@@ -623,7 +623,10 @@ impl McpHandler {
                 &progress,
             )
         };
-        let v = crate::planner::convenience::next_target_view(rec);
+        // The recommendation's derived `Serialize` is the wire contract
+        // (see `PlannerTarget`): `target` nests its `coord`, and the
+        // selected plan entry surfaces as a nested `exposure` object.
+        let v = serde_json::to_value(&rec).unwrap_or(serde_json::Value::Null);
         Ok(CallToolResult::success(vec![ContentBlock::text(
             v.to_string(),
         )]))

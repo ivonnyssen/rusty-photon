@@ -3999,8 +3999,8 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
         h.get_next_target(Parameters(GetNextTargetParams { time: None }))
             .await,
     );
-    assert_eq!(v["filter"], "Red");
-    assert_eq!(v["duration_secs"], 120.0);
+    assert_eq!(v["exposure"]["filter"], "Red");
+    assert_eq!(v["exposure"]["duration_secs"], 120.0);
     let _ = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
             target: "testfield".into(),
@@ -4012,8 +4012,11 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
         h.get_next_target(Parameters(GetNextTargetParams { time: None }))
             .await,
     );
-    assert_eq!(v["filter"], "Blue", "the met Red goal rotates the plan");
-    assert_eq!(v["duration_secs"], 60.0);
+    assert_eq!(
+        v["exposure"]["filter"], "Blue",
+        "the met Red goal rotates the plan"
+    );
+    assert_eq!(v["exposure"]["duration_secs"], 60.0);
     let _ = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
             target: "testfield".into(),

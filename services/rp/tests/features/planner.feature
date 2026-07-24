@@ -20,11 +20,13 @@ Feature: Planner convenience tools
   `all_below_min_altitude`, `wait_for_twilight`, `end_of_session`)
   so a planner plugin can branch without parsing free-form text.
 
-  A recommendation also carries the target's plan: `filter` and
-  `duration_secs` are the first goal (in store order) whose
-  `desired_count` the `record_exposure` counters have not yet met, or
-  null when the target defines no goals — the orchestrator then falls
-  back to its own exposure parameters.
+  A recommendation carries the target as a `target` object whose
+  coordinate nests as `coord: {ra_hours, dec_degrees}`, plus the plan
+  entry to shoot next as a nested `exposure` object:
+  `exposure.filter` and `exposure.duration_secs` are the first goal (in
+  store order) whose `desired_count` the `record_exposure` counters have
+  not yet met; `exposure` is null when the target defines no goals — the
+  orchestrator then falls back to its own exposure parameters.
 
   Scenario: Tool catalog includes the convenience tools
     Given a running Alpaca simulator

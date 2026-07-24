@@ -2238,20 +2238,27 @@ fn deep_sky_params(doc: &Document, overrides: Value) -> Value {
     bind_parameters(&doc.parameters, Some(&supplied)).unwrap()
 }
 
-/// `get_next_target` result carrying an exposure plan, as rp returns
-/// it after #462: `filter` / `duration_secs` are the recommended
-/// target's first `exposures[]` entry.
+/// `get_next_target` result carrying an exposure plan, in rp's current
+/// wire shape: the target's coordinate nests as `coord`, and the plan
+/// entry to shoot next is a nested `exposure` object (`{filter,
+/// duration_secs}`), or `null` when the target defines no plan. A null
+/// `duration_secs` argument is the "no plan entry" signal — it yields a
+/// null `exposure`, matching the workflow's `result.exposure != null`
+/// fallback guard.
 fn planned_recommendation(filter: Value, duration_secs: Value) -> Value {
+    let exposure = if duration_secs.is_null() {
+        Value::Null
+    } else {
+        json!({ "filter": filter, "duration_secs": duration_secs })
+    };
     json!({
         "target": {
             "name": "M31",
-            "ra_hours": 0.7,
-            "dec_degrees": 41.0,
+            "coord": { "ra_hours": 0.7, "dec_degrees": 41.0 },
             "min_altitude_degrees": null
         },
         "reason": "best_transiting_candidate",
-        "filter": filter,
-        "duration_secs": duration_secs
+        "exposure": exposure
     })
 }
 
@@ -2439,8 +2446,7 @@ async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_sess
         "get_next_target" => Ok(json!({
             "target": null,
             "reason": "end_of_session",
-            "filter": null,
-            "duration_secs": null
+            "exposure": null
         })),
         other => panic!("unexpected tool call `{other}` after end_of_session"),
     });
@@ -2487,8 +2493,7 @@ async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
                 _ => Ok(json!({
                     "target": null,
                     "reason": "end_of_session",
-                    "filter": null,
-                    "duration_secs": null
+                    "exposure": null
                 })),
             }
         }

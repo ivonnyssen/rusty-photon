@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted (2026-07-23). To be implemented on `feature/rp-targets-p1`
-(planetarium target import P1) in the same PR that lands the target store.
+Accepted (2026-07-23); landing across `feature/rp-targets-p1`
+(planetarium target import P1). The value types, the `rp_targets::Target`
+and `PlannerTarget` `coord: IcrsCoord` newtype migration, and the
+`rp-ephemeris` `From`/`TryFrom` boundary bridge have landed; the
+`schema`/`validate` endpoints follow (see Non-goals).
 Full type design: [`docs/crates/rp-vocabulary.md`](../crates/rp-vocabulary.md).
 Plan entry: [`planetarium-target-import.md`](../plans/planetarium-target-import.md)
 Decision 12.
@@ -148,10 +151,12 @@ Consequential decisions settled here:
 
 - **Newtype-field migration.** `rp_targets::Target` changes its coordinate
   field to `coord: IcrsCoord` (private-field newtype), so the compiler
-  forces every construction through `try_new` (the planner's
-  `PlannerTarget` keeps flat `f64` fields, reading the newtype via
-  accessors at the store boundary — its own `coord` adoption is deferred).
-  The coordinate now serializes as a
+  forces every construction through `try_new`. The planner's
+  `PlannerTarget` adopts the same `coord: IcrsCoord` field: its store
+  projection (`From<&Target>`) shares the validated coord directly, and
+  the `get_next_target` wire nests it as a `coord` object (the alt/az call
+  converts to `rp-ephemeris`'s computed coord via the total `From`
+  bridge). The coordinate now serializes as a
   nested `coord` object (`{ra_hours, dec_degrees}`) — `#[serde(flatten)]`
   is removed — so one canonical coordinate shape spans the on-disk store
   (redb JSON) and the MCP wire.

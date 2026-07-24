@@ -177,8 +177,7 @@ mod tests {
     fn target(name: &str, exposures: Vec<ExposureSpec>) -> PlannerTarget {
         PlannerTarget {
             name: name.to_string(),
-            ra_hours: 0.0,
-            dec_degrees: 0.0,
+            coord: rp_targets::IcrsCoord::try_new(0.0, 0.0).unwrap(),
             min_altitude_degrees: None,
             exposures,
         }

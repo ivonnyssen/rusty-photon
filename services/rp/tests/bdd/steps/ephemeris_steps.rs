@@ -205,21 +205,26 @@ fn progress_slot(world: &mut RpWorld, target: String, filter: String, completed:
     assert_eq!(slot.get("goal").and_then(|v| v.as_u64()), Some(goal));
 }
 
+// `get_next_target` surfaces the recommended plan entry as a nested
+// `exposure: {filter, duration_secs}` object (null when the target has
+// no plan), so these steps navigate into it.
+
 #[then(expr = "the result filter should be {string}")]
 fn result_filter(world: &mut RpWorld, expected: String) {
     let value = success_payload(world);
     let filter = value
-        .get("filter")
+        .pointer("/exposure/filter")
         .and_then(|v| v.as_str())
-        .expect("missing `filter`");
+        .unwrap_or_else(|| panic!("missing `exposure.filter` in: {value}"));
     assert_eq!(filter, expected.as_str());
 }
 
 #[then("the result filter should be null")]
 fn result_filter_null(world: &mut RpWorld) {
     let value = success_payload(world);
+    let exposure = value.get("exposure").expect("missing `exposure`");
     assert!(
-        value.get("filter").is_some_and(|v| v.is_null()),
+        exposure.is_null() || exposure.get("filter").is_some_and(|v| v.is_null()),
         "expected filter=null, got: {value}"
     );
 }
@@ -228,9 +233,9 @@ fn result_filter_null(world: &mut RpWorld) {
 fn result_duration_secs(world: &mut RpWorld, expected: f64) {
     let value = success_payload(world);
     let duration = value
-        .get("duration_secs")
+        .pointer("/exposure/duration_secs")
         .and_then(|v| v.as_f64())
-        .expect("missing `duration_secs`");
+        .unwrap_or_else(|| panic!("missing `exposure.duration_secs` in: {value}"));
     assert!(
         (duration - expected).abs() < f64::EPSILON,
         "expected duration_secs={expected}, got {duration}"
@@ -240,8 +245,9 @@ fn result_duration_secs(world: &mut RpWorld, expected: f64) {
 #[then("the result duration_secs should be null")]
 fn result_duration_secs_null(world: &mut RpWorld) {
     let value = success_payload(world);
+    let exposure = value.get("exposure").expect("missing `exposure`");
     assert!(
-        value.get("duration_secs").is_some_and(|v| v.is_null()),
+        exposure.is_null() || exposure.get("duration_secs").is_some_and(|v| v.is_null()),
         "expected duration_secs=null, got: {value}"
     );
 }

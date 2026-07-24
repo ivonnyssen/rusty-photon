@@ -933,7 +933,7 @@ hours, `dec` is degrees. See
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. `filter`/`duration_secs` come from the recommended target's first **incomplete** `exposures[]` entry (the `record_exposure` counters rotate the plan); null when the target defines none — see §"Dynamic Planner" |
+| `get_next_target` | time (optional) | target, reason, exposure | Evaluate candidates and recommend next target. `target` nests its coordinate as `coord: {ra_hours, dec_degrees}`; `exposure` is a nested `{filter, duration_secs}` object from the recommended target's first **incomplete** goal (the `record_exposure` counters rotate the plan), or null when the target defines none — see §"Dynamic Planner" |
 | `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches an active target-store row, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
 | `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name an active target-store row (its slug); omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted. *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
@@ -3881,7 +3881,7 @@ decide what to do next — `rp` does not make workflow decisions.
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `get_next_target` | — | target, filter, duration, reason | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter |
+| `get_next_target` | — | target (nested `coord`), reason, exposure (nested `{filter, duration_secs}`, null when none) | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter |
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
 | `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress. Reads store rows only *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
@@ -3945,9 +3945,10 @@ after each exposure, after each target switch, or when conditions change.
 > fraction wins (bullet 3; a target without goals counts as 0),
 > then the target whose next exposure matches the last recorded
 > frame's filter (bullet 4), then target-store list order.
-> The recommendation carries the exposure plan progress-aware:
-> `filter` and `duration_secs` are the recommended target's first
-> **incomplete** `exposures[]` entry in plan order (null when the
+> The recommendation carries the exposure plan progress-aware as a
+> nested `exposure` object: `exposure.filter` and
+> `exposure.duration_secs` are the recommended target's first
+> **incomplete** plan entry in plan order (`exposure` is null when the
 > target defines none) — 40 completed Luminance frames rotate the
 > recommendation to the plan's Red entry.
 > Documented v1 gaps:
@@ -4738,8 +4739,11 @@ services/rp/src/
     mod.rs              Module root; tool registration helpers
     primitives.rs       MCP wrappers for the 10 ephemeris primitives
     catalog.rs          MCP wrapper for resolve_target (over rp-catalog)
-    convenience.rs      MCP wrappers: get_target_status, get_next_target,
-                          get_meridian_status (compose primitives)
+    convenience.rs      Derived-`Serialize` view helpers for
+                          get_target_status, get_meridian_status, and the
+                          progress views (get_next_target has no helper —
+                          it serializes decision.rs's recommendation type
+                          directly)
     decision.rs         The decision logic from §"Dynamic Planner",
                           parameterised by an `Ephemeris` impl + an
                           explicit `now` so tests are deterministic

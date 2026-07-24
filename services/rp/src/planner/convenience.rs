@@ -1,22 +1,40 @@
 //! Convenience-tool body helpers: `get_target_status`,
-//! `get_next_target`, `get_meridian_status`, plus the progress views
-//! for `record_exposure` / `get_session_progress`. Each produces a
-//! JSON `Value` from typed inputs; the MCP tool body in `crate::mcp`
-//! handles parameter parsing, equipment lookup, locking the shared
-//! progress store, and `CallToolResult` shaping.
+//! `get_meridian_status`, plus the progress views for `record_exposure`
+//! / `get_session_progress`. Each produces a JSON `Value` from typed
+//! inputs through a derived `Serialize` projection — there is no
+//! hand-built JSON here. (`get_next_target` has no helper at all: its
+//! wire type is `super::decision::NextTargetRecommendation`, whose own
+//! derived `Serialize` the tool body serializes directly.) The MCP tool
+//! body in `crate::mcp` handles parameter parsing, equipment lookup,
+//! locking the shared progress store, and `CallToolResult` shaping.
+
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, SideOfPier, Site};
-use serde_json::{json, Map, Value};
+use serde::Serialize;
+use serde_json::Value;
 
-use super::decision::{signed_hour_angle, NextTargetRecommendation, PlannerTarget};
+use super::decision::{signed_hour_angle, PlannerTarget};
 use super::progress::SessionProgress;
 
-/// Status of a single named target: alt, az, hour-angle, time-to-set,
+/// The `get_target_status` result: sky position for one named target
 /// plus the caller-supplied `progress` (the per-filter map when the
-/// name matches a configured target, `Value::Null` otherwise).
-/// `time_to_set_seconds` is `null` when the target is circumpolar
-/// above `min_altitude` or never reaches it on the supplied date.
+/// name matches a configured target, `null` otherwise).
+#[derive(Serialize)]
+struct TargetStatusView<'a> {
+    target_name: &'a str,
+    altitude_degrees: f64,
+    azimuth_degrees: f64,
+    hour_angle_hours: f64,
+    /// `null` when the target is circumpolar above `min_altitude` or
+    /// never reaches it on the supplied date.
+    time_to_set_seconds: Option<i64>,
+    progress: Value,
+}
+
+/// Status of a single named target: alt, az, hour-angle, time-to-set,
+/// plus the caller-supplied `progress` (passed through verbatim).
 pub fn target_status_view(
     site: &Site,
     target: IcrsCoord,
@@ -55,55 +73,35 @@ pub fn target_status_view(
         yesterday.and_then(|d| pick_set(eph.rise_set(site, target, d, min_altitude_degrees)))
     });
 
-    Ok(json!({
-        "target_name": target_name,
-        "altitude_degrees": aa.altitude_degrees,
-        "azimuth_degrees": aa.azimuth_degrees,
-        "hour_angle_hours": ha,
-        "time_to_set_seconds": time_to_set_seconds,
-        "progress": progress,
-    }))
+    let view = TargetStatusView {
+        target_name,
+        altitude_degrees: aa.altitude_degrees,
+        azimuth_degrees: aa.azimuth_degrees,
+        hour_angle_hours: ha,
+        time_to_set_seconds,
+        progress,
+    };
+    Ok(serde_json::to_value(view).unwrap_or(Value::Null))
 }
 
-/// Project a [`NextTargetRecommendation`] onto the JSON surface. The
-/// `reason` field carries the structured discriminant so a planner
-/// plugin can branch without parsing free-form text.
-pub fn next_target_view(rec: NextTargetRecommendation) -> Value {
-    // `NextTargetReason` is a plain enum so this never errors in
-    // practice; fall back to `Value::Null` rather than panicking if
-    // serde ever rejects the variant.
-    let reason = serde_json::to_value(rec.reason).unwrap_or(serde_json::Value::Null);
-    // The exposure plan: the recommended target's first *incomplete*
-    // `exposures[]` entry, chosen by the decision logic against the
-    // `record_exposure` counters; null when the target defines no
-    // plan (the orchestrator's own exposure parameters apply).
-    let plan = rec.exposure.as_ref();
-    let filter = plan
-        .and_then(|p| p.filter.clone())
-        .map_or(Value::Null, Value::String);
-    let duration_secs = plan.map_or(Value::Null, |p| json!(p.duration_secs));
-    let target = rec.target.as_ref().map(|t| {
-        json!({
-            "name": t.name,
-            "ra_hours": t.ra_hours,
-            "dec_degrees": t.dec_degrees,
-            "min_altitude_degrees": t.min_altitude_degrees,
-        })
-    });
-    json!({
-        "target": target,
-        "reason": reason,
-        "filter": filter,
-        "duration_secs": duration_secs,
-    })
+/// One filter slot's progress: frames done and the goal (`null` when
+/// the filter is outside the target's plan).
+#[derive(Serialize)]
+struct ProgressEntry {
+    completed: u32,
+    goal: Option<u32>,
 }
 
-/// One target's per-filter progress map: filter key (the empty string
-/// is the unfiltered slot) → `{completed, goal}`. Plan entries seed
-/// the keys (so untouched goals show `completed: 0`), and recorded
-/// filters outside the plan appear with `goal: null`.
-pub fn target_progress_view(target: &PlannerTarget, progress: &SessionProgress) -> Value {
-    let mut keys: Vec<String> = target
+/// One target's per-filter progress: filter key (the empty string is
+/// the unfiltered slot) → `{completed, goal}`. Plan entries seed the
+/// keys (so untouched goals show `completed: 0`), and recorded filters
+/// outside the plan appear with `goal: null`. The `BTreeMap` keeps the
+/// keys in a stable, sorted order.
+fn target_progress_map(
+    target: &PlannerTarget,
+    progress: &SessionProgress,
+) -> BTreeMap<String, ProgressEntry> {
+    let keys = target
         .exposures
         .iter()
         .map(|e| super::progress::filter_key(e.filter.as_deref()))
@@ -112,28 +110,49 @@ pub fn target_progress_view(target: &PlannerTarget, progress: &SessionProgress) 
                 .recorded_filter_keys(&target.name)
                 .into_iter()
                 .map(String::from),
-        )
-        .collect();
-    keys.sort();
-    keys.dedup();
-    let mut map = Map::new();
+        );
+    let mut map = BTreeMap::new();
     for key in keys {
         let completed = progress.completed_for(&target.name, Some(&key));
-        let goal = SessionProgress::goal_for(target, &key).map_or(Value::Null, |g| json!(g));
-        map.insert(key, json!({ "completed": completed, "goal": goal }));
+        let goal = SessionProgress::goal_for(target, &key);
+        map.insert(key, ProgressEntry { completed, goal });
     }
-    Value::Object(map)
+    map
 }
 
-/// The full `get_session_progress` payload: target name → per-filter
-/// progress for every configured target (a target with no plan and no
-/// recorded frames appears as an empty object).
+/// One target's per-filter progress map, as a JSON object — the
+/// `progress` field of `get_target_status` / `record_exposure`.
+pub fn target_progress_view(target: &PlannerTarget, progress: &SessionProgress) -> Value {
+    serde_json::to_value(target_progress_map(target, progress)).unwrap_or(Value::Null)
+}
+
+/// The full `get_session_progress` payload: `{progress: {target ->
+/// {filter -> {completed, goal}}}}` for every configured target (a
+/// target with no plan and no recorded frames is an empty object).
+#[derive(Serialize)]
+struct SessionProgressView {
+    progress: BTreeMap<String, BTreeMap<String, ProgressEntry>>,
+}
+
+/// Build the `get_session_progress` payload over every configured
+/// target.
 pub fn session_progress_view(targets: &[PlannerTarget], progress: &SessionProgress) -> Value {
-    let mut map = Map::new();
-    for target in targets {
-        map.insert(target.name.clone(), target_progress_view(target, progress));
-    }
-    json!({ "progress": Value::Object(map) })
+    let map = targets
+        .iter()
+        .map(|t| (t.name.clone(), target_progress_map(t, progress)))
+        .collect();
+    serde_json::to_value(SessionProgressView { progress: map }).unwrap_or(Value::Null)
+}
+
+/// The `get_meridian_status` result: time-to-flip from the mount's
+/// current pointing plus the side of pier (`SideOfPier`'s own
+/// kebab-case `Serialize` gives `"east"` / `"west"` / `"unknown"`).
+#[derive(Serialize)]
+struct MeridianStatusView {
+    time_to_flip_seconds: Option<i64>,
+    side_of_pier: SideOfPier,
+    mount_ra_hours: f64,
+    mount_dec_degrees: f64,
 }
 
 /// Status of the meridian-flip clock: time-to-flip from the mount's
@@ -151,17 +170,13 @@ pub fn meridian_status_view(
         dec_degrees: mount_dec_degrees,
     };
     let dur = eph.meridian_flip(site, target, now, side);
-    let side_str = match side {
-        SideOfPier::East => "east",
-        SideOfPier::West => "west",
-        SideOfPier::Unknown => "unknown",
+    let view = MeridianStatusView {
+        time_to_flip_seconds: dur.map(|d| d.num_seconds()),
+        side_of_pier: side,
+        mount_ra_hours,
+        mount_dec_degrees,
     };
-    json!({
-        "time_to_flip_seconds": dur.map(|d| d.num_seconds()),
-        "side_of_pier": side_str,
-        "mount_ra_hours": mount_ra_hours,
-        "mount_dec_degrees": mount_dec_degrees,
-    })
+    serde_json::to_value(view).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]
@@ -169,7 +184,7 @@ pub fn meridian_status_view(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-    use crate::planner::decision::{ExposureSpec, NextTargetReason, PlannerTarget};
+    use crate::planner::decision::{ExposureSpec, PlannerTarget};
 
     fn site() -> Site {
         Site::new(47.6062, -122.3321).unwrap()
@@ -196,111 +211,10 @@ mod tests {
     }
 
     #[test]
-    fn next_target_view_serialises_no_targets_branch() {
-        let rec = NextTargetRecommendation {
-            target: None,
-            reason: NextTargetReason::NoTargetsConfigured,
-            exposure: None,
-        };
-        let v = next_target_view(rec);
-        assert_eq!(v["reason"], "no_targets_configured");
-        assert!(v["target"].is_null());
-        assert!(v["filter"].is_null());
-        assert!(v["duration_secs"].is_null());
-    }
-
-    #[test]
-    fn next_target_view_serialises_recommendation_branch() {
-        let rec = NextTargetRecommendation {
-            target: Some(PlannerTarget {
-                name: "M31".into(),
-                ra_hours: 0.7,
-                dec_degrees: 41.0,
-                min_altitude_degrees: Some(25.0),
-                exposures: Vec::new(),
-            }),
-            reason: NextTargetReason::BestTransitingCandidate,
-            exposure: None,
-        };
-        let v = next_target_view(rec);
-        assert_eq!(v["reason"], "best_transiting_candidate");
-        assert_eq!(v["target"]["name"], "M31");
-        assert_eq!(v["target"]["min_altitude_degrees"], 25.0);
-        assert!(
-            v["filter"].is_null() && v["duration_secs"].is_null(),
-            "a target without exposures[] must leave the plan null: {v}"
-        );
-    }
-
-    #[test]
-    fn next_target_view_surfaces_the_recommended_exposure_entry() {
-        // The decision logic picks the entry (first incomplete, per
-        // the progress counters); the view must surface exactly that
-        // one — here the plan's *second* entry — not exposures[0].
-        let rec = NextTargetRecommendation {
-            target: Some(PlannerTarget {
-                name: "M31".into(),
-                ra_hours: 0.7,
-                dec_degrees: 41.0,
-                min_altitude_degrees: None,
-                exposures: vec![
-                    ExposureSpec {
-                        filter: Some("Luminance".to_string()),
-                        duration_secs: 300.0,
-                        count: Some(1),
-                    },
-                    ExposureSpec {
-                        filter: Some("Red".to_string()),
-                        duration_secs: 120.0,
-                        count: Some(1),
-                    },
-                ],
-            }),
-            reason: NextTargetReason::BestTransitingCandidate,
-            exposure: Some(ExposureSpec {
-                filter: Some("Red".to_string()),
-                duration_secs: 120.0,
-                count: Some(1),
-            }),
-        };
-        let v = next_target_view(rec);
-        assert_eq!(v["filter"], "Red");
-        assert_eq!(v["duration_secs"], 120.0);
-        assert!(
-            v["target"].get("exposures").is_none(),
-            "the wire target object carries coordinates only: {v}"
-        );
-    }
-
-    #[test]
-    fn next_target_view_leaves_filter_null_for_an_unfiltered_plan_entry() {
-        let entry = ExposureSpec {
-            filter: None,
-            duration_secs: 60.0,
-            count: None,
-        };
-        let rec = NextTargetRecommendation {
-            target: Some(PlannerTarget {
-                name: "OSC Field".into(),
-                ra_hours: 0.7,
-                dec_degrees: 41.0,
-                min_altitude_degrees: None,
-                exposures: vec![entry.clone()],
-            }),
-            reason: NextTargetReason::BestTransitingCandidate,
-            exposure: Some(entry),
-        };
-        let v = next_target_view(rec);
-        assert!(v["filter"].is_null());
-        assert_eq!(v["duration_secs"], 60.0);
-    }
-
-    #[test]
     fn target_progress_view_seeds_plan_keys_and_carries_off_plan_records() {
         let target = PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7,
-            dec_degrees: 41.0,
+            coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
             min_altitude_degrees: None,
             exposures: vec![
                 ExposureSpec {
@@ -336,8 +250,7 @@ mod tests {
     fn session_progress_view_lists_every_configured_target() {
         let planned = PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7,
-            dec_degrees: 41.0,
+            coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
             min_altitude_degrees: None,
             exposures: vec![ExposureSpec {
                 filter: None,
@@ -347,8 +260,7 @@ mod tests {
         };
         let bare = PlannerTarget {
             name: "M42".into(),
-            ra_hours: 5.5,
-            dec_degrees: -5.4,
+            coord: rp_targets::IcrsCoord::try_new(5.5, -5.4).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         };

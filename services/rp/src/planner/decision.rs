@@ -28,6 +28,7 @@
 
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, Site};
+use rp_targets::IcrsCoord;
 use serde::Serialize;
 
 use super::progress::SessionProgress;
@@ -53,33 +54,48 @@ const SUN_TREND_SAMPLE_SECS: i64 = 60;
 /// integration (and fewer filter changes) is free.
 const TRANSIT_TIE_BAND_HOURS: f64 = 0.5;
 
+/// A planner decision candidate: a target's stable identity (`name` =
+/// its store slug), validated ICRS coordinate, altitude floor, and
+/// plan. This is also the `get_next_target` wire type — its derived
+/// `Serialize` produces the tool result's `target` object, so `coord`
+/// serializes as a nested `{ra_hours, dec_degrees}` object while the
+/// decision-only `exposures` plan is skipped (the selected entry
+/// surfaces separately as the recommendation's `exposure`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannerTarget {
     pub name: String,
-    pub ra_hours: f64,
-    pub dec_degrees: f64,
+    /// Validated ICRS coordinate (the store's plan value type). Nests
+    /// on the wire as `coord: {ra_hours, dec_degrees}`.
+    pub coord: IcrsCoord,
     /// Per-target altitude floor. `None` falls back to the
     /// planner-wide minimum supplied by the caller.
     pub min_altitude_degrees: Option<f64>,
-    /// The target's `exposures[]` plan, in config order. The
-    /// recommendation surfaces the first entry as `filter` /
-    /// `duration_secs`; empty ⇒ both null (the orchestrator's own
-    /// exposure parameters apply).
+    /// The target's plan (store goals), in list order — a decision
+    /// input only, skipped on the wire. `next_target` surfaces the
+    /// first incomplete entry as the recommendation's `exposure`;
+    /// empty ⇒ that is null (the orchestrator's own exposure
+    /// parameters apply).
+    #[serde(skip)]
     pub exposures: Vec<ExposureSpec>,
 }
 
-/// One entry of a target's `exposures[]` plan (rp.md § Target
-/// Definition).
+/// One entry of a target's plan, projected from a store
+/// `AcquisitionGoal` (rp.md § Target Store). When this entry is the
+/// recommendation `next_target` surfaces, `filter` / `duration_secs`
+/// are the wire `exposure` object; `count` is a decision input (goal
+/// tracking) and is skipped on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExposureSpec {
-    /// `None` for an unfiltered entry (no `filter` key, `null`, or
-    /// `""` in config — e.g. an OSC rig without a filter wheel).
+    /// `None` for an unfiltered entry (an empty store filter — e.g. an
+    /// OSC rig without a filter wheel).
     pub filter: Option<String>,
     /// Exposure duration in seconds; positive and finite.
     pub duration_secs: f64,
     /// Integration goal for this entry (frames), tracked by the
     /// `record_exposure` counters. `None` = no finite goal: the entry
-    /// recommends forever and its target never exhausts.
+    /// recommends forever and its target never exhausts. Skipped on the
+    /// wire — a decision input, not part of the tool result.
+    #[serde(skip)]
     pub count: Option<u32>,
 }
 
@@ -145,10 +161,11 @@ pub fn next_target(
             );
             continue;
         }
-        let coords = rp_ephemeris::IcrsCoord {
-            ra_hours: t.ra_hours,
-            dec_degrees: t.dec_degrees,
-        };
+        // The validated plan coordinate converts total-ly to the
+        // ephemeris crate's computed coordinate (ADR-019 boundary
+        // bridge — a valid plan coord is always a valid transform
+        // input).
+        let coords: rp_ephemeris::IcrsCoord = t.coord.into();
         let aa = match eph.alt_az(site, coords, now) {
             Ok(aa) => aa,
             Err(e) => {
@@ -223,7 +240,7 @@ pub fn next_target(
     // keep the store's list order, so the scan's strict `<` is that
     // final tie-break).
     let lst = eph.sidereal_time(site, now).lst_hours;
-    let abs_ha = |t: &PlannerTarget| signed_hour_angle(lst, t.ra_hours).abs();
+    let abs_ha = |t: &PlannerTarget| signed_hour_angle(lst, t.coord.ra_hours()).abs();
     let Some(best_ha) = survivors
         .iter()
         .map(|t| abs_ha(t))
@@ -304,17 +321,18 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
 /// candidate for `next_target` (Decision 9 — altitude-gating parity,
 /// `docs/plans/planetarium-target-import.md`). `name` carries the
 /// target's `slug` (its stable identity — `display_name` is freely
-/// operator-editable and unsuited as a lookup key). Every goal's
+/// operator-editable and unsuited as a lookup key). The validated
+/// `coord` is shared directly — both types hold the same
+/// `rp_targets::IcrsCoord`, so no re-validation is needed. Every goal's
 /// `desired_count` is a required, finite `u32` (`validate_goals`
 /// rejects zero), so each maps to a `count: Some(_)` entry — a
-/// store-backed target's plan never "recommends forever": every
-/// `exposures[]` entry it projects to carries a finite goal.
+/// store-backed target's plan never "recommends forever": every plan
+/// entry it projects to carries a finite goal.
 impl From<&rp_targets::Target> for PlannerTarget {
     fn from(t: &rp_targets::Target) -> Self {
         Self {
             name: t.slug.as_str().to_string(),
-            ra_hours: t.coord.ra_hours(),
-            dec_degrees: t.coord.dec_degrees(),
+            coord: t.coord,
             min_altitude_degrees: t.scheduling.and_then(|s| s.min_altitude_degrees),
             exposures: t
                 .goals
@@ -496,8 +514,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -523,8 +540,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -553,8 +569,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -581,8 +596,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -609,8 +623,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -638,8 +651,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -668,8 +680,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -689,8 +700,7 @@ mod tests {
     fn never_visible_target() -> Vec<PlannerTarget> {
         vec![PlannerTarget {
             name: "below floor".into(),
-            ra_hours: 0.0,
-            dec_degrees: 0.0,
+            coord: rp_targets::IcrsCoord::try_new(0.0, 0.0).unwrap(),
             min_altitude_degrees: Some(90.0),
             exposures: Vec::new(),
         }]
@@ -757,8 +767,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "M31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.27,
+            coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
@@ -787,15 +796,13 @@ mod tests {
         let targets = vec![
             PlannerTarget {
                 name: "M31".into(),
-                ra_hours: 0.7,
-                dec_degrees: 41.0,
+                coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
                 min_altitude_degrees: None,
                 exposures: Vec::new(),
             },
             PlannerTarget {
                 name: "M42".into(),
-                ra_hours: 11.0,
-                dec_degrees: -5.0,
+                coord: rp_targets::IcrsCoord::try_new(11.0, -5.0).unwrap(),
                 min_altitude_degrees: None,
                 exposures: Vec::new(),
             },
@@ -820,8 +827,7 @@ mod tests {
     fn target_with_plan(name: &str, ra_hours: f64, exposures: Vec<ExposureSpec>) -> PlannerTarget {
         PlannerTarget {
             name: name.into(),
-            ra_hours,
-            dec_degrees: 0.0,
+            coord: rp_targets::IcrsCoord::try_new(ra_hours, 0.0).unwrap(),
             min_altitude_degrees: None,
             exposures,
         }
@@ -982,8 +988,7 @@ mod tests {
         };
         let targets = vec![PlannerTarget {
             name: "T1".into(),
-            ra_hours: 1.0,
-            dec_degrees: 0.0,
+            coord: rp_targets::IcrsCoord::try_new(1.0, 0.0).unwrap(),
             min_altitude_degrees: Some(20.0),
             exposures: Vec::new(),
         }];
@@ -1038,8 +1043,8 @@ mod tests {
         let t = store_target("ngc7000", None, Vec::new());
         let planner_target = PlannerTarget::from(&t);
         assert_eq!(planner_target.name, "ngc7000");
-        assert_eq!(planner_target.ra_hours, 1.0);
-        assert_eq!(planner_target.dec_degrees, 2.0);
+        assert_eq!(planner_target.coord.ra_hours(), 1.0);
+        assert_eq!(planner_target.coord.dec_degrees(), 2.0);
         assert_eq!(planner_target.min_altitude_degrees, None);
     }
 
@@ -1074,5 +1079,88 @@ mod tests {
                 count: Some(20),
             }]
         );
+    }
+
+    // --- get_next_target wire shape ------------------------------------
+    // The derived `Serialize` of a `NextTargetRecommendation` *is* the
+    // tool result (no hand-built view any more), so these pin its
+    // contract: a nested `coord` object, a nested `exposure` object, and
+    // the decision-only `exposures` / `count` fields kept off the wire.
+
+    #[test]
+    fn serialized_no_targets_branch_nulls_target_and_exposure() {
+        let rec = NextTargetRecommendation {
+            target: None,
+            reason: NextTargetReason::NoTargetsConfigured,
+            exposure: None,
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["reason"], "no_targets_configured");
+        assert!(v["target"].is_null());
+        assert!(v["exposure"].is_null());
+    }
+
+    #[test]
+    fn serialized_recommendation_nests_coord_and_hides_the_plan() {
+        let rec = NextTargetRecommendation {
+            target: Some(PlannerTarget {
+                name: "M31".into(),
+                coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
+                min_altitude_degrees: Some(25.0),
+                exposures: vec![ExposureSpec {
+                    filter: Some("Luminance".to_string()),
+                    duration_secs: 300.0,
+                    count: Some(1),
+                }],
+            }),
+            reason: NextTargetReason::BestTransitingCandidate,
+            exposure: Some(ExposureSpec {
+                filter: Some("Red".to_string()),
+                duration_secs: 120.0,
+                count: Some(2),
+            }),
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["reason"], "best_transiting_candidate");
+        assert_eq!(v["target"]["name"], "M31");
+        // The coordinate nests as an object, not flat ra/dec keys.
+        assert_eq!(v["target"]["coord"]["ra_hours"], 0.7);
+        assert_eq!(v["target"]["coord"]["dec_degrees"], 41.0);
+        assert_eq!(v["target"]["min_altitude_degrees"], 25.0);
+        // The full plan stays off the wire (the target carries identity
+        // + coordinate only).
+        assert!(
+            v["target"].get("exposures").is_none(),
+            "the wire target must not leak the plan: {v}"
+        );
+        // The selected exposure nests; the goal `count` is not surfaced.
+        assert_eq!(v["exposure"]["filter"], "Red");
+        assert_eq!(v["exposure"]["duration_secs"], 120.0);
+        assert!(
+            v["exposure"].get("count").is_none(),
+            "the goal count is a decision input, not wire: {v}"
+        );
+    }
+
+    #[test]
+    fn serialized_unfiltered_exposure_leaves_filter_null() {
+        let entry = ExposureSpec {
+            filter: None,
+            duration_secs: 60.0,
+            count: None,
+        };
+        let rec = NextTargetRecommendation {
+            target: Some(PlannerTarget {
+                name: "OSC Field".into(),
+                coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
+                min_altitude_degrees: None,
+                exposures: vec![entry.clone()],
+            }),
+            reason: NextTargetReason::BestTransitingCandidate,
+            exposure: Some(entry),
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert!(v["exposure"]["filter"].is_null());
+        assert_eq!(v["exposure"]["duration_secs"], 60.0);
     }
 }
