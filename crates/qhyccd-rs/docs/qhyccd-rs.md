@@ -384,16 +384,15 @@ classDiagram
         +u32 subday
     }
 
-    class Control {
+    class ControlType {
         <<enumeration>>
-        Brightness
-        Contrast
         Gain
         Offset
         Exposure
         Cooler
         CfwPort
-        +85 more...
+        +26 more named
+        Other(i32)
     }
 
     class StreamMode {
@@ -423,15 +422,15 @@ Defines rectangular regions on the sensor. Used for:
 **ImageData:**
 Contains captured image data along with metadata. The `data` field is a flat `Vec<u8>` containing raw pixel data. The structure depends on `bits_per_pixel` (8 or 16) and `channels` (1 for mono, 3 for debayered color).
 
-**Control:**
-Enum with 92 variants representing camera parameters. Each variant corresponds to a control ID in the QHYCCD SDK (values 0-86 plus 1024-1029). Controls are organized into categories:
-- Basic imaging: Gain, Offset, Exposure, Brightness, Contrast
-- Color: Wbr, Wbb, Wbg (white balance)
-- Temperature: Cooler, CurTemp, CurPWM, ManualPWM
+**ControlType:**
+A small **semantic subset** of the SDK's `CONTROL_ID`s — the ~31 controls actually referenced across the workspace — plus an `Other(i32)` escape hatch carrying the raw id for any control not named. The discriminant values still match the SDK's own `CONTROL_ID` numbering, exposed via `to_raw` (renamed from the former exhaustive `Control` enum in Phase 2 of the convention-alignment plan). Named controls include:
+- Basic imaging: Gain, Offset, Exposure, Brightness, Speed, TransferBit, UsbTraffic
+- Color: Wbr, Wbb, Wbg (white balance), CamColor, CamIsColor
+- Temperature/cooler: Cooler, CurTemp, CurPWM, ManualPWM
 - Binning modes: CamBin1x1mode through CamBin8x8mode
-- Capabilities: Various Cam* controls indicating feature support
+- Frame / bit modes: CamSingleFrameMode, CamLiveVideoMode, Cam8bits, Cam16bits, OutputDataActualBits
 - Filter wheel: CfwPort, CfwSlotsNum
-- Advanced: UsbTraffic, Speed, TransferBit, DDR, GPS, Humidity, Pressure, etc.
+- Misc capabilities: CamMechanicalShutter, DDR
 
 **StreamMode:**
 Two imaging modes:
@@ -762,7 +761,7 @@ Uses the `rand` crate to generate random noise and `rayon` for parallel processi
 
 ## Control System
 
-The library provides extensive control over camera parameters through the `Control` enum with 92 control types.
+The library provides extensive control over camera parameters through the `ControlType` enum — a semantic subset of the SDK's `CONTROL_ID`s plus an `Other(i32)` escape hatch.
 
 ### Control Categories
 
@@ -850,7 +849,7 @@ For real hardware, this calls `IsQHYCCDControlAvailable()`. For simulation, it c
 
 **Parameter Operations:**
 
-All parameter operations use the `Control` enum:
+All parameter operations use the `ControlType` enum:
 1. Check availability with `is_control_available()`
 2. Optionally get valid range with `get_parameter_min_max_step()`
 3. Set value with `set_parameter(control, value)`
