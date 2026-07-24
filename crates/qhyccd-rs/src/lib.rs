@@ -75,16 +75,14 @@
 /// convention (`pub use libzwo_sys as sys;` / `pub use libsvbony_sys as sys;`).
 pub use libqhyccd_sys as sys;
 
-// Module declarations. The real-hardware handle machinery (`backend`) is only
-// compiled without the `simulation` feature: under `simulation` every camera
-// method takes its `#[cfg(feature = "simulation")]` arm and the FFI handle is
-// never constructed. This is the compile-time real/sim split used by the sibling
-// `zwo-rs` / `svbony-rs` crates (a per-method `#[cfg]` fork), replacing the former
-// runtime `CameraBackend` enum + `#[automock]` FFI-mock layer.
-#[cfg(not(feature = "simulation"))]
-mod backend;
+// Module declarations. `camera` is the single device-file-major module holding
+// the `Camera` device, its `ControlType` address space, and (only without the
+// `simulation` feature) the real-hardware handle machinery — the compile-time
+// real/sim split used by the sibling `zwo-rs` / `svbony-rs` crates (a per-method
+// `#[cfg]` fork), replacing the former runtime `CameraBackend` enum + `#[automock]`
+// FFI-mock layer. It merges the former `camera/` submodule split, `backend.rs`,
+// and `control.rs`.
 mod camera;
-mod control;
 mod error;
 mod filter_wheel;
 mod sdk;
@@ -94,8 +92,7 @@ mod types;
 pub mod simulation;
 
 // Public re-exports
-pub use camera::Camera;
-pub use control::ControlType;
+pub use camera::{Camera, ControlType};
 pub use error::{check, QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;
