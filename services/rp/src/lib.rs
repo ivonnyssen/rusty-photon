@@ -150,15 +150,13 @@ impl ServerBuilder {
             None
         };
 
-        let targets = crate::planner::decision::parse_targets_from_value(&config.targets);
-
-        // Target store (rp.md § Target Store, additive coexistence with
-        // the legacy targets[] array above pending the Dynamic Planner
-        // cutover): opened unconditionally, at
-        // `targets.db_path` or `<data_directory>/targets.redb`.
+        // Target store (rp.md § Target Store): the sole source of planner
+        // targets (the legacy `targets[]` config array was retired).
+        // Opened unconditionally, at `target_store.db_path` or
+        // `<data_directory>/targets.redb`.
         let target_store_config =
-            crate::config::target_store::parse_target_store_config(&config.targets)
-                .map_err(|e| crate::error::RpError::Config(format!("targets: {e}")))?;
+            crate::config::target_store::parse_target_store_config(&config.target_store)
+                .map_err(|e| crate::error::RpError::Config(format!("target_store: {e}")))?;
         let target_store_db_path = target_store_config.db_path.clone().unwrap_or_else(|| {
             std::path::Path::new(&config.session.data_directory)
                 .join("targets.redb")
@@ -168,7 +166,7 @@ impl ServerBuilder {
         if let Some(parent) = std::path::Path::new(&target_store_db_path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 crate::error::RpError::Config(format!(
-                    "targets.db_path {target_store_db_path:?}: failed to create parent directory: {e}"
+                    "target_store.db_path {target_store_db_path:?}: failed to create parent directory: {e}"
                 ))
             })?;
         }
@@ -177,7 +175,7 @@ impl ServerBuilder {
                 .await
                 .map_err(|e| {
                     crate::error::RpError::Config(format!(
-                        "targets.db_path {target_store_db_path:?}: failed to open target store: {e}"
+                        "target_store.db_path {target_store_db_path:?}: failed to open target store: {e}"
                     ))
                 })?,
         );
@@ -313,7 +311,7 @@ impl ServerBuilder {
             image_cache.clone(),
             site,
         )
-        .with_planner_config(targets, default_min_alt)
+        .with_planner_default_min_altitude(default_min_alt)
         .with_progress_store(planner_progress)
         .with_session_manager(session.clone())
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)

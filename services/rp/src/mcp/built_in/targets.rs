@@ -2,13 +2,14 @@
 //! `add_target` / `get_target` / `list_targets` / `update_target` /
 //! `delete_target` / `set_goals`, backed by [`rp_targets::TargetStore`].
 //!
-//! Coexists with the legacy `targets[]` planner tools
-//! ([`super::planner`]) during the P1 migration — see
-//! `crate::config::target_store` for how the two share the `targets`
-//! config key. Progress derivation here always reports `good: 0,
-//! total: 0`: the on-disk frame scan needs both the grading plugin's
-//! sidecar shape and `capture`'s target linkage, neither of which has
-//! landed yet (`docs/crates/rp-targets.md` § MVP scope).
+//! The store is the sole source of planner targets ([`super::planner`]'s
+//! `get_next_target` / `record_exposure` / `get_session_progress` read
+//! its active rows); its settings live under the `target_store` config
+//! key (`crate::config::target_store`). Progress derivation here always
+//! reports `good: 0, total: 0`: the on-disk frame scan needs both the
+//! grading plugin's sidecar shape and `capture`'s target linkage,
+//! neither of which has landed yet (`docs/crates/rp-targets.md` § MVP
+//! scope).
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};

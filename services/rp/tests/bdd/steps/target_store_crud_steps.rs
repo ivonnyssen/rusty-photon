@@ -27,8 +27,8 @@ use crate::world::RpWorld;
 /// connected — goal filter-roster validation reads the configured
 /// `filters[]` list, not live device state, per rp.md § Target Store).
 /// Picks up `world.target_store_config` (set by a `Given rp is
-/// configured with default target goals:`-style step) as the `targets`
-/// config block, when present — mirrors how `RpWorld::build_config`
+/// configured with default target goals:`-style step) as the
+/// `target_store` config block, when present — mirrors how `RpWorld::build_config`
 /// applies the same field for the OmniSim-backed bootstrap path, so a
 /// scenario can set the override before either "rp is running ..."
 /// Given step.
@@ -50,8 +50,8 @@ pub(crate) fn write_target_store_config(world: &mut RpWorld, filters: Option<Vec
         "equipment": equipment,
         "server": { "port": 0, "bind_address": "127.0.0.1" }
     });
-    if let Some(targets) = &world.target_store_config {
-        config["targets"] = targets.clone();
+    if let Some(target_store) = &world.target_store_config {
+        config["target_store"] = target_store.clone();
     }
     let path = dir.path().join("rp.json");
     std::fs::write(

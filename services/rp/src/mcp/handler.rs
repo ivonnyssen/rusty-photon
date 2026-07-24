@@ -26,11 +26,6 @@ pub struct McpHandler {
     /// tools that require a site (`compute_alt_az`, `get_twilight`,
     /// etc.) error cleanly in that case.
     pub site: Option<rp_ephemeris::Site>,
-    /// Targets parsed from `Config.targets` for the planner
-    /// convenience tools. Empty when `targets[]` is absent or none
-    /// of its rows carry the required `name` / `ra_hours` /
-    /// `dec_degrees` fields.
-    pub targets: Vec<crate::planner::decision::PlannerTarget>,
     /// Planner-wide minimum altitude default (degrees). Read from
     /// `Config.planner.min_altitude_degrees`, falling back to 20°
     /// when omitted.
@@ -131,7 +126,6 @@ impl McpHandler {
             session_config,
             image_cache,
             site,
-            targets: Vec::new(),
             default_min_altitude_degrees: 20.0,
             progress: Arc::new(std::sync::Mutex::new(
                 crate::planner::progress::SessionProgress::default(),
@@ -171,16 +165,13 @@ impl McpHandler {
         }
     }
 
-    /// Wire planner inputs after construction. The lib.rs build path
-    /// calls this with the parsed `targets[]` JSON and
-    /// `planner.min_altitude_degrees` (defaulting to 20°). Tests
-    /// can leave the defaults as-is.
-    pub fn with_planner_config(
-        mut self,
-        targets: Vec<crate::planner::decision::PlannerTarget>,
-        default_min_altitude_degrees: f64,
-    ) -> Self {
-        self.targets = targets;
+    /// Wire the planner-wide minimum-altitude default after
+    /// construction. The lib.rs build path calls this with
+    /// `planner.min_altitude_degrees` (defaulting to 20°); it is the
+    /// altitude floor `get_next_target` applies to a store-backed
+    /// target that carries no per-target or `default_scheduling`
+    /// override. Tests can leave the default as-is.
+    pub fn with_planner_default_min_altitude(mut self, default_min_altitude_degrees: f64) -> Self {
         self.default_min_altitude_degrees = default_min_altitude_degrees;
         self
     }

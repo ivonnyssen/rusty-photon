@@ -11,8 +11,9 @@ use crate::world::RpWorld;
 
 /// Parses a `| filter | binning | exposure_duration | desired_count |` Gherkin
 /// table into the JSON shape `add_target`/`set_goals` accept for their
-/// `goals[]` parameter.
-fn goals_from_table(step: &Step) -> Vec<Value> {
+/// `goals[]` parameter. `pub(crate)` so `target_store_planner_steps.rs`
+/// reuses it for the planner-feature always-visible-with-goals seeds.
+pub(crate) fn goals_from_table(step: &Step) -> Vec<Value> {
     let table = step
         .table
         .as_ref()

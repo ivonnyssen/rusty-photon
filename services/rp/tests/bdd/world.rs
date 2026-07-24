@@ -15,9 +15,9 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig, FocuserConfig,
     GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig, OmniSimHandle,
-    OpticalTrainConfig, OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig,
-    PlateSolverStub, ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient,
-    SwitchConfig, TestOrchestrator, WebhookReceiver,
+    OpticalTrainConfig, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub, ReceivedEvent,
+    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, TestOrchestrator,
+    WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -85,9 +85,6 @@ pub struct RpWorld {
     /// the generated rp config. Used by `target_catalog`,
     /// `ephemeris_primitives`, and `planner` BDD features.
     pub site: Option<(f64, f64)>,
-    /// Planner targets accumulated via Given steps — emitted as the
-    /// top-level `targets` array `get_next_target` recommends from.
-    pub planner_targets: Vec<PlannerTargetConfig>,
     /// Safety monitors accumulated via Given steps (safety.feature).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
     /// Switches accumulated via Given steps (equipment_connectivity.feature).
@@ -186,7 +183,7 @@ pub struct RpWorld {
     /// Raw JSON array from the most recent `list_targets` call
     /// (Target Store scenarios).
     pub last_target_list: Option<Vec<Value>>,
-    /// Raw `targets` config block override (Target Store scenarios —
+    /// Raw `target_store` config block override (Target Store scenarios —
     /// `db_path`/`default_scheduling`/`default_grading`/`default_goals`,
     /// see rp.md § Target Store → Configuration), merged over whatever
     /// [`RpConfigBuilder::build`] emits so these scenarios can still use
@@ -395,9 +392,6 @@ impl RpWorld {
         if let Some((lat, lon)) = self.site {
             builder.with_site(lat, lon);
         }
-        for target in &self.planner_targets {
-            builder.add_target(target.clone());
-        }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());
         }
@@ -432,16 +426,15 @@ impl RpWorld {
             builder.with_imaging(mib, images);
         }
         let mut config = builder.build();
-        // Target Store scenarios (*(planned, P1)*): RpConfigBuilder only
-        // knows the legacy `targets[]` array (PlannerTargetConfig); the
-        // new store's `targets` object (db_path/default_scheduling/
-        // default_grading/default_goals, rp.md § Target Store) has no
-        // typed builder support yet since P1 hasn't landed. Overwriting
-        // the key here — rather than extending the shared builder ahead
-        // of the real implementation — keeps this override local to rp's
-        // own BDD suite until Phase 3 settles the real shape.
-        if let Some(targets) = &self.target_store_config {
-            config["targets"] = targets.clone();
+        // Target-store settings (`db_path` / `default_scheduling` /
+        // `default_goals`, rp.md § Target Store) as the raw
+        // `target_store` config object. The shared `RpConfigBuilder` has
+        // no typed store-settings builder yet, so a scenario that needs
+        // non-default settings sets `target_store_config` and it is
+        // spliced in here; targets themselves are seeded post-boot via
+        // the `add_target` MCP tool.
+        if let Some(target_store) = &self.target_store_config {
+            config["target_store"] = target_store.clone();
         }
         if let Some(pattern) = &self.file_naming_pattern {
             config["session"]["file_naming_pattern"] = Value::String(pattern.clone());

@@ -96,7 +96,9 @@ pub struct GetNextTargetParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecordExposureParams {
-    /// Name of a configured `targets[]` entry.
+    /// Slug of an active target-store row — the `target.name` a
+    /// `get_next_target` recommendation carries (a target's slug is its
+    /// stable identity).
     pub target: String,
     /// Filter of the completed frame. Omit (or pass `null` / `""`)
     /// for an unfiltered frame.
@@ -111,6 +113,35 @@ pub struct GetSessionProgressParams {}
 pub struct GetMeridianStatusParams {
     #[serde(default)]
     pub time: Option<String>,
+}
+
+impl McpHandler {
+    /// The planner's working set: every active target-store row
+    /// projected onto the decision candidate type
+    /// ([`crate::planner::decision::PlannerTarget`], whose `name` is the
+    /// target's slug). The single source of planner targets since the
+    /// legacy `targets[]` config array was retired — `get_next_target`,
+    /// `record_exposure`, `get_session_progress`, and `get_target_status`
+    /// all read from here. Returns empty when no store is configured or
+    /// the listing fails (logged at `debug!`), which surfaces as
+    /// `no_targets_configured` / an unknown-target error rather than a
+    /// tool failure.
+    async fn active_planner_targets(&self) -> Vec<crate::planner::decision::PlannerTarget> {
+        let Some(store) = self.target_store.as_ref() else {
+            return Vec::new();
+        };
+        match store.list_targets().await {
+            Ok(targets) => targets
+                .iter()
+                .filter(|t| t.active)
+                .map(crate::planner::decision::PlannerTarget::from)
+                .collect(),
+            Err(e) => {
+                tracing::debug!(error = %e, "target store list_targets failed; planner sees no targets");
+                Vec::new()
+            }
+        }
+    }
 }
 
 #[tool_router(router = tool_router_planner, vis = "pub")]
@@ -441,8 +472,8 @@ impl McpHandler {
                        raw ra/dec pair. progress is the per-filter \
                        {completed, goal} map from the record_exposure \
                        counters when target_name (as given or \
-                       catalog-resolved) matches a configured targets[] \
-                       entry, null otherwise. Requires `site`.")]
+                       catalog-resolved) slugifies to an active target-store \
+                       row, null otherwise. Requires `site`.")]
     pub(crate) async fn get_target_status(
         &self,
         Parameters(params): Parameters<GetTargetStatusParams>,
@@ -492,19 +523,27 @@ impl McpHandler {
                 ))
             }
         };
-        // The progress map is keyed by configured target names, which
-        // are free-form, while the catalog normalises "m 31" → "M 31"
-        // — so match the caller's `target_name` as given first, then
-        // its catalog-resolved form (`name`). The ra/dec form has no
-        // name to match and reports progress: null.
-        let progress = match params.target_name.as_deref().and_then(|raw| {
-            self.targets
-                .iter()
-                .find(|t| t.name == raw || t.name == name)
-        }) {
-            Some(configured) => {
-                let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-                crate::planner::convenience::target_progress_view(configured, &store)
+        // The progress counters are keyed by a target's slug (its stable
+        // identity), while `get_target_status` is queried by a free-form
+        // or catalog name — so slugify both the caller's `target_name`
+        // and its catalog-resolved form (`name`) and match those against
+        // the active store rows (`PlannerTarget.name` is the slug). The
+        // ra/dec form has no name to match and reports progress: null.
+        let progress = match params.target_name.as_deref() {
+            Some(raw) => {
+                let wanted: Vec<String> = [raw, name.as_str()]
+                    .iter()
+                    .filter_map(|s| rp_targets::TargetSlug::new(s).ok())
+                    .map(|slug| slug.as_str().to_string())
+                    .collect();
+                let targets = self.active_planner_targets().await;
+                match targets.iter().find(|t| wanted.contains(&t.name)) {
+                    Some(configured) => {
+                        let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+                        crate::planner::convenience::target_progress_view(configured, &store)
+                    }
+                    None => serde_json::Value::Null,
+                }
             }
             None => serde_json::Value::Null,
         };
@@ -523,19 +562,18 @@ impl McpHandler {
         }
     }
 
-    #[tool(description = "Recommend the next target from the legacy `targets[]` \
-                       config array and the active rows of the target store \
-                       (rp.md § Target Store), combined, based on altitude / \
+    #[tool(description = "Recommend the next target from the active rows of the \
+                       target store (rp.md § Target Store), based on altitude / \
                        approaching transit / integration progress / \
                        sun-elevation gating. A store-backed target's altitude \
                        floor is target.scheduling.min_altitude_degrees, \
-                       falling back to targets.default_scheduling.\
+                       falling back to target_store.default_scheduling.\
                        min_altitude_degrees from config (Decision 9 — \
                        altitude-gating parity, docs/plans/\
                        planetarium-target-import.md). filter and \
                        duration_secs are the recommended target's first \
-                       incomplete exposures[] entry per the record_exposure \
-                       counters (null when it has no plan) — a store-backed \
+                       incomplete goal per the record_exposure \
+                       counters (null when it has no goals) — a store-backed \
                        target's goals always carry a finite desired_count, so \
                        none of its entries can recommend forever. Returns \
                        target=null and a structured reason \
@@ -564,33 +602,11 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let eph = rp_ephemeris::ErfarsEphemeris::new();
-        // Candidates are the legacy `targets[]` array plus every active
-        // store row (Decision 9). `Config.targets` is one JSON value —
-        // an array (legacy) or the store's settings object — so in
-        // practice at most one side is ever non-empty; live-added store
-        // targets still surface even under a legacy-array deployment,
-        // since `with_target_store` always opens the store regardless
-        // of that shape (rp.md § Target Store).
-        let mut candidates = self.targets.clone();
-        if let Some(store) = self.target_store.as_ref() {
-            match store.list_targets().await {
-                Ok(targets) => candidates.extend(
-                    targets
-                        .iter()
-                        .filter(|t| t.active)
-                        .map(crate::planner::decision::PlannerTarget::from),
-                ),
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        "target store list_targets failed; get_next_target continues with the legacy targets[] array only"
-                    );
-                }
-            }
-        }
+        // Candidates are every active store row (Decision 9), projected
+        // onto the decision candidate type.
+        let candidates = self.active_planner_targets().await;
         // A store-backed target's own default floor, falling back to
-        // the planner-wide default (`planner.min_altitude_degrees`) —
-        // the same role that default plays for the legacy array.
+        // the planner-wide default (`planner.min_altitude_degrees`).
         let default_min_altitude_degrees = self
             .target_store_defaults
             .default_scheduling
@@ -614,27 +630,27 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Record one completed frame against a configured targets[] \
-                       entry's per-filter counter and return it: {target, \
-                       filter, completed, goal}. goal is the summed `count` \
-                       for that filter in the target's exposures[] plan (null \
-                       when the filter is not in the plan or any matching \
-                       entry has no count). Omit filter (or pass null / \"\") \
-                       for an unfiltered frame. The counters drive \
-                       get_next_target's plan rotation, target balancing, and \
-                       the all-goals-met end_of_session; they reset when a \
-                       fresh session starts."
+        description = "Record one completed frame against an active target-store \
+                       row's per-filter counter (keyed by the target's slug) \
+                       and return it: {target, filter, completed, goal}. goal \
+                       is the summed desired_count for that filter in the \
+                       target's goals (null when the filter is not among its \
+                       goals). Omit filter (or pass null / \"\") for an \
+                       unfiltered frame. The counters drive get_next_target's \
+                       plan rotation, target balancing, and the all-goals-met \
+                       end_of_session; they reset when a fresh session starts."
     )]
     pub(crate) async fn record_exposure(
         &self,
         Parameters(params): Parameters<RecordExposureParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        // Recording against an unknown name would count frames the
-        // planner can never see — a typo'd orchestrator config should
+        // Recording against an unknown slug would count frames the
+        // planner can never see — a typo'd orchestrator call should
         // fail loudly, not silently disable progress tracking.
-        let Some(target) = self.targets.iter().find(|t| t.name == params.target) else {
+        let targets = self.active_planner_targets().await;
+        let Some(target) = targets.iter().find(|t| t.name == params.target) else {
             return Ok(tool_error!(
-                "unknown target `{}`: not a configured targets[] entry",
+                "unknown target `{}`: not an active target-store row",
                 params.target
             ));
         };
@@ -660,17 +676,18 @@ impl McpHandler {
 
     #[tool(
         description = "Full progress overview from the record_exposure counters: \
-                       target name -> filter -> {completed, goal} for every \
-                       configured targets[] entry (the unfiltered slot appears \
+                       target slug -> filter -> {completed, goal} for every \
+                       active target-store row (the unfiltered slot appears \
                        under the empty-string key; a recorded filter outside \
-                       the target's plan has goal null)."
+                       the target's goals has goal null)."
     )]
     pub(crate) async fn get_session_progress(
         &self,
         Parameters(_params): Parameters<GetSessionProgressParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let targets = self.active_planner_targets().await;
         let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-        let v = crate::planner::convenience::session_progress_view(&self.targets, &store);
+        let v = crate::planner::convenience::session_progress_view(&targets, &store);
         Ok(CallToolResult::success(vec![ContentBlock::text(
             v.to_string(),
         )]))

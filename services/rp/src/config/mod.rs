@@ -55,7 +55,7 @@ pub use server::ServerConfig;
 pub use session::SessionConfig;
 pub use site::SiteConfig;
 pub use switch::SwitchConfig;
-pub use target_store::TargetStoreConfig;
+pub use target_store::{TargetStoreConfig, TargetStoreConfigWire};
 
 use std::path::Path;
 
@@ -83,8 +83,14 @@ pub struct Config {
     pub site: Option<SiteConfig>,
     #[serde(default)]
     pub plugins: Vec<Value>,
+    /// Target-store settings (`db_path`, `default_goals`,
+    /// `default_scheduling`). Targets themselves live in the redb store
+    /// (added via `add_target`), not in config — the legacy `targets[]`
+    /// planner array was retired. A stray `targets` key or a leftover
+    /// array shape here fails loudly at load (`deny_unknown_fields` +
+    /// the typed field).
     #[serde(default)]
-    pub targets: Value,
+    pub target_store: TargetStoreConfigWire,
     #[serde(default)]
     pub planner: Value,
     /// Safety-enforcement knobs (rp.md § Safety); the monitors
@@ -537,7 +543,11 @@ mod tests {
                 }]
             },
             "plugins": [{ "name": "image-analyzer", "type": "event" }],
-            "targets": [{ "name": "M31", "ra_hours": 0.712, "dec_degrees": 41.27 }],
+            "target_store": {
+                "db_path": "/data/targets.redb",
+                "default_goals": [{ "filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20 }],
+                "default_scheduling": { "min_altitude_degrees": 20.0 }
+            },
             "planner": { "min_altitude_degrees": 20 },
             "safety": { "poll_interval": "10s" },
             "imaging": { "cache_max_mib": 1024, "cache_max_images": 8 },

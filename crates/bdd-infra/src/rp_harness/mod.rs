@@ -36,9 +36,9 @@ mod webhook;
 pub use computed_sky::ComputedSky;
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoolingOverrides, CoverCalibratorConfig,
-    DomeConfig, ExposurePlanConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, MountConfig,
-    ObservingConditionsConfig, OpticalTrainConfig, PlannerTargetConfig, PlateSolverConfig,
-    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SwitchConfig, TrainAutoFocusConfig,
+    DomeConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, MountConfig,
+    ObservingConditionsConfig, OpticalTrainConfig, PlateSolverConfig, RotatorConfig,
+    RpConfigBuilder, SafetyMonitorConfig, SwitchConfig, TrainAutoFocusConfig,
 };
 pub use guider_stub::{CannedGuiding, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};

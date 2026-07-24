@@ -3849,39 +3849,87 @@ async fn get_next_target_with_no_targets_returns_no_targets_configured() {
 // these pin the tool wiring (store sharing, goal lookup, error arms).
 // -----------------------------------------------------------------------
 
-/// A handler whose single always-visible target (`min_altitude` -90
-/// survives any sky) carries a Red×1 + Blue×1 plan.
-fn handler_with_planned_target() -> McpHandler {
-    use crate::planner::decision::{ExposureSpec, PlannerTarget};
-    test_handler_with_site(test_site()).with_planner_config(
-        vec![PlannerTarget {
-            name: "Test Field".into(),
-            ra_hours: 0.0,
-            dec_degrees: 0.0,
-            min_altitude_degrees: Some(-90.0),
-            exposures: vec![
-                ExposureSpec {
-                    filter: Some("Red".into()),
-                    duration_secs: 120.0,
-                    count: Some(1),
-                },
-                ExposureSpec {
-                    filter: Some("Blue".into()),
-                    duration_secs: 60.0,
-                    count: Some(1),
-                },
-            ],
-        }],
-        20.0,
-    )
+/// A handler backed by a real (temp) target store holding a single
+/// always-visible target (`scheduling.min_altitude` -90 survives any
+/// sky), display name `"Test Field"` (slug `testfield`), with a Red×1 +
+/// Blue×1 goal set. Returns the handler and the `TempDir` the store's
+/// redb file lives in — keep the dir bound for the handler's lifetime.
+async fn handler_with_planned_target() -> (McpHandler, tempfile::TempDir) {
+    handler_with_store_target(test_store_target(
+        "Test Field",
+        0.0,
+        0.0,
+        Some(-90.0),
+        vec![store_goal("Red", 120, 1), store_goal("Blue", 60, 1)],
+    ))
+    .await
+}
+
+/// Opens a temp redb store, upserts `target`, and wires it onto a
+/// site-configured handler (the store is now the sole planner-target
+/// source).
+async fn handler_with_store_target(target: rp_targets::Target) -> (McpHandler, tempfile::TempDir) {
+    use rp_targets::TargetStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = rp_targets::RedbTargetStore::open(dir.path().join("targets.redb"))
+        .await
+        .unwrap();
+    store.upsert_target(target).await.unwrap();
+    let store: Arc<dyn rp_targets::TargetStore> = Arc::new(store);
+    let h = test_handler_with_site(test_site())
+        .with_target_store(Some(store), crate::config::TargetStoreConfig::default());
+    (h, dir)
+}
+
+/// One acquisition goal in the store's typed shape.
+fn store_goal(filter: &str, secs: u64, desired_count: u32) -> rp_targets::AcquisitionGoal {
+    rp_targets::AcquisitionGoal {
+        filter: filter.to_string(),
+        binning: rp_targets::Binning { x: 1, y: 1 },
+        exposure_duration: Duration::from_secs(secs),
+        desired_count,
+    }
+}
+
+/// A store `Target` from a display name (whose slug is the
+/// whitespace-stripped, lower-cased form), coordinates, an optional
+/// per-target altitude floor, and goals. `active: true` so the planner
+/// sees it.
+fn test_store_target(
+    display_name: &str,
+    ra_hours: f64,
+    dec_degrees: f64,
+    min_altitude_degrees: Option<f64>,
+    goals: Vec<rp_targets::AcquisitionGoal>,
+) -> rp_targets::Target {
+    rp_targets::Target {
+        slug: rp_targets::TargetSlug::new(display_name).unwrap(),
+        display_name: display_name.to_string(),
+        coord: rp_targets::IcrsCoord::try_new(ra_hours, dec_degrees).unwrap(),
+        catalog_ref: None,
+        object_type: None,
+        magnitude: None,
+        size_arcmin: None,
+        priority: 0,
+        active: true,
+        goals,
+        scheduling: min_altitude_degrees.map(|m| rp_targets::SchedulingConstraints {
+            min_altitude_degrees: Some(m),
+            ..Default::default()
+        }),
+        grading: None,
+        notes: None,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    }
 }
 
 #[tokio::test]
 async fn record_exposure_errors_for_an_unknown_target() {
-    let h = handler_with_planned_target();
+    let (h, _store_dir) = handler_with_planned_target().await;
     let r = h
         .record_exposure(Parameters(RecordExposureParams {
-            target: "No Such Field".into(),
+            target: "no-such-field".into(),
             filter: Some("Red".into()),
         }))
         .await;
@@ -3890,15 +3938,15 @@ async fn record_exposure_errors_for_an_unknown_target() {
 
 #[tokio::test]
 async fn record_exposure_increments_and_reports_the_plan_goal() {
-    let h = handler_with_planned_target();
+    let (h, _store_dir) = handler_with_planned_target().await;
     let v = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
-            target: "Test Field".into(),
+            target: "testfield".into(),
             filter: Some("Red".into()),
         }))
         .await,
     );
-    assert_eq!(v["target"], "Test Field");
+    assert_eq!(v["target"], "testfield");
     assert_eq!(v["filter"], "Red");
     assert_eq!(v["completed"], 1);
     assert_eq!(v["goal"], 1);
@@ -3906,7 +3954,7 @@ async fn record_exposure_increments_and_reports_the_plan_goal() {
     // this plan: filter echoes back null and the goal is null.
     let v = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
-            target: "Test Field".into(),
+            target: "testfield".into(),
             filter: None,
         }))
         .await,
@@ -3918,10 +3966,10 @@ async fn record_exposure_increments_and_reports_the_plan_goal() {
 
 #[tokio::test]
 async fn get_session_progress_reports_every_configured_target() {
-    let h = handler_with_planned_target();
+    let (h, _store_dir) = handler_with_planned_target().await;
     let _ = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
-            target: "Test Field".into(),
+            target: "testfield".into(),
             filter: Some("Red".into()),
         }))
         .await,
@@ -3931,11 +3979,11 @@ async fn get_session_progress_reports_every_configured_target() {
             .await,
     );
     assert_eq!(
-        v["progress"]["Test Field"]["Red"],
+        v["progress"]["testfield"]["Red"],
         serde_json::json!({"completed": 1, "goal": 1})
     );
     assert_eq!(
-        v["progress"]["Test Field"]["Blue"],
+        v["progress"]["testfield"]["Blue"],
         serde_json::json!({"completed": 0, "goal": 1}),
         "plan entries appear before any frame is recorded"
     );
@@ -3946,7 +3994,7 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
     // The tool-level loop an orchestrator drives: recommend Red,
     // record it, recommend Blue, record it, end_of_session — all
     // through one shared progress store.
-    let h = handler_with_planned_target();
+    let (h, _store_dir) = handler_with_planned_target().await;
     let v = ok_json(
         h.get_next_target(Parameters(GetNextTargetParams { time: None }))
             .await,
@@ -3955,7 +4003,7 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
     assert_eq!(v["duration_secs"], 120.0);
     let _ = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
-            target: "Test Field".into(),
+            target: "testfield".into(),
             filter: Some("Red".into()),
         }))
         .await,
@@ -3968,7 +4016,7 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
     assert_eq!(v["duration_secs"], 60.0);
     let _ = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
-            target: "Test Field".into(),
+            target: "testfield".into(),
             filter: Some("Blue".into()),
         }))
         .await,
@@ -3983,26 +4031,19 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
 
 #[tokio::test]
 async fn get_target_status_reports_progress_for_a_configured_target() {
-    use crate::planner::decision::{ExposureSpec, PlannerTarget};
-    // Configured under its catalog name so the same string both
-    // resolves coordinates and matches the progress map.
-    let h = test_handler_with_site(test_site()).with_planner_config(
-        vec![PlannerTarget {
-            name: "M 31".into(),
-            ra_hours: 0.7123,
-            dec_degrees: 41.269,
-            min_altitude_degrees: None,
-            exposures: vec![ExposureSpec {
-                filter: Some("Red".into()),
-                duration_secs: 120.0,
-                count: Some(4),
-            }],
-        }],
-        20.0,
-    );
+    // Stored under its catalog name so the same string both resolves
+    // coordinates and (slugified to `m31`) matches the progress map.
+    let (h, _store_dir) = handler_with_store_target(test_store_target(
+        "M 31",
+        0.7123,
+        41.269,
+        None,
+        vec![store_goal("Red", 120, 4)],
+    ))
+    .await;
     let _ = ok_json(
         h.record_exposure(Parameters(RecordExposureParams {
-            target: "M 31".into(),
+            target: "m31".into(),
             filter: Some("Red".into()),
         }))
         .await,

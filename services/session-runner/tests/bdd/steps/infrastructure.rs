@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use bdd_infra::rp_harness::{start_rp, write_temp_config_file, OmniSimHandle, WebhookReceiver};
+use bdd_infra::rp_harness::{
+    start_rp, write_temp_config_file, McpTestClient, OmniSimHandle, WebhookReceiver,
+};
 use bdd_infra::ServiceHandle;
 use serde_json::Value;
 
@@ -200,6 +202,21 @@ pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
         world.wait_for_rp_healthy().await,
         "rp did not become healthy within timeout"
     );
+
+    // Seed the planner targets into rp's redb store via the `add_target`
+    // MCP tool (the legacy `targets[]` config array was retired). The
+    // scenario's Given steps stage the argument objects on
+    // `pending_store_targets`; rp must be healthy first.
+    if !world.pending_store_targets.is_empty() {
+        let mcp = McpTestClient::connect(&format!("{}/mcp", world.rp_url()))
+            .await
+            .expect("failed to connect MCP client to seed target store");
+        for args in &world.pending_store_targets {
+            mcp.call_tool("add_target", args.clone())
+                .await
+                .unwrap_or_else(|e| panic!("seeding add_target failed: {e}"));
+        }
+    }
 }
 
 pub async fn ensure_webhook_receiver(world: &mut SessionRunnerWorld) {

@@ -10,8 +10,8 @@
 //! (bullets 3–4: survivors within [`TRANSIT_TIE_BAND_HOURS`] of the
 //! best |HA| count as equally transiting, and among them least
 //! completed-to-goal fraction wins, then a next-exposure filter
-//! matching the last recorded frame, then `targets[]` order), and
-//! bullet 6 in full — an exhausted target (every plan entry's
+//! matching the last recorded frame, then target-store list order),
+//! and bullet 6 in full — an exhausted target (every plan entry's
 //! `count` met per the `record_exposure` counters) is eliminated,
 //! all targets exhausted is `EndOfSession`, and otherwise when no
 //! target survives, the Sun-elevation cut-off plus the Sun's
@@ -29,7 +29,6 @@
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, Site};
 use serde::Serialize;
-use serde_json::Value;
 
 use super::progress::SessionProgress;
 
@@ -220,9 +219,9 @@ pub fn next_target(
     // that best |HA| treated as ties for the progress and filter
     // tie-breakers (bullets 3–4) to order: least completed-to-goal
     // fraction first, then a next exposure whose filter matches the
-    // last recorded frame's, then `targets[]` order (survivors keep
-    // config order, so the scan's strict `<` is that final
-    // tie-break).
+    // last recorded frame's, then target-store list order (survivors
+    // keep the store's list order, so the scan's strict `<` is that
+    // final tie-break).
     let lst = eph.sidereal_time(site, now).lst_hours;
     let abs_ha = |t: &PlannerTarget| signed_hour_angle(lst, t.ra_hours).abs();
     let Some(best_ha) = survivors
@@ -308,8 +307,8 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
 /// operator-editable and unsuited as a lookup key). Every goal's
 /// `desired_count` is a required, finite `u32` (`validate_goals`
 /// rejects zero), so each maps to a `count: Some(_)` entry — a
-/// store-backed target's plan is never "recommends forever" the way an
-/// uncounted legacy `exposures[]` entry can be.
+/// store-backed target's plan never "recommends forever": every
+/// `exposures[]` entry it projects to carries a finite goal.
 impl From<&rp_targets::Target> for PlannerTarget {
     fn from(t: &rp_targets::Target) -> Self {
         Self {
@@ -328,139 +327,6 @@ impl From<&rp_targets::Target> for PlannerTarget {
                 .collect(),
         }
     }
-}
-
-/// Parse the top-level `targets` JSON (rp's `Config.targets: Value`)
-/// into typed entries, skipping (with a `debug!` log) rows that
-/// don't have the required `name` / `ra_hours` / `dec_degrees`
-/// fields *or* whose numeric fields are out of range. The latter
-/// would otherwise turn a config typo into a confusing runtime
-/// "no_targets_configured" / "all_below_min_altitude" outcome from
-/// `get_next_target` — flagging it at parse time keeps the failure
-/// mode close to the operator's edit. Used at McpHandler
-/// construction time.
-pub fn parse_targets_from_value(v: &Value) -> Vec<PlannerTarget> {
-    let Some(arr) = v.as_array() else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(arr.len());
-    for entry in arr {
-        let Some(name) = entry.get("name").and_then(|n| n.as_str()) else {
-            tracing::debug!(?entry, "skipping target row missing `name`");
-            continue;
-        };
-        let Some(ra) = entry.get("ra_hours").and_then(|n| n.as_f64()) else {
-            tracing::debug!(target = %name, "skipping target row missing `ra_hours`");
-            continue;
-        };
-        let Some(dec) = entry.get("dec_degrees").and_then(|n| n.as_f64()) else {
-            tracing::debug!(target = %name, "skipping target row missing `dec_degrees`");
-            continue;
-        };
-        if !(0.0..24.0).contains(&ra) {
-            tracing::debug!(
-                target = %name, ra_hours = ra,
-                "skipping target with ra_hours outside [0, 24)"
-            );
-            continue;
-        }
-        if !(-90.0..=90.0).contains(&dec) {
-            tracing::debug!(
-                target = %name, dec_degrees = dec,
-                "skipping target with dec_degrees outside [-90, 90]"
-            );
-            continue;
-        }
-        let min_alt = entry.get("min_altitude_degrees").and_then(|n| n.as_f64());
-        if let Some(m) = min_alt {
-            if !(-90.0..=90.0).contains(&m) {
-                tracing::debug!(
-                    target = %name, min_altitude_degrees = m,
-                    "skipping target with min_altitude_degrees outside [-90, 90]"
-                );
-                continue;
-            }
-        }
-        out.push(PlannerTarget {
-            name: name.to_string(),
-            ra_hours: ra,
-            dec_degrees: dec,
-            min_altitude_degrees: min_alt,
-            exposures: parse_exposures(entry, name),
-        });
-    }
-    out
-}
-
-/// Parse a target row's `exposures[]` into typed entries, skipping
-/// (with a `debug!` log) entries without a positive finite
-/// `duration_secs` or with a non-string `filter`. Same rationale as
-/// the target rows themselves: flag a config typo at parse time
-/// instead of letting it surface as a confusing null plan at night.
-fn parse_exposures(entry: &Value, target: &str) -> Vec<ExposureSpec> {
-    let exposures = match entry.get("exposures") {
-        None => return Vec::new(),
-        Some(v) => v,
-    };
-    let Some(arr) = exposures.as_array() else {
-        tracing::debug!(
-            target = %target,
-            "ignoring `exposures` that is not an array"
-        );
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(arr.len());
-    for e in arr {
-        let Some(duration_secs) = e.get("duration_secs").and_then(|n| n.as_f64()) else {
-            tracing::debug!(
-                target = %target, entry = ?e,
-                "skipping exposure entry missing a numeric `duration_secs`"
-            );
-            continue;
-        };
-        if !duration_secs.is_finite() || duration_secs <= 0.0 {
-            tracing::debug!(
-                target = %target, duration_secs,
-                "skipping exposure entry with a non-finite or non-positive `duration_secs`"
-            );
-            continue;
-        }
-        let filter = match e.get("filter") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(s)) if s.is_empty() => None,
-            Some(Value::String(s)) => Some(s.clone()),
-            Some(other) => {
-                tracing::debug!(
-                    target = %target, filter = ?other,
-                    "skipping exposure entry whose `filter` is not a string"
-                );
-                continue;
-            }
-        };
-        let count = match e.get("count") {
-            None | Some(Value::Null) => None,
-            Some(v) => match v
-                .as_u64()
-                .filter(|c| *c > 0)
-                .and_then(|c| u32::try_from(c).ok())
-            {
-                Some(c) => Some(c),
-                None => {
-                    tracing::debug!(
-                        target = %target, count = ?v,
-                        "skipping exposure entry whose `count` is not a positive integer"
-                    );
-                    continue;
-                }
-            },
-        };
-        out.push(ExposureSpec {
-            filter,
-            duration_secs,
-            count,
-        });
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1207,160 +1073,6 @@ mod tests {
                 duration_secs: 300.0,
                 count: Some(20),
             }]
-        );
-    }
-
-    #[test]
-    fn parse_targets_skips_bad_entries() {
-        let v = serde_json::json!([
-            {"name": "M31", "ra_hours": 0.7, "dec_degrees": 41.0},
-            {"name": "no_coords"},
-            {"ra_hours": 1.0, "dec_degrees": 2.0},
-            "garbage string",
-            {"name": "M42", "ra_hours": 5.5, "dec_degrees": -5.4, "min_altitude_degrees": 25.0},
-        ]);
-        let parsed = parse_targets_from_value(&v);
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].name, "M31");
-        assert_eq!(parsed[1].name, "M42");
-        assert_eq!(parsed[1].min_altitude_degrees, Some(25.0));
-    }
-
-    #[test]
-    fn parse_targets_skips_out_of_range_numerics() {
-        let v = serde_json::json!([
-            {"name": "good", "ra_hours": 1.0, "dec_degrees": 0.0},
-            {"name": "ra_too_low", "ra_hours": -1.0, "dec_degrees": 0.0},
-            {"name": "ra_too_high", "ra_hours": 25.0, "dec_degrees": 0.0},
-            {"name": "dec_too_low", "ra_hours": 1.0, "dec_degrees": -91.0},
-            {"name": "dec_too_high", "ra_hours": 1.0, "dec_degrees": 91.0},
-            {
-                "name": "min_alt_bad",
-                "ra_hours": 1.0,
-                "dec_degrees": 0.0,
-                "min_altitude_degrees": 200.0
-            },
-        ]);
-        let parsed = parse_targets_from_value(&v);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].name, "good");
-    }
-
-    #[test]
-    fn parse_targets_reads_exposures_in_order() {
-        let v = serde_json::json!([{
-            "name": "M31",
-            "ra_hours": 0.7,
-            "dec_degrees": 41.0,
-            "exposures": [
-                {"filter": "Luminance", "duration_secs": 300, "count": 40},
-                {"filter": "Red", "duration_secs": 120.5},
-                {"duration_secs": 60},
-            ],
-        }]);
-        let parsed = parse_targets_from_value(&v);
-        assert_eq!(
-            parsed[0].exposures,
-            vec![
-                ExposureSpec {
-                    filter: Some("Luminance".to_string()),
-                    duration_secs: 300.0,
-                    count: Some(40),
-                },
-                ExposureSpec {
-                    filter: Some("Red".to_string()),
-                    duration_secs: 120.5,
-                    count: None,
-                },
-                ExposureSpec {
-                    filter: None,
-                    duration_secs: 60.0,
-                    count: None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_targets_without_exposures_yields_an_empty_plan() {
-        let v = serde_json::json!([
-            {"name": "bare", "ra_hours": 1.0, "dec_degrees": 0.0},
-            {"name": "not_array", "ra_hours": 2.0, "dec_degrees": 0.0, "exposures": "oops"},
-        ]);
-        let parsed = parse_targets_from_value(&v);
-        assert_eq!(parsed.len(), 2);
-        assert!(parsed[0].exposures.is_empty());
-        assert!(parsed[1].exposures.is_empty());
-    }
-
-    #[test]
-    fn parse_exposures_skips_invalid_entries_and_normalises_empty_filters() {
-        let v = serde_json::json!([{
-            "name": "M31",
-            "ra_hours": 0.7,
-            "dec_degrees": 41.0,
-            "exposures": [
-                {"filter": "Red"},
-                {"filter": "Red", "duration_secs": 0},
-                {"filter": "Red", "duration_secs": -5},
-                {"filter": "Red", "duration_secs": "300"},
-                {"filter": 5, "duration_secs": 300},
-                {"filter": "", "duration_secs": 30},
-                {"filter": null, "duration_secs": 45},
-            ],
-        }]);
-        let parsed = parse_targets_from_value(&v);
-        assert_eq!(
-            parsed[0].exposures,
-            vec![
-                ExposureSpec {
-                    filter: None,
-                    duration_secs: 30.0,
-                    count: None,
-                },
-                ExposureSpec {
-                    filter: None,
-                    duration_secs: 45.0,
-                    count: None,
-                },
-            ],
-            "only entries with a positive numeric duration survive; \
-             empty/null filters normalise to None"
-        );
-    }
-
-    #[test]
-    fn parse_exposures_skips_entries_with_an_invalid_count() {
-        let v = serde_json::json!([{
-            "name": "M31",
-            "ra_hours": 0.7,
-            "dec_degrees": 41.0,
-            "exposures": [
-                {"duration_secs": 10, "count": 0},
-                {"duration_secs": 20, "count": -3},
-                {"duration_secs": 30, "count": 2.5},
-                {"duration_secs": 40, "count": "5"},
-                {"duration_secs": 50, "count": null},
-                {"duration_secs": 60, "count": 7},
-            ],
-        }]);
-        let parsed = parse_targets_from_value(&v);
-        assert_eq!(
-            parsed[0].exposures,
-            vec![
-                ExposureSpec {
-                    filter: None,
-                    duration_secs: 50.0,
-                    count: None,
-                },
-                ExposureSpec {
-                    filter: None,
-                    duration_secs: 60.0,
-                    count: Some(7),
-                },
-            ],
-            "a `count` must be a positive integer when present; \
-             null reads as absent (no finite goal)"
         );
     }
 }

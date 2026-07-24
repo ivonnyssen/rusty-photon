@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 /// The wire shape of one `goals[]` entry, as accepted by `add_target`,
 /// `set_goals`, and `targets.default_goals` in config.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 pub struct GoalWire {
     pub filter: String,
     /// `"AxB"`, e.g. `"1x1"`, `"2x2"`.
