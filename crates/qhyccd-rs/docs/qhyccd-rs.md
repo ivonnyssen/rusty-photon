@@ -450,6 +450,7 @@ classDiagram
         GetParameter
         IsControlAvailable
         GetMinMaxStep
+        BufferTooSmall
         InvalidUtf8
         InvalidCameraId
     }
@@ -459,7 +460,7 @@ classDiagram
 
 **Error Design:**
 
-The `QHYError` enum uses `thiserror` and is deliberately **flat**, matching the sibling `zwo-rs` / `svbony-rs` crates. Because most QHY SDK calls return a bare `u32` (`0` == success, `u32::MAX` == error) with **no discriminating error codes**, a failed plain call is reported as `Sdk { op }`, carrying a `&'static` operation label rather than a per-call-site variant. The remaining variants capture the genuinely-distinct cases: `CameraNotOpen`; the control-scoped `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` (which carry the `ControlType` that failed); and the `#[from]` foreign errors `InvalidUtf8` / `InvalidCameraId`. The library exports a `Result<T>` alias (`Result<T, QHYError>`) and a `check(status, op)` helper — the analogue of zwo's `asi_check` / svbony's `svb_check` — that funnels the void SDK calls; both are re-exported at the crate root alongside `pub use libqhyccd_sys as sys;`.
+The `QHYError` enum uses `thiserror` and is deliberately **flat**, matching the sibling `zwo-rs` / `svbony-rs` crates. Because most QHY SDK calls return a bare `u32` (`0` == success, `u32::MAX` == error) with **no discriminating error codes**, a failed plain call is reported as `Sdk { op }`, carrying a `&'static` operation label rather than a per-call-site variant. The remaining variants capture the genuinely-distinct cases: `CameraNotOpen`; the control-scoped `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` (which carry the `ControlType` that failed); `BufferTooSmall { needed, got }` (the caller-owned frame buffer is shorter than the frame — detected before the SDK write); and the `#[from]` foreign errors `InvalidUtf8` / `InvalidCameraId`. The library exports a `Result<T>` alias (`Result<T, QHYError>`) and a `check(status, op)` helper — the analogue of zwo's `asi_check` / svbony's `svb_check` — that funnels the void SDK calls; both are re-exported at the crate root alongside `pub use libqhyccd_sys as sys;`.
 
 Error handling flow:
 1. FFI call returns its status word (`u32`; `QHYCCD_SUCCESS` == `0`, `QHYCCD_ERROR` == `u32::MAX`)
@@ -1207,10 +1208,11 @@ graph TD
 
 **Error Types:**
 
-`QHYError` is a flat 7-variant enum:
+`QHYError` is a flat 8-variant enum:
 - `Sdk { op }` — any plain SDK success/fail call, tagged with a `&'static` operation label (the QHY ABI carries no error code to preserve)
 - `CameraNotOpen`
 - `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` — carry the `ControlType` that failed
+- `BufferTooSmall { needed, got }` — the caller-owned frame buffer is shorter than the frame (Phase 5)
 - `InvalidUtf8` / `InvalidCameraId` — foreign errors captured via `#[from]`
 - Formatted error messages using `thiserror`
 

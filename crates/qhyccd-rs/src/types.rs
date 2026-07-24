@@ -62,7 +62,7 @@ pub struct CCDChipArea {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[allow(missing_docs)]
-/// this struct is returned from `is_control_available` when used with `Control::CamColor`
+/// this struct is returned from `is_control_available` when used with `ControlType::CamColor`
 pub enum BayerMode {
     GBRG = 1,
     GRBG = 2,
