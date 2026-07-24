@@ -10,7 +10,7 @@ use crate::steps::tool_steps::{add_camera, add_filter_wheel, ensure_mcp_client, 
 use crate::world::RpWorld;
 
 const DEFAULT_PATTERN: &str =
-    "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+    "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
 
 // ---------------------------------------------------------------------------
 // Given

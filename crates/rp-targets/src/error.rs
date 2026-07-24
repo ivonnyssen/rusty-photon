@@ -63,8 +63,8 @@ pub enum TargetStoreError {
 
     /// A goal set passed to [`crate::TargetStore::set_goals`] or
     /// [`crate::TargetStore::upsert_target`] contains duplicate
-    /// `(filter, binning, exposure)` keys, or a goal with a zero
-    /// `desired_count` or zero `exposure`.
+    /// `(filter, binning, exposure_duration)` keys, or a goal with a zero
+    /// `desired_count` or zero `exposure_duration`.
     #[error("invalid acquisition goal set: {reason}")]
     InvalidGoals {
         /// Human-readable description of which goal failed validation and why.

@@ -100,7 +100,8 @@ pub struct Target {
     pub display_name: String,
 
     // --- Pointing (denormalized; validated IcrsCoord, see note below) ---
-    // `#[serde(flatten)]` keeps the flat {ra_hours, dec_degrees} on-disk shape.
+    // Serialized as a nested `coord` object
+    // {ra_hours, dec_degrees}; not `#[serde(flatten)]`.
     pub coord: IcrsCoord,
 
     // --- Catalog provenance (None for non-catalog targets) ---
@@ -188,7 +189,7 @@ name rather than a surrogate id. UUIDs in this codebase identify
 *transient operational artifacts* (exposure documents, operations,
 events); a target is a durable plan entity, so it is name-keyed.
 
-### Coordinates: validated `IcrsCoord`, flat decimals on disk
+### Coordinates: validated `IcrsCoord`, nested `coord` object
 
 The pointing is `coord: IcrsCoord` — the validated plan value type from
 [`rp-vocabulary`](rp-vocabulary.md) ([ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md)),
@@ -197,8 +198,11 @@ constructed through `IcrsCoord::try_new` (`ra_hours ∈ [0,24)`,
 `dec_degrees ∈ [-90,90]`), so a `Target` cannot hold an out-of-range
 pointing — the store-write validation gap the old bare-`f64` fields left
 open (`add_target`/`update_target` accepted any `f64`) is closed by
-construction. `#[serde(flatten)]` keeps the on-disk form the flat
-`{ra_hours, dec_degrees}` decimal pair, unchanged by the newtype; read
+construction. The coordinate is **not** `#[serde(flatten)]`ed — it
+serializes as a nested `coord` object,
+`"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`, one canonical
+coordinate shape shared by the on-disk redb store and the MCP wire (the
+`target_to_json` output of `get_target`/`list_targets`/`add_target`); read
 sites use `coord.ra_hours()` / `coord.dec_degrees()`.
 
 This unifies the plan-side coordinate with `rp_catalog::ResolvedTarget`
@@ -416,7 +420,7 @@ validation below). The default reproduces the agreed scheme:
 
 ```
 directory_pattern    = "{target}/{night_date}/{frame_type}"
-file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
 ```
 
 Target rendering example (note the lowercase `{target}` slug — the
@@ -434,7 +438,7 @@ regex with named captures — never a naive `split('_')`, which the
 | `{filter}` | `[A-Za-z0-9]+` | filter name |
 | `{binning}` | `\d+x\d+` | `Binning` |
 | `{frame_number}` | `\d+` | per-spec sequence, rendered zero-padded to width 4 (`0002`) |
-| `{exposure}` | `\d+sec` | whole-second `Duration`, rendered `format!("{}sec", d.as_secs())` |
+| `{exposure_duration}` | `\d+sec` | whole-second `Duration`, rendered `format!("{}sec", d.as_secs())` |
 | `{filter_position}` | `\d+` | wheel slot |
 | `{sensor_temp}` | `-?\d+C` | measured at capture |
 | `{night_date}` | `\d{4}-\d{2}-\d{2}` | observing-night date |
@@ -442,8 +446,8 @@ regex with named captures — never a naive `split('_')`, which the
 | `{uuid8}` | `[0-9a-f]{8}` | exposure-document id (sidecar link) |
 
 Token encodings are filename-specific and **distinct from** the
-config/value encodings: `{exposure}` renders
-`format!("{}sec", exposure.as_secs())` (so goal exposures are constrained
+config/value encodings: `{exposure_duration}` renders
+`format!("{}sec", exposure_duration.as_secs())` (so goal exposures are constrained
 to whole seconds — sub-second/non-integer exposures are unsupported in
 filenames, independent of the `humantime_serde` *value* encoding, which
 uses `120s`/`500ms`), and `{frame_number}` renders zero-padded to width
@@ -456,7 +460,7 @@ their own dirs).
 at startup; a bad pattern fails the load, not a session.
 `file_naming_pattern`'s rejection rules: the pattern must contain every
 token needed to derive the quota key (`{target}`, `{filter}`,
-`{binning}`, `{exposure}`) and a per-frame uniqueness token (`{uuid8}`
+`{binning}`, `{exposure_duration}`) and a per-frame uniqueness token (`{uuid8}`
 or `{frame_number}`). `directory_pattern` skips this quota/uniqueness
 requirement (its documented default, `"{target}/{night_date}/{frame_type}"`,
 has neither) but is checked against everything below. Both must compile to an
@@ -470,7 +474,7 @@ exactly why the default pattern is unambiguous and never falls back to
 every adjacent token pair, not only nominally "variable-width" ones —
 a conservative superset of the strict rule that never mis-accepts an
 ambiguous pattern.) A pattern placing two such tokens adjacent (e.g.
-`{frame_number}{exposure}`, or `{target}` immediately before
+`{frame_number}{exposure_duration}`, or `{target}` immediately before
 `{night_date}`, whose hyphens/digits the `[a-z0-9-]+` slug would swallow)
 is rejected. Unknown tokens are rejected with the offending token named.
 
@@ -480,7 +484,7 @@ is rejected. Unknown tokens are rejected with the offending token named.
 
 1. **Total per sub-spec** — scan `<data_directory>/<slug>/<night>/Light/`,
    parse each filename via the template, bucket by
-   `(filter, binning, exposure)`. Cheap: `readdir` + regex, no file
+   `(filter, binning, exposure_duration)`. Cheap: `readdir` + regex, no file
    opens. Filenames that don't match the compiled template are skipped
    (`debug!`-logged with the path) — they count toward neither total nor
    any sub-spec and never fail the scan. An absent or empty slug
@@ -529,8 +533,8 @@ documents progress keyed by filter alone
 share a filter (e.g. Ha@120s and Ha@300s). Because an `AcquisitionGoal`
 is keyed by the full `(filter, binning, exposure_duration)` triple, the
 progress shape becomes, per target, a list of
-`{filter, binning, exposure, good, total, desired}` (the JSON key stays
-`exposure` on the wire). The Rule-2 rp.md update must replace the
+`{filter, binning, exposure_duration, good, total, desired}` (the JSON
+key is `exposure_duration` on the wire). The Rule-2 rp.md update must replace the
 filter-only shape accordingly.
 
 ### Constraint evaluation
@@ -554,7 +558,7 @@ are bare decimal degrees):
   "session": {
     "data_directory": "/data/lights",
     "directory_pattern": "{target}/{night_date}/{frame_type}",
-    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
   },
   "targets": {
     "db_path": "/data/lights/targets.redb",      // default: <data_directory>/targets.redb

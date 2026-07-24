@@ -20,7 +20,7 @@ Feature: Capture threads target identity into the file-naming template (Decision
   `ra_hours`/`dec_degrees` left unset since it names no real
   target-store row. `{frame_number}` is derived, not stored: `capture`
   scans the target's directory for existing frames sharing the same
-  `(filter, binning, exposure)` sub-spec and uses `count + 1`.
+  `(filter, binning, exposure_duration)` sub-spec and uses `count + 1`.
 
   `{filter}`/`{filter_position}` read the resolved camera's train
   filter wheel live for `Light`/`Flat`; `Dark`/`Bias` always render the

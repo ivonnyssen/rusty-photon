@@ -4,7 +4,7 @@
 //! tagged `@wip`).
 //!
 //! Scoped to what's fully decided today: the reshaped per-goal
-//! `{filter, binning, exposure, good, total, desired}` progress type,
+//! `{filter, binning, exposure_duration, good, total, desired}` progress type,
 //! against targets with no captured frames (`good`/`total` both 0).
 //! Scenarios exercising actual on-disk good-vs-rejected frame counting
 //! need the grading plugin's sidecar section shape, which
@@ -61,22 +61,28 @@ fn progress_for_target_exactly(world: &mut RpWorld, target_slug: String, step: &
 }
 
 fn progress_rows_from_table(step: &Step) -> Vec<Value> {
-    let table = step
-        .table
-        .as_ref()
-        .expect("step requires a `| filter | binning | exposure | good | total | desired |` table");
+    let table = step.table.as_ref().expect(
+        "step requires a `| filter | binning | exposure_duration | good | total | desired |` table",
+    );
     let mut rows = table.rows.iter();
     let header = rows.next().expect("progress table must have a header");
     assert_eq!(
         header.as_slice(),
-        ["filter", "binning", "exposure", "good", "total", "desired"],
+        [
+            "filter",
+            "binning",
+            "exposure_duration",
+            "good",
+            "total",
+            "desired"
+        ],
         "progress table header"
     );
     rows.map(|row| {
         serde_json::json!({
             "filter": row[0],
             "binning": row[1],
-            "exposure": row[2],
+            "exposure_duration": row[2],
             "good": row[3].parse::<u32>().expect("good must parse as u32"),
             "total": row[4].parse::<u32>().expect("total must parse as u32"),
             "desired": row[5].parse::<u32>().expect("desired must parse as u32"),

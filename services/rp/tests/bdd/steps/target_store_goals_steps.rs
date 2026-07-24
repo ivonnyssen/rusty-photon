@@ -9,26 +9,26 @@ use serde_json::Value;
 use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
 
-/// Parses a `| filter | binning | exposure | desired_count |` Gherkin
+/// Parses a `| filter | binning | exposure_duration | desired_count |` Gherkin
 /// table into the JSON shape `add_target`/`set_goals` accept for their
 /// `goals[]` parameter.
 fn goals_from_table(step: &Step) -> Vec<Value> {
     let table = step
         .table
         .as_ref()
-        .expect("step requires a `| filter | binning | exposure | desired_count |` table");
+        .expect("step requires a `| filter | binning | exposure_duration | desired_count |` table");
     let mut rows = table.rows.iter();
     let header = rows.next().expect("goals table must have a header");
     assert_eq!(
         header.as_slice(),
-        ["filter", "binning", "exposure", "desired_count"],
+        ["filter", "binning", "exposure_duration", "desired_count"],
         "goals table header"
     );
     rows.map(|row| {
         serde_json::json!({
             "filter": row[0],
             "binning": row[1],
-            "exposure": row[2],
+            "exposure_duration": row[2],
             "desired_count": row[3].parse::<u32>().expect("desired_count must parse as u32"),
         })
     })

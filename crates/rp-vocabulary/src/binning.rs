@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Frame binning, rendered as `"{x}x{y}"` (e.g. `"1x1"`, `"2x2"`).
 ///
-/// The `(filter, binning, exposure)` triple is the acquisition quota key.
+/// The `(filter, binning, exposure_duration)` triple is the acquisition quota key.
 /// `x`/`y` stay public: any `u8 × u8` is shape-valid, so there is no bound
 /// to protect. [`FromStr`] is the exact inverse of the derived `Display`,
 /// so a rendered `{binning}` token round-trips.

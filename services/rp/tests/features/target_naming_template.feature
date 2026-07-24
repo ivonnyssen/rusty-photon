@@ -5,7 +5,7 @@ Feature: Round-trippable file-naming template config-load validation (P1)
   and checked at startup: a bad pattern fails the load, not a session.
   Rejection rules: the pattern
   must carry every token needed to derive the quota key (`{target}`,
-  `{filter}`, `{binning}`, `{exposure}`) plus a per-frame uniqueness
+  `{filter}`, `{binning}`, `{exposure_duration}`) plus a per-frame uniqueness
   token (`{uuid8}` or `{frame_number}`); it must compile to an
   unambiguous anchored regex — two variable-width tokens can't sit
   adjacent with no literal separator excluded from both charsets; and
@@ -31,21 +31,21 @@ Feature: Round-trippable file-naming template config-load validation (P1)
     When rp attempts to start
     Then rp should fail to start
 
-  # {frame_number} and {exposure} are both purely-numeric charsets with
+  # {frame_number} and {exposure_duration} are both purely-numeric charsets with
   # no literal separator between them here — the doc's own canonical
   # example of an unresolvable split.
   Scenario: A pattern placing two ambiguous variable-width tokens adjacent is rejected at config load
-    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
     When rp attempts to start
     Then rp should fail to start
 
   Scenario: An unknown token is rejected at config load
-    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}_{exposure}_{bogus_token}"
+    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_{bogus_token}"
     When rp attempts to start
     Then rp should fail to start
 
   Scenario: The default file_naming_pattern starts successfully
-    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
     When rp attempts to start
     Then rp should start successfully
 

@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
 
 use crate::equipment::EquipmentRegistry;
-use crate::planner::goal_wire::{format_exposure, parse_goal, GoalWire};
+use crate::planner::goal_wire::{format_exposure_duration, parse_goal, GoalWire};
 
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
@@ -309,7 +309,7 @@ impl McpHandler {
     }
 
     #[tool(description = "Fetch one target with derived progress \
-                       (per-goal {filter, binning, exposure, good, total, \
+                       (per-goal {filter, binning, exposure_duration, good, total, \
                        desired} — good/total are always 0 until the \
                        on-disk frame scan lands).")]
     pub(crate) async fn get_target(
@@ -537,8 +537,10 @@ fn target_to_json(t: &Target) -> Value {
     json!({
         "slug": t.slug.as_str(),
         "display_name": t.display_name,
-        "ra_hours": t.coord.ra_hours(),
-        "dec_degrees": t.coord.dec_degrees(),
+        "coord": {
+            "ra_hours": t.coord.ra_hours(),
+            "dec_degrees": t.coord.dec_degrees()
+        },
         "catalog_ref": t.catalog_ref,
         "object_type": t.object_type,
         "magnitude": t.magnitude,
@@ -553,7 +555,7 @@ fn target_to_json(t: &Target) -> Value {
     })
 }
 
-/// Per-goal `{filter, binning, exposure, good, total, desired}`
+/// Per-goal `{filter, binning, exposure_duration, good, total, desired}`
 /// (rp.md § Progress derivation). `good`/`total` are hard-coded 0 —
 /// the on-disk scan this needs is out of scope until the grading
 /// plugin's sidecar shape and capture's target linkage both land.
@@ -564,7 +566,7 @@ fn progress_for(t: &Target) -> Vec<Value> {
             json!({
                 "filter": g.filter,
                 "binning": g.binning.to_string(),
-                "exposure": format_exposure(g.exposure_duration),
+                "exposure_duration": format_exposure_duration(g.exposure_duration),
                 "good": 0,
                 "total": 0,
                 "desired": g.desired_count,

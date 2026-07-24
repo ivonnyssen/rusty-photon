@@ -149,9 +149,9 @@ pub struct Target {
     pub display_name: String,
 
     /// J2000/ICRS pointing, validated by construction ([`IcrsCoord`],
-    /// ADR-019). `#[serde(flatten)]` keeps the flat `{ra_hours, dec_degrees}`
-    /// on-disk shape, so the newtype changes no stored form.
-    #[serde(flatten)]
+    /// ADR-019). Serialized as a nested `"coord": { "ra_hours",
+    /// "dec_degrees" }` object — one canonical coordinate shape across the
+    /// on-disk store and the MCP wire (no `#[serde(flatten)]`).
     pub coord: IcrsCoord,
 
     /// Canonical catalog name this was resolved from, e.g. `"NGC 224"`.

@@ -111,7 +111,7 @@ mod tests {
             r#"{
                 "session": {
                     "data_directory": "/tmp/rp-test",
-                    "file_naming_pattern": "{target}_{filter}_{binning}_{exposure}_{uuid8}"
+                    "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}_{uuid8}"
                 },
                 "equipment": {},
                 "server": { "port": 0 }
@@ -122,7 +122,7 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(
             config.session.file_naming_pattern.as_deref(),
-            Some("{target}_{filter}_{binning}_{exposure}_{uuid8}")
+            Some("{target}_{filter}_{binning}_{exposure_duration}_{uuid8}")
         );
     }
 

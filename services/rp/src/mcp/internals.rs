@@ -218,7 +218,7 @@ pub(crate) struct ResolvedMeasureStarsParams {
 }
 
 /// Counts existing `.fits` frames in `dir` whose filename (parsed via
-/// `file_template`) shares this frame's `(filter, binning, exposure)`
+/// `file_template`) shares this frame's `(filter, binning, exposure_duration)`
 /// sub-spec, and returns count + 1 — the `{frame_number}` value for a
 /// new frame in that sub-spec. Nothing is stored (rp-targets.md §
 /// Progress derivation): a plain `read_dir` scan per capture, scoped
@@ -232,7 +232,7 @@ async fn next_frame_number(
     dir: &std::path::Path,
     filter: &str,
     binning: rp_targets::Binning,
-    exposure: Duration,
+    exposure_duration: Duration,
 ) -> std::result::Result<u32, String> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(e) => e,
@@ -263,7 +263,7 @@ async fn next_frame_number(
         };
         if parsed.filter.as_deref() == Some(filter)
             && parsed.binning == Some(binning)
-            && parsed.exposure == Some(exposure)
+            && parsed.exposure_duration == Some(exposure_duration)
         {
             count += 1;
         }
@@ -857,7 +857,7 @@ impl McpHandler {
                     target: Some(target_slug),
                     filter: Some(filter_name.clone()),
                     binning: Some(binning),
-                    exposure: Some(duration),
+                    exposure_duration: Some(duration),
                     filter_position: Some(filter_position),
                     sensor_temp_c: sensor_temperature_c.map(|t| t.round() as i32),
                     night_date,

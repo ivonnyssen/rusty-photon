@@ -314,7 +314,7 @@ The optional `session.file_naming_pattern` config, together with
 template (P1 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md)):
 `rp` both renders filenames from capture context and parses them back
-to recover `(target, filter, binning, exposure)` for goal-progress
+to recover `(target, filter, binning, exposure_duration)` for goal-progress
 derivation (see [Target Store](#target-store)). The full contract —
 per-token typed shapes and the compiled-anchored-regex requirement —
 lives in
@@ -322,7 +322,7 @@ lives in
 Both patterns are parsed and validated at config-load time — an
 unknown token or an ambiguous adjacent-token pair fails startup, not a
 session; `file_naming_pattern` additionally requires the quota tokens
-(`{target}`/`{filter}`/`{binning}`/`{exposure}`) and a uniqueness token
+(`{target}`/`{filter}`/`{binning}`/`{exposure_duration}`) and a uniqueness token
 (`{uuid8}` or `{frame_number}`), a stricter contract than
 `directory_pattern` (whose documented default,
 `"{target}/{night_date}/{frame_type}"`, has neither). Each compiles
@@ -934,10 +934,10 @@ hours, `dec` is degrees. See
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. `filter`/`duration_secs` come from the recommended target's first **incomplete** `exposures[]` entry (the `record_exposure` counters rotate the plan); null when the target defines none — see §"Dynamic Planner" |
-| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches a `targets[]` entry, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches a `targets[]` entry, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
 | `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name a `targets[]` entry; omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted. *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
-| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every configured target (the unfiltered slot appears under the empty-string key). *(P1 planned: reshapes to per-goal `{filter, binning, exposure, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every configured target (the unfiltered slot appears under the empty-string key). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
 
 **Targets** *(planned — P1)*
 
@@ -1038,7 +1038,7 @@ on-disk path, replacing the flat `<doc_uuid_8>.fits`. `{night_date}`
 uses the noon-rollover rule against the capture-completion instant
 (rp-targets.md § Progress derivation); `{frame_number}` is derived by
 scanning the target frame's directory for existing files sharing the
-same `(filter, binning, exposure)` sub-spec via
+same `(filter, binning, exposure_duration)` sub-spec via
 `CompiledTemplate::parse` and using `count + 1` — nothing is stored,
 consistent with the "derive progress from disk" design (rp-targets.md
 § Progress derivation). A render failure (a missing field, a filter
@@ -3788,8 +3788,8 @@ Document).
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
 
-`goals[]` entries are the wire shape `{filter, binning, exposure,
-desired_count}` — `binning` as `"AxB"` (e.g. `"1x1"`) and `exposure` as
+`goals[]` entries are the wire shape `{filter, binning, exposure_duration,
+desired_count}` — `binning` as `"AxB"` (e.g. `"1x1"`) and `exposure_duration` as
 a humantime string (e.g. `"300s"`), not `AcquisitionGoal`'s internal
 struct/`Duration` shapes.
 
@@ -3808,11 +3808,11 @@ goals, so `rp` walks **every** `<night_date>` subdirectory under a
 target's slug directory (`<data_directory>/<slug>/*/Light/`,
 accumulating across the whole project, not one night), parses each
 filename through the configured `file_naming_pattern` (§ Persistence)
-to bucket frames by `(filter, binning, exposure)`, then classifies each frame
+to bucket frames by `(filter, binning, exposure_duration)`, then classifies each frame
 good/rejected against its sidecar's grading section and the target's
 effective `GradingThresholds` (its own overrides, field-wise over
 `targets.default_grading`). `get_target`/`list_targets` report, per
-target, a list of `{filter, binning, exposure, good, total, desired}` —
+target, a list of `{filter, binning, exposure_duration, good, total, desired}` —
 one entry per `AcquisitionGoal` — superseding the filter-only
 `{completed, goal}` shape that `get_target_status.progress` and
 `get_session_progress` return today (§ Target Definition), which
@@ -3900,7 +3900,7 @@ decide what to do next — `rp` does not make workflow decisions.
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
 | `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress. Still legacy-`targets[]`-only *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
-| `get_session_progress` | — | progress | Full per-target, per-filter progress overview. Still legacy-`targets[]`-only *(P1 planned: reshapes to per-goal `{filter, binning, exposure, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_session_progress` | — | progress | Full per-target, per-filter progress overview. Still legacy-`targets[]`-only *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
 
 ### Decision Logic (inside `get_next_target`)
 
@@ -4517,7 +4517,7 @@ section's Configuration block for the replacement shape.
   "session": {
     "data_directory": "/data/lights",
     "session_state_file": "/data/session_state.json",
-    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
   },
   "site": {
     "latitude_degrees": 47.6062,

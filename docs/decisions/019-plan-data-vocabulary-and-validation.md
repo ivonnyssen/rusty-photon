@@ -145,8 +145,10 @@ Consequential decisions settled here:
 - **Newtype-field migration.** `rp_targets::Target` and
   `rp::planner::decision::PlannerTarget` change their coordinate fields to
   `coord: IcrsCoord` (private-field newtype), so the compiler forces every
-  construction through `try_new`. Serde keeps the flat `{ra_hours,
-  dec_degrees}` shape; on-disk and MCP wire forms are unchanged.
+  construction through `try_new`. The coordinate now serializes as a
+  nested `coord` object (`{ra_hours, dec_degrees}`) — `#[serde(flatten)]`
+  is removed — so one canonical coordinate shape spans the on-disk store
+  (redb JSON) and the MCP wire.
 - **`rp-catalog` adopts `IcrsCoord`.** `rp_catalog::ResolvedTarget` also
   takes `coord: IcrsCoord` and `rp-catalog` depends on `rp-vocabulary`, so
   one validated coordinate type spans the plan pipeline (catalog → store →
@@ -218,8 +220,10 @@ refresh (Rule 10).
 - **One coordinate type across the plan pipeline** (catalog → store →
   planner) via the `rp-catalog` adoption; `rp-ephemeris`'s computed
   coordinate stays a separate type, bridged at the boundary by
-  `From`/`TryFrom`. The store and MCP wire keep bare decimals, only the
-  in-memory representation gains validation.
+  `From`/`TryFrom`. The store and MCP wire serialize the coordinate as a
+  nested `coord` object (`{ra_hours, dec_degrees}`), `#[serde(flatten)]`
+  removed — one canonical coordinate shape across the on-disk store and
+  the wire — and the in-memory representation gains validation.
 - **A published contract crate** future surfaces (UIs, tools, the bridge)
   either link (Rust) or consume as schema (non-linking) — the
   cross-surface single-validation goal.
@@ -258,7 +262,8 @@ refresh (Rule 10).
 - [`docs/crates/rp-vocabulary.md`](../crates/rp-vocabulary.md) — the crate
   design (the "how"; this ADR is the "why").
 - [`docs/crates/rp-targets.md`](../crates/rp-targets.md) — the store; its
-  "bare decimals" coordinate section is amended by the newtype migration.
+  coordinate section is amended by the newtype migration (the bare on-disk
+  decimals become a nested `coord` object).
 - [`docs/plans/planetarium-target-import.md`](../plans/planetarium-target-import.md)
   — P1, Decision 12.
 - [ADR-006](006-typed-physical-quantities-for-mount-pointing.md) — the

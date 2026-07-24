@@ -1,6 +1,6 @@
 //! Wire-format conversion for [`rp_targets::AcquisitionGoal`]: the JSON
 //! shape `add_target`/`set_goals`/`targets.default_goals` (config) all
-//! share — `binning` as `"AxB"` and `exposure` as a humantime string
+//! share — `binning` as `"AxB"` and `exposure_duration` as a humantime string
 //! (`"300s"`), rather than `AcquisitionGoal`'s derived struct/duration
 //! shapes. Shared by [`crate::mcp::built_in::targets`] (the MCP tool
 //! bodies) and [`crate::config::target_store`] (parsing
@@ -21,7 +21,7 @@ pub struct GoalWire {
     /// `"AxB"`, e.g. `"1x1"`, `"2x2"`.
     pub binning: String,
     /// A humantime duration string, e.g. `"300s"`.
-    pub exposure: String,
+    pub exposure_duration: String,
     pub desired_count: u32,
 }
 
@@ -30,13 +30,13 @@ pub struct GoalWire {
 /// # Errors
 ///
 /// Returns a human-readable message naming the offending value when
-/// `binning` isn't `"AxB"` or `exposure` isn't a valid humantime string.
+/// `binning` isn't `"AxB"` or `exposure_duration` isn't a valid humantime string.
 pub fn parse_goal(g: &GoalWire) -> Result<AcquisitionGoal, String> {
     Ok(AcquisitionGoal {
         filter: g.filter.clone(),
         binning: parse_binning(&g.binning)?,
-        exposure_duration: humantime::parse_duration(&g.exposure)
-            .map_err(|e| format!("goal exposure {:?}: {e}", g.exposure))?,
+        exposure_duration: humantime::parse_duration(&g.exposure_duration)
+            .map_err(|e| format!("goal exposure_duration {:?}: {e}", g.exposure_duration))?,
         desired_count: g.desired_count,
     })
 }
@@ -67,7 +67,7 @@ pub(crate) fn parse_binning(s: &str) -> Result<Binning, String> {
 /// `"300s"` out), since [`humantime::format_duration`] would otherwise
 /// pick a coarser unit (`"5m"`) that fails a literal round-trip
 /// comparison.
-pub fn format_exposure(d: Duration) -> String {
+pub fn format_exposure_duration(d: Duration) -> String {
     if d.subsec_nanos() == 0 {
         format!("{}s", d.as_secs())
     } else {
@@ -81,7 +81,7 @@ pub fn goal_to_json(g: &AcquisitionGoal) -> Value {
     json!({
         "filter": g.filter,
         "binning": g.binning.to_string(),
-        "exposure": format_exposure(g.exposure_duration),
+        "exposure_duration": format_exposure_duration(g.exposure_duration),
         "desired_count": g.desired_count,
     })
 }
@@ -91,24 +91,24 @@ pub fn goal_to_json(g: &AcquisitionGoal) -> Value {
 mod tests {
     use super::*;
 
-    fn wire(filter: &str, binning: &str, exposure: &str, desired_count: u32) -> GoalWire {
+    fn wire(filter: &str, binning: &str, exposure_duration: &str, desired_count: u32) -> GoalWire {
         GoalWire {
             filter: filter.to_string(),
             binning: binning.to_string(),
-            exposure: exposure.to_string(),
+            exposure_duration: exposure_duration.to_string(),
             desired_count,
         }
     }
 
     #[test]
-    fn parse_goal_round_trips_whole_second_exposure() {
+    fn parse_goal_round_trips_whole_second_exposure_duration() {
         let goal = parse_goal(&wire("Ha", "1x1", "300s", 20)).unwrap();
         assert_eq!(goal.binning, Binning { x: 1, y: 1 });
         assert_eq!(goal.exposure_duration, Duration::from_secs(300));
         assert_eq!(
             goal_to_json(&goal),
             json!({
-                "filter": "Ha", "binning": "1x1", "exposure": "300s", "desired_count": 20
+                "filter": "Ha", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20
             })
         );
     }
@@ -120,8 +120,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_goal_rejects_malformed_exposure() {
+    fn parse_goal_rejects_malformed_exposure_duration() {
         let err = parse_goal(&wire("Ha", "1x1", "not-a-duration", 20)).unwrap_err();
-        assert!(err.contains("exposure"), "{err}");
+        assert!(err.contains("exposure_duration"), "{err}");
     }
 }

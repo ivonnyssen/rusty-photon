@@ -69,7 +69,7 @@ const TOKENS: &[TokenSpec] = &[
         shape: r"\d+",
     },
     TokenSpec {
-        name: "exposure",
+        name: "exposure_duration",
         leading: "[0-9]",
         trailing: "c",
         shape: r"\d+sec",
@@ -160,7 +160,7 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
 
 /// Validates a `session.file_naming_pattern` value against the
 /// rp-targets.md contract: every quota token (`target`, `filter`,
-/// `binning`, `exposure`) must appear, at least one uniqueness token
+/// `binning`, `exposure_duration`) must appear, at least one uniqueness token
 /// (`uuid8` or `frame_number`) must appear, every token must be known,
 /// and no two variable-width tokens may sit adjacent without a literal
 /// separator whose characters are excluded from both tokens' edge
@@ -194,7 +194,7 @@ fn validate_segments(segments: &[Segment<'_>]) -> Result<(), String> {
         })
         .collect();
 
-    for required in ["target", "filter", "binning", "exposure"] {
+    for required in ["target", "filter", "binning", "exposure_duration"] {
         if !present.contains(&required) {
             return Err(format!(
                 "file_naming_pattern is missing required token {{{required}}}"
@@ -317,10 +317,10 @@ pub struct TemplateFields {
     /// (`0002`).
     pub frame_number: Option<u32>,
     /// Rendered `format!("{}sec", d.as_secs())` — `render` rejects a
-    /// non-whole-second value, since sub-second exposures have no
-    /// naming-template representation (rp-targets.md § File-naming
+    /// non-whole-second value, since sub-second exposure durations have
+    /// no naming-template representation (rp-targets.md § File-naming
     /// template).
-    pub exposure: Option<Duration>,
+    pub exposure_duration: Option<Duration>,
     pub filter_position: Option<u32>,
     /// Whole-degree Celsius; rendered `format!("{c}C")` (Rust's `i32`
     /// `Display` already omits the sign for non-negatives and includes
@@ -337,7 +337,7 @@ pub struct TemplateFields {
 
 impl TemplateFields {
     /// The value `render` should substitute for a `{name}` token, or
-    /// an error naming the missing field or, for `{exposure}`, the
+    /// an error naming the missing field or, for `{exposure_duration}`, the
     /// violated whole-second business rule.
     fn rendered_value(&self, name: &str) -> Result<String, String> {
         let value = match name {
@@ -345,12 +345,12 @@ impl TemplateFields {
             "filter" => self.filter.clone(),
             "binning" => self.binning.as_ref().map(ToString::to_string),
             "frame_number" => self.frame_number.map(|n| format!("{n:04}")),
-            "exposure" => match self.exposure {
+            "exposure_duration" => match self.exposure_duration {
                 Some(d) if d.subsec_nanos() == 0 => Some(format!("{}sec", d.as_secs())),
                 Some(d) => {
                     return Err(format!(
-                        "exposure {d:?} is not a whole number of seconds; the naming \
-                         template only supports whole-second exposures"
+                        "exposure_duration {d:?} is not a whole number of seconds; the \
+                         naming template only supports whole-second exposure durations"
                     ))
                 }
                 None => None,
@@ -376,8 +376,8 @@ impl TemplateFields {
             "filter" => self.filter = Some(value.to_string()),
             "binning" => self.binning = parse_binning(value).ok(),
             "frame_number" => self.frame_number = value.parse().ok(),
-            "exposure" => {
-                self.exposure = value
+            "exposure_duration" => {
+                self.exposure_duration = value
                     .strip_suffix("sec")
                     .and_then(|s| s.parse::<u64>().ok())
                     .map(Duration::from_secs);
@@ -509,7 +509,7 @@ impl CompiledTemplate {
     /// pattern references, or names the offending value when a
     /// supplied value doesn't match the token's shape (e.g. a filter
     /// name containing a character outside `[A-Za-z0-9]`, or a
-    /// non-whole-second exposure).
+    /// non-whole-second exposure duration).
     pub fn render(&self, fields: &TemplateFields) -> Result<String, String> {
         let mut out = String::new();
         for part in &self.parts {
@@ -613,7 +613,7 @@ mod tests {
     use super::*;
 
     const DEFAULT_PATTERN: &str =
-        "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+        "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
 
     #[test]
     fn default_pattern_is_valid() {
@@ -632,16 +632,18 @@ mod tests {
     #[test]
     fn missing_quota_token_is_rejected() {
         let err = validate_pattern("{target}_{frame_number}_{uuid8}").unwrap_err();
-        assert!(err.contains("filter") || err.contains("binning") || err.contains("exposure"));
+        assert!(
+            err.contains("filter") || err.contains("binning") || err.contains("exposure_duration")
+        );
     }
 
     #[test]
     fn adjacent_ambiguous_tokens_are_rejected() {
         let err = validate_pattern(
-            "{target}_{filter}_{binning}_{frame_number}{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}",
+            "{target}_{filter}_{binning}_{frame_number}{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}",
         )
         .unwrap_err();
-        assert!(err.contains("frame_number") && err.contains("exposure"));
+        assert!(err.contains("frame_number") && err.contains("exposure_duration"));
     }
 
     #[test]
@@ -670,9 +672,10 @@ mod tests {
 
     #[test]
     fn unknown_token_is_rejected() {
-        let err =
-            validate_pattern("{target}_{filter}_{binning}_{frame_number}_{exposure}_{bogus_token}")
-                .unwrap_err();
+        let err = validate_pattern(
+            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_{bogus_token}",
+        )
+        .unwrap_err();
         assert!(err.contains("bogus_token"));
     }
 
@@ -684,7 +687,7 @@ mod tests {
 
     #[test]
     fn missing_uniqueness_token_is_rejected() {
-        let err = validate_pattern("{target}_{filter}_{binning}_{exposure}").unwrap_err();
+        let err = validate_pattern("{target}_{filter}_{binning}_{exposure_duration}").unwrap_err();
         assert!(err.contains("uuid8") || err.contains("frame_number"));
     }
 
@@ -696,7 +699,7 @@ mod tests {
             filter: Some("Ha".to_string()),
             binning: Some(Binning { x: 1, y: 1 }),
             frame_number: Some(2),
-            exposure: Some(Duration::from_secs(120)),
+            exposure_duration: Some(Duration::from_secs(120)),
             filter_position: Some(680),
             sensor_temp_c: Some(-20),
             uuid8: Some("a1b2c3d4".to_string()),
@@ -745,10 +748,10 @@ mod tests {
     }
 
     #[test]
-    fn render_rejects_a_non_whole_second_exposure() {
+    fn render_rejects_a_non_whole_second_exposure_duration() {
         let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
         let mut fields = documented_example_fields();
-        fields.exposure = Some(Duration::from_millis(1500));
+        fields.exposure_duration = Some(Duration::from_millis(1500));
         let err = template.render(&fields).unwrap_err();
         assert!(err.contains("whole"), "{err}");
     }
@@ -761,13 +764,13 @@ mod tests {
 
     #[test]
     fn render_and_parse_round_trip_frame_type_and_night_date() {
-        let pattern = "{target}_{filter}_{binning}_{exposure}_{frame_number}_{frame_type}_{night_date}_{uuid8}";
+        let pattern = "{target}_{filter}_{binning}_{exposure_duration}_{frame_number}_{frame_type}_{night_date}_{uuid8}";
         let template = CompiledTemplate::compile(pattern).unwrap();
         let fields = TemplateFields {
             target: Some(TargetSlug::new("ngc7000").unwrap()),
             filter: Some("L".to_string()),
             binning: Some(Binning { x: 2, y: 2 }),
-            exposure: Some(Duration::from_secs(30)),
+            exposure_duration: Some(Duration::from_secs(30)),
             frame_number: Some(1),
             frame_type: Some(FrameType::Dark),
             night_date: Some(NaiveDate::from_ymd_opt(2026, 6, 2).unwrap()),
@@ -825,7 +828,7 @@ mod tests {
     #[test]
     fn directory_pattern_has_no_quota_or_uniqueness_requirement() {
         // Unlike file_naming_pattern, a directory_pattern with none of
-        // target/filter/binning/exposure/uuid8/frame_number is valid —
+        // target/filter/binning/exposure_duration/uuid8/frame_number is valid —
         // it only needs to be an unambiguous path component.
         validate_directory_pattern("nightly").unwrap();
     }

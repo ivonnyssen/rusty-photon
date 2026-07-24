@@ -31,10 +31,9 @@ pub struct ResolvedTarget {
     /// <https://github.com/mattiaverga/OpenNGC>.
     pub object_type: String,
     /// J2000/ICRS pointing, validated by construction (ADR-019): one
-    /// coordinate type spans catalog → store → planner. `#[serde(flatten)]`
-    /// keeps the flat `{ra_hours, dec_degrees}` shape, so the newtype
-    /// changes no serialized form.
-    #[serde(flatten)]
+    /// coordinate type spans catalog → store → planner, serialized as a
+    /// nested `"coord": { "ra_hours", "dec_degrees" }` object (no
+    /// `#[serde(flatten)]`).
     pub coord: IcrsCoord,
     /// V-Mag from OpenNGC, falling back to B-Mag when V is missing.
     /// `None` if the source row lacks both.

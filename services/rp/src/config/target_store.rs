@@ -94,7 +94,7 @@ mod tests {
         let v = serde_json::json!({
             "db_path": "/data/lights/targets.redb",
             "default_goals": [
-                {"filter": "L", "binning": "1x1", "exposure": "300s", "desired_count": 20}
+                {"filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20}
             ]
         });
         let config = parse_target_store_config(&v).unwrap();
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn object_shape_rejects_bad_default_goal() {
         let v = serde_json::json!({
-            "default_goals": [{"filter": "L", "binning": "bad", "exposure": "300s", "desired_count": 20}]
+            "default_goals": [{"filter": "L", "binning": "bad", "exposure_duration": "300s", "desired_count": 20}]
         });
         let err = parse_target_store_config(&v).unwrap_err();
         assert!(err.contains("binning"), "{err}");

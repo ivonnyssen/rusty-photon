@@ -178,11 +178,16 @@ pub enum CoordError { RaOutOfRange { ra_hours: f64 }, DecOutOfRange { dec_degree
 
 Fields are **private** — that is what makes the invalid state
 unrepresentable (as `TargetSlug` already does with its inner `String`).
-The wire/on-disk form is unchanged: `#[serde(try_from = "IcrsCoordWire")]`
-where `IcrsCoordWire { ra_hours, dec_degrees }` is the flat two-key shape,
-and the `TryFrom` runs `try_new` — so deserializing a bad row or bad JSON
+The serialized form is a nested `coord` object:
+`#[serde(try_from = "IcrsCoordWire")]` where
+`IcrsCoordWire { ra_hours, dec_degrees }` is the two-key inner shape, and
+the `TryFrom` runs `try_new` — so deserializing a bad row or bad JSON
 *fails* rather than smuggling an out-of-range value past the constructor.
-Read sites migrate from `.ra_hours` to `.ra_hours()`.
+The containing `Target`/`ResolvedTarget` no longer `#[serde(flatten)]` the
+coordinate, so it serializes as
+`"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }` — one canonical
+shape on disk and on the MCP wire alike. Read sites migrate from
+`.ra_hours` to `.ra_hours()`.
 
 ### `Binning` — completed round-trip
 
@@ -292,10 +297,15 @@ not say here — it is *not* a constraint this crate has to work around:
   [Not this crate](#not-this-crate-false-cognates)) — so the coupling that
   remains is an explicit typed boundary, not an accidental look-alike.
   Alignment goes *up*, not down.
-- **On-disk and wire shapes are unchanged.** `IcrsCoord` serializes as
-  the flat `{ra_hours, dec_degrees}` pair. The store still holds bare
-  decimals on disk (the part of the decision about the *serialized* form
-  is untouched); only the *in-memory* representation gains validation.
+- **The serialized coordinate is a nested `coord` object.** `IcrsCoord`
+  serializes as `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`
+  rather than flat top-level keys — the store `Target` and catalog
+  `ResolvedTarget` no longer `#[serde(flatten)]` it, giving one canonical
+  coordinate shape across the on-disk redb store and the MCP wire. The
+  values inside that object are still bare decimals (the part of the
+  decision about *not* adopting typed quantities is untouched); the
+  *in-memory* representation gains validation and the serialized form
+  gains the `coord` nesting.
 
 ### `rp-catalog` adopts `IcrsCoord` (settled — ADR-019)
 
@@ -329,9 +339,11 @@ With no raw-`f64` coordinate field left, every construction — today's
 `add_target`/`update_target`, `parse_targets_from_value`, and any future
 write path — is *forced* through `IcrsCoord::try_new` by the compiler. The
 `update_target` line that did `target.ra_hours = v` no longer type-checks;
-it becomes `target.coord = IcrsCoord::try_new(...)?`. Serde keeps the flat
-`{ra_hours, dec_degrees}` shape (above), so neither the redb rows nor the
-MCP JSON change. This is not a backwards-compatibility exercise — the
+it becomes `target.coord = IcrsCoord::try_new(...)?`. Serde now nests the
+coordinate as `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`
+(above) instead of `#[serde(flatten)]`-ing it to the top level, so the
+redb rows and the MCP JSON both carry one canonical `coord` object. This
+is not a backwards-compatibility exercise — the
 store and tools are new in this PR with no shipped caller — it is doing
 the change *while it is still free*, before the wire ossifies into a
 contract.
@@ -478,8 +490,8 @@ existing round-trip tests **move here with the code they cover**, so the
 relocation cannot silently regress the render/parse contract:
 
 - `IcrsCoord` — `try_new` accepts in-range / rejects each out-of-range
-  bound; `serde` round-trips through the flat wire and *rejects* an
-  out-of-range wire value on deserialize.
+  bound; `serde` round-trips through the two-key `coord` wire and
+  *rejects* an out-of-range wire value on deserialize.
 - `Binning` — `Display`/`FromStr` round-trip; `FromStr` rejects non-`AxB`
   and non-`u8`.
 - `FrameType` — `Display`/`FromStr` round-trip every variant (the moved

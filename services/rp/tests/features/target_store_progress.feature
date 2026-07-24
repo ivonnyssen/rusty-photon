@@ -2,7 +2,7 @@ Feature: Target progress derivation (P1)
   Progress is computed on demand from goals plus on-disk frames, never
   stored (rp.md § Target Store → Progress derivation): `get_target` and
   `get_session_progress` report, per target, a list of `{filter,
-  binning, exposure, good, total, desired}` — one entry per
+  binning, exposure_duration, good, total, desired}` — one entry per
   `AcquisitionGoal` — superseding the filter-only `{completed, goal}`
   shape the config-array planner uses today (see planner.feature),
   which cannot distinguish two goals that share a filter (e.g. Ha at
@@ -19,13 +19,13 @@ Feature: Target progress derivation (P1)
     And an MCP client connected to rp
     And the MCP client has added a target named "Fresh Frame" at ra_hours 5.0 dec_degrees 10.0
     And the MCP client has set its goals to:
-      | filter    | binning | exposure | desired_count |
+      | filter    | binning | exposure_duration | desired_count |
       | Luminance | 1x1     | 300s     | 40            |
       | Red       | 1x1     | 300s     | 20            |
     When the MCP client calls "get_target" for slug "fresh-frame"
     Then the tool call should succeed
     And the reported progress should be exactly:
-      | filter    | binning | exposure | good | total | desired |
+      | filter    | binning | exposure_duration | good | total | desired |
       | Luminance | 1x1     | 300s     | 0    | 0     | 40      |
       | Red       | 1x1     | 300s     | 0    | 0     | 20      |
 
@@ -40,17 +40,17 @@ Feature: Target progress derivation (P1)
     And an MCP client connected to rp
     And the MCP client has added a target named "First Frame" at ra_hours 5.0 dec_degrees 10.0
     And the MCP client has set its goals to:
-      | filter    | binning | exposure | desired_count |
+      | filter    | binning | exposure_duration | desired_count |
       | Luminance | 1x1     | 300s     | 40            |
     And the MCP client has added a target named "Second Frame" at ra_hours 6.0 dec_degrees 12.0
     And the MCP client has set its goals to:
-      | filter | binning | exposure | desired_count |
+      | filter | binning | exposure_duration | desired_count |
       | Red    | 1x1     | 300s     | 20            |
     When the MCP client calls "get_session_progress"
     Then the tool call should succeed
     And the progress for target "first-frame" should be exactly:
-      | filter    | binning | exposure | good | total | desired |
+      | filter    | binning | exposure_duration | good | total | desired |
       | Luminance | 1x1     | 300s     | 0    | 0     | 40      |
     And the progress for target "second-frame" should be exactly:
-      | filter | binning | exposure | good | total | desired |
+      | filter | binning | exposure_duration | good | total | desired |
       | Red    | 1x1     | 300s     | 0    | 0     | 20      |
