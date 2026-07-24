@@ -52,6 +52,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extract dirs (`sdk_mac_arm_<ver>` / `sdk_mac_x64_<ver>`) and the Windows
   `sdk_win64_<ver>` layout accordingly; the Linux `/usr/local/lib` link path is
   unchanged. Validated on real hardware (QHY178M + 7-slot CFW, ConformU 0 errors).
+- **BREAKING:** the single-frame / live-video download now writes pixels into a
+  **caller-owned `&mut [u8]`** buffer and returns only the frame dimensions as
+  `FrameInfo`, replacing the `Vec`-owning `ImageData` return (the `zwo-rs` /
+  `svbony-rs` `download_exposure(&mut [u8])` convention). `Camera::get_single_frame`
+  / `Camera::get_live_frame` take `buf: &mut [u8]` and return `Result<FrameInfo>`,
+  writing the pixels into `buf`; a buffer shorter than the frame is rejected with
+  the new `QHYError::BufferTooSmall { needed, got }` **before** any pixels are
+  written (the sim single-frame path checks before consuming the captured image, so
+  a short buffer never loses it). The public `ImageData` type is replaced by
+  `FrameInfo` (dimensions only). Size the buffer with `Camera::get_image_size()`;
+  no `Vec` is allocated per frame inside the library.
 
 ### Removed
 
@@ -81,6 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `thiserror`, and `tracing` now inherit the workspace dependency pins.
 - Moved the demo programs from `src/bin/` to `examples/` and made
   `tracing-subscriber` a dev-dependency, so library consumers no longer pull it.
+- Consolidated the six-file `camera/` module split, `backend.rs`, and `control.rs`
+  into a single device-file-major `src/camera.rs` (the `zwo-rs` / `svbony-rs`
+  one-file-per-device layout), with the camera's behaviour grouped into `impl`
+  blocks and `ControlType` + the real-only handle machinery folded in. Purely
+  internal file moves; `use qhyccd_rs::{…}` paths are unchanged.
 
 ## [0.1.9] - 2026-01-19
 

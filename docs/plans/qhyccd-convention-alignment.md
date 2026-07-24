@@ -1,15 +1,18 @@
 # Align `qhyccd-rs` to the `zwo-rs` / `svbony-rs` conventions
 
-**Status:** Phases 1–4 IMPLEMENTED (Phases 1–3 2026-07-23, Phase 4 2026-07-24),
-consolidated on one branch `feature/qhyccd-convention-alignment`. Phase 1: shared
-handle cell + RAII last-drop close + `Sdk::drop` Close-before-Release. Phase 2:
-`Control` → `ControlType` (31-variant subset + `Other(i32)` + `to_raw`), typed
-accessors on `Camera` + the service seam. Phase 3: flat `QHYError` (`Sdk { op }` +
-the genuinely-distinct cases) + a `check` helper + `pub use libqhyccd_sys as sys`.
-Phase 4: runtime `CameraBackend` enum → compile-time `#[cfg(feature =
-"simulation")]` per-method fork; `mocks.rs` `#[automock]` FFI-mock layer deleted;
-`simulation/` subtree flattened to one `simulation.rs`. Phase 5 not started.
-Analysis complete 2026-07-23.
+**Status:** Phases 1–5 IMPLEMENTED (Phases 1–3 2026-07-23, Phases 4–5 2026-07-24),
+consolidated on one branch `feature/qhyccd-convention-alignment`. **The plan is
+complete.** Phase 1: shared handle cell + RAII last-drop close + `Sdk::drop`
+Close-before-Release. Phase 2: `Control` → `ControlType` (31-variant subset +
+`Other(i32)` + `to_raw`), typed accessors on `Camera` + the service seam. Phase 3:
+flat `QHYError` (`Sdk { op }` + the genuinely-distinct cases) + a `check` helper +
+`pub use libqhyccd_sys as sys`. Phase 4: runtime `CameraBackend` enum → compile-time
+`#[cfg(feature = "simulation")]` per-method fork; `mocks.rs` `#[automock]` FFI-mock
+layer deleted; `simulation/` subtree flattened to one `simulation.rs`. Phase 5:
+six-file `camera/` split + `backend.rs` + `control.rs` consolidated into one
+device-file-major `camera.rs` (5a); single-frame/live download switched from a
+`Vec`-owning `ImageData` to a caller-owned `&mut [u8]` returning `FrameInfo`, with a
+`BufferTooSmall` bounds check (5b). Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
 ([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
@@ -330,7 +333,7 @@ green with no coverage regression. ✓ (sim unit suite 139 green; FFI arms are
 `#[cfg]`'d out of the sim coverage build, so the hard-to-cover FFI path no longer
 counts as uncovered.)
 
-### Phase 5 — Module consolidation + frame buffer
+### Phase 5 — Module consolidation + frame buffer (IMPLEMENTED 2026-07-24)
 
 - Collapse the 6-file `camera/` split + `backend.rs` + `control.rs` into a
   single `camera.rs` with `impl` blocks (device-file-major, as zwo/svbony).
@@ -340,7 +343,35 @@ counts as uncovered.)
   (`zwo camera.rs:754` pattern). The two capture *paths* stay (SDK-forced); only
   the buffer ownership changes.
 
-**Exit:** one `camera.rs`; caller-owned frame buffer; suites green.
+**Concrete design (as implemented 2026-07-24, in two commits):**
+- **5a — module consolidation (mechanical, no API change).** `src/camera.rs`
+  now holds, in order: `ControlType` (formerly `control.rs`), the
+  `#[cfg(not(feature = "simulation"))]` handle machinery (`QHYCCDHandle` /
+  `HandleCell` / `read_lock!`, formerly `backend.rs`, with `read_lock!` now a
+  same-module `macro_rules!`), the `Camera` struct, and the camera's behaviour in
+  `impl Camera` blocks by responsibility (constructors, lifecycle, configuration,
+  device info, imaging, parameters + typed accessors, readout modes). The six
+  behavioural blocks moved **verbatim**; the per-submodule `use` headers collapsed
+  into one deduplicated import block. `lib.rs` dropped `mod backend;` / `mod
+  control;` and re-exports `ControlType` from `camera`. `glob(["src/**/*.rs"])`
+  needed no BUILD.bazel change.
+- **5b — caller-owned frame buffer (API change).** `Camera::get_single_frame` /
+  `get_live_frame` take `buf: &mut [u8]` and return `Result<FrameInfo>` (the frame
+  dimensions), writing pixels into `buf`. Both bounds-check `buf.len()` against the
+  frame size **before** the SDK write and return the new `QHYError::BufferTooSmall
+  { needed, got }`; the single-frame sim path checks before consuming the captured
+  image so a short buffer never loses it. `types::ImageData` (owned `Vec<u8>` +
+  metadata) → `types::FrameInfo` (dimensions only), re-exported in place of
+  `ImageData`. Callers size the buffer with `get_image_size()` exactly as before.
+  The sole consumer (`qhy-camera`) keeps a small **service-local** `ImageData` DTO
+  (pixels + `FrameInfo` fields) as the currency between the `CameraHandle` seam and
+  the ASCOM image conversion — mirroring how `zwo-camera` owns its capture `Vec<u8>`;
+  `RealCameraHandle::get_single_frame` allocates the buffer, calls the new API, and
+  pairs the pixels with the returned dimensions. No public ASCOM behaviour changed.
+
+**Exit:** one `camera.rs`; caller-owned frame buffer; suites green. ✓ (bazel
+build+test 87; real ConformU green; sim unit+integration 104; doctests 54; clippy
+`-D warnings` on both crates in both feature configs.)
 
 ## Non-goals (explicitly out of scope)
 
