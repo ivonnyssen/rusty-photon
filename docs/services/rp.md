@@ -18,8 +18,8 @@ calling tools on `rp`.
 3. **Automate what is safe to automate.** The planner makes target and filter
    decisions autonomously. Manual intervention is never required during a
    session.
-4. **Remote interfaces only.** ASCOM Alpaca for devices, HTTP for plugins, HTTP
-   for UIs. No direct hardware integrations. Ever.
+4. **Remote interfaces only.** ASCOM Alpaca for devices, MCP (over HTTP) for
+   plugins and UIs. No direct hardware integrations. Ever.
 5. **Minimal footprint.** The application runs on Linux, macOS, and Windows, and
    must be efficient enough for a Raspberry Pi 5. Memory and CPU budgets are tight.
 6. **Loose coupling via events.** The application emits events; plugins react.
@@ -27,6 +27,13 @@ calling tools on `rp`.
 7. **UI is a client, not a component.** The web UI contains zero application
    logic. It renders state and sends commands. Anyone can build an alternative
    UI without changing the application.
+8. **MCP is the surface.** Every capability a client drives — UI, plugin, or
+   external — is an MCP tool on `rp`'s `/mcp` server; that is the one way to
+   command `rp`. HTTP/REST is not a second surface: it carries only what
+   cannot ride MCP — raw image bytes (`/api/images/{id}/pixels`), the SSE
+   event stream, and plugin completion callbacks — plus config, which must
+   stay reachable while the `/mcp` safety gate is closed. A REST endpoint that
+   mirrors an MCP tool is a design error, not a feature.
 
 ## Architecture
 
@@ -43,7 +50,7 @@ by calling tools on `rp`.
                        │   framework)      │
                        │  NO app logic     │
                        └────────┬──────────┘
-                                │ REST + WebSocket
+                                │ MCP + SSE
                        ┌────────▼──────────┐
                        │       RP          │
                        │                   │
@@ -52,7 +59,7 @@ by calling tools on `rp`.
                        │  Safety Enforcer  │
                        │  Session State    │
                        │  Planner          │
-                       │  API Layer        │
+                       │  HTTP shim        │
                        └──┬────┬────┬──────┘
                           │    │    │
             ┌─────────────┤    │    ├─────────────┐
@@ -3663,9 +3670,9 @@ is imperceptible.
 ## Target Store
 
 *(P1 of [planetarium-target-import.md](../plans/planetarium-target-import.md)
-— the store, its CRUD/goals MCP tools, the REST mirror, and the
-planner's cutover to reading the store have landed; the frame-scan-based
-progress derivation below has not.)* The plan data model,
+— the store, its CRUD/goals MCP tools, and the planner's cutover to
+reading the store have landed; the frame-scan-based progress derivation
+below has not.)* The plan data model,
 `TargetStore` trait, and `RedbTargetStore` implementation live in the
 `rp-targets` crate ([design doc](../crates/rp-targets.md)); this
 section is the authoritative rp-side integration contract that crate
@@ -3674,8 +3681,8 @@ doc's "rp Integration" section summarizes.
 Targets are rows in a redb-backed `rp-targets` database that `rp` opens
 once at startup (`target_store.db_path`, default
 `<session.data_directory>/targets.redb`), editable live via the MCP
-tools and REST endpoints below without a restart — no more
-`PUT /api/config` plus a restart to add or edit a target.
+tools below without a restart — no more `PUT /api/config` plus a restart
+to add or edit a target.
 
 Targets live exclusively in the store: `get_next_target` (§ Dynamic
 Planner), `record_exposure`, `get_session_progress`, and
@@ -3868,8 +3875,7 @@ contract has landed; rendering and the frame scan it feeds have not).
 The legacy `targets[]` config array is gone — a breaking, pre-1.0 hard
 cutover. `Config` has `deny_unknown_fields`, so a stray `targets` key,
 or an array shape under `target_store`, fails loudly at config load;
-each target is (re-)added via `add_target` (or the REST mirror) into
-the store.
+each target is (re-)added via the `add_target` MCP tool into the store.
 
 ## Dynamic Planner
 
@@ -4215,14 +4221,22 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
 
 ## API Layer
 
-`rp` exposes an HTTP API for UIs and external consumers. The
-API is a dumb pipe — it exposes state and accepts commands. It contains no
-application logic.
+`rp`'s client surface is MCP (Tenet 8): every capability a UI, plugin, or
+external client drives is an MCP tool on `/mcp`. The HTTP/REST routes below
+are **not** a second surface that mirrors those tools — they carry only what
+cannot ride MCP: raw image bytes, the SSE event stream, plugin completion
+callbacks, and config (which must stay reachable while the `/mcp` safety
+gate is closed), plus a few operational reads (`/health`, equipment and
+session status). Whatever REST serves, it stays a dumb pipe — no application
+logic.
 
 ### REST Endpoints
 
-Endpoints marked *(planned)* are part of the target design but **not yet
-implemented** — the router serves only the unmarked ones.
+The router serves only the unmarked routes below. A bullet marked
+*(planned)* for a client **action** — device connect/disconnect, session
+abort, planner introspection — is a leftover REST sketch: per Tenet 8 that
+capability lands as an MCP tool, not a new REST route. Nothing here mirrors
+the target-store CRUD tools; those are MCP-only (§ Target Store).
 
 #### Equipment
 - `GET /api/equipment` — live connection status per configured device. The
@@ -4234,10 +4248,9 @@ implemented** — the router serves only the unmarked ones.
   config id; the mount is singular and has none. Device *addresses and
   settings* are not repeated here — they live in the config, readable via
   `GET /api/config`, and a UI joins the two by `id`.
-- `PUT /api/equipment/{device_id}/connect` — connect to a device *(planned;
-  the registry is built once at startup and holds no runtime
-  connect/disconnect path yet)*
-- `PUT /api/equipment/{device_id}/disconnect` — disconnect from a device *(planned)*
+- Runtime device connect/disconnect is **not** a REST route: the registry is
+  built once at startup with no runtime connect/disconnect path today, and if
+  it is ever exposed it lands as an MCP tool, not a REST endpoint (Tenet 8).
 
 #### Configuration
 - `GET /api/config` — the effective configuration, secrets redacted, plus
@@ -4262,11 +4275,11 @@ implemented** — the router serves only the unmarked ones.
 - `POST /api/session/start` — start a new session (or resume existing)
 - `POST /api/session/stop` — stop the session gracefully (finish current
   exposures, park)
-- `POST /api/session/abort` — abort immediately (discard in-progress exposures,
-  park) *(planned)*
+- Session **abort** (discard in-progress exposures, park) is *(planned as an
+  MCP tool — Tenet 8)*, not a REST route.
 - `GET /api/session/status` — current session state, active target, progress
-- `GET /api/session/plan` — planner's current evaluation (why it chose the
-  current target, upcoming decisions) *(planned)*
+- Planner **introspection** (why it chose the current target, upcoming
+  decisions) is *(planned as an MCP tool — Tenet 8)*, not a REST route.
 
 #### Documents
 - `GET /api/documents` — list recent exposure documents *(planned)*
@@ -4901,19 +4914,16 @@ services/rp/src/
     mod.rs              Pipeline orchestrator: dispatch async tasks after capture
     save.rs             Write FITS to final location, create sidecar JSON
 
-  # API layer
-  api/
-    mod.rs              Axum router setup
-    equipment.rs        Equipment endpoints
-    targets.rs          Target CRUD endpoints, mirroring the
-                        add_target/get_target/list_targets/
-                        update_target/delete_target/set_goals MCP
-                        tools body-for-body (§ Target Store)
-                        *(planned, P1)*
-    session.rs          Session control endpoints
-    documents.rs        Document endpoints (including plugin section updates)
-    stream.rs           WebSocket / SSE event stream
-    types.rs            API request/response types (serde)
+  # HTTP layer — the technical-exception surface (Tenet 8); the
+  # client surface is MCP. One flat file, no api/ package.
+  routes.rs             Axum router mounting /mcp alongside the HTTP
+                        routes: /health, /api/equipment, /api/config
+                        [+ /schema], /api/session/{start,stop,status},
+                        /api/plugins/{workflow_id}/complete,
+                        /api/documents/{id}, /api/images/{id}[/pixels]
+                        (Alpaca ImageBytes), /api/events/subscribe (SSE).
+                        No /api/targets — target CRUD is MCP-only
+                        (§ Target Store); no application logic here.
 
   # I/O abstractions
   io.rs                 Traits for HTTP client, clock, filesystem (testability)

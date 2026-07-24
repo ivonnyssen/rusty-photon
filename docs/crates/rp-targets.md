@@ -592,7 +592,7 @@ the on-disk frame scan.
 migration scaffold, and override storage for scheduling + grading. An
 in-memory test double for consumer tests.
 
-**In MVP (rp-side):** target CRUD MCP/REST tools (resolve via
+**In MVP (rp-side):** target CRUD MCP tools (resolve via
 `rp-catalog` → derive slug → `upsert`), the round-trippable naming
 template with config-load validation, progress derivation (total from
 filenames, good/rejected from sidecar metrics + effective thresholds),
