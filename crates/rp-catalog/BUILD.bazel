@@ -6,6 +6,14 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# rp-vocabulary is a first-party leaf (not an `@cr` entry), so it is named
+# as an explicit Bazel label rather than resolved by `all_crate_deps`.
+# `ResolvedTarget.coord` is the validated `rp_vocabulary::IcrsCoord`
+# (ADR-019), so one coordinate type spans catalog → store → planner.
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-vocabulary:rp-vocabulary",
+]
+
 rust_library(
     name = "rp-catalog",
     srcs = glob(["src/**/*.rs"]),
@@ -17,7 +25,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -32,7 +40,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

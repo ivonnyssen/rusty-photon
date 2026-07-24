@@ -15,6 +15,7 @@ mod derived;
 mod erfars_impl;
 mod site;
 mod types;
+mod vocabulary;
 
 pub use erfars_impl::ErfarsEphemeris;
 pub use site::{Site, SiteError};

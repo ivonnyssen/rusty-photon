@@ -35,8 +35,11 @@ impl From<&ResolvedTarget> for ResolvedTargetView {
         Self {
             name: t.name.clone(),
             object_type: t.object_type.clone(),
-            ra_hours: t.ra_hours,
-            dec_degrees: t.dec_degrees,
+            // The view keeps flat `f64` coordinate fields — the MCP wire
+            // contract is unchanged; only the read routes through the
+            // validated `IcrsCoord` accessors (ADR-019).
+            ra_hours: t.coord.ra_hours(),
+            dec_degrees: t.coord.dec_degrees(),
             magnitude: t.magnitude,
             size_arcmin: t.size_arcmin,
         }

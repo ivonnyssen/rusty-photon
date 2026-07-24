@@ -15,6 +15,7 @@ workspace = true
 chrono = { workspace = true, features = ["serde"] }
 chrono-tz = { workspace = true }
 erfars = { workspace = true }
+rp-vocabulary = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

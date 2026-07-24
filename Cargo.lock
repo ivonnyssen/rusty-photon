@@ -4357,6 +4357,7 @@ name = "rp-catalog"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "rp-vocabulary",
  "serde",
  "thiserror 2.0.19",
  "tracing",
@@ -4369,6 +4370,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "erfars",
+ "rp-vocabulary",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

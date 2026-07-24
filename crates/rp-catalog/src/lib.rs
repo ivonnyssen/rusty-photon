@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use rp_vocabulary::IcrsCoord;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
@@ -29,8 +30,12 @@ pub struct ResolvedTarget {
     /// = globular, `Neb` = nebula, etc.). Documented at
     /// <https://github.com/mattiaverga/OpenNGC>.
     pub object_type: String,
-    pub ra_hours: f64,
-    pub dec_degrees: f64,
+    /// J2000/ICRS pointing, validated by construction (ADR-019): one
+    /// coordinate type spans catalog → store → planner. `#[serde(flatten)]`
+    /// keeps the flat `{ra_hours, dec_degrees}` shape, so the newtype
+    /// changes no serialized form.
+    #[serde(flatten)]
+    pub coord: IcrsCoord,
     /// V-Mag from OpenNGC, falling back to B-Mag when V is missing.
     /// `None` if the source row lacks both.
     pub magnitude: Option<f64>,
@@ -129,11 +134,27 @@ impl Catalog {
                     file: label,
                     source: e,
                 })?;
+                // Validate coordinates at the parse boundary. The committed
+                // data is proven in-range by `loads_with_expected_size`, so
+                // this is defensive: a malformed row is skipped (logged),
+                // not fatal — one bad row must not empty the whole catalog.
+                let coord = match IcrsCoord::try_new(r.ra_hours, r.dec_degrees) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!(
+                            file = label,
+                            name = %r.name,
+                            ra_hours = r.ra_hours,
+                            dec_degrees = r.dec_degrees,
+                            "catalog row has out-of-range coordinates ({e}); skipping"
+                        );
+                        continue;
+                    }
+                };
                 let target = ResolvedTarget {
                     name: r.name.clone(),
                     object_type: r.object_type,
-                    ra_hours: r.ra_hours,
-                    dec_degrees: r.dec_degrees,
+                    coord,
                     magnitude: r.magnitude.trim().parse().ok(),
                     size_arcmin: r.size_arcmin.trim().parse().ok(),
                 };
@@ -292,8 +313,8 @@ mod tests {
         let m31 = cat().resolve("M 31").expect("M 31 must resolve");
         assert_eq!(m31.name, "M 31");
         assert!(m31.object_type.starts_with('G')); // galaxy
-        assert!((m31.ra_hours - 0.7123).abs() < 0.001);
-        assert!((m31.dec_degrees - 41.269).abs() < 0.001);
+        assert!((m31.coord.ra_hours() - 0.7123).abs() < 0.001);
+        assert!((m31.coord.dec_degrees() - 41.269).abs() < 0.001);
     }
 
     #[test]
@@ -315,8 +336,8 @@ mod tests {
     fn ngc_alias_resolves_same_object_as_messier_for_orion_nebula() {
         let m42 = cat().resolve("M 42").unwrap();
         let ngc = cat().resolve("NGC 1976").unwrap();
-        assert!((m42.ra_hours - ngc.ra_hours).abs() < 1e-4);
-        assert!((m42.dec_degrees - ngc.dec_degrees).abs() < 1e-4);
+        assert!((m42.coord.ra_hours() - ngc.coord.ra_hours()).abs() < 1e-4);
+        assert!((m42.coord.dec_degrees() - ngc.coord.dec_degrees()).abs() < 1e-4);
     }
 
     #[test]
@@ -331,8 +352,8 @@ mod tests {
         let ic1396 = cat().resolve("IC 1396").expect("IC 1396 must resolve");
         assert_eq!(ic1396.name, "IC 1396");
         // Cepheus, ~21.6h RA, ~+57.5° Dec
-        assert!((ic1396.ra_hours - 21.6).abs() < 0.5);
-        assert!((ic1396.dec_degrees - 57.5).abs() < 1.0);
+        assert!((ic1396.coord.ra_hours() - 21.6).abs() < 0.5);
+        assert!((ic1396.coord.dec_degrees() - 57.5).abs() < 1.0);
     }
 
     #[test]

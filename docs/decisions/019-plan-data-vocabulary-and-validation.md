@@ -66,8 +66,10 @@ home.
 
 - Extracting the file-naming template *engine* — it stays in `rp`
   (session-layer glue, one linker). Only its value types move.
-- Unifying ASCOM camera **binning** or mount **pointing** types — false
-  cognates (driver/ASCOM contract vs plan value); see
+- Unifying ASCOM camera **binning**, mount **pointing**, or
+  `rp-ephemeris`'s **computed** `IcrsCoord` with the plan value types —
+  false cognates (a driver/ASCOM contract, or a `NaN`-capable computed
+  astronomy value, versus a validated plan value); see
   [ADR-006](006-typed-physical-quantities-for-mount-pointing.md) and the
   crate doc.
 - A shared `rusty-photon-units` driver foundation — deferred to ADR-006's
@@ -147,10 +149,24 @@ Consequential decisions settled here:
   dec_degrees}` shape; on-disk and MCP wire forms are unchanged.
 - **`rp-catalog` adopts `IcrsCoord`.** `rp_catalog::ResolvedTarget` also
   takes `coord: IcrsCoord` and `rp-catalog` depends on `rp-vocabulary`, so
-  there is **one** coordinate type end to end (catalog → store → planner →
-  ephemeris), replacing three parallel bare-`f64` representations. (Chosen
-  over bridging with a `From` at the `rp` boundary, which would leave one
-  bare-`f64` rep behind.)
+  one validated coordinate type spans the plan pipeline (catalog → store →
+  planner), replacing the parallel bare-`f64` representations that only
+  happened to agree. (Chosen over bridging catalog with a `From` at the
+  `rp` boundary, which would leave a bare-`f64` rep behind.)
+- **`rp-ephemeris`'s `IcrsCoord` is a false cognate — bridged, not
+  unified.** It is a *computed* astronomy value: `Epv00`/`Moon98` build it,
+  and the panic-safety contract fills it with `NaN` when the host clock
+  misbehaves (`sun_position`/`moon_position` return NaN-filled coords
+  rather than crashing), on a circular domain where a body can normalise
+  exactly onto the `24.0h` seam. A `try_new`-validated newtype cannot hold
+  either (`NaN` rejected; half-open `[0,24)` rejects `24.0`). So
+  `rp-ephemeris` keeps its own type and depends on `rp-vocabulary` only for
+  two boundary conversions: `From<vocab::IcrsCoord>` (total — a validated
+  plan coord is always a valid transform input) and
+  `TryFrom<ephemeris::IcrsCoord> for vocab::IcrsCoord` (partial — the
+  `NaN`/seam cases surface as a `CoordError`, never a panic or a silent
+  clamp). This is the computed-vs-plan analogue of the camera-vs-plan
+  binning split.
 - **`FrameType`'s home is `rp-vocabulary`**, not a top-level `rp` module
   and not `rp-targets` — the feature-gated schema dissolves the
   schemars-purity reason that would have kept it out of the store leaf.
@@ -175,8 +191,11 @@ is mechanical, few-caller, and unit-test-pinned:
 1. `crates/rp-vocabulary` with the three types + their round-trip tests
    (moved from `rp-targets`/`rp`, not rewritten — losing them is the only
    real regression path).
-2. `rp-ephemeris` re-homes `IcrsCoord` here and depends on the crate;
-   `rp-catalog`'s `ResolvedTarget` adopts it.
+2. `rp-catalog`'s `ResolvedTarget` adopts `IcrsCoord` (its coordinates are
+   validatable parse input, so a malformed row rightly fails `try_new`).
+   `rp-ephemeris` does **not** re-home its `IcrsCoord` — that computed,
+   `NaN`-capable type is a false cognate (above); it depends on the crate
+   only for the `From`/`TryFrom` boundary conversions.
 3. `rp-targets` depends on the crate (no `schema` feature) for `Binning`/
    `FrameType`; `Target.coord` becomes `IcrsCoord`; `AcquisitionGoal`
    standardizes on `humantime` for its `exposure_duration`.
@@ -196,9 +215,11 @@ refresh (Rule 10).
 - **The coordinate drift becomes unrepresentable** — no raw-`f64`
   coordinate field survives, and the store-write validation gap closes by
   construction, not by a remembered call.
-- **One coordinate type across the plan pipeline** via the `rp-catalog`
-  adoption; the store and MCP wire keep bare decimals, only the in-memory
-  representation gains validation.
+- **One coordinate type across the plan pipeline** (catalog → store →
+  planner) via the `rp-catalog` adoption; `rp-ephemeris`'s computed
+  coordinate stays a separate type, bridged at the boundary by
+  `From`/`TryFrom`. The store and MCP wire keep bare decimals, only the
+  in-memory representation gains validation.
 - **A published contract crate** future surfaces (UIs, tools, the bridge)
   either link (Rust) or consume as schema (non-linking) — the
   cross-surface single-validation goal.
@@ -218,12 +239,18 @@ refresh (Rule 10).
 1. **New crate vs consolidate** — new leaf (`rp-vocabulary`);
    consolidation can't share a validated coordinate field without an
    inverted ERFA edge.
-2. **`rp-catalog`** — adopts `IcrsCoord` (full unification), not a bridge.
-3. **`FrameType` home** — `rp-vocabulary` with feature-gated schema, not
+2. **`rp-catalog`** — adopts `IcrsCoord` (full unification), not a bridge:
+   its coordinates are validatable parse input.
+3. **`rp-ephemeris`** — the opposite call: keeps its own computed
+   `IcrsCoord` (a false cognate — `NaN` degradation sentinel + circular
+   domain), bridged to the plan type by `From`/`TryFrom`, not unified. The
+   computed→plan direction is `TryFrom` because a `From` there would panic
+   on the `24.0h` seam or clamp silently.
+4. **`FrameType` home** — `rp-vocabulary` with feature-gated schema, not
    `rp-targets` (schemars purity) or a top-level `rp` module.
-4. **Naming engine** — stays in `rp`; only its value types move; the
+5. **Naming engine** — stays in `rp`; only its value types move; the
    grammar slice's boundary is staked for a later split.
-5. **Drivers** — no camera/mount driver links `rp-vocabulary`; the
+6. **Drivers** — no camera/mount driver links `rp-vocabulary`; the
    ASCOM-boundary translation is `rp`'s mcp-client seam.
 
 ## References

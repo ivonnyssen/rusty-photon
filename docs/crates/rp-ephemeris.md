@@ -186,6 +186,28 @@ accumulated leapsecond count; bumping `erfars` resyncs it.
 Annual aberration is not applied to the Sun (sub-arcmin effect;
 below the resolution that matters for "is the Sun up?").
 
+### `IcrsCoord` vs the validated plan coordinate (ADR-019)
+
+This crate's `IcrsCoord` (in `types.rs`) is a **computed** value: the
+transforms build it from ERFA output, and the [panic-safety
+contract](#panic-safety-and-degradation) fills it with `NaN` on a bad host
+clock (`sun_position`/`moon_position` degrade rather than crash). It is
+deliberately **not** the validated plan coordinate
+`rp_vocabulary::IcrsCoord`, which is private-field, `try_new`-checked to
+`ra_hours ∈ [0,24)` / `dec_degrees ∈ [-90,90]`, and so cannot hold `NaN`
+or a body that normalises exactly onto the `24.0h`≡`0h` seam — a genuinely
+different concern (validated plan input vs computed astronomy output), a
+false cognate rather than a duplicate.
+
+The two are bridged in `vocabulary.rs`, and the direction asymmetry is the
+whole point: `From<rp_vocabulary::IcrsCoord> for IcrsCoord` (plan →
+computed, **total** — a validated coord is always a valid transform input)
+and `TryFrom<IcrsCoord> for rp_vocabulary::IcrsCoord` (computed → plan,
+**partial** — `NaN`/seam surface as a `CoordError`; a plain `From` here
+would panic on the seam or clamp silently). See
+[ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md) and
+[rp-vocabulary.md](rp-vocabulary.md).
+
 ## Module Layout
 
 ```
@@ -197,6 +219,8 @@ crates/rp-ephemeris/src/
 ├── site.rs         # Site + tzf-rs timezone resolution
 ├── erfars_impl.rs  # ErfarsEphemeris, time_jds, alt_az_at, sun_icrs,
 │                   #   moon_icrs, run_with_guard, NaN-fallback ctors
+├── vocabulary.rs   # From/TryFrom bridge between the computed IcrsCoord
+│                   #   and the validated rp_vocabulary::IcrsCoord (ADR-019)
 └── derived.rs      # bisect_dt, transit, rise_set, meridian_flip,
                     #   twilight (root-finders over ERFA positions)
 ```
@@ -237,6 +261,7 @@ code.
 |---|---|
 | `chrono` | calendar/time arithmetic, `DateTime<Utc>` |
 | `erfars` | Rust FFI for ERFA (the math) |
+| `rp-vocabulary` | validated plan `IcrsCoord`, for the `From`/`TryFrom` boundary bridge only (ADR-019) |
 | `tzf-rs` | offline lat/lon → IANA timezone, used by `Site` |
 | `tracing` | error logging on degraded paths |
 | `thiserror` | `EphemerisError` derive |

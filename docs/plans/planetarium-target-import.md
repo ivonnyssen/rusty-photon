@@ -282,7 +282,10 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     forces every construction (today's and future) through the one
     validator, closing the store-write gap *by construction*.
     `rp_catalog::ResolvedTarget` adopts `IcrsCoord` too, giving **one**
-    coordinate type catalog → store → planner → ephemeris. The crate also
+    validated coordinate type across the plan pipeline (catalog → store →
+    planner); `rp-ephemeris` keeps its own computed, `NaN`-capable
+    `IcrsCoord` (a false cognate) and bridges to the plan type with
+    `From`/`TryFrom` rather than being unified. The crate also
     seeds a plan-data **schema + validate** protocol (a plan-side analogue
     of the `config.get`/`config.schema`/`config.apply` machinery in
     `rusty-photon-config`): it supplies the validating constructors and a

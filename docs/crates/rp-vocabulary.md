@@ -97,8 +97,9 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
   form is `humantime`, and its filename codec lives with the naming
   engine). See [Not a type: exposure](#not-a-type-exposure-duration).
 - **Ephemeris math** ([`rp-ephemeris`](rp-ephemeris.md)) — `alt_az`,
-  sidereal time, twilight. It depends on this crate for the `IcrsCoord`
-  *value* and keeps the transforms *on* it.
+  sidereal time, twilight. It keeps its **own** computed `IcrsCoord` (a
+  `NaN`-capable false cognate — see below) and depends on this crate only
+  for the `From`/`TryFrom` boundary conversions to the plan value.
 - **The file-naming template engine** (`rp::config::naming_template`:
   `CompiledTemplate`, `TOKENS`, `parse_segments`, `check_unambiguous`) —
   stays in `rp`. Only the grammar's *value types* live here. See
@@ -108,11 +109,15 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
 - **ASCOM driver quantities** — camera `BinX`/`BinY`, mount
   `RightAscension`/`Declination`, the shutter `light: bool`. These are a
   *false cognate*, not this vocabulary. See
-  [Not this crate: driver quantities](#not-this-crate-driver-quantities-false-cognates).
+  [Not this crate](#not-this-crate-false-cognates).
 - **ADR-006 mount-local typed quantities** (`MechHa`/`Ra`/`Dec`, encoder
   ticks) — frame-safe *pointing math* inside the mount driver, a
   different concern from plan-data values. See
   [Relationship to ADR-006](#relationship-to-adr-006-and-the-bare-decimals-decision).
+- **`rp-ephemeris`'s computed `IcrsCoord`** — a computed, `NaN`-capable
+  astronomy value on a circular domain, not a validated plan value; kept
+  separate and bridged by `From`/`TryFrom`. See
+  [Not this crate](#not-this-crate-false-cognates).
 
 ## Crate boundary and dependency graph
 
@@ -127,9 +132,9 @@ never to each other.
                         ▲          ▲            ▲
         ┌───────────────┘          │            └───────────────┐
    rp-ephemeris              rp-targets                     rp-catalog
-   (keeps erfars/tzf-rs;     (keeps redb; Target,           (ResolvedTarget
-    transforms take          AcquisitionGoal hold            .coord: IcrsCoord;
-    vocab::IcrsCoord)        vocab types)                    depends on vocab)
+   (keeps erfars/tzf-rs +    (keeps redb; Target,           (ResolvedTarget
+    own computed IcrsCoord;  AcquisitionGoal hold            .coord: IcrsCoord;
+    From/TryFrom to vocab)   vocab types)                    depends on vocab)
         ▲                          ▲                             ▲
         └──────────────────────────┼─────────────────────────────┘
                               services/rp
@@ -278,10 +283,15 @@ not say here — it is *not* a constraint this crate has to work around:
 - **The "bare decimals" goals are preserved, and alignment *improves*.**
   That decision had two aims: don't adopt the ADR-006 mount types for
   plan data (honored — `IcrsCoord` is not one), and stay aligned with
-  `rp_catalog::ResolvedTarget` and `rp_ephemeris::IcrsCoord`. Today those
-  are **three parallel bare-`f64` coordinate representations** that merely
-  happen to match. Making `IcrsCoord` the one shared value type replaces
-  three look-alikes with a single type — alignment goes *up*, not down.
+  `rp_catalog::ResolvedTarget` and `rp_ephemeris::IcrsCoord`. The catalog
+  and plan coordinates were parallel bare-`f64` reps that merely happened
+  to match; making `IcrsCoord` the one shared *plan* value type unifies
+  them (catalog → store → planner). `rp_ephemeris::IcrsCoord` stays a
+  separate type by design — a computed, `NaN`-capable false cognate
+  bridged by `From`/`TryFrom` (see
+  [Not this crate](#not-this-crate-false-cognates)) — so the coupling that
+  remains is an explicit typed boundary, not an accidental look-alike.
+  Alignment goes *up*, not down.
 - **On-disk and wire shapes are unchanged.** `IcrsCoord` serializes as
   the flat `{ra_hours, dec_degrees}` pair. The store still holds bare
   decimals on disk (the part of the decision about the *serialized* form
@@ -291,13 +301,21 @@ not say here — it is *not* a constraint this crate has to work around:
 
 `rp_catalog::ResolvedTarget` also adopts `IcrsCoord`
 (`ResolvedTarget.coord: IcrsCoord`) and `rp-catalog` gains a dependency on
-`rp-vocabulary`. This is the fullest de-drift: **one** coordinate type end
-to end — catalog → store → planner → ephemeris — replacing the three
+`rp-vocabulary`. This is the de-drift across the *plan* pipeline: **one**
+validated coordinate type catalog → store → planner, replacing the
 parallel bare-`f64` representations that previously only *happened* to
-agree. The alternative considered and rejected was bridging with a
-`From`/`try_new` at the `rp` boundary (a smaller diff, but it would leave
-one bare-`f64` rep in the workspace). `rp-catalog` stays a light leaf — it
+agree. The alternative considered and rejected was bridging catalog with a
+`From`/`try_new` at the `rp` boundary (a smaller diff, but it would leave a
+bare-`f64` rep in the workspace). `rp-catalog` stays a light leaf — it
 gains only the `rp-vocabulary` edge, no other new dependency.
+
+`rp-ephemeris` is deliberately *not* on that unified path — its
+`IcrsCoord` is a computed, `NaN`-capable false cognate (see
+[Not this crate](#not-this-crate-false-cognates)) that a validated newtype
+cannot represent, so it is bridged by `From`/`TryFrom` at the boundary
+rather than replaced. Validated plan input and computed astronomy output
+are genuinely different concerns; the typed bridge makes the seam explicit
+instead of pretending one type serves both.
 
 ## The newtype-field migration (decision 3)
 
@@ -358,10 +376,12 @@ cleanly when a real second consumer (a pattern editor) exists. Until then,
 `Binning`/`FrameType` moving here already lets the engine drop its
 config→planner import.
 
-## Not this crate: driver quantities (false cognates)
+## Not this crate: false cognates
 
-The ASCOM camera/mount drivers are **not** consumers and their look-alike
-quantities are **not** this vocabulary:
+Several types share a *shape* with these plan values but a different
+*concern*, so they stay separate. The ASCOM camera/mount drivers are
+**not** consumers and their look-alike quantities are **not** this
+vocabulary:
 
 - Camera **binning** (`bin: u32`, `BinX`/`BinY`) is a *symmetric hardware
   factor* validated against the sensor's `supported_bins`, with
@@ -382,6 +402,21 @@ quantities are **not** this vocabulary:
   even wrap `erfars` directly rather than share `rp-ephemeris`); a driver
   linking `rp-vocabulary` would invert that (driver → rp-domain) for a
   transient boundary wrapper.
+- **`rp-ephemeris`'s computed `IcrsCoord`** (in-workspace, not a driver) is
+  a *computed astronomy output*: `Epv00`/`Moon98` build it, and the
+  panic-safety contract fills it with `NaN` when the host clock misbehaves
+  (`sun_position`/`moon_position` degrade rather than crash), on a circular
+  domain where a body can normalise onto the `24.0h` seam. A
+  `try_new`-validated newtype cannot hold `NaN` or `24.0` (half-open
+  `[0,24)`), so unifying the two would force a `Result` at every computed
+  construction and turn the structurally panic-free ephemeris into one that
+  panics on the seam (if unwrapped) or reports a spurious "no position" (if
+  mapped to `None`). Instead `rp-ephemeris` keeps its own type and links
+  `rp-vocabulary` only for two boundary conversions: `From<vocab::IcrsCoord>`
+  (plan → computed, total) and `TryFrom<ephemeris::IcrsCoord> for
+  vocab::IcrsCoord` (computed → plan, partial — the `NaN`/seam cases surface
+  as a `CoordError`). This is the same validated-input-vs-computed-output
+  split that keeps camera binning separate from plan binning, one layer up.
 
 No camera/mount service links `rp-vocabulary`; the translation from plan
 `Binning`/`IcrsCoord` to Alpaca `BinX`/`BinY` and `RightAscension`/
@@ -457,12 +492,14 @@ the test module.
 ## In this PR vs deferred
 
 **In this PR:** the crate and its three types with validation +
-feature-gated schema; `Binning`/`FrameType` moved off
-`rp-targets`/`rp`; `IcrsCoord` moved off `rp-ephemeris` (which now depends
-here); `rp-catalog`'s `ResolvedTarget` adopting `IcrsCoord`; the
-newtype-field migration of `Target` and `PlannerTarget`; the
-coordinate-validation gap on the store-write path closed by construction;
-the round-trip tests moved with their types.
+feature-gated schema; `Binning`/`FrameType` moved off `rp-targets`/`rp`;
+the new validated `IcrsCoord` living here, with `rp-ephemeris` keeping its
+own computed `IcrsCoord` and gaining the `From`/`TryFrom` bridges to it
+(not re-homing — the computed type is a false cognate); `rp-catalog`'s
+`ResolvedTarget` adopting the validated `IcrsCoord`; the newtype-field
+migration of `Target` and `PlannerTarget`; the coordinate-validation gap
+on the store-write path closed by construction; the round-trip tests moved
+with their types.
 
 **Deferred:** the `NamingPattern` grammar slice (stays in `rp` until a
 pattern editor exists); the full `schema`/`validate`/`apply` *endpoints*
