@@ -20,7 +20,7 @@ use std::ffi::{c_char, CStr};
 use parking_lot::RwLock;
 
 use crate::Result;
-use crate::{CCDChipArea, CCDChipInfo, ImageData, QHYError, StreamMode};
+use crate::{CCDChipArea, CCDChipInfo, FrameInfo, QHYError, StreamMode};
 
 #[cfg(not(feature = "simulation"))]
 use crate::check;
@@ -1201,7 +1201,15 @@ impl Camera {
         }
     }
 
-    /// Returns the image stored in the camera as `ImageData` struct if the camera is in Live Video Mode
+    /// Downloads the current Live Video Mode frame into the caller-owned `buf`,
+    /// returning its [`FrameInfo`] dimensions.
+    ///
+    /// `buf` must be at least [`get_image_size`](Camera::get_image_size) bytes
+    /// for the current frame; a short buffer is rejected with
+    /// [`QHYError::BufferTooSmall`] **before** the SDK is called (the FFI would
+    /// otherwise write out of bounds). This is the caller-owned-buffer convention
+    /// of `zwo-rs` / `svbony-rs`, replacing the former fresh-`Vec`-per-frame
+    /// return.
     /// # Example
     /// ```no_run
     /// use std::{thread, time::Duration};
@@ -1214,21 +1222,27 @@ impl Camera {
     /// camera.begin_live().expect("begin_live failed");
     /// thread::sleep(Duration::from_millis(100));
     /// let buffer_size = camera.get_image_size().expect("get_image_size failed");
-    /// let image = camera.get_live_frame(buffer_size).expect("get_live_frame failed");
-    /// println!("Image: {:?}", image);
+    /// let mut buf = vec![0u8; buffer_size];
+    /// let info = camera.get_live_frame(&mut buf).expect("get_live_frame failed");
+    /// println!("frame: {:?}", info);
     /// ```
-    // `buffer_size` sizes the caller's download buffer on the real FFI path; the
-    // simulated backend generates its own frame, so the arg is unused there.
-    #[cfg_attr(feature = "simulation", allow(unused_variables))]
-    pub fn get_live_frame(&self, buffer_size: usize) -> Result<ImageData> {
+    pub fn get_live_frame(&self, buf: &mut [u8]) -> Result<FrameInfo> {
         #[cfg(not(feature = "simulation"))]
         {
+            let need = self.get_image_size()?;
+            if buf.len() < need {
+                let error = QHYError::BufferTooSmall {
+                    needed: need,
+                    got: buf.len(),
+                };
+                tracing::error!(error = ?error);
+                return Err(error);
+            }
             let handle = read_lock!(self.handle)?;
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             let mut bpp: u32 = 0;
             let mut channels: u32 = 0;
-            let mut buffer = vec![0u8; buffer_size];
             match unsafe {
                 GetQHYCCDLiveFrame(
                     handle,
@@ -1236,11 +1250,10 @@ impl Camera {
                     &mut height as *mut u32,
                     &mut bpp as *mut u32,
                     &mut channels as *mut u32,
-                    buffer.as_mut_ptr(),
+                    buf.as_mut_ptr(),
                 )
             } {
-                QHYCCD_SUCCESS => Ok(ImageData {
-                    data: buffer,
+                QHYCCD_SUCCESS => Ok(FrameInfo {
                     width,
                     height,
                     bits_per_pixel: bpp,
@@ -1278,8 +1291,17 @@ impl Camera {
                 generator.generate_16bit(width, height, channels)
             };
 
-            Ok(ImageData {
-                data,
+            if buf.len() < data.len() {
+                let error = QHYError::BufferTooSmall {
+                    needed: data.len(),
+                    got: buf.len(),
+                };
+                tracing::error!(error = ?error);
+                return Err(error);
+            }
+            buf[..data.len()].copy_from_slice(&data);
+
+            Ok(FrameInfo {
                 width,
                 height,
                 bits_per_pixel: bpp,
@@ -1288,11 +1310,18 @@ impl Camera {
         }
     }
 
-    /// Returns the image stored in the camera as `ImageData` struct if the camera is in Single Frame Mode
+    /// Downloads the captured Single Frame Mode image into the caller-owned
+    /// `buf`, returning its [`FrameInfo`] dimensions (blocking until the exposure
+    /// completes).
+    ///
+    /// `buf` must be at least [`get_image_size`](Camera::get_image_size) bytes; a
+    /// short buffer is rejected with [`QHYError::BufferTooSmall`] without
+    /// consuming the captured image. See [`get_live_frame`](Camera::get_live_frame)
+    /// for the caller-owned-buffer rationale.
     /// # Example
     ///
     /// ```no_run
-    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType, ImageData};
+    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
     ///
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
@@ -1302,20 +1331,26 @@ impl Camera {
     /// camera.set_parameter(ControlType::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
     /// camera.start_single_frame_exposure().expect("start_camera_single_frame_exposure failed");
     /// let buffer_size = camera.get_image_size().expect("get_camera_image_size failed");
-    /// let image = camera.get_single_frame(buffer_size).expect("get_camera_single_frame failed");
+    /// let mut buf = vec![0u8; buffer_size];
+    /// let info = camera.get_single_frame(&mut buf).expect("get_camera_single_frame failed");
     /// ```
-    // `buffer_size` sizes the caller's download buffer on the real FFI path; the
-    // simulated backend returns its pre-generated frame, so the arg is unused there.
-    #[cfg_attr(feature = "simulation", allow(unused_variables))]
-    pub fn get_single_frame(&self, buffer_size: usize) -> Result<ImageData> {
+    pub fn get_single_frame(&self, buf: &mut [u8]) -> Result<FrameInfo> {
         #[cfg(not(feature = "simulation"))]
         {
+            let need = self.get_image_size()?;
+            if buf.len() < need {
+                let error = QHYError::BufferTooSmall {
+                    needed: need,
+                    got: buf.len(),
+                };
+                tracing::error!(error = ?error);
+                return Err(error);
+            }
             let handle = read_lock!(self.handle)?;
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             let mut bpp: u32 = 0;
             let mut channels: u32 = 0;
-            let mut buffer = vec![0u8; buffer_size];
             match unsafe {
                 GetQHYCCDSingleFrame(
                     handle,
@@ -1323,11 +1358,10 @@ impl Camera {
                     &mut height as *mut u32,
                     &mut bpp as *mut u32,
                     &mut channels as *mut u32,
-                    buffer.as_mut_ptr(),
+                    buf.as_mut_ptr(),
                 )
             } {
-                QHYCCD_SUCCESS => Ok(ImageData {
-                    data: buffer,
+                QHYCCD_SUCCESS => Ok(FrameInfo {
                     width,
                     height,
                     bits_per_pixel: bpp,
@@ -1363,7 +1397,26 @@ impl Camera {
                 }
             }
 
-            // Return the pre-generated image
+            // Bounds-check the caller's buffer against the captured frame BEFORE
+            // consuming it, so a short buffer errors without losing the image.
+            let need = match state.captured_image.as_ref() {
+                Some(image) => image.len(),
+                None => {
+                    return Err(QHYError::Sdk {
+                        op: "get_single_frame: no image available",
+                    })
+                }
+            };
+            if buf.len() < need {
+                let error = QHYError::BufferTooSmall {
+                    needed: need,
+                    got: buf.len(),
+                };
+                tracing::error!(error = ?error);
+                return Err(error);
+            }
+
+            // Take the pre-generated image + metadata (image presence checked above).
             let captured_image = state.captured_image.take().ok_or(QHYError::Sdk {
                 op: "get_single_frame: no image available",
             })?;
@@ -1374,8 +1427,9 @@ impl Camera {
             // Clear exposure state
             state.exposure_start = None;
 
-            Ok(ImageData {
-                data: captured_image,
+            buf[..captured_image.len()].copy_from_slice(&captured_image);
+
+            Ok(FrameInfo {
                 width: metadata.width,
                 height: metadata.height,
                 bits_per_pixel: metadata.bits_per_pixel,

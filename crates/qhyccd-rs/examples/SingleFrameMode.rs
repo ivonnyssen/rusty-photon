@@ -130,8 +130,9 @@ fn main() {
         .get_image_size()
         .expect("get_camera_image_size failed");
 
-    let image = camera
-        .get_single_frame(buffer_size)
+    let mut buf = vec![0u8; buffer_size];
+    let info = camera
+        .get_single_frame(&mut buf)
         .expect("get_camera_single_frame failed");
-    trace!(image = ?image);
+    trace!(frame = ?info);
 }

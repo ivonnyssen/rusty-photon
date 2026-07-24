@@ -5,7 +5,7 @@
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
 use qhyccd_rs::{
-    BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, SDKVersion, Sdk, StreamMode,
+    BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, QHYError, SDKVersion, Sdk, StreamMode,
 };
 
 #[test]
@@ -156,12 +156,13 @@ fn test_simulated_camera_single_frame_mode() {
     assert!(buffer_size > 0);
 
     camera.start_single_frame_exposure().unwrap();
-    let image = camera.get_single_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_single_frame(&mut buf).unwrap();
 
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
     assert_eq!(image.bits_per_pixel, 16);
-    assert!(!image.data.is_empty());
+    assert!(!buf.is_empty());
 
     camera.close().unwrap();
 }
@@ -177,11 +178,12 @@ fn test_simulated_camera_live_mode() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
-    assert!(!image.data.is_empty());
+    assert!(!buf.is_empty());
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -203,7 +205,8 @@ fn test_simulated_camera_binning() {
     // Get baseline dimensions with 1x1 binning
     camera.begin_live().unwrap();
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
     camera.end_live().unwrap();
@@ -213,7 +216,8 @@ fn test_simulated_camera_binning() {
 
     camera.begin_live().unwrap();
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Dimensions should NOT change - binning alone doesn't affect ROI.
     // This proves we fixed the double-binning bug.
@@ -237,11 +241,12 @@ fn test_simulated_camera_bit_mode() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     assert_eq!(image.bits_per_pixel, 8);
     // 8-bit mode uses 1 byte per pixel
-    assert_eq!(image.data.len(), (3072 * 2048) as usize);
+    assert_eq!(buf.len(), (3072 * 2048) as usize);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -489,7 +494,8 @@ fn test_set_roi() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Image dimensions should match ROI
     assert_eq!(image.width, 1000);
@@ -604,13 +610,14 @@ fn test_set_debayer() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image_debayer_on = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    camera.get_live_frame(&mut buf).unwrap();
 
     // With debayer enabled, should get 3-channel RGB image
     // Check buffer size is 3x larger than mono
     let mono_pixels = 3072 * 2048;
     let expected_rgb_size = mono_pixels * 2 * 3; // 16-bit * 3 channels
-    assert_eq!(image_debayer_on.data.len(), expected_rgb_size as usize);
+    assert_eq!(buf.len(), expected_rgb_size as usize);
 
     camera.end_live().unwrap();
 
@@ -619,11 +626,12 @@ fn test_set_debayer() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image_debayer_off = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    camera.get_live_frame(&mut buf).unwrap();
 
     // With debayer disabled, should get 1-channel image
     let expected_mono_size = mono_pixels * 2; // 16-bit * 1 channel
-    assert_eq!(image_debayer_off.data.len(), expected_mono_size as usize);
+    assert_eq!(buf.len(), expected_mono_size as usize);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -877,7 +885,8 @@ fn test_get_live_frame_not_open_error() {
     let camera = Camera::new_simulated(config);
 
     // get_live_frame() without opening should fail
-    assert!(camera.get_live_frame(1000).is_err());
+    let mut buf = vec![0u8; 1000];
+    assert!(camera.get_live_frame(&mut buf).is_err());
 }
 
 #[test]
@@ -886,7 +895,8 @@ fn test_get_single_frame_not_open_error() {
     let camera = Camera::new_simulated(config);
 
     // get_single_frame() without opening should fail
-    assert!(camera.get_single_frame(1000).is_err());
+    let mut buf = vec![0u8; 1000];
+    assert!(camera.get_single_frame(&mut buf).is_err());
 }
 
 #[test]
@@ -1256,12 +1266,13 @@ fn test_image_with_custom_generator() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Image should have expected dimensions
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
-    assert!(!image.data.is_empty());
+    assert!(!buf.is_empty());
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -1334,7 +1345,8 @@ fn test_get_live_frame_without_begin_live_errors() {
     camera.init().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    assert!(camera.get_live_frame(buffer_size).is_err());
+    let mut buf = vec![0u8; buffer_size];
+    assert!(camera.get_live_frame(&mut buf).is_err());
 
     camera.close().unwrap();
 }
@@ -1351,8 +1363,35 @@ fn test_get_single_frame_without_exposure_errors() {
     camera.init().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    assert!(camera.get_single_frame(buffer_size).is_err());
+    let mut buf = vec![0u8; buffer_size];
+    assert!(camera.get_single_frame(&mut buf).is_err());
 
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_get_live_frame_rejects_undersized_buffer() {
+    // A buffer smaller than the frame is rejected with `BufferTooSmall` before any
+    // pixels are written — the caller-owned-buffer bounds check (Phase 5).
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+    camera.begin_live().unwrap();
+
+    let need = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; need - 1];
+    let error = camera.get_live_frame(&mut buf).unwrap_err();
+    assert_eq!(
+        error,
+        QHYError::BufferTooSmall {
+            needed: need,
+            got: need - 1,
+        }
+    );
+
+    camera.end_live().unwrap();
     camera.close().unwrap();
 }
 

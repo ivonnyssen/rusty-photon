@@ -30,11 +30,11 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
-use qhyccd_rs::{BayerMode, CCDChipArea, ControlType, ImageData};
+use qhyccd_rs::{BayerMode, CCDChipArea, ControlType};
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
-use crate::backend::{BackendError, CameraHandle};
+use crate::backend::{BackendError, CameraHandle, ImageData};
 use crate::config::DeviceOverride;
 use crate::config_actions::QhyCameraDriver;
 

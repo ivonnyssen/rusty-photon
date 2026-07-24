@@ -90,15 +90,16 @@ fn main() {
         .expect("get_camera_image_size failed");
     trace!(image_size = ?size);
 
+    let mut buf = vec![0u8; size];
     for _ in 0..1000 {
-        let result = camera.get_live_frame(size);
+        let result = camera.get_live_frame(&mut buf);
         if result.is_err() {
             trace!("get_camera_live_frame returned error");
             thread::sleep(Duration::from_millis(100));
             continue;
         }
-        let image = result.unwrap();
-        trace!(image = ?image);
+        let info = result.unwrap();
+        trace!(frame = ?info);
         break;
     }
     camera.end_live().expect("end_camera_live failed");

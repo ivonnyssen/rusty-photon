@@ -97,5 +97,5 @@ pub use error::{check, QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;
 pub use types::{
-    BayerMode, CCDChipArea, CCDChipInfo, ImageData, ReadoutMode, SDKVersion, StreamMode,
+    BayerMode, CCDChipArea, CCDChipInfo, FrameInfo, ReadoutMode, SDKVersion, StreamMode,
 };

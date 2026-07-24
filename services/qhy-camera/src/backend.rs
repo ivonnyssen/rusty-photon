@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use qhyccd_rs::{CCDChipArea, CCDChipInfo, ControlType, ImageData, StreamMode};
+use qhyccd_rs::{CCDChipArea, CCDChipInfo, ControlType, StreamMode};
 
 /// A QHYCCD SDK call failed. Carries the underlying error message; the ASCOM
 /// device decides the `ASCOMError` per call site (the SDK error kind does not
@@ -32,6 +32,25 @@ impl BackendError {
 }
 
 type BackendResult<T> = std::result::Result<T, BackendError>;
+
+/// A downloaded frame the service owns: the pixel bytes plus the dimensions
+/// `qhyccd-rs` reports. Since the convention alignment, `qhyccd-rs` writes pixels
+/// into a caller-owned buffer and returns only a [`qhyccd_rs::FrameInfo`]; this
+/// pairs that buffer with the metadata as the currency between
+/// [`CameraHandle::get_single_frame`] and the ASCOM device's image conversion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageData {
+    /// raw pixel bytes (`bits_per_pixel` / `channels` describe the layout)
+    pub data: Vec<u8>,
+    /// image width in pixels
+    pub width: u32,
+    /// image height in pixels
+    pub height: u32,
+    /// bits per pixel (8 or 16)
+    pub bits_per_pixel: u32,
+    /// channel count (1 mono, 3 debayered colour)
+    pub channels: u32,
+}
 
 /// The blocking camera operations the ASCOM `Camera` device drives. Every method
 /// is synchronous (the SDK is blocking C FFI); the device offloads the long
@@ -362,10 +381,21 @@ impl CameraHandle for QhyCameraHandle {
             .map_err(BackendError::from_err)
     }
     fn get_single_frame(&self, buffer_size: usize) -> BackendResult<ImageData> {
-        self.conn
+        // qhyccd-rs writes pixels into a caller-owned buffer and returns only the
+        // frame dimensions; own the buffer here and pair it with that metadata.
+        let mut data = vec![0u8; buffer_size];
+        let info = self
+            .conn
             .camera()
-            .get_single_frame(buffer_size)
-            .map_err(BackendError::from_err)
+            .get_single_frame(&mut data)
+            .map_err(BackendError::from_err)?;
+        Ok(ImageData {
+            data,
+            width: info.width,
+            height: info.height,
+            bits_per_pixel: info.bits_per_pixel,
+            channels: info.channels,
+        })
     }
     fn get_remaining_exposure_us(&self) -> BackendResult<u32> {
         self.conn

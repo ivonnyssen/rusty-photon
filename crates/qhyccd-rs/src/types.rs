@@ -26,18 +26,24 @@ pub struct CCDChipInfo {
     pub bits_per_pixel: u32,
 }
 
-#[derive(Debug, PartialEq)]
-/// the image data coming from the camera in `get_live_frame` and `get_single_frame`
-pub struct ImageData {
-    /// the image data
-    pub data: Vec<u8>,
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+/// Metadata describing a frame downloaded by
+/// [`Camera::get_live_frame`](crate::Camera::get_live_frame) /
+/// [`Camera::get_single_frame`](crate::Camera::get_single_frame).
+///
+/// The pixel bytes are written into the caller-owned `&mut [u8]` buffer passed to
+/// those methods (the `zwo-rs` / `svbony-rs` caller-owned-buffer convention);
+/// this carries only the dimensions the SDK reports alongside the download. The
+/// number of valid bytes is the frame's own size — size the buffer with
+/// [`Camera::get_image_size`](crate::Camera::get_image_size).
+pub struct FrameInfo {
     /// the width of the image in pixels
     pub width: u32,
     /// the height of the image in pixels
     pub height: u32,
     /// the number of bits per pixel
     pub bits_per_pixel: u32,
-    /// the number of channels 1 or 4 most of the time
+    /// the number of channels: 1 (mono) or 3 (debayered colour)
     pub channels: u32,
 }
 

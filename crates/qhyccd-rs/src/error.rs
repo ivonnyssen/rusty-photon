@@ -55,6 +55,19 @@ pub enum QHYError {
         /// The control whose range could not be read.
         control: ControlType,
     },
+    /// The caller-owned buffer passed to
+    /// [`Camera::get_single_frame`](crate::Camera::get_single_frame) /
+    /// [`Camera::get_live_frame`](crate::Camera::get_live_frame) is smaller than
+    /// the frame to download. Detected by the wrapper *before* the SDK is called
+    /// (the FFI would otherwise write out of bounds), so it carries the sizes
+    /// rather than an SDK operation label.
+    #[error("frame buffer too small: need {needed} bytes, got {got}")]
+    BufferTooSmall {
+        /// bytes the frame requires
+        needed: usize,
+        /// bytes the caller provided
+        got: usize,
+    },
     /// A string returned by the SDK was not valid UTF-8.
     #[error("invalid UTF-8 in a string returned by the SDK: {0}")]
     InvalidUtf8(#[from] std::str::Utf8Error),
@@ -161,6 +174,18 @@ mod tests {
     #[test]
     fn camera_not_open_displays_without_a_code() {
         assert_eq!(QHYError::CameraNotOpen.to_string(), "camera is not open");
+    }
+
+    #[test]
+    fn buffer_too_small_displays_both_sizes() {
+        assert_eq!(
+            QHYError::BufferTooSmall {
+                needed: 2048,
+                got: 1000,
+            }
+            .to_string(),
+            "frame buffer too small: need 2048 bytes, got 1000"
+        );
     }
 
     #[test]
