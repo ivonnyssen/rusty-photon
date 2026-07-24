@@ -24,18 +24,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the directory containing `libqhyccd.a`), mirroring the existing Windows
   and Linux branches, so builds can link an SDK staged outside
   `GITHUB_WORKSPACE` / `/usr/local/lib`.
+- `pub use libqhyccd_sys as sys;` re-exports the raw FFI bindings at the crate
+  root (matching the sibling `zwo-rs` / `svbony-rs` convention); prefer the safe
+  API in this crate.
 
 ### Changed
 
-- **BREAKING:** error handling is now fully typed. Fallible `Sdk` / `Camera` /
-  `FilterWheel` methods return `qhyccd_rs::Result<T>` (`Result<T, QHYError>`)
-  instead of `eyre::Result<T>`, and a public `Result<T>` alias is exported.
-  `QHYError` gains `NoImageAvailable`, `NoImageMetadataAvailable`, `InvalidUtf8`,
-  and `InvalidCameraId` variants. Code that matched on `eyre::Report` must match
-  `QHYError` instead.
-- Real-backend `Camera` methods now return `CameraNotOpenError` (not an
-  operation-specific error such as `BeginLiveError`) when called on an unopened
-  camera, matching the simulation backend.
+- **BREAKING:** error handling is now fully typed and flat, matching the sibling
+  `zwo-rs` / `svbony-rs` crates. Fallible `Sdk` / `Camera` / `FilterWheel` methods
+  return `qhyccd_rs::Result<T>` (`Result<T, QHYError>`) instead of `eyre::Result<T>`,
+  and a public `Result<T>` alias is exported. `QHYError` is a small flat enum:
+  `Sdk { op }` for any plain SDK success/fail call (the QHY ABI returns a bare
+  `u32` with no discriminating error codes, so a `&'static` operation label
+  replaces the former per-call-site variants), `CameraNotOpen`, the control-scoped
+  `GetParameter` / `IsControlAvailable` / `GetMinMaxStep`, and the `#[from]`
+  `InvalidUtf8` / `InvalidCameraId`. A public `check(status, op)` helper (the
+  analogue of zwo's `asi_check` / svbony's `svb_check`) funnels the void SDK
+  calls. Code that matched on `eyre::Report` — or on the former per-operation
+  `QHYError` variants — must match the flat `QHYError` instead.
+- Real-backend `Camera` methods return `CameraNotOpen` when called on an unopened
+  camera (matching the simulation backend), rather than an operation-specific
+  error.
 - Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
   (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
   per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /

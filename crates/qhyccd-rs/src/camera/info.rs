@@ -3,7 +3,7 @@ use std::ffi::{c_char, CStr};
 use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
-use crate::{CCDChipArea, CCDChipInfo, QHYError::*};
+use crate::{CCDChipArea, CCDChipInfo, QHYError};
 
 use crate::ffi::{
     GetQHYCCDChipInfo, GetQHYCCDEffectiveArea, GetQHYCCDFWVersion, GetQHYCCDModel,
@@ -35,8 +35,8 @@ impl Camera {
                             .inspect_err(|error| tracing::error!(error = ?error))?;
                         Ok(model.to_string())
                     }
-                    error_code => {
-                        let error = GetCameraModelError { error_code };
+                    _ => {
+                        let error = QHYError::Sdk { op: "get_model" };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -46,7 +46,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.model.clone())
             }
@@ -86,8 +86,10 @@ impl Camera {
                             ))
                         }
                     }
-                    error_code => {
-                        let error = GetFirmwareVersionError { error_code };
+                    _ => {
+                        let error = QHYError::Sdk {
+                            op: "get_firmware_version",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -97,7 +99,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.firmware_version.clone())
             }
@@ -120,7 +122,7 @@ impl Camera {
                 let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDType(handle) } {
                     QHYCCD_ERROR => {
-                        let error = GetCameraTypeError;
+                        let error = QHYError::Sdk { op: "get_type" };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -131,7 +133,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.camera_type)
             }
@@ -180,8 +182,8 @@ impl Camera {
                         pixel_height: pixelh,
                         bits_per_pixel: bpp,
                     }),
-                    error_code => {
-                        let error = GetCCDInfoError { error_code };
+                    _ => {
+                        let error = QHYError::Sdk { op: "get_ccd_info" };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -191,7 +193,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.chip_info)
             }
@@ -231,8 +233,10 @@ impl Camera {
                         width,
                         height,
                     }),
-                    error_code => {
-                        let error = GetOverscanAreaError { error_code };
+                    _ => {
+                        let error = QHYError::Sdk {
+                            op: "get_overscan_area",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -242,7 +246,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.overscan_area)
             }
@@ -282,8 +286,10 @@ impl Camera {
                         width,
                         height,
                     }),
-                    error_code => {
-                        let error = GetEffectiveAreaError { error_code };
+                    _ => {
+                        let error = QHYError::Sdk {
+                            op: "get_effective_area",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -293,7 +299,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.effective_area)
             }

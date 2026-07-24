@@ -82,11 +82,10 @@ fn set_stream_mode_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetStreamModeError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "set_stream_mode"
         }
-        .to_string()
     );
 }
 
@@ -118,11 +117,10 @@ fn set_readout_mode_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetReadoutModeError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "set_readout_mode"
         }
-        .to_string()
     );
 }
 
@@ -174,9 +172,12 @@ fn get_model_utf8_error() {
     let res = cam.get_model();
     //then
     assert!(res.is_err());
+    // Built at runtime (not a literal) so the `invalid_from_utf8` lint does not
+    // fire; matches the bytes the mocked SDK returns.
+    let invalid_utf8 = vec![0xc3_u8, 0x28];
     assert_eq!(
-        res.err().unwrap().to_string(),
-        "Invalid UTF-8 in a string returned by the SDK: invalid utf-8 sequence of 1 bytes from index 0"
+        res.err().unwrap(),
+        QHYError::InvalidUtf8(std::str::from_utf8(&invalid_utf8).unwrap_err())
     );
 }
 
@@ -210,13 +211,7 @@ fn init_fail() {
     let res = cam.init();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::InitCameraError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "init_camera" });
 }
 
 #[test]
@@ -276,11 +271,10 @@ fn get_firmware_version_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetFirmwareVersionError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_firmware_version"
         }
-        .to_string()
     );
 }
 
@@ -319,8 +313,10 @@ fn get_number_of_readout_modes_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetNumberOfReadoutModesError.to_string()
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_number_of_readout_modes"
+        }
     );
 }
 
@@ -361,8 +357,10 @@ fn get_readout_mode_name_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetReadoutModeNameError.to_string()
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_readout_mode_name"
+        }
     );
 }
 
@@ -385,9 +383,12 @@ fn get_readout_mode_name_utf8_error() {
     let res = cam.get_readout_mode_name(0);
     //then
     assert!(res.is_err());
+    // Built at runtime (not a literal) so the `invalid_from_utf8` lint does not
+    // fire; matches the bytes the mocked SDK returns.
+    let invalid_utf8 = vec![0xc3_u8, 0x28];
     assert_eq!(
-        res.err().unwrap().to_string(),
-        "Invalid UTF-8 in a string returned by the SDK: invalid utf-8 sequence of 1 bytes from index 0"
+        res.err().unwrap(),
+        QHYError::InvalidUtf8(std::str::from_utf8(&invalid_utf8).unwrap_err())
     );
 }
 
@@ -428,8 +429,10 @@ fn get_readout_mode_resolution_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetReadoutModeResolutionError.to_string()
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_readout_mode_resolution"
+        }
     );
 }
 
@@ -468,8 +471,10 @@ fn get_readout_mode_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetReadoutModeError.to_string()
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_readout_mode"
+        }
     );
 }
 
@@ -504,10 +509,7 @@ fn get_type_fail() {
     let res = cam.get_type();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetCameraTypeError.to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "get_type" });
 }
 
 #[test]
@@ -544,13 +546,7 @@ fn set_bin_mode_fail() {
     let res = cam.set_bin_mode(2, 2);
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetBinModeError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "set_bin_mode" });
 }
 
 #[test]
@@ -583,13 +579,7 @@ fn set_debayer_fail() {
     let res = cam.set_debayer(true);
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetDebayerError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "set_debayer" });
 }
 
 #[test]
@@ -644,13 +634,7 @@ fn set_roi_fail() {
     });
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetRoiError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "set_roi" });
 }
 
 #[test]
@@ -683,13 +667,7 @@ fn begin_live_fail() {
     let res = cam.begin_live();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::BeginLiveError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "begin_live" });
 }
 
 #[test]
@@ -722,13 +700,7 @@ fn end_live_fail() {
     let res = cam.end_live();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::EndLiveError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "end_live" });
 }
 
 #[test]
@@ -763,8 +735,10 @@ fn get_image_size_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetImageSizeError.to_string()
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_image_size"
+        }
     );
 }
 
@@ -817,11 +791,10 @@ fn get_live_frame_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetLiveFrameError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_live_frame"
         }
-        .to_string()
     );
 }
 
@@ -874,11 +847,10 @@ fn get_single_frame_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetSingleFrameError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_single_frame"
         }
-        .to_string()
     );
 }
 
@@ -928,11 +900,10 @@ fn get_overscan_area_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetOverscanAreaError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_overscan_area"
         }
-        .to_string()
     );
 }
 
@@ -982,11 +953,10 @@ fn get_effective_area_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetEffectiveAreaError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_effective_area"
         }
-        .to_string()
     );
 }
 
@@ -1021,11 +991,10 @@ fn start_single_frame_exposure_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::StartSingleFrameExposureError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "start_single_frame_exposure"
         }
-        .to_string()
     );
 }
 
@@ -1071,8 +1040,10 @@ fn get_remaining_exposure_us_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetExposureRemainingError.to_string()
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_remaining_exposure_us"
+        }
     );
 }
 
@@ -1107,11 +1078,10 @@ fn stop_exposure_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::StopExposureError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "stop_exposure"
         }
-        .to_string()
     );
 }
 
@@ -1146,11 +1116,10 @@ fn abort_exposure_and_readout_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::AbortExposureAndReadoutError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "abort_exposure_and_readout"
         }
-        .to_string()
     );
 }
 
@@ -1248,13 +1217,7 @@ fn get_ccd_info_fail() {
     let res = cam.get_ccd_info();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetCCDInfoError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "get_ccd_info" });
 }
 
 #[test]
@@ -1287,13 +1250,7 @@ fn set_bit_mode_fail() {
     let res = cam.set_bit_mode(0);
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetBitModeError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "set_bit_mode" });
 }
 
 #[test]
@@ -1332,11 +1289,10 @@ fn get_parameter_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetParameterError {
+        res.err().unwrap(),
+        QHYError::GetParameter {
             control: ControlType::CfwSlotsNum
         }
-        .to_string()
     );
 }
 
@@ -1381,11 +1337,10 @@ fn get_parameter_min_max_step_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::GetMinMaxStepError {
+        res.err().unwrap(),
+        QHYError::GetMinMaxStep {
             control: ControlType::Exposure
         }
-        .to_string()
     );
 }
 
@@ -1428,11 +1383,10 @@ fn set_parameter_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetParameterError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "set_parameter"
         }
-        .to_string()
     );
 }
 
@@ -1494,11 +1448,10 @@ fn set_if_available_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::IsControlAvailableError {
+        res.err().unwrap(),
+        QHYError::IsControlAvailable {
             control: ControlType::TransferBit
         }
-        .to_string()
     );
     // Drop the first camera (closing its handle) before building a second one:
     // each `new_camera()` carries its own `CloseQHYCCD` mock context, and two live
@@ -1531,11 +1484,10 @@ fn set_if_available_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::SetParameterError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "set_parameter"
         }
-        .to_string()
     );
 }
 
@@ -1584,10 +1536,7 @@ fn open_fail() {
     let res = cam.open();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::OpenCameraError.to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "open_camera" });
 }
 #[test]
 fn open_nulerror() {
@@ -1601,8 +1550,8 @@ fn open_nulerror() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        "Camera id contains an interior NUL byte: nul byte found in provided data at position: 5"
+        res.err().unwrap(),
+        QHYError::InvalidCameraId(std::ffi::CString::new("test_\0camera").unwrap_err())
     );
 }
 
@@ -1659,13 +1608,7 @@ fn close_fail() {
     let res = cam.close();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        QHYError::CloseCameraError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "close_camera" });
 }
 
 #[test]

@@ -2,115 +2,181 @@ use thiserror::Error;
 
 use crate::ControlType;
 
-#[derive(Error, Debug)]
-/// Errors that can occur when interacting with the QHYCCD SDK
-/// most functions from the SDK return `u32::MAX` on error
-/// where it is different, it is noted in the documentation
-#[allow(missing_docs)]
+/// Errors returned by the safe `qhyccd-rs` API.
+///
+/// Most QHYCCD SDK functions return a bare `u32` — `0` (`QHYCCD_SUCCESS`) on
+/// success and `u32::MAX` (`QHYCCD_ERROR`) on failure — with **no
+/// discriminating error codes**. Unlike the sibling `zwo-rs` / `svbony-rs`
+/// crates, whose SDKs return a rich error-code enum worth mapping (`asi_check` /
+/// `svb_check`), there is no numeric code to preserve here. A failed SDK call is
+/// therefore reported as [`QHYError::Sdk`] carrying a `'static` operation label
+/// that names the wrapper method which failed; route such calls through
+/// [`check`]. The remaining variants capture the genuinely-distinct conditions
+/// the wrapper detects itself: a closed camera, the three control-scoped
+/// parameter failures (where the [`ControlType`] is real information), and the
+/// two FFI string-conversion errors.
+///
+/// This mirrors the flat shape of the sibling crates' error enums (`zwo-rs`'s
+/// `Error`, `svbony-rs`'s `Error`); it carries no per-call-site variant. The
+/// operation that failed is conveyed by the `op` label, not the enum shape.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum QHYError {
-    #[error("Error initializing QHYCCD SDK, error code {}", error_code)]
-    InitSDKError { error_code: u32 },
-    #[error("Error closing QHYCCD SDK, error code {}", error_code)]
-    CloseSDKError { error_code: u32 },
-    #[error("Error getting QHYCCD SDK version, error code {:?}", error_code)]
-    GetSDKVersionError { error_code: u32 },
-    #[error("Error scanning QHYCCD cameras")]
-    ScanQHYCCDError,
-    #[error("Error opening camera")]
-    OpenCameraError,
-    #[error("Error camera id, error code {:?}", error_code)]
-    GetCameraIdError { error_code: u32 },
-    #[error("Error getting firmware version, error code {:?}", error_code)]
-    GetFirmwareVersionError { error_code: u32 },
-    #[error("Error setting camera read mode, error code {:?}", error_code)]
-    SetReadoutModeError { error_code: u32 },
-    #[error("Error setting camera stream mode, error code {:?}", error_code)]
-    SetStreamModeError { error_code: u32 },
-    #[error("Error initializing camera {:?}", error_code)]
-    InitCameraError { error_code: u32 },
-    #[error("Error getting camera CCD info, error code {:?}", error_code)]
-    GetCCDInfoError { error_code: u32 },
-    #[error("Error setting camera bit mode, error code {:?}", error_code)]
-    SetBitModeError { error_code: u32 },
-    #[error("Error setting camera debayer on/off, error code {:?}", error_code)]
-    SetDebayerError { error_code: u32 },
-    #[error("Error setting camera bin mode, error code {:?}", error_code)]
-    SetBinModeError { error_code: u32 },
-    #[error("Error setting camera sub frame, error code {:?}", error_code)]
-    SetRoiError { error_code: u32 },
-    #[error("Error getting camera parameter for control {:?}", control)]
-    GetParameterError {
-        /// here the control field has the `ControlType` enum variant we tried to get the value for
+    /// A QHYCCD SDK call returned its failure sentinel (in practice `u32::MAX`,
+    /// `QHYCCD_ERROR`).
+    ///
+    /// `op` is a `'static` label for the wrapper operation that failed (usually
+    /// the method name, e.g. `"set_stream_mode"`). The SDK exposes no error code
+    /// beyond the success/failure bit, so none is carried.
+    #[error("QHYCCD SDK operation '{op}' failed")]
+    Sdk {
+        /// `'static` label for the wrapper operation that failed.
+        op: &'static str,
+    },
+    /// The camera is not open (the shared handle cell is `None`, or the
+    /// simulated backend is closed).
+    #[error("camera is not open")]
+    CameraNotOpen,
+    /// Reading a camera parameter for `control` failed.
+    #[error("error getting camera parameter for control {control:?}")]
+    GetParameter {
+        /// The control whose value could not be read.
         control: ControlType,
     },
-    #[error("Error setting camera parameter, error code {:?}", error_code)]
-    SetParameterError { error_code: u32 },
-    #[error("Error starting camera live mode, error code {:?}", error_code)]
-    BeginLiveError { error_code: u32 },
-    #[error("Error stopping camera live mode, error code {:?}", error_code)]
-    EndLiveError { error_code: u32 },
-    #[error("Error getting image size, error code")]
-    GetImageSizeError,
-    #[error("Error getting camera live frame, error code {:?}", error_code)]
-    GetLiveFrameError { error_code: u32 },
-    #[error("Error getting camera single frame, error code {:?}", error_code)]
-    GetSingleFrameError { error_code: u32 },
-    #[error("Error closing camera, error code {:?}", error_code)]
-    CloseCameraError { error_code: u32 },
-    #[error("Error getting camera overscan area, error code {:?}", error_code)]
-    GetOverscanAreaError { error_code: u32 },
-    #[error("Error getting camera effective area, error code {:?}", error_code)]
-    GetEffectiveAreaError { error_code: u32 },
-    #[error("Error getting determining support for camera feature {:?}", control)]
-    IsControlAvailableError { control: ControlType },
-    #[error("Error starting single frame exposure, error code {:?}", error_code)]
-    StartSingleFrameExposureError { error_code: u32 },
-    #[error("Error getting camera number of read modes")]
-    GetNumberOfReadoutModesError,
-    #[error("Error getting camera read mode name")]
-    GetReadoutModeNameError,
-    #[error("Error getting camera read mode resolution")]
-    GetReadoutModeResolutionError,
-    #[error("Error getting camera readout mode")]
-    GetReadoutModeError,
-    #[error("Error getting model of camera {:?}", error_code)]
-    GetCameraModelError { error_code: u32 },
-    #[error("Error getting type of camera")]
-    GetCameraTypeError,
-    #[error("Error getting remaining exposure time")]
-    GetExposureRemainingError,
-    #[error("Error stopping exposure {:?}", error_code)]
-    StopExposureError { error_code: u32 },
-    #[error("Error canceling exposure and readout {:?}", error_code)]
-    AbortExposureAndReadoutError { error_code: u32 },
-    #[error("Error getting camera CFW plugged status")]
-    IsCfwPluggedInError,
-    #[error("Error camera is not open")]
-    CameraNotOpenError,
-    #[error("Error getting camera min, max, step for control {:?}", control)]
-    GetMinMaxStepError {
-        /// here the control field has the `ControlType` enum variant we tried to get the value for
+    /// Determining whether `control` is supported failed.
+    #[error("error determining support for camera feature {control:?}")]
+    IsControlAvailable {
+        /// The control whose availability could not be determined.
         control: ControlType,
     },
-    #[error("Error getting filter wheel position")]
-    GetCfwPositionError,
-    #[error("Error setting filter wheel position")]
-    SetCfwPositionError,
-    #[error("Error opening the filter wheel")]
-    OpenFilterWheelError,
-    #[error("Error closing the filter wheel error code {:?}", error_code)]
-    CloseFilterWheelError { error_code: u32 },
-    #[error("Error getting the number of filters")]
-    GetNumberOfFiltersError,
-    #[error("No image available")]
-    NoImageAvailable,
-    #[error("No image metadata available")]
-    NoImageMetadataAvailable,
-    #[error("Invalid UTF-8 in a string returned by the SDK: {0}")]
+    /// Reading the min/max/step range for `control` failed.
+    #[error("error getting camera min, max, step for control {control:?}")]
+    GetMinMaxStep {
+        /// The control whose range could not be read.
+        control: ControlType,
+    },
+    /// A string returned by the SDK was not valid UTF-8.
+    #[error("invalid UTF-8 in a string returned by the SDK: {0}")]
     InvalidUtf8(#[from] std::str::Utf8Error),
-    #[error("Camera id contains an interior NUL byte: {0}")]
+    /// The camera id contains an interior NUL byte and cannot be passed to the
+    /// SDK as a C string.
+    #[error("camera id contains an interior NUL byte: {0}")]
     InvalidCameraId(#[from] std::ffi::NulError),
 }
 
 /// Convenience alias for fallible QHYCCD SDK operations: `Result<T, QHYError>`.
 pub type Result<T> = core::result::Result<T, QHYError>;
+
+/// Convert a raw QHYCCD status word into `Result<()>`, tagging any failure with
+/// an operation label.
+///
+/// Most QHYCCD SDK entry points return a bare `u32` where `0` (`QHYCCD_SUCCESS`)
+/// is success and any other value (in practice `u32::MAX`, `QHYCCD_ERROR`) is the
+/// sole failure indication — there are no discriminating error codes. This is the
+/// QHY analogue of `zwo-rs`'s `asi_check` / `svbony-rs`'s `svb_check`; because the
+/// QHY ABI carries no code to map, it takes a `'static` `op` label instead, which
+/// becomes [`QHYError::Sdk`]'s operation name on failure. On the failure path it
+/// logs the error via `tracing::error!`, centralising the per-call-site logging
+/// the void SDK wrappers previously did by hand.
+///
+/// The status is compared against the literal `0` (rather than the `ffi`/`sys`
+/// `QHYCCD_SUCCESS` constant) so the check does not depend on how the bindings
+/// are generated — matching the sibling crates' hard-coded `code == 0`. It is
+/// **not** used for the value-returning entry points (`GetQHYCCDMemLength`,
+/// `GetQHYCCDParam`, `GetQHYCCDType`, …) whose `u32::MAX` / `u32::MAX as f64`
+/// sentinel must be distinguished from a valid returned value at the call site;
+/// those keep their explicit `match` and build the error directly.
+///
+/// # Errors
+/// Returns [`QHYError::Sdk`] tagged with `op` for any non-`0` status word.
+pub fn check(status: u32, op: &'static str) -> Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        let error = QHYError::Sdk { op };
+        tracing::error!(error = ?error);
+        Err(error)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::ControlType;
+
+    #[test]
+    fn check_returns_ok_on_success_status() {
+        check(0, "set_stream_mode").unwrap();
+    }
+
+    #[test]
+    fn check_returns_sdk_error_tagged_with_op_on_failure() {
+        let error = check(u32::MAX, "set_stream_mode").unwrap_err();
+        assert_eq!(
+            error,
+            QHYError::Sdk {
+                op: "set_stream_mode"
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "QHYCCD SDK operation 'set_stream_mode' failed"
+        );
+    }
+
+    #[test]
+    fn check_treats_any_nonzero_status_as_failure() {
+        // The SDK's documented failure sentinel is u32::MAX, but `check` treats
+        // every non-zero status as failure so a stray non-sentinel code is not
+        // silently read as success.
+        check(1, "set_bin_mode").unwrap_err();
+    }
+
+    #[test]
+    fn control_scoped_errors_display_the_control() {
+        assert_eq!(
+            QHYError::GetParameter {
+                control: ControlType::Gain,
+            }
+            .to_string(),
+            "error getting camera parameter for control Gain"
+        );
+        assert_eq!(
+            QHYError::GetMinMaxStep {
+                control: ControlType::Exposure,
+            }
+            .to_string(),
+            "error getting camera min, max, step for control Exposure"
+        );
+        assert_eq!(
+            QHYError::IsControlAvailable {
+                control: ControlType::Cooler,
+            }
+            .to_string(),
+            "error determining support for camera feature Cooler"
+        );
+    }
+
+    #[test]
+    fn camera_not_open_displays_without_a_code() {
+        assert_eq!(QHYError::CameraNotOpen.to_string(), "camera is not open");
+    }
+
+    #[test]
+    fn utf8_error_converts_via_from() {
+        // Built at runtime (not a literal) so the `invalid_from_utf8` lint does not
+        // fire on a known-invalid literal.
+        let invalid = vec![0xff_u8, 0xff];
+        let utf8_error = std::str::from_utf8(&invalid).unwrap_err();
+        let error: QHYError = utf8_error.into();
+        assert_eq!(error, QHYError::InvalidUtf8(utf8_error));
+    }
+
+    #[test]
+    fn nul_error_converts_via_from() {
+        let nul_error = std::ffi::CString::new(vec![b'a', 0, b'b']).unwrap_err();
+        let error: QHYError = nul_error.clone().into();
+        assert_eq!(error, QHYError::InvalidCameraId(nul_error));
+    }
+}

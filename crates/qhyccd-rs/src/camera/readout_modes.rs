@@ -3,7 +3,7 @@ use std::ffi::{c_char, CStr};
 use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
-use crate::QHYError::*;
+use crate::QHYError;
 
 use crate::ffi::{
     GetQHYCCDNumberOfReadModes, GetQHYCCDReadMode, GetQHYCCDReadModeName,
@@ -31,7 +31,9 @@ impl Camera {
                 let mut num: u32 = 0;
                 match unsafe { GetQHYCCDNumberOfReadModes(handle, &mut num as *mut u32) } {
                     QHYCCD_ERROR => {
-                        let error = GetNumberOfReadoutModesError;
+                        let error = QHYError::Sdk {
+                            op: "get_number_of_readout_modes",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -42,7 +44,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.readout_modes.len() as u32)
             }
@@ -66,7 +68,9 @@ impl Camera {
                 let mut name: [c_char; 80] = [0; 80];
                 match unsafe { GetQHYCCDReadModeName(handle, index, name.as_mut_ptr()) } {
                     QHYCCD_ERROR => {
-                        let error = GetReadoutModeNameError;
+                        let error = QHYError::Sdk {
+                            op: "get_readout_mode_name",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -82,14 +86,16 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 state
                     .config
                     .readout_modes
                     .get(index as usize)
                     .map(|(name, _)| name.clone())
-                    .ok_or(GetReadoutModeNameError)
+                    .ok_or(QHYError::Sdk {
+                        op: "get_readout_mode_name",
+                    })
             }
         }
     }
@@ -121,7 +127,9 @@ impl Camera {
                 } {
                     QHYCCD_SUCCESS => Ok((width, height)),
                     _ => {
-                        let error = GetReadoutModeResolutionError;
+                        let error = QHYError::Sdk {
+                            op: "get_readout_mode_resolution",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -131,14 +139,16 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 state
                     .config
                     .readout_modes
                     .get(index as usize)
                     .map(|(_, res)| *res)
-                    .ok_or(GetReadoutModeResolutionError)
+                    .ok_or(QHYError::Sdk {
+                        op: "get_readout_mode_resolution",
+                    })
             }
         }
     }
@@ -161,7 +171,9 @@ impl Camera {
                 match unsafe { GetQHYCCDReadMode(handle, &mut mode as *mut u32) } {
                     QHYCCD_SUCCESS => Ok(mode),
                     _ => {
-                        let error = GetReadoutModeError;
+                        let error = QHYError::Sdk {
+                            op: "get_readout_mode",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -171,7 +183,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.readout_mode)
             }

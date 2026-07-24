@@ -1,7 +1,7 @@
 use crate::Result;
 use tracing::error;
 
-use crate::{Camera, ControlType, QHYError::*};
+use crate::{Camera, ControlType, QHYError};
 
 #[derive(Debug, PartialEq, Clone)]
 /// Filter wheels are directly connected to the QHY camera
@@ -107,7 +107,9 @@ impl FilterWheel {
             }),
             None => {
                 tracing::debug!("I'm a filter wheel without filters. :(");
-                Err(GetNumberOfFiltersError)
+                Err(QHYError::Sdk {
+                    op: "get_number_of_filters",
+                })
             }
         }
     }
@@ -131,7 +133,9 @@ impl FilterWheel {
             }),
             None => {
                 tracing::debug!("No filter wheel plugged in.");
-                Err(GetCfwPositionError)
+                Err(QHYError::Sdk {
+                    op: "get_fw_position",
+                })
             }
         }
     }
@@ -149,13 +153,17 @@ impl FilterWheel {
         match self.camera.is_control_available(ControlType::CfwPort) {
             // `set_cfw_position` applies the SDK's ASCII position offset.
             Some(_) => self.camera.set_cfw_position(position).map_err(|_| {
-                let error = SetCfwPositionError;
+                let error = QHYError::Sdk {
+                    op: "set_fw_position",
+                };
                 tracing::error!(error = ?error);
                 error
             }),
             None => {
                 tracing::debug!("No filter wheel plugged in.");
-                Err(SetCfwPositionError)
+                Err(QHYError::Sdk {
+                    op: "set_fw_position",
+                })
             }
         }
     }

@@ -72,9 +72,9 @@ impl Drop for HandleCell {
         if let Some(handle) = self.inner.get_mut().take() {
             match unsafe { crate::ffi::CloseQHYCCD(handle.ptr) } {
                 crate::ffi::QHYCCD_SUCCESS => {}
-                error_code => {
+                _ => {
                     tracing::error!(
-                        error = ?crate::QHYError::CloseCameraError { error_code },
+                        error = ?crate::QHYError::Sdk { op: "close_camera" },
                         "failed to close camera handle on drop"
                     );
                 }
@@ -124,14 +124,14 @@ impl PartialEq for CameraBackend {
 macro_rules! read_lock {
     ($var:expr) => {{
         // `parking_lot::RwLock` cannot be poisoned, so the only failure is an
-        // unopened handle (`None`) — reported as `CameraNotOpenError`, the accurate
+        // unopened handle (`None`) — reported as `CameraNotOpen`, the accurate
         // cause, matching the simulation backend (which returns it when the camera
         // is closed) instead of a misleading operation-specific error.
         match *$var.read() {
             Some(handle) => Ok::<*const std::ffi::c_void, $crate::QHYError>(handle.ptr),
             None => {
-                tracing::error!(error = ?$crate::QHYError::CameraNotOpenError);
-                Err($crate::QHYError::CameraNotOpenError)
+                tracing::error!(error = ?$crate::QHYError::CameraNotOpen);
+                Err($crate::QHYError::CameraNotOpen)
             }
         }
     }};

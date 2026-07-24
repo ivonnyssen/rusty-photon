@@ -69,6 +69,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![warn(missing_debug_implementations, rust_2018_idioms, missing_docs)]
 
+/// Raw, unsafe FFI bindings (`libqhyccd-sys`). Prefer the safe API in this crate.
+///
+/// Re-exported at the crate root to match the sibling `zwo-rs` / `svbony-rs`
+/// convention (`pub use libzwo_sys as sys;` / `pub use libsvbony_sys as sys;`).
+pub use libqhyccd_sys as sys;
+
 // Module declarations
 mod backend;
 mod camera;
@@ -106,7 +112,7 @@ pub mod simulation;
 // Public re-exports
 pub use camera::Camera;
 pub use control::ControlType;
-pub use error::{QHYError, Result};
+pub use error::{check, QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;
 pub use types::{

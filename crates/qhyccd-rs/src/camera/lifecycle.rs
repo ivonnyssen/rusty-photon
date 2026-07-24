@@ -1,12 +1,12 @@
 use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend, QHYCCDHandle};
-use crate::QHYError::*;
+use crate::{check, QHYError};
 
 #[cfg(feature = "simulation")]
 use crate::CCDChipArea;
 
-use crate::ffi::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD, QHYCCD_SUCCESS};
+use crate::ffi::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD};
 
 use super::Camera;
 
@@ -34,7 +34,7 @@ impl Camera {
                         Ok(c_id) => {
                             let handle = OpenQHYCCD(c_id.as_ptr());
                             if handle.is_null() {
-                                let error = OpenCameraError;
+                                let error = QHYError::Sdk { op: "open_camera" };
                                 tracing::error!(error = ?error);
                                 return Err(error);
                             }
@@ -76,17 +76,11 @@ impl Camera {
                 let mut lock = handle.write();
 
                 match *lock {
-                    Some(handle) => match unsafe { CloseQHYCCD(handle.ptr) } {
-                        QHYCCD_SUCCESS => {
-                            lock.take();
-                            Ok(())
-                        }
-                        error_code => {
-                            let error = CloseCameraError { error_code };
-                            tracing::error!(error = ?error);
-                            Err(error)
-                        }
-                    },
+                    Some(handle) => {
+                        check(unsafe { CloseQHYCCD(handle.ptr) }, "close_camera")?;
+                        lock.take();
+                        Ok(())
+                    }
                     None => Ok(()),
                 }
             }
@@ -115,20 +109,13 @@ impl Camera {
             CameraBackend::Real { handle } => {
                 let handle = read_lock!(handle)?;
 
-                match unsafe { InitQHYCCD(handle) } {
-                    QHYCCD_SUCCESS => Ok(()),
-                    error_code => {
-                        let error = InitCameraError { error_code };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                }
+                check(unsafe { InitQHYCCD(handle) }, "init_camera")
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
                 let mut state = state.write();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 state.is_initialized = true;
                 // Reset ROI to full frame based on current readout mode

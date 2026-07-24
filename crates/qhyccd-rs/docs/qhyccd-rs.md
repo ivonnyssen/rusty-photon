@@ -444,24 +444,25 @@ Color filter array patterns for color cameras. Implements `TryFrom<u32>` for con
 classDiagram
     class QHYError {
         <<enumeration>>
-        InitSDKError
-        OpenCameraError
-        SetParameterError
-        GetParameterError
-        GetSingleFrameError
-        +39 more variants...
+        Sdk
+        CameraNotOpen
+        GetParameter
+        IsControlAvailable
+        GetMinMaxStep
+        InvalidUtf8
+        InvalidCameraId
     }
 
-    note for QHYError "Uses thiserror for typed error definitions"
+    note for QHYError "Flat enum (thiserror). Sdk { op } carries a &'static operation label; the QHY ABI exposes no error codes"
 ```
 
 **Error Design:**
 
-The `QHYError` enum uses `thiserror` to derive the `Error` trait. Each variant includes an `error_code` field when applicable, and some include the `Control` that failed; foreign errors are captured via `#[from]` (`InvalidUtf8`, `InvalidCameraId`). The library exports a `Result<T>` alias (`Result<T, QHYError>`) and uses it as the return type for all fallible operations.
+The `QHYError` enum uses `thiserror` and is deliberately **flat**, matching the sibling `zwo-rs` / `svbony-rs` crates. Because most QHY SDK calls return a bare `u32` (`0` == success, `u32::MAX` == error) with **no discriminating error codes**, a failed plain call is reported as `Sdk { op }`, carrying a `&'static` operation label rather than a per-call-site variant. The remaining variants capture the genuinely-distinct cases: `CameraNotOpen`; the control-scoped `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` (which carry the `ControlType` that failed); and the `#[from]` foreign errors `InvalidUtf8` / `InvalidCameraId`. The library exports a `Result<T>` alias (`Result<T, QHYError>`) and a `check(status, op)` helper — the analogue of zwo's `asi_check` / svbony's `svb_check` — that funnels the void SDK calls; both are re-exported at the crate root alongside `pub use libqhyccd_sys as sys;`.
 
 Error handling flow:
-1. FFI call returns error code (typically `QHYCCD_ERROR` = `u32::MAX`)
-2. Rust wrapper creates the appropriate `QHYError` variant
+1. FFI call returns its status word (`u32`; `QHYCCD_SUCCESS` == `0`, `QHYCCD_ERROR` == `u32::MAX`)
+2. `check(status, op)` maps a non-zero status to `QHYError::Sdk { op }` (value-returning calls build the variant directly)
 3. Error is logged via `tracing::error!`
 4. The `QHYError` propagates to the caller via `?`
 
@@ -982,13 +983,13 @@ The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state:
 
 **Locking Strategy:**
 
-The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it reports as `CameraNotOpenError` — the accurate cause, matching the simulation backend (rather than a misleading operation-specific error):
+The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it reports as `CameraNotOpen` — the accurate cause, matching the simulation backend (rather than a misleading operation-specific error):
 ```rust
 macro_rules! read_lock {
     ($var:expr) => {
         match *$var.read() {
             Some(handle) => Ok(handle.ptr),
-            None => Err(QHYError::CameraNotOpenError),
+            None => Err(QHYError::CameraNotOpen),
         }
     }
 }
@@ -1189,18 +1190,19 @@ graph TD
 
 **Error Flow:**
 
-1. FFI call returns error code
-2. Check against `QHYCCD_SUCCESS` or `QHYCCD_ERROR`
-3. Create typed `QHYError` variant with error code
+1. FFI call returns its status word (or a value with a `u32::MAX` sentinel)
+2. `check(status, op)` (for void calls) or an explicit sentinel check (for value-returning calls) detects failure against `QHYCCD_SUCCESS` / `QHYCCD_ERROR`
+3. Build the typed `QHYError` (`Sdk { op }`, or a control-scoped variant)
 4. Log error with `tracing::error!(?error)`
 5. Propagate with the `?` operator (foreign errors convert via `#[from]`)
 
 **Error Types:**
 
-All 44 `QHYError` variants follow the pattern:
-- Descriptive name (e.g., `InitSDKError`, `GetParameterError`)
-- `error_code` field when applicable
-- Some include context (e.g., `GetParameterError` includes the `Control` that failed)
+`QHYError` is a flat 7-variant enum:
+- `Sdk { op }` — any plain SDK success/fail call, tagged with a `&'static` operation label (the QHY ABI carries no error code to preserve)
+- `CameraNotOpen`
+- `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` — carry the `ControlType` that failed
+- `InvalidUtf8` / `InvalidCameraId` — foreign errors captured via `#[from]`
 - Formatted error messages using `thiserror`
 
 **Logging:**

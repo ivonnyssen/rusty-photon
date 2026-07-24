@@ -1,8 +1,8 @@
 use crate::Result;
-// The `QHYError` variants are only used on the real-SDK paths (`Sdk::new`,
-// `version`, `Drop`), which are `#[cfg]`'d out under `simulation`.
+// `QHYError` is only used on the real-SDK paths (`Sdk::new`, `version`, `Drop`),
+// which are `#[cfg]`'d out under `simulation`.
 #[cfg(not(feature = "simulation"))]
-use crate::QHYError::*;
+use crate::QHYError;
 use crate::{Camera, FilterWheel, SDKVersion};
 
 #[cfg(not(feature = "simulation"))]
@@ -63,7 +63,7 @@ impl Sdk {
             QHYCCD_SUCCESS => {
                 let num_cameras = match unsafe { ScanQHYCCD() } {
                     QHYCCD_ERROR => {
-                        let error = ScanQHYCCDError;
+                        let error = QHYError::Sdk { op: "scan_cameras" };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -83,8 +83,10 @@ impl Sdk {
                                         .inspect_err(|error| tracing::error!(error = ?error))?;
                                     Ok(id.to_owned())
                                 }
-                                error_code => {
-                                    let error = GetCameraIdError { error_code };
+                                _ => {
+                                    let error = QHYError::Sdk {
+                                        op: "get_camera_id",
+                                    };
                                     tracing::error!(error = ?error);
                                     Err(error)
                                 }
@@ -133,8 +135,8 @@ impl Sdk {
                     filter_wheels,
                 })
             }
-            error_code => {
-                let error = InitSDKError { error_code };
+            _ => {
+                let error = QHYError::Sdk { op: "init_sdk" };
                 tracing::error!(error = ?error);
                 Err(error)
             }
@@ -281,8 +283,10 @@ impl Sdk {
                 day,
                 subday,
             }),
-            error_code => {
-                let error = GetSDKVersionError { error_code };
+            _ => {
+                let error = QHYError::Sdk {
+                    op: "get_sdk_version",
+                };
                 tracing::error!(error = ?error);
                 Err(error)
             }
@@ -326,8 +330,8 @@ impl Drop for Sdk {
             }
             match unsafe { ReleaseQHYCCDResource() } {
                 QHYCCD_SUCCESS => (),
-                error_code => {
-                    let error = CloseSDKError { error_code };
+                _ => {
+                    let error = QHYError::Sdk { op: "close_sdk" };
                     tracing::error!(error = ?error);
                 }
             }

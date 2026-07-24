@@ -1,7 +1,7 @@
 use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
-use crate::{ControlType, QHYError::*};
+use crate::{check, ControlType, QHYError};
 
 use crate::ffi::{
     GetQHYCCDParam, GetQHYCCDParamMinMaxStep, IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable,
@@ -32,7 +32,7 @@ impl Camera {
                 };
                 match unsafe { IsQHYCCDControlAvailable(handle, control.to_raw()) } {
                     QHYCCD_ERROR => {
-                        let error = IsControlAvailableError { control };
+                        let error = QHYError::IsControlAvailable { control };
                         tracing::debug!(control = ?error);
                         None
                     }
@@ -75,7 +75,7 @@ impl Camera {
                 let handle = read_lock!(handle)?;
                 let res = unsafe { GetQHYCCDParam(handle, control.to_raw()) };
                 if (res - QHYCCD_ERROR_F64).abs() < f64::EPSILON {
-                    let error = GetParameterError { control };
+                    let error = QHYError::GetParameter { control };
                     tracing::error!(error = ?error);
                     Err(error)
                 } else {
@@ -86,7 +86,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 // Handle special controls
                 match control {
@@ -105,14 +105,14 @@ impl Camera {
                         {
                             Ok(state.target_temperature)
                         } else {
-                            let error = GetParameterError { control };
+                            let error = QHYError::GetParameter { control };
                             tracing::error!(error = ?error);
                             Err(error)
                         }
                     }
                     ControlType::OutputDataActualBits => Ok(state.bit_depth as f64),
                     _ => state.parameters.get(&control).copied().ok_or_else(|| {
-                        let error = GetParameterError { control };
+                        let error = QHYError::GetParameter { control };
                         tracing::error!(error = ?error);
                         error
                     }),
@@ -148,7 +148,7 @@ impl Camera {
                 } {
                     QHYCCD_SUCCESS => Ok((min, max, step)),
                     _ => {
-                        let error = GetMinMaxStepError { control };
+                        let error = QHYError::GetMinMaxStep { control };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -158,7 +158,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 state
                     .config
@@ -166,7 +166,7 @@ impl Camera {
                     .get(&control)
                     .copied()
                     .ok_or_else(|| {
-                        let error = GetMinMaxStepError { control };
+                        let error = QHYError::GetMinMaxStep { control };
                         tracing::error!(error = ?error);
                         error
                     })
@@ -187,20 +187,16 @@ impl Camera {
         match &self.backend {
             CameraBackend::Real { handle } => {
                 let handle = read_lock!(handle)?;
-                match unsafe { SetQHYCCDParam(handle, control.to_raw(), value) } {
-                    QHYCCD_SUCCESS => Ok(()),
-                    error_code => {
-                        let error = SetParameterError { error_code };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                }
+                check(
+                    unsafe { SetQHYCCDParam(handle, control.to_raw(), value) },
+                    "set_parameter",
+                )
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
                 let mut state = state.write();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 // Handle special controls
                 match control {
@@ -240,7 +236,7 @@ impl Camera {
     pub fn set_if_available(&self, control: ControlType, value: f64) -> Result<()> {
         match self.is_control_available(control) {
             Some(_) => self.set_parameter(control, value),
-            None => Err(IsControlAvailableError { control }),
+            None => Err(QHYError::IsControlAvailable { control }),
         }
     }
 
@@ -263,7 +259,9 @@ impl Camera {
                     QHYCCD_SUCCESS => Ok(true),
                     QHYCCD_ERROR => Ok(false),
                     _ => {
-                        let error = IsCfwPluggedInError;
+                        let error = QHYError::Sdk {
+                            op: "is_cfw_plugged_in",
+                        };
                         tracing::error!(error = ?error);
                         Err(error)
                     }
@@ -273,7 +271,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read();
                 if !state.is_open {
-                    return Err(CameraNotOpenError);
+                    return Err(QHYError::CameraNotOpen);
                 }
                 Ok(state.config.filter_wheel_slots > 0)
             }

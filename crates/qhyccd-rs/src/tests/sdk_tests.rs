@@ -9,10 +9,7 @@ use crate::mocks::mock_libqhyccd_sys::{
 };
 
 #[cfg(not(feature = "simulation"))]
-use crate::{
-    QHYError::{GetCameraIdError, InitSDKError, ScanQHYCCDError},
-    SDKVersion, Sdk,
-};
+use crate::{QHYError, SDKVersion, Sdk};
 
 #[cfg(not(feature = "simulation"))]
 fn new_sdk() -> Sdk {
@@ -179,13 +176,7 @@ fn new_init_fail() {
     let res = Sdk::new();
     //then
     assert!(res.is_err());
-    assert_eq!(
-        res.err().unwrap().to_string(),
-        InitSDKError {
-            error_code: QHYCCD_ERROR
-        }
-        .to_string()
-    );
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "init_sdk" });
 }
 
 #[test]
@@ -203,7 +194,7 @@ fn new_scan_fail() {
     let res = Sdk::new();
     //then
     assert!(res.is_err());
-    assert_eq!(res.err().unwrap().to_string(), ScanQHYCCDError.to_string());
+    assert_eq!(res.err().unwrap(), QHYError::Sdk { op: "scan_cameras" });
 }
 
 #[test]
@@ -224,11 +215,10 @@ fn new_get_id_fail() {
     //then
     assert!(res.is_err());
     assert_eq!(
-        res.err().unwrap().to_string(),
-        GetCameraIdError {
-            error_code: QHYCCD_ERROR
+        res.err().unwrap(),
+        QHYError::Sdk {
+            op: "get_camera_id"
         }
-        .to_string()
     );
 }
 

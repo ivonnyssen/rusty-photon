@@ -1,12 +1,12 @@
 # Align `qhyccd-rs` to the `zwo-rs` / `svbony-rs` conventions
 
-**Status:** Phase 1 IMPLEMENTED (2026-07-23, branch
-`feature/qhy-convention-phase-1-handle-model`): shared handle cell + RAII
-last-drop close + `Sdk::drop` Close-before-Release. Phase 2 IMPLEMENTED
-(2026-07-23, branch `feature/qhy-convention-phase-2-control-repr`, stacked on
-Phase 1): `Control` → `ControlType` (31-variant subset + `Other(i32)` +
-`to_raw`), typed accessors on `Camera` + the service seam. Phases 3–5 not
-started. Analysis complete 2026-07-23.
+**Status:** Phases 1–3 IMPLEMENTED (2026-07-23), consolidated on one branch
+`feature/qhyccd-convention-alignment`. Phase 1: shared handle cell + RAII
+last-drop close + `Sdk::drop` Close-before-Release. Phase 2: `Control` →
+`ControlType` (31-variant subset + `Other(i32)` + `to_raw`), typed accessors on
+`Camera` + the service seam. Phase 3: flat `QHYError` (`Sdk { op }` + the
+genuinely-distinct cases) + a `check` helper + `pub use libqhyccd_sys as sys`.
+Phases 4–5 not started. Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
 ([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
@@ -230,9 +230,9 @@ it is unaffected by this plan, despite the shared "QHY" name.)
 **Exit:** services/tests consume typed accessors; raw `get_parameter(Control, )`
 no longer part of the routine surface; suites green.
 
-### Phase 3 — Error shape
+### Phase 3 — Error shape (IMPLEMENTED 2026-07-23)
 
-- Collapse the ~45 per-call-site `QHYError` variants into a flat enum that
+- Collapse the ~48 per-call-site `QHYError` variants into a flat enum that
   carries an operation label plus the genuinely-distinct cases
   (`CameraNotOpen`, `Utf8`, control-name context, …). The SDK exposes **no error
   codes** to preserve (Phase-0 forced fact #1), so no information is lost.
@@ -240,7 +240,34 @@ no longer part of the routine surface; suites green.
   matching zwo's `pub use libzwo_sys as sys` + `*_check` (folds Phase 6's
   public-surface item forward since it is cheap and touches the same files).
 
-**Exit:** flatter `QHYError`; `sys` + `check` re-exported; suites green.
+**Concrete design (as implemented 2026-07-23):**
+- **Flat `QHYError`** = 7 variants: `Sdk { op: &'static str }` for every plain
+  SDK success/fail call (the failure sentinel carries no code, so an operation
+  label replaces the ~26 `error_code`-carrying + ~16 bare-op variants);
+  `CameraNotOpen`; the three control-scoped `GetParameter` / `IsControlAvailable`
+  / `GetMinMaxStep` (the `ControlType` is real information, kept); and the two
+  `#[from]` FFI string errors `InvalidUtf8` / `InvalidCameraId`. Two
+  never-constructed filter-wheel variants were dropped. Derives
+  `#[derive(Debug, Clone, PartialEq, Eq, Error)] #[non_exhaustive]` — matching the
+  siblings' error enums, and letting the unit tests assert on the value with
+  `assert_eq!` (rather than Display strings).
+- **`pub fn check(status: u32, op: &'static str) -> Result<()>`** — the QHY
+  analogue of zwo's `asi_check` / svbony's `svb_check`. Because the QHY ABI has
+  no code to map (unlike the siblings' `from_code`), it takes a `'static` `op`
+  label and produces `QHYError::Sdk { op }` on any non-zero status; it also logs
+  on the error path, centralising the per-site `tracing::error!` the ~14 void
+  wrappers did by hand. It is the funnel for the plain void success/fail calls
+  **only** — the value-returning entry points (whose `u32::MAX` / `u32::MAX as f64`
+  sentinel must be told apart from a valid return) keep their explicit `match`
+  and build the error directly.
+- **`pub use libqhyccd_sys as sys;`** at the crate root (unconditional — resolves
+  in all three cfg configs since the `-sys` crate is a non-optional dep), matching
+  zwo/svbony; `check` is re-exported from the root alongside `QHYError`/`Result`.
+- The error shape is Display-only at the service seam
+  (`BackendError::from_err(impl Display)`), so flattening is **not** a breaking
+  change for `qhy-camera` (the sole consumer): no service code changed.
+
+**Exit:** flatter `QHYError`; `sys` + `check` re-exported; suites green. ✓
 
 ### Phase 4 — Simulation + mock-layer consolidation (largest structural change)
 
