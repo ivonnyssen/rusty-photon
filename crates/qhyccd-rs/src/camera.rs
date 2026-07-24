@@ -918,7 +918,17 @@ impl Camera {
             let mut model: [c_char; 80] = [0; 80];
             match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
                 QHYCCD_SUCCESS => {
-                    let model = unsafe { CStr::from_ptr(model.as_ptr()) }
+                    // Bounded decode: the SDK documents no maximum length and no NUL
+                    // guarantee, so scan for the terminator WITHIN the fixed 80-byte
+                    // buffer rather than with an unbounded `CStr::from_ptr` (which
+                    // would over-read past the array if the SDK ever filled all 80
+                    // bytes without a NUL). A missing terminator becomes a clean
+                    // error, not UB.
+                    let bytes = unsafe {
+                        std::slice::from_raw_parts(model.as_ptr().cast::<u8>(), model.len())
+                    };
+                    let model = CStr::from_bytes_until_nul(bytes)
+                        .map_err(|_| QHYError::Sdk { op: "get_model" })?
                         .to_str()
                         .inspect_err(|error| tracing::error!(error = ?error))?;
                     Ok(model.to_string())
@@ -1215,6 +1225,9 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.live_mode_active = true;
+            // Arm the "not ready" window (opt-in; default 0) so a poll-to-first-frame
+            // loop is exercised, mirroring real live-mode startup.
+            state.live_frames_until_ready = state.config.live_not_ready_frames;
             Ok(())
         }
     }
@@ -1292,6 +1305,17 @@ impl Camera {
     /// otherwise write out of bounds). This is the caller-owned-buffer convention
     /// of `zwo-rs` / `svbony-rs`, replacing the former fresh-`Vec`-per-frame
     /// return.
+    ///
+    /// # Live-mode polling
+    ///
+    /// In live mode a frame arrives asynchronously at the sensor frame rate.
+    /// `GetQHYCCDLiveFrame` returns `QHYCCD_ERROR` — mapped here to
+    /// `Err(QHYError::Sdk)` — both when **no frame is ready yet** and on a hard
+    /// failure; the SDK does not distinguish the two. Callers must therefore
+    /// **poll**: treat `Err` as "retry" for a bounded number of attempts (INDI's
+    /// indi-qhy retries ~10× at 1 ms) before giving up. The simulation models this
+    /// startup window via
+    /// [`SimulatedCameraConfig::with_live_not_ready_frames`](crate::simulation::SimulatedCameraConfig::with_live_not_ready_frames).
     /// # Example
     /// ```no_run
     /// use std::{thread, time::Duration};
@@ -1352,11 +1376,20 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            let state = self.state.read();
+            let mut state = self.state.write();
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
             if !state.live_mode_active {
+                return Err(QHYError::Sdk {
+                    op: "get_live_frame",
+                });
+            }
+            // Real GetQHYCCDLiveFrame returns the retryable QHYCCD_ERROR until the
+            // first frame is ready; model that "not ready" window (opt-in) so a
+            // consumer's poll loop is exercised.
+            if state.live_frames_until_ready > 0 {
+                state.live_frames_until_ready -= 1;
                 return Err(QHYError::Sdk {
                     op: "get_live_frame",
                 });
@@ -1760,8 +1793,9 @@ impl Camera {
             // Handle special controls
             match control {
                 ControlType::CfwPort => {
-                    // Position carried as its hex-ASCII code (see `cfw_slot_to_ascii`).
-                    Ok(cfw_slot_to_ascii(state.filter_wheel_position) as f64)
+                    // Position carried as its hex-ASCII code (see `cfw_slot_to_ascii`);
+                    // reading advances the simulated move one poll toward the target.
+                    Ok(cfw_slot_to_ascii(state.poll_filter_wheel()) as f64)
                 }
                 ControlType::CfwSlotsNum => Ok(state.config.filter_wheel_slots as f64),
                 ControlType::CurTemp => {
@@ -1874,7 +1908,9 @@ impl Camera {
             match control {
                 ControlType::CfwPort => {
                     // Value is the hex-ASCII position code (see `cfw_ascii_to_slot`).
-                    state.filter_wheel_position = cfw_ascii_to_slot(value as u32);
+                    // Command a move; the wheel reaches the slot after a few polls
+                    // (see `poll_filter_wheel`), not instantly.
+                    state.command_filter_wheel(cfw_ascii_to_slot(value as u32));
                 }
                 ControlType::Cooler => {
                     state.target_temperature = value;
@@ -2075,14 +2111,18 @@ impl Camera {
 
             let mut num: u32 = 0;
             match unsafe { GetQHYCCDNumberOfReadModes(handle, &mut num as *mut u32) } {
-                QHYCCD_ERROR => {
+                // Match on success, not on the `QHYCCD_ERROR` sentinel, so any
+                // non-success return is rejected instead of yielding the
+                // zero-initialised `num` as a valid "0 readout modes" (aligns with
+                // the sibling readout getters + INDI).
+                QHYCCD_SUCCESS => Ok(num),
+                _ => {
                     let error = QHYError::Sdk {
                         op: "get_number_of_readout_modes",
                     };
                     tracing::error!(error = ?error);
                     Err(error)
                 }
-                _ => Ok(num),
             }
         }
         #[cfg(feature = "simulation")]
@@ -2111,18 +2151,29 @@ impl Camera {
             let handle = read_lock!(self.handle)?;
             let mut name: [c_char; 80] = [0; 80];
             match unsafe { GetQHYCCDReadModeName(handle, index, name.as_mut_ptr()) } {
-                QHYCCD_ERROR => {
+                QHYCCD_SUCCESS => {
+                    // Bounded decode (see `get_model`): scan for the NUL within the
+                    // fixed 80-byte buffer rather than an unbounded `CStr::from_ptr`.
+                    let bytes = unsafe {
+                        std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len())
+                    };
+                    let name = CStr::from_bytes_until_nul(bytes)
+                        .map_err(|_| QHYError::Sdk {
+                            op: "get_readout_mode_name",
+                        })?
+                        .to_str()
+                        .inspect_err(|error| tracing::error!(error = ?error))?;
+                    Ok(name.to_string())
+                }
+                // Match on success, not on the `QHYCCD_ERROR` sentinel: reject any
+                // non-success return rather than pass a possibly-untouched buffer
+                // through (aligns with the sibling readout getters + INDI).
+                _ => {
                     let error = QHYError::Sdk {
                         op: "get_readout_mode_name",
                     };
                     tracing::error!(error = ?error);
                     Err(error)
-                }
-                _ => {
-                    let name = unsafe { CStr::from_ptr(name.as_ptr()) }
-                        .to_str()
-                        .inspect_err(|error| tracing::error!(error = ?error))?;
-                    Ok(name.to_string())
                 }
             }
         }

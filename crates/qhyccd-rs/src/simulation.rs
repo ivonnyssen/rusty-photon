@@ -68,6 +68,10 @@ pub struct SimulatedCameraConfig {
     pub camera_type: u32,
     /// Firmware version string
     pub firmware_version: String,
+    /// Live-mode reads that report "frame not ready" (a retryable error) before
+    /// the first frame is delivered — opt-in via `with_live_not_ready_frames`
+    /// (default 0). Models the real `GetQHYCCDLiveFrame` polling contract.
+    pub live_not_ready_frames: u32,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -115,10 +119,13 @@ impl Default for SimulatedCameraConfig {
                 width: 3072,
                 height: 2048,
             },
+            // A small overscan strip distinct from the effective imaging area —
+            // real `GetQHYCCDOverScanArea` reports a separate calibration region,
+            // not the full frame (audit fidelity fix).
             overscan_area: CCDChipArea {
                 start_x: 0,
                 start_y: 0,
-                width: 3072,
+                width: 24,
                 height: 2048,
             },
             supported_controls,
@@ -128,6 +135,7 @@ impl Default for SimulatedCameraConfig {
             readout_modes: vec![("Standard".to_string(), (3072, 2048))],
             camera_type: 4010,
             firmware_version: "Firmware version: 2024_1_1".to_string(),
+            live_not_ready_frames: 0,
         }
     }
 }
@@ -187,6 +195,15 @@ impl SimulatedCameraConfig {
         self
     }
 
+    /// Makes the first `n` live-mode frame reads report "not ready" (a retryable
+    /// error) before a frame is delivered, so a consumer's poll-to-first-frame
+    /// loop is exercised against the simulation (real `GetQHYCCDLiveFrame` returns
+    /// `QHYCCD_ERROR` between frames). Default is 0 (a frame is returned at once).
+    pub fn with_live_not_ready_frames(mut self, n: u32) -> Self {
+        self.live_not_ready_frames = n;
+        self
+    }
+
     /// Sets custom chip information
     pub fn with_chip_info(mut self, chip_info: CCDChipInfo) -> Self {
         self.effective_area = CCDChipArea {
@@ -195,7 +212,14 @@ impl SimulatedCameraConfig {
             width: chip_info.image_width,
             height: chip_info.image_height,
         };
-        self.overscan_area = self.effective_area;
+        // Keep the overscan a distinct strip, not a copy of the effective area
+        // (see the default config): the two SDK areas are separate regions.
+        self.overscan_area = CCDChipArea {
+            start_x: 0,
+            start_y: 0,
+            width: chip_info.image_width.min(24),
+            height: chip_info.image_height,
+        };
         self.chip_info = chip_info;
         self
     }
@@ -271,6 +295,14 @@ pub(crate) struct SimulatedCameraState {
     pub cooler_pwm: f64,
     /// Debayer enabled
     pub debayer_enabled: bool,
+    /// Commanded filter-wheel target slot (for the simulated settle delay).
+    pub filter_wheel_target: u32,
+    /// Reads remaining before the filter wheel reaches `filter_wheel_target`
+    /// (advance-on-poll settle, so a poll-to-arrival loop is exercised).
+    pub filter_wheel_settle_polls: u32,
+    /// Live-mode reads remaining that report "frame not ready" before a frame is
+    /// delivered (reset from config on `begin_live`).
+    pub live_frames_until_ready: u32,
 }
 
 /// Ambient (cooler-off) sensor temperature the simulated camera settles at, °C.
@@ -281,6 +313,9 @@ const SIM_AMBIENT_C: f64 = 20.0;
 const SIM_COOLING_STEP_C: f64 = 1.0;
 /// Simulated cooler PWM per °C below ambient (result saturated to 0..255).
 const SIM_COOLER_PWM_PER_DEGREE: f64 = 12.0;
+/// Reads the simulated filter wheel takes to reach a newly commanded slot
+/// (advance-on-poll, so a consumer's poll-to-arrival loop runs a few iterations).
+const SIM_CFW_SETTLE_POLLS: u32 = 3;
 
 impl SimulatedCameraState {
     /// Creates a new state from a configuration
@@ -329,6 +364,9 @@ impl SimulatedCameraState {
             current_temperature: 20.0,
             cooler_pwm: 0.0,
             debayer_enabled: false,
+            filter_wheel_target: 0,
+            filter_wheel_settle_polls: 0,
+            live_frames_until_ready: 0,
         }
     }
 
@@ -458,6 +496,32 @@ impl SimulatedCameraState {
             .clamp(0.0, 255.0);
         self.parameters
             .insert(ControlType::CurTemp, self.current_temperature);
+    }
+
+    /// Command the simulated filter wheel to `target`. Like real hardware the move
+    /// is not instantaneous: subsequent position reads report the OLD slot until
+    /// `SIM_CFW_SETTLE_POLLS` polls have elapsed (see `poll_filter_wheel`).
+    pub fn command_filter_wheel(&mut self, target: u32) {
+        self.filter_wheel_target = target;
+        self.filter_wheel_settle_polls = if target == self.filter_wheel_position {
+            0
+        } else {
+            SIM_CFW_SETTLE_POLLS
+        };
+    }
+
+    /// Read the simulated filter-wheel position, advancing the settle by one poll.
+    /// Returns the current (possibly still-moving) slot; it equals the target only
+    /// after `SIM_CFW_SETTLE_POLLS` reads, so a consumer's poll-to-arrival loop is
+    /// exercised instead of an unrealistic instantaneous move.
+    pub fn poll_filter_wheel(&mut self) -> u32 {
+        if self.filter_wheel_settle_polls > 0 {
+            self.filter_wheel_settle_polls -= 1;
+            if self.filter_wheel_settle_polls == 0 {
+                self.filter_wheel_position = self.filter_wheel_target;
+            }
+        }
+        self.filter_wheel_position
     }
 }
 

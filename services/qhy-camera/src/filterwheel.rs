@@ -340,7 +340,16 @@ mod tests {
     async fn moving_to_a_valid_slot_updates_position() {
         let device = connected(None);
         device.set_position(3).await.unwrap();
-        assert_eq!(device.position().await.unwrap(), Some(3));
+        // The simulated CFW move settles over a few polls; poll until it reports
+        // the target (`None` is the ASCOM "moving" sentinel).
+        let mut pos = None;
+        for _ in 0..10 {
+            pos = device.position().await.unwrap();
+            if pos == Some(3) {
+                break;
+            }
+        }
+        assert_eq!(pos, Some(3));
     }
 
     #[tokio::test]

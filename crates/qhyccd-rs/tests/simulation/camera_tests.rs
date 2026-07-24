@@ -20,6 +20,27 @@ fn frame_bytes(info: &FrameInfo) -> usize {
     (info.width * info.height * info.channels) as usize * bytes_per_pixel
 }
 
+/// Poll the simulated filter wheel to arrival — the move settles over a few polls
+/// (advance-on-poll), so a single read after a command still reports the old slot.
+fn cfw_arrive(camera: &Camera, target: u32) {
+    for _ in 0..10 {
+        if camera.cfw_position().unwrap() == target {
+            return;
+        }
+    }
+    panic!("filter wheel did not reach slot {target} within 10 polls");
+}
+
+/// Poll a crate [`FilterWheel`] to arrival (the move settles over a few polls).
+fn fw_arrive(fw: &FilterWheel, target: u32) {
+    for _ in 0..10 {
+        if fw.get_fw_position().unwrap() == target {
+            return;
+        }
+    }
+    panic!("filter wheel did not reach slot {target} within 10 polls");
+}
+
 #[test]
 fn test_simulated_camera_creation() {
     let config = SimulatedCameraConfig::default();
@@ -358,10 +379,9 @@ fn test_simulated_filter_wheel() {
     let pos = fw.get_fw_position().unwrap();
     assert_eq!(pos, 0);
 
-    // Set position
+    // Set position; the move settles over a few polls (poll-to-arrival).
     fw.set_fw_position(3).unwrap();
-    let pos = fw.get_fw_position().unwrap();
-    assert_eq!(pos, 3);
+    fw_arrive(&fw, 3);
 
     fw.close().unwrap();
 }
@@ -392,7 +412,7 @@ fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
     // A position set on the wheel is visible through the camera's CFW control
     // (ASCII-offset by 48), proving the single shared state.
     wheel.set_fw_position(3).unwrap();
-    assert_eq!(wheel.get_fw_position().unwrap(), 3);
+    fw_arrive(wheel, 3);
     assert_eq!(
         camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
         3 + 48
@@ -543,10 +563,10 @@ fn test_get_overscan_area() {
 
     let overscan_area = camera.get_overscan_area().unwrap();
 
-    // Default config overscan area matches effective area
+    // Default config overscan is a distinct strip (not the full effective area).
     assert_eq!(overscan_area.start_x, 0);
     assert_eq!(overscan_area.start_y, 0);
-    assert_eq!(overscan_area.width, 3072);
+    assert_eq!(overscan_area.width, 24);
     assert_eq!(overscan_area.height, 2048);
 
     camera.close().unwrap();
@@ -1216,10 +1236,11 @@ fn test_camera_typed_accessors() {
     camera.set_manual_cooler_pwm(80.0).unwrap();
     assert!((camera.cooler_power_raw().unwrap() - 80.0).abs() < f64::EPSILON);
 
-    // CFW accessors own the ASCII ±48 offset: position 3 round-trips to 3.
+    // CFW accessors encode the slot as a hex-ASCII code; the move settles over a
+    // few polls (poll-to-arrival), so read until it reports the target.
     assert_eq!(camera.cfw_slot_count().unwrap(), 5);
     camera.set_cfw_position(3).unwrap();
-    assert_eq!(camera.cfw_position().unwrap(), 3);
+    cfw_arrive(&camera, 3);
 
     camera.close().unwrap();
 }
@@ -1292,13 +1313,66 @@ fn cfw_position_uses_hex_ascii_for_high_slots() {
     camera.open().unwrap();
 
     camera.set_cfw_position(10).unwrap();
-    assert_eq!(camera.cfw_position().unwrap(), 10);
+    cfw_arrive(&camera, 10);
     // On the wire the value is the hex-ASCII code 'A' == 65, not decimal 10 + 48 == 58.
     assert_eq!(
         camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
         65
     );
 
+    camera.close().unwrap();
+}
+
+/// Audit #4: the simulated CFW move is NOT instantaneous — the first read after a
+/// command still reports the old slot (a consumer must poll to arrival), unlike
+/// the former synchronous update that hid the real hardware settle time.
+#[test]
+fn cfw_move_is_not_instantaneous() {
+    let config = SimulatedCameraConfig::default().with_filter_wheel(7);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // Start at slot 0, command slot 5. The next read must still report a
+    // non-target (moving) slot...
+    camera.set_cfw_position(5).unwrap();
+    assert_ne!(
+        camera.cfw_position().unwrap(),
+        5,
+        "move should not be instantaneous"
+    );
+    // ...but it converges to the target with a few more polls.
+    cfw_arrive(&camera, 5);
+
+    camera.close().unwrap();
+}
+
+/// Audit #6: with the opt-in not-ready window, the first N live-frame reads return
+/// the retryable error (as real `GetQHYCCDLiveFrame` does between frames), then a
+/// frame flows — exercising a consumer's poll-to-first-frame loop.
+#[test]
+fn live_frame_reports_not_ready_then_delivers() {
+    let config = SimulatedCameraConfig::default().with_live_not_ready_frames(3);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+    camera.begin_live().unwrap();
+
+    let size = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; size];
+
+    // The first three reads are "not ready".
+    for _ in 0..3 {
+        assert!(matches!(
+            camera.get_live_frame(&mut buf).unwrap_err(),
+            QHYError::Sdk { .. }
+        ));
+    }
+    // The fourth delivers a frame.
+    let info = camera.get_live_frame(&mut buf).unwrap();
+    assert_eq!(frame_bytes(&info), size);
+
+    camera.end_live().unwrap();
     camera.close().unwrap();
 }
 
@@ -1386,9 +1460,9 @@ fn test_filter_wheel_close_then_reopen() {
     fw.open().unwrap();
     assert!(fw.is_open().unwrap());
 
-    // Set position
+    // Set position; the move settles over a few polls (poll-to-arrival).
     fw.set_fw_position(2).unwrap();
-    assert_eq!(fw.get_fw_position().unwrap(), 2);
+    fw_arrive(&fw, 2);
 
     // Close
     fw.close().unwrap();
