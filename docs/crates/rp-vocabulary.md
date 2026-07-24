@@ -44,7 +44,7 @@ more than once and — worse — skipped in places:
   `rp::planner::goal_wire`, and a config→planner import reaching *up* into
   the planner from `rp::config::naming_template` to borrow it.
 - Exposure `Duration` had two divergent string encodings — a hand-rolled
-  `"300s"` formatter (`goal_wire::format_exposure`) versus the store's
+  `"300s"` formatter (`goal_wire::format_exposure_duration`) versus the store's
   humantime-canonical `"5m"` (`AcquisitionGoal`'s `humantime_serde`) — the
   same value serialized two ways.
 
@@ -243,7 +243,7 @@ and tax every arithmetic site with an `.as_duration()`.
 
 The drift it caused is fixed by **one encoding, not a type**: standardize
 on `humantime` everywhere (`#[serde(with = "humantime_serde")]` on the
-field), deleting the hand-rolled `goal_wire::format_exposure`. The
+field), deleting the hand-rolled `goal_wire::format_exposure_duration`. The
 filename-token form (`humantime` with spaces stripped, so the path
 component stays space-free and regex-clean) lives with the naming engine
 in `rp` — its only consumer. So exposure touches this crate **nowhere**.
@@ -259,7 +259,7 @@ docs is part of the consumer migration.)
 
 ## Relationship to the `rp-targets.md` "bare decimals" decision
 
-[`rp-targets.md`](rp-targets.md#coordinates-plain-decimal-not-typed-quantities)
+[`rp-targets.md`](rp-targets.md#coordinates-validated-icrscoord-nested-coord-object)
 documents a deliberate decision to store `ra_hours`/`dec_degrees` as bare
 `f64`. That is the decision this design touches; it is **consistent with
 it**, and the reconciliation is worth recording so it travels with the

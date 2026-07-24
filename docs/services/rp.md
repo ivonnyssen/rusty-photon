@@ -4040,7 +4040,7 @@ name the wheel's clear slot (e.g. `"filter": "Clear"`) instead. A
 malformed exposure entry is skipped with a `debug!` log; a target
 whose plan is missing or entirely invalid still recommends, with
 `filter` / `duration_secs` null — the orchestrator's fallback
-(e.g. `deep_sky.json`'s `exposure` / `filter` parameters) applies.
+(e.g. `deep_sky.json`'s `exposure_duration` / `filter` parameters) applies.
 
 ## Session Persistence
 

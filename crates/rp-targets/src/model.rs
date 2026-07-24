@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_goals_rejects_zero_exposure() {
+    fn validate_goals_rejects_zero_exposure_duration() {
         let goals = vec![goal("Ha", 1, 1, 0, 20)];
         let err = validate_goals(&goals).unwrap_err();
         assert!(matches!(err, TargetStoreError::InvalidGoals { .. }));

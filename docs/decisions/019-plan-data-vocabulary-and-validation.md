@@ -32,7 +32,7 @@ Two problems, both visible in the P1 target-store code.
   the planner from `rp::config::naming_template` to borrow it.
 - Exposure `Duration` had two disagreeing string encodings — the store
   wrote humantime-canonical `"5m"` (via `humantime_serde`) while the
-  hand-rolled `goal_wire::format_exposure` produced `"300s"` — the same
+  hand-rolled `goal_wire::format_exposure_duration` produced `"300s"` — the same
   value serialized two ways.
 
 The common cause: validated plan values were bare primitives (`f64`,
@@ -134,7 +134,7 @@ Exposure is deliberately **not** one of these types — it stays a
 `Duration` with no invariant a `Duration` doesn't already carry (the
 "non-zero" rule is a *goal* constraint, already in
 `rp_targets::validate_goals`). Its drift is fixed by standardizing on one
-`humantime` encoding (deleting `goal_wire::format_exposure`), and its
+`humantime` encoding (deleting `goal_wire::format_exposure_duration`), and its
 filename-token codec lives with the naming engine in `rp`. The value is
 named **`exposure_duration`** everywhere — unambiguous where bare
 "exposure" (a sub-frame count) and "exposure_time" (time of acquisition)
@@ -142,10 +142,12 @@ are not.
 
 Consequential decisions settled here:
 
-- **Newtype-field migration.** `rp_targets::Target` and
-  `rp::planner::decision::PlannerTarget` change their coordinate fields to
-  `coord: IcrsCoord` (private-field newtype), so the compiler forces every
-  construction through `try_new`. The coordinate now serializes as a
+- **Newtype-field migration.** `rp_targets::Target` changes its coordinate
+  field to `coord: IcrsCoord` (private-field newtype), so the compiler
+  forces every construction through `try_new` (the planner's
+  `PlannerTarget` keeps flat `f64` fields, reading the newtype via
+  accessors at the store boundary — its own `coord` adoption is deferred).
+  The coordinate now serializes as a
   nested `coord` object (`{ra_hours, dec_degrees}`) — `#[serde(flatten)]`
   is removed — so one canonical coordinate shape spans the on-disk store
   (redb JSON) and the MCP wire.
