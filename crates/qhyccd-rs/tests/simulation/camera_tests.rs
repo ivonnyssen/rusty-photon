@@ -5,8 +5,20 @@
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
 use qhyccd_rs::{
-    BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, QHYError, SDKVersion, Sdk, StreamMode,
+    BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, FrameInfo, QHYError, SDKVersion, Sdk,
+    StreamMode,
 };
+
+/// Bytes in a frame with the given [`FrameInfo`] — mirrors the simulated
+/// backend's `calculate_buffer_size` (`width * height * channels *
+/// bytes_per_pixel`, 1 byte per pixel at ≤8-bit, 2 otherwise). Since the download
+/// now writes into a caller-owned buffer and returns only `FrameInfo`, assertions
+/// use this to check the frame the download *reports*, not the caller's
+/// fixed-length buffer (whose `len()` is always `get_image_size()`).
+fn frame_bytes(info: &FrameInfo) -> usize {
+    let bytes_per_pixel = if info.bits_per_pixel <= 8 { 1 } else { 2 };
+    (info.width * info.height * info.channels) as usize * bytes_per_pixel
+}
 
 #[test]
 fn test_simulated_camera_creation() {
@@ -162,7 +174,8 @@ fn test_simulated_camera_single_frame_mode() {
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
     assert_eq!(image.bits_per_pixel, 16);
-    assert!(!buf.is_empty());
+    // the reported frame exactly fills the buffer we sized from get_image_size
+    assert_eq!(frame_bytes(&image), buffer_size);
 
     camera.close().unwrap();
 }
@@ -183,7 +196,7 @@ fn test_simulated_camera_live_mode() {
 
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
-    assert!(!buf.is_empty());
+    assert_eq!(frame_bytes(&image), buffer_size);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -245,8 +258,8 @@ fn test_simulated_camera_bit_mode() {
     let image = camera.get_live_frame(&mut buf).unwrap();
 
     assert_eq!(image.bits_per_pixel, 8);
-    // 8-bit mode uses 1 byte per pixel
-    assert_eq!(buf.len(), (3072 * 2048) as usize);
+    // 8-bit mode uses 1 byte per pixel: the reported frame is exactly W*H bytes
+    assert_eq!(frame_bytes(&image), (3072 * 2048) as usize);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -611,13 +624,13 @@ fn test_set_debayer() {
 
     let buffer_size = camera.get_image_size().unwrap();
     let mut buf = vec![0u8; buffer_size];
-    camera.get_live_frame(&mut buf).unwrap();
+    let info = camera.get_live_frame(&mut buf).unwrap();
 
-    // With debayer enabled, should get 3-channel RGB image
-    // Check buffer size is 3x larger than mono
+    // With debayer enabled, the reported frame is 3-channel RGB, 3x the mono size
     let mono_pixels = 3072 * 2048;
     let expected_rgb_size = mono_pixels * 2 * 3; // 16-bit * 3 channels
-    assert_eq!(buf.len(), expected_rgb_size as usize);
+    assert_eq!(info.channels, 3);
+    assert_eq!(frame_bytes(&info), expected_rgb_size as usize);
 
     camera.end_live().unwrap();
 
@@ -627,11 +640,12 @@ fn test_set_debayer() {
 
     let buffer_size = camera.get_image_size().unwrap();
     let mut buf = vec![0u8; buffer_size];
-    camera.get_live_frame(&mut buf).unwrap();
+    let info = camera.get_live_frame(&mut buf).unwrap();
 
-    // With debayer disabled, should get 1-channel image
+    // With debayer disabled, the reported frame is 1-channel
     let expected_mono_size = mono_pixels * 2; // 16-bit * 1 channel
-    assert_eq!(buf.len(), expected_mono_size as usize);
+    assert_eq!(info.channels, 1);
+    assert_eq!(frame_bytes(&info), expected_mono_size as usize);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -1272,7 +1286,7 @@ fn test_image_with_custom_generator() {
     // Image should have expected dimensions
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
-    assert!(!buf.is_empty());
+    assert_eq!(frame_bytes(&image), buffer_size);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
