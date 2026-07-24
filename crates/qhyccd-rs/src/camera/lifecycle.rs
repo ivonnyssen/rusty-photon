@@ -1,12 +1,16 @@
 use crate::Result;
 
-use crate::backend::{read_lock, CameraBackend, QHYCCDHandle};
-use crate::{check, QHYError};
+use crate::QHYError;
+
+#[cfg(not(feature = "simulation"))]
+use crate::backend::{read_lock, QHYCCDHandle};
+#[cfg(not(feature = "simulation"))]
+use crate::check;
+#[cfg(not(feature = "simulation"))]
+use crate::sys::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD};
 
 #[cfg(feature = "simulation")]
 use crate::CCDChipArea;
-
-use crate::ffi::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD};
 
 use super::Camera;
 
@@ -25,35 +29,34 @@ impl Camera {
         if self.is_open()? {
             return Ok(());
         }
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                // read and see if the handle is already Some(_)
-                let mut lock = handle.write();
-                unsafe {
-                    match std::ffi::CString::new(self.id.clone()) {
-                        Ok(c_id) => {
-                            let handle = OpenQHYCCD(c_id.as_ptr());
-                            if handle.is_null() {
-                                let error = QHYError::Sdk { op: "open_camera" };
-                                tracing::error!(error = ?error);
-                                return Err(error);
-                            }
-                            *lock = Some(QHYCCDHandle { ptr: handle });
-                            Ok(())
-                        }
-                        Err(error) => {
+        #[cfg(not(feature = "simulation"))]
+        {
+            // read and see if the handle is already Some(_)
+            let mut lock = self.handle.write();
+            unsafe {
+                match std::ffi::CString::new(self.id.clone()) {
+                    Ok(c_id) => {
+                        let handle = OpenQHYCCD(c_id.as_ptr());
+                        if handle.is_null() {
+                            let error = QHYError::Sdk { op: "open_camera" };
                             tracing::error!(error = ?error);
-                            Err(error.into())
+                            return Err(error);
                         }
+                        *lock = Some(QHYCCDHandle { ptr: handle });
+                        Ok(())
+                    }
+                    Err(error) => {
+                        tracing::error!(error = ?error);
+                        Err(error.into())
                     }
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                state.is_open = true;
-                Ok(())
-            }
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            state.is_open = true;
+            Ok(())
         }
     }
 
@@ -71,26 +74,25 @@ impl Camera {
         if !self.is_open()? {
             return Ok(());
         }
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let mut lock = handle.write();
+        #[cfg(not(feature = "simulation"))]
+        {
+            let mut lock = self.handle.write();
 
-                match *lock {
-                    Some(handle) => {
-                        check(unsafe { CloseQHYCCD(handle.ptr) }, "close_camera")?;
-                        lock.take();
-                        Ok(())
-                    }
-                    None => Ok(()),
+            match *lock {
+                Some(handle) => {
+                    check(unsafe { CloseQHYCCD(handle.ptr) }, "close_camera")?;
+                    lock.take();
+                    Ok(())
                 }
+                None => Ok(()),
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                state.is_open = false;
-                state.is_initialized = false;
-                Ok(())
-            }
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            state.is_open = false;
+            state.is_initialized = false;
+            Ok(())
         }
     }
 
@@ -105,37 +107,35 @@ impl Camera {
     /// camera.init().expect("init failed");
     /// ```
     pub fn init(&self) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-
-                check(unsafe { InitQHYCCD(handle) }, "init_camera")
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(unsafe { InitQHYCCD(handle) }, "init_camera")
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.is_initialized = true;
-                // Reset ROI to full frame based on current readout mode
-                let (width, height) = state
-                    .config
-                    .readout_modes
-                    .get(state.readout_mode as usize)
-                    .map(|(_, res)| *res)
-                    .unwrap_or((
-                        state.config.chip_info.image_width,
-                        state.config.chip_info.image_height,
-                    ));
-                state.roi = CCDChipArea {
-                    start_x: 0,
-                    start_y: 0,
-                    width,
-                    height,
-                };
-                Ok(())
-            }
+            state.is_initialized = true;
+            // Reset ROI to full frame based on current readout mode
+            let (width, height) = state
+                .config
+                .readout_modes
+                .get(state.readout_mode as usize)
+                .map(|(_, res)| *res)
+                .unwrap_or((
+                    state.config.chip_info.image_width,
+                    state.config.chip_info.image_height,
+                ));
+            state.roi = CCDChipArea {
+                start_x: 0,
+                start_y: 0,
+                width,
+                height,
+            };
+            Ok(())
         }
     }
 
@@ -150,16 +150,15 @@ impl Camera {
     /// println!("Is camera open: {:?}", is_open);
     /// ```
     pub fn is_open(&self) -> Result<bool> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let lock = handle.read();
-                Ok((*lock).is_some())
-            }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                Ok(state.is_open)
-            }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let lock = self.handle.read();
+            Ok((*lock).is_some())
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            Ok(state.is_open)
         }
     }
 }

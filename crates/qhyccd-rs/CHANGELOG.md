@@ -55,8 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **BREAKING:** dropped the `eyre` and `educe` dependencies. `Camera`'s `PartialEq`
-  (which ignores the backend handle) now uses `derive_more`'s `#[partial_eq(skip)]`.
+- **BREAKING:** the simulated/real backend is now selected at **compile time** by
+  the `simulation` feature (a per-method `#[cfg]` fork, matching `zwo-rs` /
+  `svbony-rs`) instead of a runtime `CameraBackend` enum. Consequently the
+  `#[automock]` FFI-mock layer (`qhyccd_rs::mocks`) and the `mockall`
+  dev-dependency are gone — the real FFI arm is compiled out under `simulation`,
+  so the crate no longer unit-tests through a mocked FFI (behaviour only that arm
+  reached is covered by ConformU on real hardware). `Camera::new` is now available
+  only *without* the `simulation` feature; build a simulated camera via
+  `Camera::new_simulated` / `Sdk::new`. The `simulation/` module subtree was
+  flattened into a single `src/simulation.rs` (its public API —
+  `SimulatedCameraConfig` / `ImageGenerator` / `ImagePattern` — is unchanged).
+- **BREAKING:** dropped the `eyre`, `educe`, and `derive_more` dependencies.
+  `Camera`'s `PartialEq` (which ignores the backend handle) is hand-rolled
+  (id-only) rather than derived.
 
 ### Internal
 

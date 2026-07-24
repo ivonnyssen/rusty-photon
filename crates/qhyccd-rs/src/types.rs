@@ -99,3 +99,25 @@ pub struct SDKVersion {
     /// the subday of the SDK version
     pub subday: u32,
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))] // test code: don't count toward coverage
+mod tests {
+    use super::BayerMode;
+
+    // `BayerMode::try_from` is backend-independent pure logic; it was previously
+    // only exercised by the deleted FFI-mock `camera_tests::bayer_mode_try_from`.
+    #[test]
+    fn bayer_mode_try_from_maps_the_four_sdk_codes() {
+        assert_eq!(BayerMode::try_from(1), Ok(BayerMode::GBRG));
+        assert_eq!(BayerMode::try_from(2), Ok(BayerMode::GRBG));
+        assert_eq!(BayerMode::try_from(3), Ok(BayerMode::BGGR));
+        assert_eq!(BayerMode::try_from(4), Ok(BayerMode::RGGB));
+    }
+
+    #[test]
+    fn bayer_mode_try_from_rejects_codes_outside_1_to_4() {
+        assert_eq!(BayerMode::try_from(0), Err(()));
+        assert_eq!(BayerMode::try_from(5), Err(()));
+    }
+}

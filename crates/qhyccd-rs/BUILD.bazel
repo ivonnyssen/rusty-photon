@@ -48,16 +48,19 @@ rust_library(
     deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
 )
 
-# The crate's own unit tests (src/tests/{camera,filter_wheel,sdk}_tests.rs), run
-# under Bazel against the sim variant — mirrors crates/zwo-rs:zwo-rs_unit_test.
-# Without this the suite only ran under `cargo test`, so it was both
-# ungated by the Bazel gate and absent from `bazel coverage` (qhyccd-rs read ~34%
-# vs Cargo's ~93%, only incidentally covered via qhy-camera's sim usage). The
-# `simulation` `crate_features` must be set explicitly — rust_test does NOT inherit
-# it from the wrapped `crate` — or the `#[cfg(feature = "simulation")]` tests (the
-# bulk) compile out. `mockall` arrives via the dev-deps. The sim variant still
-# links the SDK (simulation removes the camera, not the link), so this runs in the
-# SDK-provisioned bazel.yml / bazel-coverage.yml jobs, like zwo-rs.
+# The crate's own unit tests — the in-source `#[cfg(test)]` modules (error.rs,
+# control.rs, types.rs, simulation.rs) plus the `tests/simulation/*` integration
+# tests — run under Bazel against the sim variant, mirroring
+# crates/zwo-rs:zwo-rs_unit_test. Since Phase 4 of the qhyccd-rs convention
+# alignment there is NO FFI-mock layer (the `#[automock]` `src/mocks.rs` and the
+# `src/tests/` mock suite are gone): the real FFI arms are compiled out under
+# `simulation` and the simulated backend is exercised directly, like the siblings.
+# Without this the suite only ran under `cargo test`, so it was both ungated by the
+# Bazel gate and absent from `bazel coverage`. The `simulation` `crate_features`
+# must be set explicitly — rust_test does NOT inherit it from the wrapped `crate` —
+# or the `#[cfg(feature = "simulation")]` tests (the bulk) compile out. The sim
+# variant still links the SDK (simulation removes the camera, not the link), so
+# this runs in the SDK-provisioned bazel.yml / bazel-coverage.yml jobs, like zwo-rs.
 rust_test(
     name = "qhyccd-rs_unit_test",
     size = "medium",

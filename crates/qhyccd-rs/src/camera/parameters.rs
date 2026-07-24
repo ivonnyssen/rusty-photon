@@ -1,9 +1,13 @@
 use crate::Result;
 
-use crate::backend::{read_lock, CameraBackend};
-use crate::{check, ControlType, QHYError};
+use crate::{ControlType, QHYError};
 
-use crate::ffi::{
+#[cfg(not(feature = "simulation"))]
+use crate::backend::read_lock;
+#[cfg(not(feature = "simulation"))]
+use crate::check;
+#[cfg(not(feature = "simulation"))]
+use crate::sys::{
     GetQHYCCDParam, GetQHYCCDParamMinMaxStep, IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable,
     SetQHYCCDParam, QHYCCD_ERROR, QHYCCD_ERROR_F64, QHYCCD_SUCCESS,
 };
@@ -24,37 +28,36 @@ impl Camera {
     /// println!("ControlType: {:?}", control);
     /// ```
     pub fn is_control_available(&self, control: ControlType) -> Option<u32> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = match read_lock!(handle) {
-                    Ok(handle) => handle,
-                    Err(_) => return None,
-                };
-                match unsafe { IsQHYCCDControlAvailable(handle, control.to_raw()) } {
-                    QHYCCD_ERROR => {
-                        let error = QHYError::IsControlAvailable { control };
-                        tracing::debug!(control = ?error);
-                        None
-                    }
-                    is_supported => Some(is_supported),
-                }
-            }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return None;
-                }
-                // Check if control is in supported_controls
-                if state.config.supported_controls.contains_key(&control) {
-                    // For CamColor, return the bayer mode value
-                    if control == ControlType::CamColor {
-                        return state.config.bayer_mode.map(|m| m as u32);
-                    }
-                    Some(1) // ControlType is available
-                } else {
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = match read_lock!(self.handle) {
+                Ok(handle) => handle,
+                Err(_) => return None,
+            };
+            match unsafe { IsQHYCCDControlAvailable(handle, control.to_raw()) } {
+                QHYCCD_ERROR => {
+                    let error = QHYError::IsControlAvailable { control };
+                    tracing::debug!(control = ?error);
                     None
                 }
+                is_supported => Some(is_supported),
+            }
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return None;
+            }
+            // Check if control is in supported_controls
+            if state.config.supported_controls.contains_key(&control) {
+                // For CamColor, return the bayer mode value
+                if control == ControlType::CamColor {
+                    return state.config.bayer_mode.map(|m| m as u32);
+                }
+                Some(1) // ControlType is available
+            } else {
+                None
             }
         }
     }
@@ -70,53 +73,52 @@ impl Camera {
     /// println!("Exposure: {}", exposure);
     /// ```
     pub fn get_parameter(&self, control: ControlType) -> Result<f64> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let res = unsafe { GetQHYCCDParam(handle, control.to_raw()) };
-                if (res - QHYCCD_ERROR_F64).abs() < f64::EPSILON {
-                    let error = QHYError::GetParameter { control };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                } else {
-                    Ok(res)
-                }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let res = unsafe { GetQHYCCDParam(handle, control.to_raw()) };
+            if (res - QHYCCD_ERROR_F64).abs() < f64::EPSILON {
+                let error = QHYError::GetParameter { control };
+                tracing::error!(error = ?error);
+                Err(error)
+            } else {
+                Ok(res)
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
+            }
+            // Handle special controls
+            match control {
+                ControlType::CfwPort => {
+                    // Return position as ASCII value (48 = '0')
+                    Ok((state.filter_wheel_position + 48) as f64)
                 }
-                // Handle special controls
-                match control {
-                    ControlType::CfwPort => {
-                        // Return position as ASCII value (48 = '0')
-                        Ok((state.filter_wheel_position + 48) as f64)
-                    }
-                    ControlType::CfwSlotsNum => Ok(state.config.filter_wheel_slots as f64),
-                    ControlType::CurTemp => Ok(state.current_temperature),
-                    ControlType::CurPWM => Ok(state.cooler_pwm),
-                    ControlType::Cooler => {
-                        if state
-                            .config
-                            .supported_controls
-                            .contains_key(&ControlType::Cooler)
-                        {
-                            Ok(state.target_temperature)
-                        } else {
-                            let error = QHYError::GetParameter { control };
-                            tracing::error!(error = ?error);
-                            Err(error)
-                        }
-                    }
-                    ControlType::OutputDataActualBits => Ok(state.bit_depth as f64),
-                    _ => state.parameters.get(&control).copied().ok_or_else(|| {
+                ControlType::CfwSlotsNum => Ok(state.config.filter_wheel_slots as f64),
+                ControlType::CurTemp => Ok(state.current_temperature),
+                ControlType::CurPWM => Ok(state.cooler_pwm),
+                ControlType::Cooler => {
+                    if state
+                        .config
+                        .supported_controls
+                        .contains_key(&ControlType::Cooler)
+                    {
+                        Ok(state.target_temperature)
+                    } else {
                         let error = QHYError::GetParameter { control };
                         tracing::error!(error = ?error);
-                        error
-                    }),
+                        Err(error)
+                    }
                 }
+                ControlType::OutputDataActualBits => Ok(state.bit_depth as f64),
+                _ => state.parameters.get(&control).copied().ok_or_else(|| {
+                    let error = QHYError::GetParameter { control };
+                    tracing::error!(error = ?error);
+                    error
+                }),
             }
         }
     }
@@ -131,46 +133,45 @@ impl Camera {
     /// let (min_exposure, max_exposure, exposure_resolution) = camera.get_parameter_min_max_step(ControlType::Exposure).expect("getting min,max,step failed");
     /// ```
     pub fn get_parameter_min_max_step(&self, control: ControlType) -> Result<(f64, f64, f64)> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut min: f64 = 0.0;
-                let mut max: f64 = 0.0;
-                let mut step: f64 = 0.0;
-                match unsafe {
-                    GetQHYCCDParamMinMaxStep(
-                        handle,
-                        control.to_raw(),
-                        &mut min as *mut f64,
-                        &mut max as *mut f64,
-                        &mut step as *mut f64,
-                    )
-                } {
-                    QHYCCD_SUCCESS => Ok((min, max, step)),
-                    _ => {
-                        let error = QHYError::GetMinMaxStep { control };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut min: f64 = 0.0;
+            let mut max: f64 = 0.0;
+            let mut step: f64 = 0.0;
+            match unsafe {
+                GetQHYCCDParamMinMaxStep(
+                    handle,
+                    control.to_raw(),
+                    &mut min as *mut f64,
+                    &mut max as *mut f64,
+                    &mut step as *mut f64,
+                )
+            } {
+                QHYCCD_SUCCESS => Ok((min, max, step)),
+                _ => {
+                    let error = QHYError::GetMinMaxStep { control };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state
-                    .config
-                    .supported_controls
-                    .get(&control)
-                    .copied()
-                    .ok_or_else(|| {
-                        let error = QHYError::GetMinMaxStep { control };
-                        tracing::error!(error = ?error);
-                        error
-                    })
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            state
+                .config
+                .supported_controls
+                .get(&control)
+                .copied()
+                .ok_or_else(|| {
+                    let error = QHYError::GetMinMaxStep { control };
+                    tracing::error!(error = ?error);
+                    error
+                })
         }
     }
 
@@ -184,42 +185,41 @@ impl Camera {
     /// camera.set_parameter(ControlType::Exposure, 2000000.0).expect("set_parameter failed");
     /// ```
     pub fn set_parameter(&self, control: ControlType, value: f64) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe { SetQHYCCDParam(handle, control.to_raw(), value) },
-                    "set_parameter",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe { SetQHYCCDParam(handle, control.to_raw(), value) },
+                "set_parameter",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
+            // Handle special controls
+            match control {
+                ControlType::CfwPort => {
+                    // Value is ASCII position, convert to 0-indexed
+                    state.filter_wheel_position = (value as u32).saturating_sub(48);
                 }
-                // Handle special controls
-                match control {
-                    ControlType::CfwPort => {
-                        // Value is ASCII position, convert to 0-indexed
-                        state.filter_wheel_position = (value as u32).saturating_sub(48);
-                    }
-                    ControlType::Cooler => {
-                        state.target_temperature = value;
-                    }
-                    ControlType::ManualPWM => {
-                        state.cooler_pwm = value;
-                    }
-                    ControlType::Exposure => {
-                        state.exposure_duration_us = value as u64;
-                        state.parameters.insert(control, value);
-                    }
-                    _ => {
-                        state.parameters.insert(control, value);
-                    }
+                ControlType::Cooler => {
+                    state.target_temperature = value;
                 }
-                Ok(())
+                ControlType::ManualPWM => {
+                    state.cooler_pwm = value;
+                }
+                ControlType::Exposure => {
+                    state.exposure_duration_us = value as u64;
+                    state.parameters.insert(control, value);
+                }
+                _ => {
+                    state.parameters.insert(control, value);
+                }
             }
+            Ok(())
         }
     }
 
@@ -252,29 +252,28 @@ impl Camera {
     /// println!("Is filter wheel plugged in: {}", is_cfw_plugged_in);
     /// ```
     pub fn is_cfw_plugged_in(&self) -> Result<bool> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                match unsafe { IsQHYCCDCFWPlugged(handle) } {
-                    QHYCCD_SUCCESS => Ok(true),
-                    QHYCCD_ERROR => Ok(false),
-                    _ => {
-                        let error = QHYError::Sdk {
-                            op: "is_cfw_plugged_in",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            match unsafe { IsQHYCCDCFWPlugged(handle) } {
+                QHYCCD_SUCCESS => Ok(true),
+                QHYCCD_ERROR => Ok(false),
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "is_cfw_plugged_in",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.config.filter_wheel_slots > 0)
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.config.filter_wheel_slots > 0)
         }
     }
 
@@ -287,6 +286,7 @@ impl Camera {
     // `*_parameter(ControlType, )` methods remain for `Other` and any control
     // without a dedicated accessor. QHY temperatures are already whole °C, so —
     // unlike svbony's 0.1 °C `SVB_*_TEMPERATURE` — no decode is applied.
+    // Backend-agnostic: each delegates to a forked method above.
 
     /// Current sensor gain (`ControlType::Gain`).
     pub fn gain(&self) -> Result<f64> {

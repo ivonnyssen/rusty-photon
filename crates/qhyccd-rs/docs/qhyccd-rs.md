@@ -107,9 +107,10 @@ classDiagram
 
     class Camera {
         -String id
-        -CameraBackend backend
-        +new(id) Camera
-        +new_simulated(config) Camera
+        -Arc~HandleCell~ handle «real, cfg»
+        -Arc~RwLock~SimulatedCameraState~~ state «sim, cfg»
+        +new(id) Camera «real»
+        +new_simulated(config) Camera «sim»
         +open() Result
         +close() Result
         +set_stream_mode(mode) Result
@@ -181,45 +182,47 @@ The `Camera` struct represents a single camera device and provides all control f
 classDiagram
     class Camera {
         -String id
-        -CameraBackend backend
+        -Arc~HandleCell~ handle «cfg not simulation»
+        -Arc~RwLock~SimulatedCameraState~~ state «cfg simulation»
     }
 
-    class CameraBackend {
-        <<enumeration>>
-        Real
-        Simulated
+    class HandleCell {
+        -RwLock~Option~QHYCCDHandle~~ inner
+        +Drop closes on last strong ref
     }
 
-    class RealBackend {
-        -Arc~RwLock~Option~QHYCCDHandle~~ handle
-    }
-
-    class SimulatedBackend {
-        -Arc~RwLock~SimulatedCameraState~ state
-    }
-
-    Camera *-- CameraBackend
-    CameraBackend <|-- RealBackend
-    CameraBackend <|-- SimulatedBackend
+    Camera ..> HandleCell : real build only
+    Camera ..> SimulatedCameraState : sim build only
 ```
 
-**Backend Pattern:**
+**Backend Pattern (compile-time `#[cfg]` fork):**
 
-The camera uses an enum-based backend pattern to support both real hardware and simulation:
+The real/simulated backend is selected at **compile time** by the `simulation`
+feature, matching the sibling `zwo-rs` / `svbony-rs` crates. Exactly one backend
+field exists per build — `handle` without the feature, `state` with it:
 
 ```rust
-enum CameraBackend {
-    Real {
-        handle: Arc<RwLock<Option<QHYCCDHandle>>>,
-    },
+pub struct Camera {
+    id: String,
+    #[cfg(not(feature = "simulation"))]
+    handle: Arc<HandleCell>, // shared open-handle cell; Drop-closes on last ref
     #[cfg(feature = "simulation")]
-    Simulated {
-        state: Arc<RwLock<SimulatedCameraState>>,
-    },
+    state: Arc<RwLock<SimulatedCameraState>>,
 }
 ```
 
-Every public method on `Camera` matches on the backend and dispatches to either FFI calls or simulated state updates. This provides a transparent interface where the same code works for both real and simulated cameras.
+Every public method on `Camera` forks with two `#[cfg]` blocks — the real block
+calls `libqhyccd-sys` FFI (via `crate::sys`), the simulation block updates
+`SimulatedCameraState`. The FFI block is compiled **out** entirely under
+`simulation`, so a simulated build has no FFI arm to test (as in zwo/svbony) and
+the hard-to-cover FFI path never counts as uncovered.
+
+This replaced an earlier **runtime `CameraBackend` enum** (both arms always
+compiled) plus a `#[automock]` FFI-mock test layer (`src/mocks.rs`), removed in
+Phase 4 of the [convention-alignment plan](../../../docs/plans/qhyccd-convention-alignment.md).
+The backend stays **`Arc`-shared** (not a single-owner `Mutex` like zwo's
+`SimState`) because a QHY filter wheel drives the *same* camera handle, so
+`Camera: Clone` + handle-sharing with its `FilterWheel` is SDK-forced (Phase 1).
 
 **Camera Operations:**
 
@@ -635,7 +638,7 @@ sequenceDiagram
 
 #### SimulatedCameraConfig
 
-Located in `src/simulation/config.rs`. Provides configuration for simulated cameras using the builder pattern.
+Located in `src/simulation.rs`. Provides configuration for simulated cameras using the builder pattern.
 
 **Structure:**
 - `id`: Camera identifier string
@@ -673,7 +676,7 @@ Mimics a QHY178M monochrome camera:
 
 #### SimulatedCameraState
 
-Located in `src/simulation/state.rs`. Maintains runtime state for simulated cameras.
+Located in `src/simulation.rs`. Maintains runtime state for simulated cameras.
 
 **State Fields:**
 - `config`: Reference to configuration
@@ -734,7 +737,7 @@ This design prevents double-binning issues and ensures the simulation generates 
 
 #### ImageGenerator
 
-Located in `src/simulation/image_generator.rs`. Generates test images for simulated captures.
+Located in `src/simulation.rs`. Generates test images for simulated captures.
 
 **Pattern Types:**
 - `Gradient`: Linear gradient with noise
@@ -973,13 +976,14 @@ graph TB
 
 **Thread Safety Implementation:**
 
-The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state:
-- `CameraBackend::Real`: Contains `Arc<RwLock<Option<QHYCCDHandle>>>`
-- `CameraBackend::Simulated`: Contains `Arc<RwLock<SimulatedCameraState>>`
+The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state — the
+compile-time-selected field (see *Backend Pattern* above):
+- Real build (`#[cfg(not(feature = "simulation"))]`): `handle: Arc<HandleCell>`, wrapping `RwLock<Option<QHYCCDHandle>>`
+- Sim build (`#[cfg(feature = "simulation")]`): `state: Arc<RwLock<SimulatedCameraState>>`
 
 `parking_lot::RwLock` is used (not `std::sync::RwLock`) because it cannot be poisoned: `read()`/`write()` return the guard directly, so lock acquisition is infallible and no panic in another thread can wedge later lock users. This matches the consuming camera services, which already use `parking_lot`.
 
-`Camera::clone()` is cheap - it clones the backend which clones the `Arc`, incrementing the reference count. Multiple clones share the same underlying state.
+`Camera::clone()` is cheap - it clones the `Arc` backend field, incrementing the reference count. Multiple clones (and a camera's `FilterWheel`) share the same underlying state.
 
 **Locking Strategy:**
 
@@ -1145,9 +1149,15 @@ Each `with_*()` method consumes `self` and returns `Self`, enabling method chain
 
 `FilterWheel` wraps `Camera` to provide a specialized interface for filter wheel operations. This reflects the hardware architecture where filter wheels are connected to and controlled through cameras. The wrapper delegates all operations to the underlying camera's parameter API.
 
-### Strategy Pattern
+### Compile-time backend selection
 
-`CameraBackend` enum implements the strategy pattern, allowing runtime selection between real hardware and simulation backends. Every public `Camera` method pattern-matches on the backend and dispatches to the appropriate implementation. This provides complete transparency - user code works identically for both backends.
+The real vs. simulated backend is chosen at **compile time** by the `simulation`
+feature (the sibling `zwo-rs` / `svbony-rs` convention). Every public `Camera`
+method forks with two `#[cfg]` blocks, one calling `libqhyccd-sys` FFI and one
+updating `SimulatedCameraState`; only the selected block is compiled. User code
+works identically against either build. This replaced an earlier runtime
+`CameraBackend` enum + `#[automock]` FFI-mock test layer (removed in Phase 4 of the
+convention-alignment plan).
 
 ### Resource Acquisition Is Initialization (RAII)
 
@@ -1157,7 +1167,7 @@ The `Sdk` struct follows RAII principles:
 - Ensures proper cleanup even during panics
 - Prevents resource leaks
 
-Individual cameras do not implement `Drop` for `CloseQHYCCD()` because users need explicit control over connection lifetime.
+The shared real handle cell (`HandleCell`, real build only) *also* follows RAII: its `Drop` calls `CloseQHYCCD()` when the last strong reference (the `Camera` and any clones, including its `FilterWheel`) is released, so a dropped-open camera no longer leaks the handle. `Sdk::drop` additionally closes every still-open camera handle *before* `ReleaseQHYCCDResource()`, per the SDK's documented Close-then-Release ordering (Phase 1 of the convention plan).
 
 ### Interior Mutability
 
@@ -1213,18 +1223,19 @@ Every error path includes a `tracing::error!` call with the error details. This 
 
 ### Unit Tests
 
-Located in `src/tests/`:
-- `sdk_tests.rs`: SDK initialization and enumeration
-- `camera_tests.rs`: Camera operations
-- `filter_wheel_tests.rs`: Filter wheel operations
+In-source `#[cfg(test)]` modules, run against the **simulated** backend (there is
+**no FFI-mock layer** — the real FFI arm is `#[cfg]`'d out under `simulation`, as in
+`zwo-rs` / `svbony-rs`):
+- `src/error.rs`: `QHYError` construction, the `check` helper, `Display`, and the `#[from]` conversions
+- `src/control.rs`: `ControlType` ⇄ raw `CONTROL_ID` round-trip
+- `src/types.rs`: `BayerMode::try_from`
+- `src/simulation.rs`: `SimulatedCameraState` and `ImageGenerator` behaviour (state management, timing, parameter handling)
 
-Tests use the `mockall` crate to mock FFI functions via `src/mocks.rs`. This allows testing the Rust wrapper logic without calling actual SDK functions.
-
-### Simulation Tests
-
-Located in `src/simulation/`:
-- `test_state.rs`: SimulatedCameraState tests
-- Tests verify state management, timing, parameter handling
+The former `src/tests/` `#[automock]` FFI-mock suite and `src/mocks.rs` were removed
+in Phase 4 of the convention-alignment plan. Behaviour that lived only in the real
+FFI arm — the `u32::MAX` / `QHYCCD_ERROR_F64` sentinel decodes, C-string (`CStr` /
+`CString`) handling, the scan/enumeration pipeline, and `Drop` / teardown ordering —
+is exercised on real hardware via ConformU, not unit-tested, matching the siblings.
 
 ### Integration Tests
 
@@ -1315,22 +1326,18 @@ From `Cargo.toml`:
 - `libqhyccd-sys` (0.1.4, path): Internal FFI crate
 - `thiserror` (workspace): Typed error enum (`QHYError`)
 - `tracing` (workspace): Structured logging
-- `derive_more` (workspace, `eq` feature): `PartialEq` derive with `#[partial_eq(skip)]`
-- `lazy_static` (1.0.2): Static initialization
-- `tracing-attributes` (0.1.28): Tracing support
-- `enum-ordinalize-derive` (4.3.1): Enum utilities
+- `parking_lot` (workspace): Non-poisoning `RwLock` guarding the camera handle / simulated state
 
 **Dev-dependencies:**
 - `tracing-subscriber` (workspace): Logging setup for the `examples/` demos
-- `mockall` (0.14.0): FFI mocking for unit tests
 
 **Optional (simulation feature only):**
 - `rand` (workspace): Random number generation for image noise
 - `rayon` (workspace): Parallel processing for improved simulation performance
 
-### Development Dependencies
-
-- `mockall` (0.14.0): Mocking framework for tests
+`Camera`'s id-only `PartialEq` is hand-rolled, so the crate no longer depends on
+`derive_more`; the `#[automock]` FFI-mock layer is gone, so it no longer depends on
+`mockall` (both removed in Phase 4 of the convention-alignment plan).
 
 ### System Dependencies
 
@@ -1347,33 +1354,23 @@ The `libqhyccd-sys` crate links against the system-installed QHYCCD library via:
 ```
 qhyccd-rs/
 ├── src/
-│   ├── lib.rs              # Main library root (103 lines) - module declarations and re-exports
-│   ├── backend.rs          # Internal backend types (74 lines, pub(crate))
-│   ├── control.rs          # Control enum with 92 variants (236 lines)
-│   ├── error.rs            # QHYError enum with 44 error types (108 lines)
-│   ├── types.rs            # Public data types (101 lines)
-│   ├── sdk.rs              # Sdk implementation (315 lines)
-│   ├── filter_wheel.rs     # FilterWheel implementation (171 lines)
-│   ├── camera/             # Camera module (7 sub-modules by responsibility)
-│   │   ├── mod.rs          # Camera struct, basic methods (89 lines)
-│   │   ├── lifecycle.rs    # open, close, init, is_open (203 lines)
-│   │   ├── configuration.rs # stream mode, ROI, binning, debayer (264 lines)
-│   │   ├── readout_modes.rs # readout mode queries (203 lines)
-│   │   ├── info.rs         # model, firmware, chip info (331 lines)
-│   │   ├── imaging.rs      # live/single frame capture (497 lines)
-│   │   └── parameters.rs   # parameter get/set/check (304 lines)
-│   ├── mocks.rs            # Mock FFI for testing (214 lines)
-│   ├── simulation/         # Simulation feature
-│   │   ├── mod.rs          # Public API
-│   │   ├── config.rs       # SimulatedCameraConfig
-│   │   ├── state.rs        # SimulatedCameraState
-│   │   ├── image_generator.rs  # Image generation
-│   │   └── test_state.rs   # State tests
-│   └── tests/              # Unit tests (with mocked FFI)
-│       ├── mod.rs
-│       ├── sdk_tests.rs
-│       ├── camera_tests.rs
-│       └── filter_wheel_tests.rs
+│   ├── lib.rs              # Library root - module declarations and re-exports
+│   ├── backend.rs          # Real handle machinery: HandleCell / QHYCCDHandle / read_lock! (pub(crate); #[cfg(not(simulation))])
+│   ├── control.rs          # ControlType: semantic CONTROL_ID subset + Other(i32) + to_raw
+│   ├── error.rs            # Flat QHYError enum + check() helper
+│   ├── types.rs            # Public data types
+│   ├── sdk.rs              # Sdk implementation (real/sim #[cfg] fork)
+│   ├── filter_wheel.rs     # FilterWheel implementation (delegates to Camera)
+│   ├── camera/             # Camera module (6 sub-modules by responsibility)
+│   │   ├── mod.rs          # Camera struct (compile-time-selected backend), basic methods
+│   │   ├── lifecycle.rs    # open, close, init, is_open
+│   │   ├── configuration.rs # stream mode, ROI, binning, debayer
+│   │   ├── readout_modes.rs # readout mode queries
+│   │   ├── info.rs         # model, firmware, chip info
+│   │   ├── imaging.rs      # live/single frame capture
+│   │   └── parameters.rs   # parameter get/set/check + typed accessors
+│   └── simulation.rs       # Simulation backend (feature-gated): SimulatedCameraConfig,
+│                           #   SimulatedCameraState, ImageGenerator + in-source tests
 ├── examples/               # Demo programs (run with --features simulation)
 │   ├── LiveFrameMode.rs
 │   ├── SingleFrameMode.rs
@@ -1393,16 +1390,19 @@ qhyccd-rs/
     └── build.rs            # Build script (if needed)
 ```
 
-The library is organized into 13 well-defined modules, reducing the original monolithic `lib.rs` from 2,866 lines to just 103 lines. The public API is now composed of:
+The library is organized into small single-responsibility modules (the original
+monolithic `lib.rs` is now just declarations and re-exports). The public API is
+composed of:
 
-**Top-level modules** (6 modules + 7 camera sub-modules):
+**Top-level modules** (+ 6 camera sub-modules):
 - `lib.rs`: Module declarations and public re-exports only
-- `control.rs`: Control enum with 92 camera control parameters
-- `error.rs`: QHYError enum with 44 error variants using thiserror
+- `control.rs`: `ControlType` — a semantic subset of the SDK `CONTROL_ID`s (+ `Other(i32)` + `to_raw`)
+- `error.rs`: flat `QHYError` enum (`thiserror`) + the `check()` helper
 - `types.rs`: Public data types (StreamMode, CCDChipInfo, ImageData, etc.)
 - `sdk.rs`: SDK initialization, camera discovery, resource management
 - `filter_wheel.rs`: Filter wheel control and operations
-- `backend.rs`: Internal backend abstraction (pub(crate) only)
+- `backend.rs`: Real handle machinery (`HandleCell` etc.; `pub(crate)`, compiled without the `simulation` feature)
+- `simulation.rs`: Simulation backend (feature-gated) — config builder, runtime state, image generation
 
 **Camera sub-modules** (organized by functional responsibility):
 - `camera/mod.rs`: Camera struct definition and basic accessors

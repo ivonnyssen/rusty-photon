@@ -1,11 +1,14 @@
+#[cfg(not(feature = "simulation"))]
 use std::ffi::{c_char, CStr};
 
 use crate::Result;
 
-use crate::backend::{read_lock, CameraBackend};
 use crate::{CCDChipArea, CCDChipInfo, QHYError};
 
-use crate::ffi::{
+#[cfg(not(feature = "simulation"))]
+use crate::backend::read_lock;
+#[cfg(not(feature = "simulation"))]
+use crate::sys::{
     GetQHYCCDChipInfo, GetQHYCCDEffectiveArea, GetQHYCCDFWVersion, GetQHYCCDModel,
     GetQHYCCDOverScanArea, GetQHYCCDType, QHYCCD_ERROR, QHYCCD_SUCCESS,
 };
@@ -24,32 +27,31 @@ impl Camera {
     /// println!("Camera model: {}", model);
     /// ```
     pub fn get_model(&self) -> Result<String> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut model: [c_char; 80] = [0; 80];
-                match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
-                    QHYCCD_SUCCESS => {
-                        let model = unsafe { CStr::from_ptr(model.as_ptr()) }
-                            .to_str()
-                            .inspect_err(|error| tracing::error!(error = ?error))?;
-                        Ok(model.to_string())
-                    }
-                    _ => {
-                        let error = QHYError::Sdk { op: "get_model" };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut model: [c_char; 80] = [0; 80];
+            match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
+                QHYCCD_SUCCESS => {
+                    let model = unsafe { CStr::from_ptr(model.as_ptr()) }
+                        .to_str()
+                        .inspect_err(|error| tracing::error!(error = ?error))?;
+                    Ok(model.to_string())
+                }
+                _ => {
+                    let error = QHYError::Sdk { op: "get_model" };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.config.model.clone())
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.config.model.clone())
         }
     }
 
@@ -64,45 +66,44 @@ impl Camera {
     /// println!("Firmware version: {}", firmware_version);
     /// ```
     pub fn get_firmware_version(&self) -> Result<String> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut version = [0u8; 32];
-                match unsafe { GetQHYCCDFWVersion(handle, version.as_mut_ptr()) } {
-                    QHYCCD_SUCCESS => {
-                        if version[0] >> 4 <= 9 {
-                            Ok(format!(
-                                "Firmware version: 20{}_{}_{}",
-                                (((version[0] >> 4) + 0x10) as u32),
-                                version[0] & 0x0F,
-                                version[1]
-                            ))
-                        } else {
-                            Ok(format!(
-                                "Firmware version: 20{}_{}_{}",
-                                ((version[0] >> 4) as u32),
-                                version[0] & 0x0F,
-                                version[1]
-                            ))
-                        }
-                    }
-                    _ => {
-                        let error = QHYError::Sdk {
-                            op: "get_firmware_version",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut version = [0u8; 32];
+            match unsafe { GetQHYCCDFWVersion(handle, version.as_mut_ptr()) } {
+                QHYCCD_SUCCESS => {
+                    if version[0] >> 4 <= 9 {
+                        Ok(format!(
+                            "Firmware version: 20{}_{}_{}",
+                            (((version[0] >> 4) + 0x10) as u32),
+                            version[0] & 0x0F,
+                            version[1]
+                        ))
+                    } else {
+                        Ok(format!(
+                            "Firmware version: 20{}_{}_{}",
+                            ((version[0] >> 4) as u32),
+                            version[0] & 0x0F,
+                            version[1]
+                        ))
                     }
                 }
-            }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "get_firmware_version",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
-                Ok(state.config.firmware_version.clone())
             }
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
+            }
+            Ok(state.config.firmware_version.clone())
         }
     }
 
@@ -117,26 +118,25 @@ impl Camera {
     /// println!("Camera type: {}", camera_type);
     /// ```
     pub fn get_type(&self) -> Result<u32> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                match unsafe { GetQHYCCDType(handle) } {
-                    QHYCCD_ERROR => {
-                        let error = QHYError::Sdk { op: "get_type" };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                    camera_type => Ok(camera_type),
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            match unsafe { GetQHYCCDType(handle) } {
+                QHYCCD_ERROR => {
+                    let error = QHYError::Sdk { op: "get_type" };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
+                camera_type => Ok(camera_type),
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.config.camera_type)
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.config.camera_type)
         }
     }
 
@@ -151,52 +151,51 @@ impl Camera {
     /// println!("CCD info: {:?}", ccd_info);
     /// ```
     pub fn get_ccd_info(&self) -> Result<CCDChipInfo> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut chipw: f64 = 0.0;
-                let mut chiph: f64 = 0.0;
-                let mut imagew: u32 = 0;
-                let mut imageh: u32 = 0;
-                let mut pixelw: f64 = 0.0;
-                let mut pixelh: f64 = 0.0;
-                let mut bpp: u32 = 0;
-                match unsafe {
-                    GetQHYCCDChipInfo(
-                        handle,
-                        &mut chipw as *mut f64,
-                        &mut chiph as *mut f64,
-                        &mut imagew as *mut u32,
-                        &mut imageh as *mut u32,
-                        &mut pixelw as *mut f64,
-                        &mut pixelh as *mut f64,
-                        &mut bpp as *mut u32,
-                    )
-                } {
-                    QHYCCD_SUCCESS => Ok(CCDChipInfo {
-                        chip_width: chipw,
-                        chip_height: chiph,
-                        image_width: imagew,
-                        image_height: imageh,
-                        pixel_width: pixelw,
-                        pixel_height: pixelh,
-                        bits_per_pixel: bpp,
-                    }),
-                    _ => {
-                        let error = QHYError::Sdk { op: "get_ccd_info" };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut chipw: f64 = 0.0;
+            let mut chiph: f64 = 0.0;
+            let mut imagew: u32 = 0;
+            let mut imageh: u32 = 0;
+            let mut pixelw: f64 = 0.0;
+            let mut pixelh: f64 = 0.0;
+            let mut bpp: u32 = 0;
+            match unsafe {
+                GetQHYCCDChipInfo(
+                    handle,
+                    &mut chipw as *mut f64,
+                    &mut chiph as *mut f64,
+                    &mut imagew as *mut u32,
+                    &mut imageh as *mut u32,
+                    &mut pixelw as *mut f64,
+                    &mut pixelh as *mut f64,
+                    &mut bpp as *mut u32,
+                )
+            } {
+                QHYCCD_SUCCESS => Ok(CCDChipInfo {
+                    chip_width: chipw,
+                    chip_height: chiph,
+                    image_width: imagew,
+                    image_height: imageh,
+                    pixel_width: pixelw,
+                    pixel_height: pixelh,
+                    bits_per_pixel: bpp,
+                }),
+                _ => {
+                    let error = QHYError::Sdk { op: "get_ccd_info" };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.config.chip_info)
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.config.chip_info)
         }
     }
 
@@ -211,45 +210,44 @@ impl Camera {
     /// println!("Overscan area: {:?}", overscan_area);
     /// ```
     pub fn get_overscan_area(&self) -> Result<CCDChipArea> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut start_x: u32 = 0;
-                let mut start_y: u32 = 0;
-                let mut width: u32 = 0;
-                let mut height: u32 = 0;
-                match unsafe {
-                    GetQHYCCDOverScanArea(
-                        handle,
-                        &mut start_x as *mut u32,
-                        &mut start_y as *mut u32,
-                        &mut width as *mut u32,
-                        &mut height as *mut u32,
-                    )
-                } {
-                    QHYCCD_SUCCESS => Ok(CCDChipArea {
-                        start_x,
-                        start_y,
-                        width,
-                        height,
-                    }),
-                    _ => {
-                        let error = QHYError::Sdk {
-                            op: "get_overscan_area",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut start_x: u32 = 0;
+            let mut start_y: u32 = 0;
+            let mut width: u32 = 0;
+            let mut height: u32 = 0;
+            match unsafe {
+                GetQHYCCDOverScanArea(
+                    handle,
+                    &mut start_x as *mut u32,
+                    &mut start_y as *mut u32,
+                    &mut width as *mut u32,
+                    &mut height as *mut u32,
+                )
+            } {
+                QHYCCD_SUCCESS => Ok(CCDChipArea {
+                    start_x,
+                    start_y,
+                    width,
+                    height,
+                }),
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "get_overscan_area",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.config.overscan_area)
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.config.overscan_area)
         }
     }
 
@@ -264,45 +262,44 @@ impl Camera {
     /// println!("Effective area: {:?}", effective_area);
     /// ```
     pub fn get_effective_area(&self) -> Result<CCDChipArea> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut start_x: u32 = 0;
-                let mut start_y: u32 = 0;
-                let mut width: u32 = 0;
-                let mut height: u32 = 0;
-                match unsafe {
-                    GetQHYCCDEffectiveArea(
-                        handle,
-                        &mut start_x as *mut u32,
-                        &mut start_y as *mut u32,
-                        &mut width as *mut u32,
-                        &mut height as *mut u32,
-                    )
-                } {
-                    QHYCCD_SUCCESS => Ok(CCDChipArea {
-                        start_x,
-                        start_y,
-                        width,
-                        height,
-                    }),
-                    _ => {
-                        let error = QHYError::Sdk {
-                            op: "get_effective_area",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut start_x: u32 = 0;
+            let mut start_y: u32 = 0;
+            let mut width: u32 = 0;
+            let mut height: u32 = 0;
+            match unsafe {
+                GetQHYCCDEffectiveArea(
+                    handle,
+                    &mut start_x as *mut u32,
+                    &mut start_y as *mut u32,
+                    &mut width as *mut u32,
+                    &mut height as *mut u32,
+                )
+            } {
+                QHYCCD_SUCCESS => Ok(CCDChipArea {
+                    start_x,
+                    start_y,
+                    width,
+                    height,
+                }),
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "get_effective_area",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.config.effective_area)
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.config.effective_area)
         }
     }
 }

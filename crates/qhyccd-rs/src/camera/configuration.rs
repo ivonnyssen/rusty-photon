@@ -1,18 +1,22 @@
 use crate::Result;
 
-use crate::backend::{read_lock, CameraBackend};
-use crate::{check, CCDChipArea, StreamMode};
+use crate::{CCDChipArea, StreamMode};
 
-// `QHYError` is only constructed on the simulation match arms here (the real arms
-// funnel their success/fail return through `check`), so keep it `simulation`-gated
-// to avoid an unused import on the real/test build.
-#[cfg(feature = "simulation")]
-use crate::QHYError;
-
-use crate::ffi::{
+#[cfg(not(feature = "simulation"))]
+use crate::backend::read_lock;
+#[cfg(not(feature = "simulation"))]
+use crate::check;
+#[cfg(not(feature = "simulation"))]
+use crate::sys::{
     SetQHYCCDBinMode, SetQHYCCDBitsMode, SetQHYCCDDebayerOnOff, SetQHYCCDReadMode,
     SetQHYCCDResolution, SetQHYCCDStreamMode,
 };
+
+// `QHYError` is only constructed on the simulation arms here (the real arms funnel
+// their success/fail return through `check`), so keep it `simulation`-gated to
+// avoid an unused import on the real build.
+#[cfg(feature = "simulation")]
+use crate::QHYError;
 
 use super::Camera;
 
@@ -27,23 +31,22 @@ impl Camera {
     /// camera.set_stream_mode(StreamMode::LiveMode).expect("set_stream_mode failed");
     /// ```
     pub fn set_stream_mode(&self, mode: StreamMode) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe { SetQHYCCDStreamMode(handle, mode as u8) },
-                    "set_stream_mode",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe { SetQHYCCDStreamMode(handle, mode as u8) },
+                "set_stream_mode",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.stream_mode = Some(mode);
-                Ok(())
-            }
+            state.stream_mode = Some(mode);
+            Ok(())
         }
     }
 
@@ -58,28 +61,27 @@ impl Camera {
     /// camera.set_readout_mode(0).expect("set_readout_mode failed");
     /// ```
     pub fn set_readout_mode(&self, mode: u32) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe { SetQHYCCDReadMode(handle, mode) },
-                    "set_readout_mode",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe { SetQHYCCDReadMode(handle, mode) },
+                "set_readout_mode",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                if mode as usize >= state.config.readout_modes.len() {
-                    return Err(QHYError::Sdk {
-                        op: "set_readout_mode",
-                    });
-                }
-                state.readout_mode = mode;
-                Ok(())
+            if mode as usize >= state.config.readout_modes.len() {
+                return Err(QHYError::Sdk {
+                    op: "set_readout_mode",
+                });
             }
+            state.readout_mode = mode;
+            Ok(())
         }
     }
 
@@ -94,23 +96,22 @@ impl Camera {
     /// camera.set_bin_mode(1, 1).expect("set_bin_mode failed");
     /// ```
     pub fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe { SetQHYCCDBinMode(handle, bin_x, bin_y) },
-                    "set_bin_mode",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe { SetQHYCCDBinMode(handle, bin_x, bin_y) },
+                "set_bin_mode",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.binning = (bin_x, bin_y);
-                Ok(())
-            }
+            state.binning = (bin_x, bin_y);
+            Ok(())
         }
     }
 
@@ -124,20 +125,19 @@ impl Camera {
     /// camera.set_debayer(true).expect("set_debayer failed");
     /// ```
     pub fn set_debayer(&self, on: bool) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(unsafe { SetQHYCCDDebayerOnOff(handle, on) }, "set_debayer")
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(unsafe { SetQHYCCDDebayerOnOff(handle, on) }, "set_debayer")
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.debayer_enabled = on;
-                Ok(())
-            }
+            state.debayer_enabled = on;
+            Ok(())
         }
     }
 
@@ -157,25 +157,24 @@ impl Camera {
     /// camera.set_roi(roi).expect("set_roi failed");
     /// ```
     pub fn set_roi(&self, roi: CCDChipArea) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe {
-                        SetQHYCCDResolution(handle, roi.start_x, roi.start_y, roi.width, roi.height)
-                    },
-                    "set_roi",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe {
+                    SetQHYCCDResolution(handle, roi.start_x, roi.start_y, roi.width, roi.height)
+                },
+                "set_roi",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.roi = roi;
-                Ok(())
-            }
+            state.roi = roi;
+            Ok(())
         }
     }
 
@@ -190,20 +189,19 @@ impl Camera {
     /// camera.set_bit_mode(16).expect("set_bit_mode failed");
     /// ```
     pub fn set_bit_mode(&self, mode: u32) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(unsafe { SetQHYCCDBitsMode(handle, mode) }, "set_bit_mode")
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(unsafe { SetQHYCCDBitsMode(handle, mode) }, "set_bit_mode")
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.bit_depth = mode;
-                Ok(())
-            }
+            state.bit_depth = mode;
+            Ok(())
         }
     }
 }

@@ -84,7 +84,12 @@ pub enum ControlType {
 impl ControlType {
     /// The SDK `CONTROL_ID` for this control. The numeric values match the
     /// QHYCCD SDK's own numbering (forced fact #3 of the convention plan).
+    ///
+    /// Only the real FFI arms (compiled without `simulation`) and the round-trip
+    /// test consume this — the simulated backend keys controls by `ControlType`
+    /// directly — so it is dead code on a `simulation` non-test build.
     #[must_use]
+    #[cfg_attr(feature = "simulation", allow(dead_code))]
     pub(crate) fn to_raw(self) -> u32 {
         match self {
             Self::Brightness => 0,

@@ -11,19 +11,14 @@ use std::ffi::{c_char, CStr};
 #[cfg(feature = "simulation")]
 use crate::simulation;
 
-// These imports are only used when NOT simulating (real hardware path in Sdk::new)
-#[cfg(all(not(test), not(feature = "simulation")))]
-use libqhyccd_sys::{GetQHYCCDId, InitQHYCCDResource, ScanQHYCCD, QHYCCD_ERROR};
-
-#[cfg(all(not(test), not(feature = "simulation")))]
-use libqhyccd_sys::{GetQHYCCDSDKVersion, ReleaseQHYCCDResource, QHYCCD_SUCCESS};
-
-#[cfg(all(test, not(feature = "simulation")))]
-use crate::mocks::mock_libqhyccd_sys::{GetQHYCCDId, InitQHYCCDResource, ScanQHYCCD, QHYCCD_ERROR};
-
-#[cfg(all(test, not(feature = "simulation")))]
-use crate::mocks::mock_libqhyccd_sys::{
-    GetQHYCCDSDKVersion, ReleaseQHYCCDResource, QHYCCD_SUCCESS,
+// These imports are only used when NOT simulating (real hardware path in Sdk::new
+// / version / Drop); under `simulation` those methods are `#[cfg]`'d out. The FFI
+// is called directly here (not behind a per-method backend fork like the camera
+// modules), so `sdk.rs` gates itself out under `simulation` rather than forking.
+#[cfg(not(feature = "simulation"))]
+use crate::sys::{
+    GetQHYCCDId, GetQHYCCDSDKVersion, InitQHYCCDResource, ReleaseQHYCCDResource, ScanQHYCCD,
+    QHYCCD_ERROR, QHYCCD_SUCCESS,
 };
 
 #[non_exhaustive]

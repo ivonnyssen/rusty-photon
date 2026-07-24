@@ -1,16 +1,20 @@
 use crate::Result;
 
-use crate::backend::{read_lock, CameraBackend};
-use crate::{check, ImageData, QHYError};
+use crate::{ImageData, QHYError};
 
-#[cfg(feature = "simulation")]
-use crate::simulation;
-
-use crate::ffi::{
+#[cfg(not(feature = "simulation"))]
+use crate::backend::read_lock;
+#[cfg(not(feature = "simulation"))]
+use crate::check;
+#[cfg(not(feature = "simulation"))]
+use crate::sys::{
     BeginQHYCCDLive, CancelQHYCCDExposing, CancelQHYCCDExposingAndReadout, ExpQHYCCDSingleFrame,
     GetQHYCCDExposureRemaining, GetQHYCCDLiveFrame, GetQHYCCDMemLength, GetQHYCCDSingleFrame,
     StopQHYCCDLive, QHYCCD_ERROR, QHYCCD_SUCCESS,
 };
+
+#[cfg(feature = "simulation")]
+use crate::simulation;
 
 use super::Camera;
 
@@ -27,20 +31,19 @@ impl Camera {
     /// camera.begin_live().expect("begin_live failed");
     /// ```
     pub fn begin_live(&self) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(unsafe { BeginQHYCCDLive(handle) }, "begin_live")
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(unsafe { BeginQHYCCDLive(handle) }, "begin_live")
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.live_mode_active = true;
-                Ok(())
-            }
+            state.live_mode_active = true;
+            Ok(())
         }
     }
 
@@ -57,20 +60,19 @@ impl Camera {
     /// camera.end_live().expect("end_live failed");
     /// ```
     pub fn end_live(&self) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(unsafe { StopQHYCCDLive(handle) }, "end_live")
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(unsafe { StopQHYCCDLive(handle) }, "end_live")
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.live_mode_active = false;
-                Ok(())
-            }
+            state.live_mode_active = false;
+            Ok(())
         }
     }
 
@@ -85,28 +87,27 @@ impl Camera {
     /// println!("Image size: {}", image_size);
     /// ```
     pub fn get_image_size(&self) -> Result<usize> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                match unsafe { GetQHYCCDMemLength(handle) } {
-                    QHYCCD_ERROR => {
-                        let error = QHYError::Sdk {
-                            op: "get_image_size",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                    size => Ok(size as usize),
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            match unsafe { GetQHYCCDMemLength(handle) } {
+                QHYCCD_ERROR => {
+                    let error = QHYError::Sdk {
+                        op: "get_image_size",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
+                size => Ok(size as usize),
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.calculate_buffer_size())
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.calculate_buffer_size())
         }
     }
 
@@ -126,72 +127,74 @@ impl Camera {
     /// let image = camera.get_live_frame(buffer_size).expect("get_live_frame failed");
     /// println!("Image: {:?}", image);
     /// ```
+    // `buffer_size` sizes the caller's download buffer on the real FFI path; the
+    // simulated backend generates its own frame, so the arg is unused there.
+    #[cfg_attr(feature = "simulation", allow(unused_variables))]
     pub fn get_live_frame(&self, buffer_size: usize) -> Result<ImageData> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut width: u32 = 0;
-                let mut height: u32 = 0;
-                let mut bpp: u32 = 0;
-                let mut channels: u32 = 0;
-                let mut buffer = vec![0u8; buffer_size];
-                match unsafe {
-                    GetQHYCCDLiveFrame(
-                        handle,
-                        &mut width as *mut u32,
-                        &mut height as *mut u32,
-                        &mut bpp as *mut u32,
-                        &mut channels as *mut u32,
-                        buffer.as_mut_ptr(),
-                    )
-                } {
-                    QHYCCD_SUCCESS => Ok(ImageData {
-                        data: buffer,
-                        width,
-                        height,
-                        bits_per_pixel: bpp,
-                        channels,
-                    }),
-                    _ => {
-                        let error = QHYError::Sdk {
-                            op: "get_live_frame",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                }
-            }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                if !state.live_mode_active {
-                    return Err(QHYError::Sdk {
-                        op: "get_live_frame",
-                    });
-                }
-
-                let (width, height) = state.get_current_image_dimensions();
-                let bpp = state.bit_depth;
-                let channels = state.get_channels();
-
-                let generator = simulation::ImageGenerator::default();
-                let data = if bpp <= 8 {
-                    generator.generate_8bit(width, height, channels)
-                } else {
-                    generator.generate_16bit(width, height, channels)
-                };
-
-                Ok(ImageData {
-                    data,
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut width: u32 = 0;
+            let mut height: u32 = 0;
+            let mut bpp: u32 = 0;
+            let mut channels: u32 = 0;
+            let mut buffer = vec![0u8; buffer_size];
+            match unsafe {
+                GetQHYCCDLiveFrame(
+                    handle,
+                    &mut width as *mut u32,
+                    &mut height as *mut u32,
+                    &mut bpp as *mut u32,
+                    &mut channels as *mut u32,
+                    buffer.as_mut_ptr(),
+                )
+            } {
+                QHYCCD_SUCCESS => Ok(ImageData {
+                    data: buffer,
                     width,
                     height,
                     bits_per_pixel: bpp,
                     channels,
-                })
+                }),
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "get_live_frame",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
+                }
             }
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
+            }
+            if !state.live_mode_active {
+                return Err(QHYError::Sdk {
+                    op: "get_live_frame",
+                });
+            }
+
+            let (width, height) = state.get_current_image_dimensions();
+            let bpp = state.bit_depth;
+            let channels = state.get_channels();
+
+            let generator = simulation::ImageGenerator::default();
+            let data = if bpp <= 8 {
+                generator.generate_8bit(width, height, channels)
+            } else {
+                generator.generate_16bit(width, height, channels)
+            };
+
+            Ok(ImageData {
+                data,
+                width,
+                height,
+                bits_per_pixel: bpp,
+                channels,
+            })
         }
     }
 
@@ -211,84 +214,83 @@ impl Camera {
     /// let buffer_size = camera.get_image_size().expect("get_camera_image_size failed");
     /// let image = camera.get_single_frame(buffer_size).expect("get_camera_single_frame failed");
     /// ```
+    // `buffer_size` sizes the caller's download buffer on the real FFI path; the
+    // simulated backend returns its pre-generated frame, so the arg is unused there.
+    #[cfg_attr(feature = "simulation", allow(unused_variables))]
     pub fn get_single_frame(&self, buffer_size: usize) -> Result<ImageData> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                let mut width: u32 = 0;
-                let mut height: u32 = 0;
-                let mut bpp: u32 = 0;
-                let mut channels: u32 = 0;
-                let mut buffer = vec![0u8; buffer_size];
-                match unsafe {
-                    GetQHYCCDSingleFrame(
-                        handle,
-                        &mut width as *mut u32,
-                        &mut height as *mut u32,
-                        &mut bpp as *mut u32,
-                        &mut channels as *mut u32,
-                        buffer.as_mut_ptr(),
-                    )
-                } {
-                    QHYCCD_SUCCESS => Ok(ImageData {
-                        data: buffer,
-                        width,
-                        height,
-                        bits_per_pixel: bpp,
-                        channels,
-                    }),
-                    _ => {
-                        let error = QHYError::Sdk {
-                            op: "get_single_frame",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            let mut width: u32 = 0;
+            let mut height: u32 = 0;
+            let mut bpp: u32 = 0;
+            let mut channels: u32 = 0;
+            let mut buffer = vec![0u8; buffer_size];
+            match unsafe {
+                GetQHYCCDSingleFrame(
+                    handle,
+                    &mut width as *mut u32,
+                    &mut height as *mut u32,
+                    &mut bpp as *mut u32,
+                    &mut channels as *mut u32,
+                    buffer.as_mut_ptr(),
+                )
+            } {
+                QHYCCD_SUCCESS => Ok(ImageData {
+                    data: buffer,
+                    width,
+                    height,
+                    bits_per_pixel: bpp,
+                    channels,
+                }),
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "get_single_frame",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-
-                // Wait for exposure to complete if one is in progress (like real hardware)
-                // But instead of spin-waiting, sleep for the exact remaining time
-                while !state.is_exposure_complete() {
-                    let remaining_us = state.get_remaining_exposure_us();
-                    if remaining_us > 0 {
-                        drop(state); // Release lock while sleeping
-                        std::thread::sleep(std::time::Duration::from_micros(remaining_us as u64));
-                        // Reacquire lock
-                        state = match &self.backend {
-                            CameraBackend::Simulated { state } => state.write(),
-                            _ => unreachable!(),
-                        };
-                    } else {
-                        break;
-                    }
-                }
-
-                // Return the pre-generated image
-                let captured_image = state.captured_image.take().ok_or(QHYError::Sdk {
-                    op: "get_single_frame: no image available",
-                })?;
-                let metadata = state.captured_image_metadata.take().ok_or(QHYError::Sdk {
-                    op: "get_single_frame: no image metadata available",
-                })?;
-
-                // Clear exposure state
-                state.exposure_start = None;
-
-                Ok(ImageData {
-                    data: captured_image,
-                    width: metadata.width,
-                    height: metadata.height,
-                    bits_per_pixel: metadata.bits_per_pixel,
-                    channels: metadata.channels,
-                })
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+
+            // Wait for exposure to complete if one is in progress (like real hardware)
+            // But instead of spin-waiting, sleep for the exact remaining time
+            while !state.is_exposure_complete() {
+                let remaining_us = state.get_remaining_exposure_us();
+                if remaining_us > 0 {
+                    drop(state); // Release lock while sleeping
+                    std::thread::sleep(std::time::Duration::from_micros(remaining_us as u64));
+                    // Reacquire lock
+                    state = self.state.write();
+                } else {
+                    break;
+                }
+            }
+
+            // Return the pre-generated image
+            let captured_image = state.captured_image.take().ok_or(QHYError::Sdk {
+                op: "get_single_frame: no image available",
+            })?;
+            let metadata = state.captured_image_metadata.take().ok_or(QHYError::Sdk {
+                op: "get_single_frame: no image metadata available",
+            })?;
+
+            // Clear exposure state
+            state.exposure_start = None;
+
+            Ok(ImageData {
+                data: captured_image,
+                width: metadata.width,
+                height: metadata.height,
+                bits_per_pixel: metadata.bits_per_pixel,
+                channels: metadata.channels,
+            })
         }
     }
 
@@ -306,23 +308,22 @@ impl Camera {
     /// camera.start_single_frame_exposure().expect("start_single_frame_exposure failed");
     /// ```
     pub fn start_single_frame_exposure(&self) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe { ExpQHYCCDSingleFrame(handle) },
-                    "start_single_frame_exposure",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe { ExpQHYCCDSingleFrame(handle) },
+                "start_single_frame_exposure",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.start_exposure();
-                Ok(())
-            }
+            state.start_exposure();
+            Ok(())
         }
     }
 
@@ -342,29 +343,28 @@ impl Camera {
     /// println!("Remaining exposure time: {}", remaining);
     /// ```
     pub fn get_remaining_exposure_us(&self) -> Result<u32> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                match unsafe { GetQHYCCDExposureRemaining(handle) } {
-                    QHYCCD_ERROR => {
-                        let error = QHYError::Sdk {
-                            op: "get_remaining_exposure_us",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                    remaining if { remaining <= 100 } => Ok(0),
-                    remaining => Ok(remaining),
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            match unsafe { GetQHYCCDExposureRemaining(handle) } {
+                QHYCCD_ERROR => {
+                    let error = QHYError::Sdk {
+                        op: "get_remaining_exposure_us",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
                 }
+                remaining if { remaining <= 100 } => Ok(0),
+                remaining => Ok(remaining),
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let state = state.read();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                Ok(state.get_remaining_exposure_us())
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
+            Ok(state.get_remaining_exposure_us())
         }
     }
 
@@ -383,20 +383,19 @@ impl Camera {
     /// camera.stop_exposure().expect("stop_exposure failed");
     /// ```
     pub fn stop_exposure(&self) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(unsafe { CancelQHYCCDExposing(handle) }, "stop_exposure")
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(unsafe { CancelQHYCCDExposing(handle) }, "stop_exposure")
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.stop_exposure();
-                Ok(())
-            }
+            state.stop_exposure();
+            Ok(())
         }
     }
 
@@ -414,23 +413,22 @@ impl Camera {
     /// camera.abort_exposure_and_readout().expect("abort_exposure_and_readout failed");
     /// ```
     pub fn abort_exposure_and_readout(&self) -> Result<()> {
-        match &self.backend {
-            CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle)?;
-                check(
-                    unsafe { CancelQHYCCDExposingAndReadout(handle) },
-                    "abort_exposure_and_readout",
-                )
+        #[cfg(not(feature = "simulation"))]
+        {
+            let handle = read_lock!(self.handle)?;
+            check(
+                unsafe { CancelQHYCCDExposingAndReadout(handle) },
+                "abort_exposure_and_readout",
+            )
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let mut state = self.state.write();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
             }
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => {
-                let mut state = state.write();
-                if !state.is_open {
-                    return Err(QHYError::CameraNotOpen);
-                }
-                state.abort_exposure();
-                Ok(())
-            }
+            state.abort_exposure();
+            Ok(())
         }
     }
 }

@@ -1,8 +1,12 @@
-use parking_lot::RwLock;
-use std::sync::Arc;
+//! Real-hardware handle machinery for [`Camera`](crate::Camera).
+//!
+//! Compiled only **without** the `simulation` feature (`lib.rs` gates the whole
+//! module): a simulated camera holds a `SimulatedCameraState` instead of a
+//! [`HandleCell`], and every camera method forks at compile time on the feature
+//! (see the sibling `zwo-rs` / `svbony-rs` crates). This module therefore never
+//! touches the simulation types and always calls the real `libqhyccd-sys` FFI.
 
-#[cfg(feature = "simulation")]
-use crate::simulation::SimulatedCameraState;
+use parking_lot::RwLock;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) struct QHYCCDHandle {
@@ -11,9 +15,9 @@ pub(crate) struct QHYCCDHandle {
 
 // SAFETY: the struct holds a raw pointer (`*const c_void`), which makes it
 // `!Send + !Sync` by default — so these impls are REQUIRED for `Camera`
-// (`CameraBackend::Real { handle: Arc<HandleCell> }`) to be `Send + Sync`, which
-// it must be to move across the async runtime / blocking threads. The pointer is
-// an opaque QHYCCD SDK handle that is never dereferenced in Rust.
+// (whose real backend is `Arc<HandleCell>`) to be `Send + Sync`, which it must be
+// to move across the async runtime / blocking threads. The pointer is an opaque
+// QHYCCD SDK handle that is never dereferenced in Rust.
 //
 // This type does NOT itself serialize concurrent SDK calls on one handle: the
 // `parking_lot::RwLock` inside `HandleCell` only guards the `Option<handle>`
@@ -36,10 +40,7 @@ unsafe impl Sync for QHYCCDHandle {}
 ///
 /// `Drop` closes only an *open* handle (`Some`), so an explicit
 /// [`Camera::close`](crate::Camera::close) (which `take()`s the `Option`) makes
-/// it a no-op. Under the `simulation` feature the [`crate::ffi`] alias is the
-/// `unimplemented!()` stub, but a Real handle is never opened there (`open()`
-/// hits the stub and panics first), so the `Option` is always `None` and the
-/// stub is never reached.
+/// it a no-op.
 #[derive(Debug)]
 pub(crate) struct HandleCell {
     inner: RwLock<Option<QHYCCDHandle>>,
@@ -70,8 +71,8 @@ impl Drop for HandleCell {
         // so a prior explicit `close()` (or `Sdk::drop`'s pre-release close)
         // makes this a no-op rather than a double-close.
         if let Some(handle) = self.inner.get_mut().take() {
-            match unsafe { crate::ffi::CloseQHYCCD(handle.ptr) } {
-                crate::ffi::QHYCCD_SUCCESS => {}
+            match unsafe { crate::sys::CloseQHYCCD(handle.ptr) } {
+                crate::sys::QHYCCD_SUCCESS => {}
                 _ => {
                     tracing::error!(
                         error = ?crate::QHYError::Sdk { op: "close_camera" },
@@ -79,44 +80,6 @@ impl Drop for HandleCell {
                     );
                 }
             }
-        }
-    }
-}
-
-/// Internal backend for camera operations
-#[derive(Debug)]
-pub(crate) enum CameraBackend {
-    /// Real hardware camera using FFI calls
-    Real { handle: Arc<HandleCell> },
-    /// Simulated camera for testing
-    #[cfg(feature = "simulation")]
-    Simulated {
-        state: Arc<RwLock<SimulatedCameraState>>,
-    },
-}
-
-impl Clone for CameraBackend {
-    fn clone(&self) -> Self {
-        match self {
-            CameraBackend::Real { handle } => CameraBackend::Real {
-                handle: Arc::clone(handle),
-            },
-            #[cfg(feature = "simulation")]
-            CameraBackend::Simulated { state } => CameraBackend::Simulated {
-                state: Arc::clone(state),
-            },
-        }
-    }
-}
-
-impl PartialEq for CameraBackend {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (CameraBackend::Real { .. }, CameraBackend::Real { .. }) => true,
-            #[cfg(feature = "simulation")]
-            (CameraBackend::Simulated { .. }, CameraBackend::Simulated { .. }) => true,
-            #[allow(unreachable_patterns)]
-            _ => false,
         }
     }
 }

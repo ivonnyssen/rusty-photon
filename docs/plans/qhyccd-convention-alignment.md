@@ -1,12 +1,15 @@
 # Align `qhyccd-rs` to the `zwo-rs` / `svbony-rs` conventions
 
-**Status:** Phases 1–3 IMPLEMENTED (2026-07-23), consolidated on one branch
-`feature/qhyccd-convention-alignment`. Phase 1: shared handle cell + RAII
-last-drop close + `Sdk::drop` Close-before-Release. Phase 2: `Control` →
-`ControlType` (31-variant subset + `Other(i32)` + `to_raw`), typed accessors on
-`Camera` + the service seam. Phase 3: flat `QHYError` (`Sdk { op }` + the
-genuinely-distinct cases) + a `check` helper + `pub use libqhyccd_sys as sys`.
-Phases 4–5 not started. Analysis complete 2026-07-23.
+**Status:** Phases 1–4 IMPLEMENTED (Phases 1–3 2026-07-23, Phase 4 2026-07-24),
+consolidated on one branch `feature/qhyccd-convention-alignment`. Phase 1: shared
+handle cell + RAII last-drop close + `Sdk::drop` Close-before-Release. Phase 2:
+`Control` → `ControlType` (31-variant subset + `Other(i32)` + `to_raw`), typed
+accessors on `Camera` + the service seam. Phase 3: flat `QHYError` (`Sdk { op }` +
+the genuinely-distinct cases) + a `check` helper + `pub use libqhyccd_sys as sys`.
+Phase 4: runtime `CameraBackend` enum → compile-time `#[cfg(feature =
+"simulation")]` per-method fork; `mocks.rs` `#[automock]` FFI-mock layer deleted;
+`simulation/` subtree flattened to one `simulation.rs`. Phase 5 not started.
+Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
 ([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
@@ -269,7 +272,7 @@ no longer part of the routine surface; suites green.
 
 **Exit:** flatter `QHYError`; `sys` + `check` re-exported; suites green. ✓
 
-### Phase 4 — Simulation + mock-layer consolidation (largest structural change)
+### Phase 4 — Simulation + mock-layer consolidation (IMPLEMENTED 2026-07-24)
 
 - Fold the `simulation/` subtree into an inline `SimState` + `#[cfg(feature =
   "simulation")]` per-method fork, matching `zwo camera.rs` / `svbony camera.rs`.
@@ -280,8 +283,52 @@ no longer part of the routine surface; suites green.
 - **Keep** `QHYCCD_SKIP_NATIVE_LINK` and its `unimplemented!()` stubs — that
   capability is orthogonal and worth retaining.
 
+**Concrete design (as implemented 2026-07-24):**
+- **Runtime `CameraBackend` enum → compile-time `#[cfg]` fork.** Each camera
+  method's `match &self.backend { Real, #[cfg] Simulated }` becomes two
+  `#[cfg(feature = "simulation")]` / `#[cfg(not(...))]` blocks (Idiom A: each block
+  is the method's tail expression — verified to compile under both configs). The
+  `Camera` struct now holds `#[cfg(not(feature = "simulation"))] handle:
+  Arc<HandleCell>` **xor** `#[cfg(feature = "simulation")] state:
+  Arc<RwLock<SimulatedCameraState>>`. It stays **`Arc`-shared** (not zwo's
+  single-owner `Mutex<SimState>`): a QHY CFW drives the *same* camera handle
+  (Phase 1), so `Camera: Clone` + wheel-sharing is SDK-forced. `backend.rs`
+  (`HandleCell`/`QHYCCDHandle`/`read_lock!`) is now `#[cfg(not(feature =
+  "simulation"))]`; `Camera::new` is real-only, `new_simulated` sim-only,
+  `is_simulated` a per-build constant; `PartialEq` is hand-rolled id-only (dropped
+  the `derive_more` dep).
+- **`mocks.rs` deleted entirely** — both the `#[automock]` `mock_libqhyccd_sys`
+  *and* the `unimplemented!()` stub module — along with the `crate::ffi` alias in
+  `lib.rs`. The real arms call `crate::sys::*` (= `libqhyccd_sys`) directly, like
+  zwo's `sys::ASI*`. **`QHYCCD_SKIP_NATIVE_LINK` is untouched:** the no-SDK-build
+  capability lives entirely in `libqhyccd-sys` (build.rs `qhyccd_skip_link` cfg
+  gating the `#[link]` attr), *independent* of `mocks.rs` — under `simulation` the
+  FFI arms are `#[cfg]`'d out, so the former alias/stubs were simply unneeded.
+  Removed the now-unused `mockall` dev-dep; repinned `MODULE.bazel.lock`.
+- **FFI-mock test suite deleted** (`src/tests/{camera,sdk,filter_wheel}_tests.rs`,
+  99 tests). A coverage audit classified each: **47 DUP** (already covered by the
+  simulation-path tests), **45 FFI-ONLY** (the `u32::MAX`/`QHYCCD_ERROR_F64`
+  sentinel decodes, the ≤100 remaining-exposure threshold, firmware bit-decode,
+  `CStr`/UTF-8 + `CString` interior-NUL handling of C buffers, the real
+  scan/enumeration pipeline, and the `HandleCell::Drop` / teardown-order
+  mock-call-count checks — all in the now-compiled-out FFI arm, so legitimately
+  untested, exactly as in zwo/svbony), and **7 GAP** → re-expressed as **5 new
+  simulation-path tests** (`Sdk::version` sim value; `BayerMode::try_from` in a
+  `types.rs` `#[cfg(test)]` mod; `get_live_frame` open-but-not-live;
+  `get_single_frame` open-but-no-image; a `FilterWheel` over an open no-CFW camera).
+- **`simulation/` subtree flattened** to a single `src/simulation.rs`, preserving
+  the public `simulation` module + `SimulatedCameraConfig` / `ImageGenerator` /
+  `ImagePattern` and the `pub(crate)` `SimulatedCameraState`. The rich sim model is
+  **kept, not trimmed to zwo's minimal `fill_noise`**: `Sdk::new()`'s configured
+  `SIM-QHY178M` (7-slot CFW + cooler + chip geometry) is what the `qhy-camera` BDD +
+  ConformU suites drive, so a zwo-minimal rewrite was not viable — and the phase's
+  own risk table only anticipated *re-expressing* the FFI-mock tests, not deleting
+  the sim model.
+
 **Exit:** no `simulation/` subtree, no `mocks.rs`; unit + BDD + ConformU suites
-green with no coverage regression.
+green with no coverage regression. ✓ (sim unit suite 139 green; FFI arms are
+`#[cfg]`'d out of the sim coverage build, so the hard-to-cover FFI path no longer
+counts as uncovered.)
 
 ### Phase 5 — Module consolidation + frame buffer
 

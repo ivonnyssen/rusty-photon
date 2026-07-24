@@ -4,7 +4,9 @@
 //! requiring actual QHYCCD hardware.
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
-use qhyccd_rs::{BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, Sdk, StreamMode};
+use qhyccd_rs::{
+    BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, SDKVersion, Sdk, StreamMode,
+};
 
 #[test]
 fn test_simulated_camera_creation() {
@@ -1298,4 +1300,74 @@ fn test_filter_wheel_close_then_reopen() {
     assert!(pos < 10); // Valid position range
 
     fw.close().unwrap();
+}
+
+// The tests below preserve coverage of behaviour formerly reached only through
+// the deleted FFI-mock unit tests (src/tests/), re-expressed against the
+// simulated backend (the mock layer is gone — see the convention plan, Phase 4).
+
+#[test]
+fn test_simulated_sdk_version_is_the_targeted_release() {
+    // The simulated `Sdk::version()` returns the synthetic SDK release this crate
+    // targets — previously only asserted (on the FFI byte-decode) by the deleted
+    // `sdk_tests::version_success`.
+    let sdk = Sdk::new_simulated();
+    assert_eq!(
+        sdk.version().unwrap(),
+        SDKVersion {
+            year: 26,
+            month: 6,
+            day: 4,
+            subday: 0,
+        }
+    );
+}
+
+#[test]
+fn test_get_live_frame_without_begin_live_errors() {
+    // Open + init in live mode but never call `begin_live`: `get_live_frame`
+    // must fail (formerly `camera_tests::get_live_frame_fail`).
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+
+    let buffer_size = camera.get_image_size().unwrap();
+    assert!(camera.get_live_frame(buffer_size).is_err());
+
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_get_single_frame_without_exposure_errors() {
+    // Open + init in single-frame mode but never start an exposure: no image is
+    // captured, so `get_single_frame` must fail (formerly
+    // `camera_tests::get_single_frame_fail`).
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::SingleFrameMode).unwrap();
+    camera.init().unwrap();
+
+    let buffer_size = camera.get_image_size().unwrap();
+    assert!(camera.get_single_frame(buffer_size).is_err());
+
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_filter_wheel_methods_error_when_camera_has_no_cfw_control() {
+    // A `FilterWheel` wrapping an OPEN camera whose config has no CFW control:
+    // every wheel method must fail on the control-unavailable branch — distinct
+    // from the not-open branch. Preserves the three deleted
+    // `filter_wheel_tests::*_fail_no_filter_wheel` cases.
+    let config = SimulatedCameraConfig::default(); // no `.with_filter_wheel(..)`
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    let fw = FilterWheel::new(camera);
+
+    assert!(fw.get_number_of_filters().is_err());
+    assert!(fw.get_fw_position().is_err());
+    assert!(fw.set_fw_position(1).is_err());
 }
