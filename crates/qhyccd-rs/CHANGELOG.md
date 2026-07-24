@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `start_single_frame_exposure` no longer reports a spurious error when
+  `ExpQHYCCDSingleFrame` returns `QHYCCD_READ_DIRECTLY` (`0x2001`) — a non-error
+  return meaning the single frame is already captured and can be read
+  immediately. It is now accepted as success alongside `QHYCCD_SUCCESS` (matching
+  INDI's indi-qhy); only `QHYCCD_ERROR` is treated as a failure. Previously the
+  `check()`-based handling (== 0 only) rejected it, which would break
+  single-frame capture on the cameras/modes that take that path. Affects real
+  hardware only — the `simulation` backend never returns this code, so no test in
+  the crate covers the branch. Adds `libqhyccd_sys::QHYCCD_READ_DIRECTLY`.
+
 ### Changed
 
 - Simulated exposures now capture their start timestamp *after* the frame is

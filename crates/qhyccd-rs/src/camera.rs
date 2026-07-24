@@ -34,7 +34,7 @@ use crate::sys::{
     GetQHYCCDType, InitQHYCCD, IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable, OpenQHYCCD,
     SetQHYCCDBinMode, SetQHYCCDBitsMode, SetQHYCCDDebayerOnOff, SetQHYCCDParam, SetQHYCCDReadMode,
     SetQHYCCDResolution, SetQHYCCDStreamMode, StopQHYCCDLive, QHYCCD_ERROR, QHYCCD_ERROR_F64,
-    QHYCCD_SUCCESS,
+    QHYCCD_READ_DIRECTLY, QHYCCD_SUCCESS,
 };
 
 #[cfg(feature = "simulation")]
@@ -1455,10 +1455,25 @@ impl Camera {
         #[cfg(not(feature = "simulation"))]
         {
             let handle = read_lock!(self.handle)?;
-            check(
-                unsafe { ExpQHYCCDSingleFrame(handle) },
-                "start_single_frame_exposure",
-            )
+            // `ExpQHYCCDSingleFrame` has THREE documented returns, not two:
+            // `QHYCCD_SUCCESS` (exposure started — wait for it) and
+            // `QHYCCD_READ_DIRECTLY` (0x2001 — the frame is already captured and
+            // can be read immediately) are BOTH success; only `QHYCCD_ERROR`
+            // (0xFFFFFFFF) is a failure. Plain `check()` (== 0 only) would wrongly
+            // reject `READ_DIRECTLY`, breaking single-frame capture on the cameras
+            // / modes that take that path — INDI's indi-qhy accepts it for the same
+            // reason. Reachable only against real hardware: the `simulation` arm
+            // always succeeds, so no test in this crate exercises this branch.
+            match unsafe { ExpQHYCCDSingleFrame(handle) } {
+                QHYCCD_SUCCESS | QHYCCD_READ_DIRECTLY => Ok(()),
+                _ => {
+                    let error = QHYError::Sdk {
+                        op: "start_single_frame_exposure",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
+                }
+            }
         }
         #[cfg(feature = "simulation")]
         {

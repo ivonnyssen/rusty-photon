@@ -217,6 +217,18 @@ calls `libqhyccd-sys` FFI (via `crate::sys`), the simulation block updates
 `simulation`, so a simulated build has no FFI arm to test (as in zwo/svbony) and
 the hard-to-cover FFI path never counts as uncovered.
 
+**FFI-arm behaviour the simulation does not reproduce is hardware-verified, not
+sim-verified.** Because the real arm is compiled out under `simulation`, any SDK
+return semantics the simulated backend does not model are validated only against
+physical hardware / ConformU-on-real. Concretely: `ExpQHYCCDSingleFrame` can
+return `QHYCCD_READ_DIRECTLY` (`0x2001`) rather than `QHYCCD_SUCCESS` on the
+cameras/modes where the frame is already captured — a *success* return meaning
+"read it immediately." `start_single_frame_exposure` accepts it as success
+(matching INDI's indi-qhy; only `QHYCCD_ERROR` is a failure), but the
+`simulation` arm always succeeds, so no test in this crate exercises that branch.
+When touching an FFI arm, treat the SDK's non-`SUCCESS`/non-`ERROR` returns as a
+hardware-only concern the suite will not catch.
+
 This replaced an earlier **runtime `CameraBackend` enum** (both arms always
 compiled) plus a `#[automock]` FFI-mock test layer (`src/mocks.rs`), removed in
 Phase 4 of the [convention-alignment plan](../../../docs/plans/qhyccd-convention-alignment.md).
