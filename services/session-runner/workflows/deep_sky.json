@@ -1,14 +1,14 @@
 {
   "version": 1,
   "name": "deep-sky",
-  "description": "Classic multi-target deep-sky imaging session, addressed by optical train: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (stop guiding if active, slew, optional plate-solve centering, optional auto-focus, optional start of guiding), capturing one frame per pass, recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met, and dithering every dither_every recorded frames — with reactive refocusing, meridian-flip handling, and rp's guide-focus-watch events answered by a guide-only metric auto_focus (guide_focus_degraded) or the full refocus_train (guide_focus_escalation), ending at the frame budget or when the planner declares the session over (end_of_session), stopping guiding and optionally parking. The single train_id parameter names the imaging train: rp resolves the camera, filter wheel, and focuser through it, and auto-focus sweep geometry comes from the train's auto_focus config block. get_next_target supplies filter/duration_secs from the target's first incomplete exposures[] entry with the exposure/filter parameters as fallback for plan-less targets — see docs/services/session-runner.md § deep_sky.json.",
+  "description": "Classic multi-target deep-sky imaging session, addressed by optical train: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (stop guiding if active, slew, optional plate-solve centering, optional auto-focus, optional start of guiding), capturing one frame per pass, recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met, and dithering every dither_every recorded frames — with reactive refocusing, meridian-flip handling, and rp's guide-focus-watch events answered by a guide-only metric auto_focus (guide_focus_degraded) or the full refocus_train (guide_focus_escalation), ending at the frame budget or when the planner declares the session over (end_of_session), stopping guiding and optionally parking. The single train_id parameter names the imaging train: rp resolves the camera, filter wheel, and focuser through it, and auto-focus sweep geometry comes from the train's auto_focus config block. get_next_target supplies filter/duration_secs from the target's first incomplete exposures[] entry with the exposure_duration/filter parameters as fallback for plan-less targets — see docs/services/session-runner.md § deep_sky.json.",
   "parameters": {
     "train_id": { "type": "string", "required": true },
-    "exposure": { "type": "duration", "default": "300s" },
+    "exposure_duration": { "type": "duration", "default": "300s" },
     "max_frames": { "type": "integer", "default": 0 },
     "filter": { "type": "string", "default": "" },
     "centering": { "type": "boolean", "default": true },
-    "centering_exposure": { "type": "duration", "default": "5s" },
+    "centering_exposure_duration": { "type": "duration", "default": "5s" },
     "centering_tolerance_arcsec": { "type": "number", "default": 60 },
     "centering_max_attempts": { "type": "integer", "default": 5 },
     "focus": { "type": "boolean", "default": true },
@@ -146,7 +146,7 @@
                 "train_id": { "$expr": "params.train_id" },
                 "ra": { "$expr": "session.target_ra" },
                 "dec": { "$expr": "session.target_dec" },
-                "duration": { "$expr": "params.centering_exposure" },
+                "duration": { "$expr": "params.centering_exposure_duration" },
                 "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
                 "max_attempts": { "$expr": "params.centering_max_attempts" }
               }
@@ -289,7 +289,7 @@
                       "session.pass_ra": "result.target.ra_hours",
                       "session.pass_dec": "result.target.dec_degrees",
                       "session.pass_filter": "result.duration_secs != null ? (result.filter != null ? result.filter : '') : params.filter",
-                      "session.pass_duration": "result.duration_secs != null ? humantime(result.duration_secs) : params.exposure"
+                      "session.pass_duration": "result.duration_secs != null ? humantime(result.duration_secs) : params.exposure_duration"
                     }
                   },
                   {
@@ -358,7 +358,7 @@
                               "train_id": { "$expr": "params.train_id" },
                               "ra": { "$expr": "session.pass_ra" },
                               "dec": { "$expr": "session.pass_dec" },
-                              "duration": { "$expr": "params.centering_exposure" },
+                              "duration": { "$expr": "params.centering_exposure_duration" },
                               "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
                               "max_attempts": { "$expr": "params.centering_max_attempts" }
                             }

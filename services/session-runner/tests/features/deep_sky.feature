@@ -38,7 +38,7 @@ Feature: Deep-sky workflow document
     And the simulated mount matches the site and points at the first target
     And a stub plate solver echoing the first target
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure       | 500ms |
+      | exposure_duration      | 500ms |
       | max_frames     | 3     |
       | focus          | false |
       | centering      | true  |
@@ -65,7 +65,7 @@ Feature: Deep-sky workflow document
       | park_on_finish | false |
     And an SSE client is watching rp's event stream
     When a session is started via the REST API
-    # `exposure` is deliberately not supplied: its default is 300s, so
+    # `exposure_duration` is deliberately not supplied: its default is 300s, so
     # the session can only finish this fast if the planner-returned 2s
     # plan is what reaches the camera.
     Then the session ends within 90 seconds
@@ -95,7 +95,7 @@ Feature: Deep-sky workflow document
     And an observing site where the morning sun has risen and one planner target sits below its floor
     And the simulated mount matches the site and points at the first target
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure       | 2s    |
+      | exposure_duration      | 2s    |
       | max_frames     | 2     |
       | focus          | false |
       | centering      | false |
@@ -116,7 +116,7 @@ Feature: Deep-sky workflow document
     And an observing site where it is astronomical night and the first of two planner targets sinks below its floor after 120 seconds
     And the simulated mount matches the site and points at the first target
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure       | 2s    |
+      | exposure_duration      | 2s    |
       | max_frames     | 0     |
       | focus          | false |
       | centering      | false |
@@ -134,7 +134,7 @@ Feature: Deep-sky workflow document
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
     And rp is running with a camera, a mount, a focuser, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure          | 500ms |
+      | exposure_duration         | 500ms |
       | max_frames        | 3     |
       | focus             | true  |
       | refocus_every     | 2     |
@@ -161,7 +161,7 @@ Feature: Deep-sky workflow document
     # meridian poll's first cycle fires the trigger deterministically
     # mid-loop.
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure        | 2s     |
+      | exposure_duration       | 2s     |
       | max_frames      | 20     |
       | focus           | false  |
       | centering       | false  |
@@ -181,7 +181,7 @@ Feature: Deep-sky workflow document
     And the simulated mount matches the site and points at the first target
     And a stub plate solver echoing the first target
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure       | 2s    |
+      | exposure_duration      | 2s    |
       | max_frames     | 4     |
       | focus          | false |
       | centering      | true  |
@@ -210,7 +210,7 @@ Feature: Deep-sky workflow document
     And the simulated mount matches the site and points at the first target
     And a stub guider accepting guide commands
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure       | 500ms |
+      | exposure_duration      | 500ms |
       | max_frames     | 3     |
       | focus          | false |
       | centering      | false |
@@ -243,7 +243,7 @@ Feature: Deep-sky workflow document
     And the stub guider has a focus watch of window 3, poll interval "250ms", and escalation deadline "3s"
     And a guiding train "guide" on the simulator's focuser with a metric auto_focus block
     And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
-      | exposure       | 2s    |
+      | exposure_duration      | 2s    |
       | max_frames     | 8     |
       | focus          | false |
       | centering      | false |

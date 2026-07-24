@@ -89,7 +89,7 @@ and either `required: true` or a `default`:
 ```jsonc
 "parameters": {
   "camera_id":  { "type": "string", "required": true },
-  "exposure":   { "type": "duration", "default": "300s" },
+  "exposure_duration": { "type": "duration", "default": "300s" },
   "max_frames": { "type": "integer", "default": 0 },
   "filters":    { "type": "array", "required": true }   // e.g. [ { "name": "L", "count": 20 }, … ]
 }
@@ -351,7 +351,7 @@ null-propagation in a system that moves telescopes is worse than a loud
   `"…"` with the JSON escape set; single quotes avoid escaping inside JSON
   documents.
 - **Durations are strings until you convert them.**
-  `seconds(params.exposure)` for math; `humantime(session.duration)` to
+  `seconds(params.exposure_duration)` for math; `humantime(session.duration)` to
   hand a number back to a tool argument. Exposure limits from
   `get_camera_info` arrive as humantime strings too — convert once into
   the blackboard, do arithmetic on numbers, convert back at the tool call.

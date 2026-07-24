@@ -2049,7 +2049,7 @@ async fn test_golden_sky_flat_discards_an_out_of_band_frame_and_recaptures() {
 #[tokio::test]
 async fn test_golden_sky_flat_dusk_ends_the_run_when_a_ceiling_frame_is_still_dark() {
     let doc = make_doc(crate::document::corpus::golden_sky_flat());
-    let params = sky_flat_params(&doc, json!({ "max_exposure": "2s" }));
+    let params = sky_flat_params(&doc, json!({ "max_exposure_duration": "2s" }));
     // A very dark 1 s frame is NOT enough to close the window — the
     // 2 s operator ceiling has only been pointed at by the rescale's
     // clamp, not tested. The retry at the ceiling reads dark too: now
@@ -2085,7 +2085,7 @@ async fn test_golden_sky_flat_dusk_waits_for_a_bright_sky_to_dim_at_the_floor() 
         &doc,
         json!({
             "filters": [{ "name": "L", "count": 1 }],
-            "min_exposure": "500ms",
+            "min_exposure_duration": "500ms",
             "initial_duration": "500ms"
         }),
     );
@@ -2117,7 +2117,7 @@ async fn test_golden_sky_flat_dawn_ends_the_run_when_a_floor_frame_is_still_brig
         json!({
             "filters": [{ "name": "L", "count": 1 }],
             "dawn": true,
-            "min_exposure": "500ms",
+            "min_exposure_duration": "500ms",
             "initial_duration": "500ms"
         }),
     );
@@ -2146,7 +2146,7 @@ async fn test_golden_sky_flat_dawn_waits_for_a_dark_sky_to_brighten_at_the_ceili
         json!({
             "filters": [{ "name": "L", "count": 1 }],
             "dawn": true,
-            "max_exposure": "2s",
+            "max_exposure_duration": "2s",
             "initial_duration": "2s"
         }),
     );
@@ -2257,7 +2257,7 @@ fn planned_recommendation(filter: Value, duration_secs: Value) -> Value {
 
 #[tokio::test]
 async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
-    // The planner recommends Red at 120 s; the `exposure` parameter
+    // The planner recommends Red at 120 s; the `exposure_duration` parameter
     // stays at its 300s default and `filter` at "". The acquisition
     // must set the plan's filter and the capture must run at the
     // plan's duration (120 s → "2m" through the humantime() builtin).
@@ -2297,14 +2297,14 @@ async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
         .expect("capture must be called");
     assert_eq!(
         capture.1["duration"], "2m",
-        "the capture must run at the plan's 120 s, not params.exposure"
+        "the capture must run at the plan's 120 s, not params.exposure_duration"
     );
 }
 
 #[tokio::test]
-async fn test_golden_deep_sky_falls_back_to_the_exposure_parameter_without_a_plan() {
+async fn test_golden_deep_sky_falls_back_to_the_exposure_duration_parameter_without_a_plan() {
     // A target without `exposures[]` recommends with a null plan; the
-    // capture falls back to `params.exposure` (default 300s) and no
+    // capture falls back to `params.exposure_duration` (default 300s) and no
     // filter change happens.
     let doc = make_doc(crate::document::corpus::golden_deep_sky());
     let params = deep_sky_params(
