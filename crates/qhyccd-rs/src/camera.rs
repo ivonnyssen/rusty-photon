@@ -915,15 +915,15 @@ impl Camera {
         #[cfg(not(feature = "simulation"))]
         {
             let handle = read_lock!(self.handle)?;
-            let mut model: [c_char; 80] = [0; 80];
+            let mut model: [c_char; 128] = [0; 128];
             match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
                 QHYCCD_SUCCESS => {
                     // Bounded decode: the SDK documents no maximum length and no NUL
-                    // guarantee, so scan for the terminator WITHIN the fixed 80-byte
+                    // guarantee, so scan for the terminator WITHIN the fixed 128-byte
                     // buffer rather than with an unbounded `CStr::from_ptr` (which
-                    // would over-read past the array if the SDK ever filled all 80
+                    // would over-read past the array if the SDK ever filled all 128
                     // bytes without a NUL). A missing terminator becomes a clean
-                    // error, not UB.
+                    // error, not UB. 128 matches INDI's `QHYReadModeInfo::label`.
                     let bytes = unsafe {
                         std::slice::from_raw_parts(model.as_ptr().cast::<u8>(), model.len())
                     };
@@ -1225,9 +1225,6 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.live_mode_active = true;
-            // Arm the "not ready" window (opt-in; default 0) so a poll-to-first-frame
-            // loop is exercised, mirroring real live-mode startup.
-            state.live_frames_until_ready = state.config.live_not_ready_frames;
             Ok(())
         }
     }
@@ -1314,8 +1311,8 @@ impl Camera {
     /// failure; the SDK does not distinguish the two. Callers must therefore
     /// **poll**: treat `Err` as "retry" for a bounded number of attempts (INDI's
     /// indi-qhy retries ~10× at 1 ms) before giving up. The simulation models this
-    /// startup window via
-    /// [`SimulatedCameraConfig::with_live_not_ready_frames`](crate::simulation::SimulatedCameraConfig::with_live_not_ready_frames).
+    /// via
+    /// [`SimulatedCameraConfig::with_live_not_ready_probability`](crate::simulation::SimulatedCameraConfig::with_live_not_ready_probability).
     /// # Example
     /// ```no_run
     /// use std::{thread, time::Duration};
@@ -1376,7 +1373,7 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            let mut state = self.state.write();
+            let state = self.state.read();
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
@@ -1385,11 +1382,10 @@ impl Camera {
                     op: "get_live_frame",
                 });
             }
-            // Real GetQHYCCDLiveFrame returns the retryable QHYCCD_ERROR until the
-            // first frame is ready; model that "not ready" window (opt-in) so a
-            // consumer's poll loop is exercised.
-            if state.live_frames_until_ready > 0 {
-                state.live_frames_until_ready -= 1;
+            // Real GetQHYCCDLiveFrame returns the retryable QHYCCD_ERROR between
+            // frames; model that with the configured probability (default 0.0 =
+            // always ready) so a consumer's poll/retry loop is exercised.
+            if state.roll_live_not_ready() {
                 return Err(QHYError::Sdk {
                     op: "get_live_frame",
                 });
@@ -2149,11 +2145,11 @@ impl Camera {
         #[cfg(not(feature = "simulation"))]
         {
             let handle = read_lock!(self.handle)?;
-            let mut name: [c_char; 80] = [0; 80];
+            let mut name: [c_char; 128] = [0; 128];
             match unsafe { GetQHYCCDReadModeName(handle, index, name.as_mut_ptr()) } {
                 QHYCCD_SUCCESS => {
                     // Bounded decode (see `get_model`): scan for the NUL within the
-                    // fixed 80-byte buffer rather than an unbounded `CStr::from_ptr`.
+                    // fixed 128-byte buffer rather than an unbounded `CStr::from_ptr`.
                     let bytes = unsafe {
                         std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len())
                     };

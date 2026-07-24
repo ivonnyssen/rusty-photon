@@ -68,10 +68,11 @@ pub struct SimulatedCameraConfig {
     pub camera_type: u32,
     /// Firmware version string
     pub firmware_version: String,
-    /// Live-mode reads that report "frame not ready" (a retryable error) before
-    /// the first frame is delivered — opt-in via `with_live_not_ready_frames`
-    /// (default 0). Models the real `GetQHYCCDLiveFrame` polling contract.
-    pub live_not_ready_frames: u32,
+    /// Probability (0.0..=1.0) that a live-mode frame read reports "frame not
+    /// ready" (a retryable error) — opt-in via `with_live_not_ready_probability`
+    /// (default 0.0). Models the real `GetQHYCCDLiveFrame` returning `QHYCCD_ERROR`
+    /// between frames.
+    pub live_not_ready_probability: f64,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -135,7 +136,7 @@ impl Default for SimulatedCameraConfig {
             readout_modes: vec![("Standard".to_string(), (3072, 2048))],
             camera_type: 4010,
             firmware_version: "Firmware version: 2024_1_1".to_string(),
-            live_not_ready_frames: 0,
+            live_not_ready_probability: 0.0,
         }
     }
 }
@@ -195,12 +196,13 @@ impl SimulatedCameraConfig {
         self
     }
 
-    /// Makes the first `n` live-mode frame reads report "not ready" (a retryable
-    /// error) before a frame is delivered, so a consumer's poll-to-first-frame
-    /// loop is exercised against the simulation (real `GetQHYCCDLiveFrame` returns
-    /// `QHYCCD_ERROR` between frames). Default is 0 (a frame is returned at once).
-    pub fn with_live_not_ready_frames(mut self, n: u32) -> Self {
-        self.live_not_ready_frames = n;
+    /// Sets the probability (clamped to 0.0..=1.0) that each live-mode frame read
+    /// reports "not ready" (a retryable error) instead of delivering a frame, so a
+    /// consumer's poll/retry loop is exercised against the simulation (real
+    /// `GetQHYCCDLiveFrame` returns `QHYCCD_ERROR` between frames — e.g. ~0.05).
+    /// Default is 0.0 (a frame is returned on every read).
+    pub fn with_live_not_ready_probability(mut self, p: f64) -> Self {
+        self.live_not_ready_probability = p.clamp(0.0, 1.0);
         self
     }
 
@@ -300,9 +302,6 @@ pub(crate) struct SimulatedCameraState {
     /// Reads remaining before the filter wheel reaches `filter_wheel_target`
     /// (advance-on-poll settle, so a poll-to-arrival loop is exercised).
     pub filter_wheel_settle_polls: u32,
-    /// Live-mode reads remaining that report "frame not ready" before a frame is
-    /// delivered (reset from config on `begin_live`).
-    pub live_frames_until_ready: u32,
 }
 
 /// Ambient (cooler-off) sensor temperature the simulated camera settles at, °C.
@@ -366,7 +365,6 @@ impl SimulatedCameraState {
             debayer_enabled: false,
             filter_wheel_target: 0,
             filter_wheel_settle_polls: 0,
-            live_frames_until_ready: 0,
         }
     }
 
@@ -522,6 +520,14 @@ impl SimulatedCameraState {
             }
         }
         self.filter_wheel_position
+    }
+
+    /// Roll whether this live-mode read reports "frame not ready" (a retryable
+    /// error), per the configured probability (0.0 = never). Models real
+    /// `GetQHYCCDLiveFrame` returning `QHYCCD_ERROR` between frames.
+    pub fn roll_live_not_ready(&self) -> bool {
+        let p = self.config.live_not_ready_probability;
+        p > 0.0 && rand::rng().random::<f64>() < p
     }
 }
 

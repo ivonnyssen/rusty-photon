@@ -40,10 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `QHYCCD_SUCCESS` as success (rejecting any other return), matching the sibling
   readout getters and INDI, instead of accepting any non-`QHYCCD_ERROR` return and
   possibly yielding a zero-initialised count / empty name.
-- `get_model` and `get_readout_mode_name` decode the SDK's fixed 80-byte name
-  buffer with a bounded `CStr::from_bytes_until_nul` instead of an unbounded
-  `CStr::from_ptr`, so a name the SDK writes without a NUL terminator becomes a
-  clean error rather than an out-of-bounds read.
+- `get_model` and `get_readout_mode_name` decode the SDK-written name buffer with
+  a bounded `CStr::from_bytes_until_nul` instead of an unbounded `CStr::from_ptr`,
+  so a name the SDK writes without a NUL terminator becomes a clean error rather
+  than an out-of-bounds read. The buffer is 128 bytes (matching INDI's
+  `QHYReadModeInfo::label`) rather than 80.
 
 ### Changed
 
@@ -71,9 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented `get_live_frame`'s live-mode polling contract: it returns
   `Err(QHYError::Sdk)` both for "frame not ready" and a hard failure (the SDK does
   not distinguish them), so callers must poll/retry with a bounded budget. Added
-  `SimulatedCameraConfig::with_live_not_ready_frames(n)` (default 0) to make the
-  first `n` live reads report "not ready" so that poll loop can be exercised in
-  simulation.
+  `SimulatedCameraConfig::with_live_not_ready_probability(p)` (default 0.0) to make
+  each live read report "not ready" with probability `p`, so that poll loop can be
+  exercised in simulation.
 - Simulated exposures now capture their start timestamp *after* the frame is
   pre-generated, so frame-generation time no longer counts against the
   simulated exposure duration (on a loaded machine it could consume — or

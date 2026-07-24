@@ -1346,31 +1346,45 @@ fn cfw_move_is_not_instantaneous() {
     camera.close().unwrap();
 }
 
-/// Audit #6: with the opt-in not-ready window, the first N live-frame reads return
-/// the retryable error (as real `GetQHYCCDLiveFrame` does between frames), then a
-/// frame flows — exercising a consumer's poll-to-first-frame loop.
+/// Audit #6: with a configured not-ready probability, live-mode reads
+/// intermittently return the retryable error (as real `GetQHYCCDLiveFrame` does
+/// between frames), so a consumer must poll/retry. Over 200 reads at p=0.5 both
+/// outcomes are effectively certain (P(all one outcome) = 0.5^200).
 #[test]
-fn live_frame_reports_not_ready_then_delivers() {
-    let config = SimulatedCameraConfig::default().with_live_not_ready_frames(3);
+fn live_frame_reports_not_ready_with_configured_probability() {
+    let config = SimulatedCameraConfig::default().with_live_not_ready_probability(0.5);
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
     camera.set_stream_mode(StreamMode::LiveMode).unwrap();
     camera.init().unwrap();
+    // A small ROI keeps each generated frame cheap over many reads.
+    camera
+        .set_roi(CCDChipArea {
+            start_x: 0,
+            start_y: 0,
+            width: 8,
+            height: 8,
+        })
+        .unwrap();
     camera.begin_live().unwrap();
 
     let size = camera.get_image_size().unwrap();
     let mut buf = vec![0u8; size];
 
-    // The first three reads are "not ready".
-    for _ in 0..3 {
-        assert!(matches!(
-            camera.get_live_frame(&mut buf).unwrap_err(),
-            QHYError::Sdk { .. }
-        ));
+    let mut not_ready = 0;
+    let mut frames = 0;
+    for _ in 0..200 {
+        match camera.get_live_frame(&mut buf) {
+            Ok(info) => {
+                assert_eq!(frame_bytes(&info), size);
+                frames += 1;
+            }
+            Err(QHYError::Sdk { .. }) => not_ready += 1,
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
     }
-    // The fourth delivers a frame.
-    let info = camera.get_live_frame(&mut buf).unwrap();
-    assert_eq!(frame_bytes(&info), size);
+    assert!(frames > 0, "should deliver frames");
+    assert!(not_ready > 0, "should report some not-ready reads at p=0.5");
 
     camera.end_live().unwrap();
     camera.close().unwrap();
