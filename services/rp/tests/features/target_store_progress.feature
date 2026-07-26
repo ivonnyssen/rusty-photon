@@ -30,11 +30,12 @@ Feature: Target progress derivation (P1)
       | Red       | 1x1     | 5m       | 0    | 0     | 20      |
 
   @wip
-  # get_session_progress is still the legacy targets[]-array planner
-  # tool (planner.rs) — it doesn't read the target store yet. That
-  # migration is part of the Dynamic Planner cutover
-  # (target_store_planner.feature), not this additive
-  # CRUD/goals/rest increment.
+  # Unlike get_target above, get_session_progress still emits the legacy
+  # per-filter {completed, goal} counter shape (from the record_exposure
+  # counters), not the per-goal {filter, binning, exposure_duration, good,
+  # total, desired} shape this scenario asserts. It already reads the store
+  # (active_planner_targets); what remains is reworking its payload to the
+  # per-goal shape, part of the Dynamic Planner cutover.
   Scenario: get_session_progress reports every target's per-goal progress
     Given rp is running with a target store and filter roster "Luminance, Red"
     And an MCP client connected to rp
