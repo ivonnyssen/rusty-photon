@@ -29,36 +29,16 @@ pub struct GoalWire {
 /// # Errors
 ///
 /// Returns a human-readable message naming the offending value when
-/// `binning` isn't `"AxB"` or `exposure_duration` isn't a valid humantime string.
+/// `binning` isn't `"AxB"` (per [`Binning`]'s `FromStr`) or
+/// `exposure_duration` isn't a valid humantime string.
 pub fn parse_goal(g: &GoalWire) -> Result<AcquisitionGoal, String> {
     Ok(AcquisitionGoal {
         filter: g.filter.clone(),
-        binning: parse_binning(&g.binning)?,
+        binning: g.binning.parse::<Binning>().map_err(|e| e.to_string())?,
         exposure_duration: humantime::parse_duration(&g.exposure_duration)
             .map_err(|e| format!("goal exposure_duration {:?}: {e}", g.exposure_duration))?,
         desired_count: g.desired_count,
     })
-}
-
-/// Parses `"AxB"` binning (e.g. `"1x1"`, `"2x2"`) into a [`Binning`].
-/// Shared with [`crate::config::naming_template`], whose `parse()`
-/// recovers a `{binning}` token's value from the same wire shape.
-///
-/// # Errors
-///
-/// Returns a human-readable message when `s` isn't `"AxB"` with two
-/// valid `u8` factors.
-pub(crate) fn parse_binning(s: &str) -> Result<Binning, String> {
-    let (x, y) = s
-        .split_once('x')
-        .ok_or_else(|| format!("invalid binning {s:?}: expected \"AxB\", e.g. \"1x1\""))?;
-    let x = x
-        .parse::<u8>()
-        .map_err(|_| format!("invalid binning {s:?}: expected \"AxB\", e.g. \"1x1\""))?;
-    let y = y
-        .parse::<u8>()
-        .map_err(|_| format!("invalid binning {s:?}: expected \"AxB\", e.g. \"1x1\""))?;
-    Ok(Binning { x, y })
 }
 
 /// Renders one goal back to its wire JSON shape (the inverse of

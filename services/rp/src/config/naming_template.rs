@@ -24,8 +24,6 @@ use regex::Regex;
 use rp_targets::{Binning, TargetSlug};
 use rp_vocabulary::FrameType;
 
-use crate::planner::goal_wire::parse_binning;
-
 /// One naming-template token, identified by variant so every `match` on
 /// a token is exhaustive: adding a token forces the renderer
 /// ([`TemplateFields::rendered_value`]), the parser
@@ -405,7 +403,7 @@ impl TemplateFields {
         match token {
             Token::Target => self.target = TargetSlug::new(value).ok(),
             Token::Filter => self.filter = Some(value.to_string()),
-            Token::Binning => self.binning = parse_binning(value).ok(),
+            Token::Binning => self.binning = value.parse::<Binning>().ok(),
             Token::FrameNumber => self.frame_number = value.parse().ok(),
             Token::ExposureDuration => {
                 self.exposure_duration = humantime::parse_duration(value).ok();
