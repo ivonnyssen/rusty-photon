@@ -466,6 +466,17 @@ fields, and internal timing arithmetic are unaffected.
   drop the fork/git dependency in favor of upstream `main` directly. The old
   `integration` branch, which used to combine several open PRs, is retired now
   that all but #14 have merged upstream.
+- `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
+  Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
+  pkg-config for a system AWS-LC and links it dynamically when it finds one —
+  which would give the shipped `.deb`/`.rpm` (built by
+  `scripts/build-packages.sh` with a plain `cargo build --release`) a runtime
+  dependency the field rig does not have. Bazel does not read that file, so the
+  same pin is applied there through the `aws-lc-sys` `crate.annotation` in
+  `MODULE.bazel`, which additionally keeps the build-script action hermetic:
+  none of the probed host state is part of its action key, so an unpinned build
+  on a host that has AWS-LC installed would publish a dynamically-linked
+  artifact into the shared disk and remote caches.
 
 ### Bazel
 

@@ -147,8 +147,17 @@ crate.from_cargo(
 # subdirectories.  The default build_script_data_glob does not materialise
 # every vendored file in the runfiles tree, so those includes fail with
 # "No such file or directory".  Glob everything.
+#
+# AWS_LC_SYS_USE_SYSTEM=0 forces the vendored source build.  Left unset, the
+# build script probes OPENSSL_DIR / OPENSSL_INCLUDE_DIR / OPENSSL_LIB_DIR and
+# then pkg-config for a system AWS-LC, and links it dynamically if it finds
+# one.  None of that host state is part of the action key, so a host that has
+# AWS-LC installed would publish a dynamically-linked artifact into the shared
+# disk / remote caches for hosts that do not.  Pinning the source build keeps
+# the action hermetic.
 crate.annotation(
     build_script_data_glob = ["**"],
+    build_script_env = {"AWS_LC_SYS_USE_SYSTEM": "0"},
     crate = "aws-lc-sys",
 )
 use_repo(crate, "cr")
