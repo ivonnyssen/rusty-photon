@@ -5,7 +5,7 @@
 //! hand-transcribed FFI in
 //! [`libsvbony-sys`](https://crates.io/crates/libsvbony-sys) in a safe,
 //! ergonomic API. It is consumed by rusty-photon's `svbony-camera` ASCOM
-//! Alpaca driver (a later phase; see `docs/plans/svbony-camera.md`).
+//! Alpaca driver (a later phase; see `docs/plans/archive/svbony-camera.md`).
 //!
 //! ## Status
 //!

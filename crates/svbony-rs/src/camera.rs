@@ -83,7 +83,7 @@ pub enum ImageType {
 impl ImageType {
     /// Bytes per pixel for this format.
     ///
-    /// The verified SDK ground truth (`docs/plans/svbony-camera.md`) gives
+    /// The verified SDK ground truth (`docs/plans/archive/svbony-camera.md`) gives
     /// the buffer-size formula only for 8-bit mono (`w*h`), 16-bit mono
     /// (`w*h*2`), and RGB24 (`w*h*3`). RAW10/12/14 and Y10/12/14 are
     /// **assumed** packed into 16-bit containers (2 bytes/pixel) — the
@@ -202,10 +202,10 @@ pub struct CameraPropertyEx {
 pub enum ControlType {
     /// `SVB_GAIN`.
     Gain,
-    /// `SVB_EXPOSURE`. **Unit assumption**: the ground truth does not state
-    /// the exposure control's unit explicitly; modelled as microseconds
-    /// (µs), matching ZWO's ASI `ASI_EXPOSURE` convention — needs
-    /// confirmation against real hardware (Phase G).
+    /// `SVB_EXPOSURE`, in microseconds (µs) — **hardware-confirmed** on a
+    /// physical SV605CC (2026-07-26): a 3 s value integrates ~3 s
+    /// wall-clock, and the SDK's own quantization reads back at µs scale
+    /// (200 000 → 199 997). Matches ZWO's ASI `ASI_EXPOSURE` convention.
     Exposure,
     /// `SVB_GAMMA`.
     Gamma,
@@ -361,7 +361,7 @@ pub struct RoiFormat {
 /// [`CameraMode::Normal`] frames are free-running/continuous; in
 /// [`CameraMode::TrigSoft`] a frame is only produced after
 /// [`Camera::send_soft_trigger`]. See the module docs and
-/// `docs/plans/svbony-camera.md` ("Exposure state machine over video mode").
+/// `docs/plans/archive/svbony-camera.md` ("Exposure state machine over video mode").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
     /// `SVB_MODE_NORMAL` — free-running video capture.
@@ -1195,7 +1195,7 @@ fn sim_camera_property() -> CameraProperty {
 #[cfg(feature = "simulation")]
 fn sim_camera_property_ex() -> CameraPropertyEx {
     CameraPropertyEx {
-        // The SV605CC has no ST4 port (docs/plans/svbony-camera.md).
+        // The SV605CC has no ST4 port (docs/plans/archive/svbony-camera.md).
         supports_pulse_guide: false,
         supports_control_temp: true,
     }

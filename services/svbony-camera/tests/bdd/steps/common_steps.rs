@@ -49,7 +49,7 @@ async fn exposure_in_flight(world: &mut CameraWorld, _device: u32) {
 // --- boolean property reports (used as Given precondition and Then check) ----
 //
 // Every property beyond `Connected` reads a still-`NOT_IMPLEMENTED` `Camera`
-// stub method (Phase E, docs/plans/svbony-camera.md); the steps compile now
+// stub method (Phase E, docs/plans/archive/svbony-camera.md); the steps compile now
 // so the `@wip` feature files that reference them are ready to run the
 // moment each area lands, but only `Connected` is exercised by a non-`@wip`
 // scenario today.
