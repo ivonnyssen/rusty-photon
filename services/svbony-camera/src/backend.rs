@@ -130,7 +130,7 @@ pub struct CaptureRequest {
 }
 
 /// `exposure_us * 2 + 500ms` — the SDK's own documented `SVBGetVideoData`
-/// timeout recommendation (`docs/plans/svbony-camera.md` "Verified SDK
+/// timeout recommendation (`docs/plans/archive/svbony-camera.md` "Verified SDK
 /// facts"), as a pure, unit-testable function. Negative/zero exposures clamp
 /// to a `0` base so the timeout never underflows.
 #[must_use]

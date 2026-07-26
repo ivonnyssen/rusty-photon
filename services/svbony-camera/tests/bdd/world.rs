@@ -4,7 +4,7 @@
 //! `simulation` backend so the SDK yields one `SV605CC-Simulated` camera)
 //! and drives it through the typed `ascom-alpaca` Camera client over real
 //! HTTP — mirroring the `zwo-camera` / `qhy-camera` pattern. As of Phase E
-//! (`docs/plans/svbony-camera.md`) `SvbonyCamera`'s `Camera` methods are
+//! (`docs/plans/archive/svbony-camera.md`) `SvbonyCamera`'s `Camera` methods are
 //! fully implemented and every scenario in `tests/features/*.feature` is
 //! green.
 

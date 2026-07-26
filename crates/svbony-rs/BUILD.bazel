@@ -18,7 +18,7 @@ _LIBSVBONY_SYS = "//crates/svbony-rs/libsvbony-sys:libsvbony-sys"
 # elsewhere in the workspace, so crate_universe's per-package resolution
 # picks `rand`/`rayon` up into `all_crate_deps` automatically), NO workspace
 # member yet depends on svbony-rs at all (no consuming service exists in
-# this phase — see docs/plans/svbony-camera.md). crate_universe therefore
+# this phase — see docs/plans/archive/svbony-camera.md). crate_universe therefore
 # never sees svbony-rs's `simulation` feature activated anywhere in the
 # unified workspace Cargo resolution, and `all_crate_deps` omits `rand` for
 # this package even though it's declared optionally in Cargo.toml. Reference

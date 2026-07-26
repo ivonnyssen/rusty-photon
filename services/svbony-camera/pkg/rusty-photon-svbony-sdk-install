@@ -11,7 +11,7 @@
 #
 # **RUNPATH, not ldconfig.** `libSVBCameraSDK.so` itself carries no
 # embedded DT_SONAME (byte-verified via `readelf -d`, see
-# docs/plans/svbony-camera.md Phase F/G and install-svbony-sdk's header
+# docs/plans/archive/svbony-camera.md Phase F/G and install-svbony-sdk's header
 # comment) — CI's provisioning step works around that by installing it
 # under an ldconfig-scanned system prefix (`/usr/local/lib`) with a
 # SOVERSIONed filename, which is fine for a build host but wrong for a

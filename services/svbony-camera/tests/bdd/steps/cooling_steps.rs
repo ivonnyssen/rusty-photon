@@ -1,4 +1,4 @@
-//! Cooling steps (`@wip` — Phase E, docs/plans/svbony-camera.md). Tenet-3
+//! Cooling steps (`@wip` — Phase E, docs/plans/archive/svbony-camera.md). Tenet-3
 //! (no actuation on connect) is documented in
 //! docs/services/svbony-camera.md and unit-tested at connect time, not here.
 
