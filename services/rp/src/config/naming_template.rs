@@ -14,6 +14,7 @@
 //! (`mcp::internals::do_capture`, Decision 11) is the landed caller —
 //! see rp.md § Capture Tool Details.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -25,93 +26,149 @@ use rp_vocabulary::FrameType;
 
 use crate::planner::goal_wire::parse_binning;
 
-/// One naming-template token: its canonical name, the leading/
-/// trailing character classes a rendered value can start/end with —
-/// each a `regex` character-class fragment, e.g. `"[a-z0-9-]"` or a
-/// single literal like `"C"` (the adjacent-token ambiguity check
-/// compiles and matches these the same way it does `shape`) — and its
-/// regex shape (rp-targets.md § File-naming template's shape table),
-/// whose named capture group [`CompiledTemplate::compile`] builds and
-/// whose exact-match validator [`CompiledTemplate::render`] checks a
-/// formatted value against before ever emitting it.
-#[derive(Debug)]
+/// One naming-template token, identified by variant so every `match` on
+/// a token is exhaustive: adding a token forces the renderer
+/// ([`TemplateFields::rendered_value`]), the parser
+/// ([`TemplateFields::set_from_capture`]) and every validator below to
+/// handle it — the compiler flags an unhandled arm rather than letting a
+/// string `match` fall through and silently drop the field. The
+/// user-facing `{name}` spelling and regex data live in exactly one
+/// place, [`Token::spec`], so renaming a token is a one-line change the
+/// compiler then propagates to every use site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Token {
+    Target,
+    Filter,
+    Binning,
+    FrameNumber,
+    ExposureDuration,
+    FilterPosition,
+    SensorTemp,
+    NightDate,
+    FrameType,
+    Uuid8,
+}
+
+/// A [`Token`]'s regex-facing data: its canonical `{name}`, the leading/
+/// trailing character classes a rendered value can start/end with — each
+/// a `regex` character-class fragment, e.g. `"[a-z0-9-]"` or a single
+/// literal like `"C"` (the adjacent-token ambiguity check compiles and
+/// matches these the same way it does `shape`) — and its regex shape
+/// (rp-targets.md § File-naming template's shape table), whose named
+/// capture group [`CompiledTemplate::build`] builds and whose exact-match
+/// validator [`CompiledTemplate::render`] checks a formatted value
+/// against before ever emitting it.
+#[derive(Debug, Clone, Copy)]
 struct TokenSpec {
-    name: &'static str,
+    canonical: &'static str,
     leading: &'static str,
     trailing: &'static str,
     shape: &'static str,
 }
 
-const TOKENS: &[TokenSpec] = &[
-    TokenSpec {
-        name: "target",
-        leading: "[a-z0-9-]",
-        trailing: "[a-z0-9-]",
-        shape: "[a-z0-9-]+",
-    },
-    TokenSpec {
-        name: "filter",
-        leading: "[A-Za-z0-9]",
-        trailing: "[A-Za-z0-9]",
-        shape: "[A-Za-z0-9]+",
-    },
-    TokenSpec {
-        name: "binning",
-        leading: "[0-9]",
-        trailing: "[0-9]",
-        shape: r"\d+x\d+",
-    },
-    TokenSpec {
-        name: "frame_number",
-        leading: "[0-9]",
-        trailing: "[0-9]",
-        shape: r"\d+",
-    },
-    TokenSpec {
-        name: "exposure_duration",
-        leading: "[0-9]",
-        trailing: "c",
-        shape: r"\d+sec",
-    },
-    TokenSpec {
-        name: "filter_position",
-        leading: "[0-9]",
-        trailing: "[0-9]",
-        shape: r"\d+",
-    },
-    TokenSpec {
-        name: "sensor_temp",
-        leading: "[-0-9]",
-        trailing: "C",
-        shape: r"-?\d+C",
-    },
-    TokenSpec {
-        name: "night_date",
-        leading: "[0-9]",
-        trailing: "[0-9]",
-        shape: r"\d{4}-\d{2}-\d{2}",
-    },
-    TokenSpec {
-        name: "frame_type",
-        leading: "[LDFB]",
-        trailing: "[tks]",
-        shape: "Light|Dark|Flat|Bias",
-    },
-    TokenSpec {
-        name: "uuid8",
-        leading: "[0-9a-f]",
-        trailing: "[0-9a-f]",
-        shape: "[0-9a-f]{8}",
-    },
-];
+impl Token {
+    /// Every token, in the order they appear in the documented default
+    /// pattern. The one list the string→[`Token`] boundary lookup
+    /// ([`Token::from_canonical`]) iterates; a variant added without an
+    /// entry here becomes unrecognized in every pattern, which the
+    /// per-token tests (each token appears in some tested pattern) catch
+    /// as an "unknown token" failure.
+    const ALL: [Token; 10] = [
+        Token::Target,
+        Token::Filter,
+        Token::Binning,
+        Token::FrameNumber,
+        Token::ExposureDuration,
+        Token::FilterPosition,
+        Token::SensorTemp,
+        Token::NightDate,
+        Token::FrameType,
+        Token::Uuid8,
+    ];
 
-fn token_spec(canonical: &str) -> Option<&'static TokenSpec> {
-    TOKENS.iter().find(|t| t.name == canonical)
+    /// This token's canonical `{name}` and regex data — the single place
+    /// each token's spelling and shape are written.
+    fn spec(self) -> TokenSpec {
+        match self {
+            Token::Target => TokenSpec {
+                canonical: "target",
+                leading: "[a-z0-9-]",
+                trailing: "[a-z0-9-]",
+                shape: "[a-z0-9-]+",
+            },
+            Token::Filter => TokenSpec {
+                canonical: "filter",
+                leading: "[A-Za-z0-9]",
+                trailing: "[A-Za-z0-9]",
+                shape: "[A-Za-z0-9]+",
+            },
+            Token::Binning => TokenSpec {
+                canonical: "binning",
+                leading: "[0-9]",
+                trailing: "[0-9]",
+                shape: r"\d+x\d+",
+            },
+            Token::FrameNumber => TokenSpec {
+                canonical: "frame_number",
+                leading: "[0-9]",
+                trailing: "[0-9]",
+                shape: r"\d+",
+            },
+            Token::ExposureDuration => TokenSpec {
+                canonical: "exposure_duration",
+                leading: "[0-9]",
+                trailing: "c",
+                shape: r"\d+sec",
+            },
+            Token::FilterPosition => TokenSpec {
+                canonical: "filter_position",
+                leading: "[0-9]",
+                trailing: "[0-9]",
+                shape: r"\d+",
+            },
+            Token::SensorTemp => TokenSpec {
+                canonical: "sensor_temp",
+                leading: "[-0-9]",
+                trailing: "C",
+                shape: r"-?\d+C",
+            },
+            Token::NightDate => TokenSpec {
+                canonical: "night_date",
+                leading: "[0-9]",
+                trailing: "[0-9]",
+                shape: r"\d{4}-\d{2}-\d{2}",
+            },
+            Token::FrameType => TokenSpec {
+                canonical: "frame_type",
+                leading: "[LDFB]",
+                trailing: "[tks]",
+                shape: "Light|Dark|Flat|Bias",
+            },
+            Token::Uuid8 => TokenSpec {
+                canonical: "uuid8",
+                leading: "[0-9a-f]",
+                trailing: "[0-9a-f]",
+                shape: "[0-9a-f]{8}",
+            },
+        }
+    }
+
+    /// This token's canonical `{name}` spelling.
+    fn canonical(self) -> &'static str {
+        self.spec().canonical
+    }
+
+    /// The token a raw `{name}` from a pattern refers to, or `None` when
+    /// no token owns that spelling (an unknown token, which
+    /// [`parse_segments`] rejects).
+    fn from_canonical(name: &str) -> Option<Token> {
+        Token::ALL.into_iter().find(|t| t.canonical() == name)
+    }
 }
 
 enum Segment<'a> {
     Literal(&'a str),
-    Token(&'static TokenSpec),
+    Token(Token),
 }
 
 /// Splits `pattern` into literal and `{token}` segments. Returns the
@@ -134,9 +191,9 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
         if whole.start() > last_end {
             segments.push(Segment::Literal(&pattern[last_end..whole.start()]));
         }
-        let spec = token_spec(raw_name)
+        let token = Token::from_canonical(raw_name)
             .ok_or_else(|| format!("unknown naming-template token {{{raw_name}}}"))?;
-        segments.push(Segment::Token(spec));
+        segments.push(Segment::Token(token));
         last_end = whole.end();
     }
     if last_end < pattern.len() {
@@ -185,22 +242,28 @@ pub fn validate_directory_pattern(pattern: &str) -> Result<(), String> {
 /// segments so [`CompiledTemplate::compile`] can validate and compile
 /// in one parse of the pattern string rather than two.
 fn validate_segments(segments: &[Segment<'_>]) -> Result<(), String> {
-    let present: Vec<&str> = segments
+    let present: Vec<Token> = segments
         .iter()
         .filter_map(|s| match s {
-            Segment::Token(spec) => Some(spec.name),
+            Segment::Token(token) => Some(*token),
             Segment::Literal(_) => None,
         })
         .collect();
 
-    for required in ["target", "filter", "binning", "exposure_duration"] {
+    for required in [
+        Token::Target,
+        Token::Filter,
+        Token::Binning,
+        Token::ExposureDuration,
+    ] {
         if !present.contains(&required) {
             return Err(format!(
-                "file_naming_pattern is missing required token {{{required}}}"
+                "file_naming_pattern is missing required token {{{}}}",
+                required.canonical()
             ));
         }
     }
-    if !present.contains(&"uuid8") && !present.contains(&"frame_number") {
+    if !present.contains(&Token::Uuid8) && !present.contains(&Token::FrameNumber) {
         return Err(
             "file_naming_pattern must contain a per-frame uniqueness token, {uuid8} or {frame_number}"
                 .to_string(),
@@ -218,9 +281,10 @@ fn check_unambiguous(segments: &[Segment<'_>]) -> Result<(), String> {
     // always ambiguous.
     for window in segments.windows(2) {
         if let [Segment::Token(left), Segment::Token(right)] = window {
-            let (left, right) = (left.name, right.name);
             return Err(format!(
-                "naming pattern places {{{left}}} directly next to {{{right}}} with no literal separator between them"
+                "naming pattern places {{{}}} directly next to {{{}}} with no literal separator between them",
+                left.canonical(),
+                right.canonical()
             ));
         }
     }
@@ -229,14 +293,15 @@ fn check_unambiguous(segments: &[Segment<'_>]) -> Result<(), String> {
     // trailing charset and the right token's leading charset.
     for window in segments.windows(3) {
         if let [Segment::Token(left), Segment::Literal(sep), Segment::Token(right)] = window {
-            let trailing_re = edge_class_regex(left.trailing)?;
-            let leading_re = edge_class_regex(right.leading)?;
+            let trailing_re = edge_class_regex(left.spec().trailing)?;
+            let leading_re = edge_class_regex(right.spec().leading)?;
             if sep.chars().any(|c| {
                 trailing_re.is_match(&c.to_string()) || leading_re.is_match(&c.to_string())
             }) {
-                let (left, right) = (left.name, right.name);
                 return Err(format!(
-                    "naming pattern's separator {sep:?} between {{{left}}} and {{{right}}} does not unambiguously split them"
+                    "naming pattern's separator {sep:?} between {{{}}} and {{{}}} does not unambiguously split them",
+                    left.canonical(),
+                    right.canonical()
                 ));
             }
         }
@@ -285,16 +350,17 @@ pub struct TemplateFields {
 }
 
 impl TemplateFields {
-    /// The value `render` should substitute for a `{name}` token, or
-    /// an error naming the missing field or, for `{exposure_duration}`, the
-    /// violated whole-second business rule.
-    fn rendered_value(&self, name: &str) -> Result<String, String> {
-        let value = match name {
-            "target" => self.target.as_ref().map(ToString::to_string),
-            "filter" => self.filter.clone(),
-            "binning" => self.binning.as_ref().map(ToString::to_string),
-            "frame_number" => self.frame_number.map(|n| format!("{n:04}")),
-            "exposure_duration" => match self.exposure_duration {
+    /// The value `render` should substitute for `token`, or an error
+    /// naming the missing field or, for [`Token::ExposureDuration`], the
+    /// violated whole-second business rule. The `match` is exhaustive, so
+    /// a new token can't be added without deciding how it renders.
+    fn rendered_value(&self, token: Token) -> Result<String, String> {
+        let value = match token {
+            Token::Target => self.target.as_ref().map(ToString::to_string),
+            Token::Filter => self.filter.clone(),
+            Token::Binning => self.binning.as_ref().map(ToString::to_string),
+            Token::FrameNumber => self.frame_number.map(|n| format!("{n:04}")),
+            Token::ExposureDuration => match self.exposure_duration {
                 Some(d) if d.subsec_nanos() == 0 => Some(format!("{}sec", d.as_secs())),
                 Some(d) => {
                     return Err(format!(
@@ -304,41 +370,42 @@ impl TemplateFields {
                 }
                 None => None,
             },
-            "filter_position" => self.filter_position.map(|n| n.to_string()),
-            "sensor_temp" => self.sensor_temp_c.map(|c| format!("{c}C")),
-            "night_date" => self.night_date.map(|d| d.format("%Y-%m-%d").to_string()),
-            "frame_type" => self.frame_type.map(|t| t.to_string()),
-            "uuid8" => self.uuid8.clone(),
-            _ => None,
+            Token::FilterPosition => self.filter_position.map(|n| n.to_string()),
+            Token::SensorTemp => self.sensor_temp_c.map(|c| format!("{c}C")),
+            Token::NightDate => self.night_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            Token::FrameType => self.frame_type.map(|t| t.to_string()),
+            Token::Uuid8 => self.uuid8.clone(),
         };
-        value.ok_or_else(|| format!("missing value for token {{{name}}}"))
+        value.ok_or_else(|| format!("missing value for token {{{}}}", token.canonical()))
     }
 
-    /// Fills in the field named `name` from one capture group's
-    /// matched text. A value that fails its typed parse (should never
-    /// happen — the enclosing regex already constrained its shape)
-    /// leaves the field `None` rather than panicking; `capture`'s
-    /// caller sees an absent field, not a crash.
-    fn set_from_capture(&mut self, name: &str, value: &str) {
-        match name {
-            "target" => self.target = TargetSlug::new(value).ok(),
-            "filter" => self.filter = Some(value.to_string()),
-            "binning" => self.binning = parse_binning(value).ok(),
-            "frame_number" => self.frame_number = value.parse().ok(),
-            "exposure_duration" => {
+    /// Fills in the field `token` names from one capture group's matched
+    /// text. A value that fails its typed parse (should never happen —
+    /// the enclosing regex already constrained its shape) leaves the
+    /// field `None` rather than panicking; `capture`'s caller sees an
+    /// absent field, not a crash. The `match` is exhaustive, so a new
+    /// token can't be added without deciding how it parses back — the
+    /// previous string `match`'s `_ => {}` would have silently dropped
+    /// it on the round trip.
+    fn set_from_capture(&mut self, token: Token, value: &str) {
+        match token {
+            Token::Target => self.target = TargetSlug::new(value).ok(),
+            Token::Filter => self.filter = Some(value.to_string()),
+            Token::Binning => self.binning = parse_binning(value).ok(),
+            Token::FrameNumber => self.frame_number = value.parse().ok(),
+            Token::ExposureDuration => {
                 self.exposure_duration = value
                     .strip_suffix("sec")
                     .and_then(|s| s.parse::<u64>().ok())
                     .map(Duration::from_secs);
             }
-            "filter_position" => self.filter_position = value.parse().ok(),
-            "sensor_temp" => {
+            Token::FilterPosition => self.filter_position = value.parse().ok(),
+            Token::SensorTemp => {
                 self.sensor_temp_c = value.strip_suffix('C').and_then(|s| s.parse().ok());
             }
-            "night_date" => self.night_date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok(),
-            "frame_type" => self.frame_type = value.parse().ok(),
-            "uuid8" => self.uuid8 = Some(value.to_string()),
-            _ => {}
+            Token::NightDate => self.night_date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok(),
+            Token::FrameType => self.frame_type = value.parse().ok(),
+            Token::Uuid8 => self.uuid8 = Some(value.to_string()),
         }
     }
 }
@@ -346,7 +413,7 @@ impl TemplateFields {
 #[derive(Debug)]
 enum TemplatePart {
     Literal(String),
-    Token(&'static TokenSpec),
+    Token(Token),
 }
 
 /// A `session.file_naming_pattern` (or a future `directory_pattern`)
@@ -363,12 +430,12 @@ pub struct CompiledTemplate {
     /// crate rejects duplicate group names and nothing stops a
     /// pattern from repeating a token), used by `parse`.
     regex: Regex,
-    /// Per-token-name exact-match validator (`^(?:{shape})$`) built
-    /// from the same `TokenSpec::shape` the combined regex embeds —
-    /// `render` checks every formatted value against it before ever
-    /// emitting it, so `parse(render(x))` can never fail to read back
-    /// a value `render` actually produced.
-    validators: HashMap<&'static str, Regex>,
+    /// Per-token exact-match validator (`^(?:{shape})$`) built from the
+    /// same `TokenSpec::shape` the combined regex embeds — `render`
+    /// checks every formatted value against it before ever emitting it,
+    /// so `parse(render(x))` can never fail to read back a value `render`
+    /// actually produced.
+    validators: HashMap<Token, Regex>,
 }
 
 impl CompiledTemplate {
@@ -378,10 +445,9 @@ impl CompiledTemplate {
     /// # Errors
     ///
     /// Returns the same error [`validate_pattern`] would for an
-    /// invalid pattern, or an internal message if a `TOKENS` entry's
-    /// own shape fails to compile as a regex — a static table bug,
-    /// which is why every `TOKENS` shape is exercised by this module's
-    /// tests.
+    /// invalid pattern, or an internal message if a [`Token::spec`]
+    /// shape fails to compile as a regex — a static-table bug, which is
+    /// why every token's shape is exercised by this module's tests.
     pub fn compile(pattern: &str) -> Result<Self, String> {
         let segments = parse_segments(pattern)?;
         validate_segments(&segments)?;
@@ -408,7 +474,7 @@ impl CompiledTemplate {
         let mut parts = Vec::with_capacity(segments.len());
         let mut regex_pattern = String::from("^");
         let mut validators = HashMap::new();
-        let mut occurrences: HashMap<&'static str, u32> = HashMap::new();
+        let mut occurrences: HashMap<Token, u32> = HashMap::new();
 
         for segment in segments {
             match segment {
@@ -416,24 +482,29 @@ impl CompiledTemplate {
                     regex_pattern.push_str(&regex::escape(text));
                     parts.push(TemplatePart::Literal(text.to_string()));
                 }
-                Segment::Token(spec) => {
-                    let occurrence = occurrences.entry(spec.name).or_insert(0);
+                Segment::Token(token) => {
+                    let spec = token.spec();
+                    let occurrence = occurrences.entry(token).or_insert(0);
                     regex_pattern.push_str(&format!(
                         "(?P<{}_{occurrence}>(?:{}))",
-                        spec.name, spec.shape
+                        spec.canonical, spec.shape
                     ));
                     *occurrence += 1;
-                    if !validators.contains_key(spec.name) {
+                    // First occurrence of this token: compile its shape
+                    // validator. The `Entry` form (rather than
+                    // `contains_key` + `insert`) keeps the fallible
+                    // `Regex::new(...)?` on the miss path.
+                    if let Entry::Vacant(entry) = validators.entry(token) {
                         let validator =
                             Regex::new(&format!("^(?:{})$", spec.shape)).map_err(|e| {
                                 format!(
                                     "internal: token {{{}}}'s shape regex is invalid: {e}",
-                                    spec.name
+                                    spec.canonical
                                 )
                             })?;
-                        validators.insert(spec.name, validator);
+                        entry.insert(validator);
                     }
-                    parts.push(TemplatePart::Token(spec));
+                    parts.push(TemplatePart::Token(token));
                 }
             }
         }
@@ -464,18 +535,18 @@ impl CompiledTemplate {
         for part in &self.parts {
             match part {
                 TemplatePart::Literal(text) => out.push_str(text),
-                TemplatePart::Token(spec) => {
-                    let value = fields.rendered_value(spec.name)?;
-                    let validator = self.validators.get(spec.name).ok_or_else(|| {
+                TemplatePart::Token(token) => {
+                    let value = fields.rendered_value(*token)?;
+                    let validator = self.validators.get(token).ok_or_else(|| {
                         format!(
                             "internal: no shape validator built for token {{{}}}",
-                            spec.name
+                            token.canonical()
                         )
                     })?;
                     if !validator.is_match(&value) {
                         return Err(format!(
                             "value {value:?} for token {{{}}} does not match its shape",
-                            spec.name
+                            token.canonical()
                         ));
                     }
                     out.push_str(&value);
@@ -494,14 +565,14 @@ impl CompiledTemplate {
     pub fn parse(&self, filename_stem: &str) -> Option<TemplateFields> {
         let caps = self.regex.captures(filename_stem)?;
         let mut fields = TemplateFields::default();
-        let mut occurrences: HashMap<&'static str, u32> = HashMap::new();
+        let mut occurrences: HashMap<Token, u32> = HashMap::new();
         for part in &self.parts {
-            if let TemplatePart::Token(spec) = part {
-                let occurrence = occurrences.entry(spec.name).or_insert(0);
-                let group_name = format!("{}_{occurrence}", spec.name);
+            if let TemplatePart::Token(token) = part {
+                let occurrence = occurrences.entry(*token).or_insert(0);
+                let group_name = format!("{}_{occurrence}", token.canonical());
                 *occurrence += 1;
                 if let Some(m) = caps.name(&group_name) {
-                    fields.set_from_capture(spec.name, m.as_str());
+                    fields.set_from_capture(*token, m.as_str());
                 }
             }
         }
@@ -638,6 +709,40 @@ mod tests {
     fn missing_uniqueness_token_is_rejected() {
         let err = validate_pattern("{target}_{filter}_{binning}_{exposure_duration}").unwrap_err();
         assert!(err.contains("uuid8") || err.contains("frame_number"));
+    }
+
+    // --- Token table ------------------------------------------------
+
+    #[test]
+    fn token_table_is_self_consistent() {
+        let mut seen = std::collections::HashSet::new();
+        for token in Token::ALL {
+            let spec = token.spec();
+            // Canonical `{name}`s must be unique — `from_canonical`
+            // returns the first match, so a duplicate would shadow a
+            // token and misroute its captures.
+            assert!(
+                seen.insert(spec.canonical),
+                "duplicate canonical token name {:?}",
+                spec.canonical
+            );
+            // Every embedded shape must be a valid standalone regex (the
+            // render-time validator is `^(?:{shape})$`); a bad static
+            // entry is a table bug, caught here rather than at first
+            // render.
+            Regex::new(&format!("^(?:{})$", spec.shape)).unwrap_or_else(|e| {
+                panic!(
+                    "token {{{}}} shape {:?} does not compile: {e}",
+                    spec.canonical, spec.shape
+                )
+            });
+            // The string→Token boundary must recover exactly this token
+            // from its own canonical spelling (ALL and `canonical` agree).
+            assert_eq!(Token::from_canonical(spec.canonical), Some(token));
+        }
+        // Guards the fixed-size ALL against a variant added to `spec`'s
+        // exhaustive match but forgotten here.
+        assert_eq!(seen.len(), Token::ALL.len());
     }
 
     // --- CompiledTemplate: render / parse ---------------------------
