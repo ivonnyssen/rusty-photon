@@ -9,7 +9,6 @@
 use rp_targets::{AcquisitionGoal, Binning};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 /// The wire shape of one `goals[]` entry, as accepted by `add_target`,
 /// `set_goals`, and `targets.default_goals` in config.
@@ -41,25 +40,30 @@ pub fn parse_goal(g: &GoalWire) -> Result<AcquisitionGoal, String> {
     })
 }
 
-/// Renders one goal back to its wire JSON shape (the inverse of
-/// [`parse_goal`]). `exposure_duration` uses [`humantime::format_duration`]
+/// Renders one goal back to its wire shape (the inverse of
+/// [`parse_goal`]). Building the [`GoalWire`] struct — rather than a
+/// hand-keyed `json!` map — makes the field names compile-checked, and
+/// `GoalWire`'s derived `Serialize` produces the JSON.
+/// `exposure_duration` uses [`humantime::format_duration`]
 /// — the exact encoding `AcquisitionGoal`'s `humantime_serde` field uses
 /// for the redb store, so the MCP wire and the store agree (a 300 s sub is
 /// `"5m"`, a 32 µs bias is `"32us"`; the file-naming template renders the
 /// same string with humantime's inter-unit spaces removed).
-pub fn goal_to_json(g: &AcquisitionGoal) -> Value {
-    json!({
-        "filter": g.filter,
-        "binning": g.binning.to_string(),
-        "exposure_duration": humantime::format_duration(g.exposure_duration).to_string(),
-        "desired_count": g.desired_count,
-    })
+pub fn goal_to_wire(g: &AcquisitionGoal) -> GoalWire {
+    GoalWire {
+        filter: g.filter.clone(),
+        binning: g.binning.to_string(),
+        exposure_duration: humantime::format_duration(g.exposure_duration).to_string(),
+        desired_count: g.desired_count,
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use std::time::Duration;
+
+    use serde_json::json;
 
     use super::*;
 
@@ -81,7 +85,7 @@ mod tests {
         assert_eq!(goal.binning, Binning { x: 1, y: 1 });
         assert_eq!(goal.exposure_duration, Duration::from_secs(300));
         assert_eq!(
-            goal_to_json(&goal),
+            serde_json::to_value(goal_to_wire(&goal)).unwrap(),
             json!({
                 "filter": "Ha", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20
             })
@@ -89,12 +93,12 @@ mod tests {
     }
 
     #[test]
-    fn goal_to_json_encodes_a_sub_second_bias_exposure() {
+    fn goal_to_wire_encodes_a_sub_second_bias_exposure() {
         // The motivating case: a sub-second exposure the old whole-second
         // encoding could not represent now survives the wire.
         let goal = parse_goal(&wire("Dark", "1x1", "32us", 50)).unwrap();
         assert_eq!(goal.exposure_duration, Duration::from_micros(32));
-        assert_eq!(goal_to_json(&goal)["exposure_duration"], "32us");
+        assert_eq!(goal_to_wire(&goal).exposure_duration, "32us");
     }
 
     #[test]

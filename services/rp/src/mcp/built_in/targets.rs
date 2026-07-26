@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
 
 use crate::equipment::EquipmentRegistry;
-use crate::planner::goal_wire::{parse_goal, GoalWire};
+use crate::planner::goal_wire::{goal_to_wire, parse_goal, GoalWire};
 
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
@@ -548,7 +548,7 @@ fn target_to_json(t: &Target) -> Value {
         "size_arcmin": t.size_arcmin,
         "priority": t.priority,
         "active": t.active,
-        "goals": t.goals.iter().map(crate::planner::goal_wire::goal_to_json).collect::<Vec<_>>(),
+        "goals": t.goals.iter().map(goal_to_wire).collect::<Vec<_>>(),
         "scheduling": t.scheduling.map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
         "notes": t.notes,
         "created_at": t.created_at,
@@ -564,13 +564,18 @@ fn progress_for(t: &Target) -> Vec<Value> {
     t.goals
         .iter()
         .map(|g| {
+            // Progress rows add `good`/`total`/`desired` to the goal key, so
+            // this is a distinct shape — but the goal encodings themselves
+            // (binning, humantime exposure) come from `goal_to_wire`, not a
+            // third hand-rolled copy.
+            let wire = goal_to_wire(g);
             json!({
-                "filter": g.filter,
-                "binning": g.binning.to_string(),
-                "exposure_duration": humantime::format_duration(g.exposure_duration).to_string(),
+                "filter": wire.filter,
+                "binning": wire.binning,
+                "exposure_duration": wire.exposure_duration,
                 "good": 0,
                 "total": 0,
-                "desired": g.desired_count,
+                "desired": wire.desired_count,
             })
         })
         .collect()
