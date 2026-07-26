@@ -1088,7 +1088,7 @@ mod tests {
         assert!(matches_uuid8_suffix("550e8400.fits", "550e8400"));
         // Template form: <base>_<uuid8>.fits.
         assert!(matches_uuid8_suffix(
-            "M31_L_300s_001_550e8400.fits",
+            "M31_L_5m_001_550e8400.fits",
             "550e8400"
         ));
         // Substring without underscore separator → reject.

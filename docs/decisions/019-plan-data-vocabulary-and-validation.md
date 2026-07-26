@@ -40,7 +40,9 @@ Two problems, both visible in the P1 target-store code.
 - Exposure `Duration` had two disagreeing string encodings — the store
   wrote humantime-canonical `"5m"` (via `humantime_serde`) while the
   hand-rolled `goal_wire::format_exposure_duration` produced `"300s"` — the same
-  value serialized two ways.
+  value serialized two ways. (Since resolved: the hand-rolled formatter was
+  removed and every surface now uses humantime's `"5m"`; exposure remains a
+  plain `Duration` in `rp`, outside this crate.)
 
 The common cause: validated plan values were bare primitives (`f64`,
 `Duration`) with the rule written *beside* the data, so it could be — and

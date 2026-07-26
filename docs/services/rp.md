@@ -159,7 +159,7 @@ The document accumulates data as it flows through the system.
   "exposure_time_secs": 300,
   "planned_at": "2026-03-02T01:15:00Z",
   "captured_at": "2026-03-02T01:20:02Z",
-  "file_path": "/data/lights/M31/M31_L_300s_001.fits",
+  "file_path": "/data/lights/M31/M31_L_5m_001.fits",
   "session_id": "session-2026-03-01",
   "sequence_number": 42,
   "max_adu": 65535,
@@ -342,7 +342,7 @@ combined anchored regex, so `parse` is never a naive `split('_')`).
 `<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
 directory base is prefixed before the filename base, which is in turn
 prefixed before the UUID-8 suffix, e.g.
-`m31/2026-07-22/Light/m31_L_1x1_0001_300sec_fpos_2_-10C_550e8400.fits`
+`m31/2026-07-22/Light/m31_L_1x1_0001_5m_fpos_2_-10C_550e8400.fits`
 — so existing UUID-8-suffixed files stay reachable via the disk-fallback
 resolver regardless of the surrounding path. `directory_pattern`
 defaults to `"{target}/{night_date}/{frame_type}"` when unset but
@@ -514,7 +514,7 @@ Content-Type: application/json
   "timestamp": "2026-03-02T01:25:02Z",
   "payload": {
     "document": { ... },
-    "file_path": "/data/lights/M31/M31_L_300s_001.fits"
+    "file_path": "/data/lights/M31/M31_L_5m_001.fits"
   }
 }
 ```
@@ -637,7 +637,7 @@ tool call when it completes naturally:
 
 ```json
 {
-  "image_path": "/data/lights/M31/M31_L_300s_004.fits",
+  "image_path": "/data/lights/M31/M31_L_5m_004.fits",
   "document_id": "doc-043",
   "pending_correction": {
     "action": "focus",
@@ -688,7 +688,7 @@ their own reliability.
 
 #### Example: Image Analyzer Flow
 
-Setup: 5 exposures on the same target, 300s each, analysis takes 20s.
+Setup: 5 exposures on the same target, 5m each, analysis takes 20s.
 
 ```
 Exposure 3 completes
@@ -2704,7 +2704,7 @@ Loop:
   ← {rms_ra: 0.4, rms_dec: 0.3}
 
   Capture loop:
-    → tools/call capture {camera_id: "main-cam", duration: "300s"}
+    → tools/call capture {camera_id: "main-cam", duration: "5m"}
     ← {image_path: "...", document_id: "doc-042"}
     → tools/call record_exposure {target: "M31", filter: "Luminance"}
     ← {completed: 13, goal: 40}
@@ -3789,7 +3789,7 @@ Document).
 
 `goals[]` entries are the wire shape `{filter, binning, exposure_duration,
 desired_count}` — `binning` as `"AxB"` (e.g. `"1x1"`) and `exposure_duration` as
-a humantime string (e.g. `"300s"`), not `AcquisitionGoal`'s internal
+a humantime string (e.g. `"5m"`), not `AcquisitionGoal`'s internal
 struct/`Duration` shapes.
 
 ### Progress derivation

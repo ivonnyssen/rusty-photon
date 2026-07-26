@@ -545,7 +545,7 @@ mod tests {
             "plugins": [{ "name": "image-analyzer", "type": "event" }],
             "target_store": {
                 "db_path": "/data/targets.redb",
-                "default_goals": [{ "filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20 }],
+                "default_goals": [{ "filter": "L", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20 }],
                 "default_scheduling": { "min_altitude_degrees": 20.0 }
             },
             "planner": { "min_altitude_degrees": 20 },

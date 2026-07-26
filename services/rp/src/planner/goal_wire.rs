@@ -1,7 +1,7 @@
 //! Wire-format conversion for [`rp_targets::AcquisitionGoal`]: the JSON
 //! shape `add_target`/`set_goals`/`targets.default_goals` (config) all
 //! share — `binning` as `"AxB"` and `exposure_duration` as a humantime string
-//! (`"300s"`), rather than `AcquisitionGoal`'s derived struct/duration
+//! (`"5m"`), rather than `AcquisitionGoal`'s derived struct/duration
 //! shapes. Shared by [`crate::mcp::built_in::targets`] (the MCP tool
 //! bodies) and [`crate::config::target_store`] (parsing
 //! `targets.default_goals`) so the two stay byte-for-byte consistent.
@@ -18,7 +18,8 @@ pub struct GoalWire {
     pub filter: String,
     /// `"AxB"`, e.g. `"1x1"`, `"2x2"`.
     pub binning: String,
-    /// A humantime duration string, e.g. `"300s"`.
+    /// A humantime duration string, e.g. `"5m"` (`"300s"` is accepted too;
+    /// humantime rolls whole minutes up, so it reads back as `"5m"`).
     pub exposure_duration: String,
     pub desired_count: u32,
 }

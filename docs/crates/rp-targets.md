@@ -533,7 +533,7 @@ derivation above (actuals).
 **Progress shape supersedes the filter-only map.** rp.md § Planner Tools
 documents progress keyed by filter alone
 (`{"Luminance": {completed, goal}}`), which would collapse two goals that
-share a filter (e.g. Ha@120s and Ha@300s). Because an `AcquisitionGoal`
+share a filter (e.g. Ha@2m and Ha@5m). Because an `AcquisitionGoal`
 is keyed by the full `(filter, binning, exposure_duration)` triple, the
 progress shape becomes, per target, a list of
 `{filter, binning, exposure_duration, good, total, desired}` (the JSON
@@ -566,7 +566,7 @@ are bare decimal degrees):
   "target_store": {
     "db_path": "/data/lights/targets.redb",      // default: <data_directory>/targets.redb
     "default_goals": [                           // applied by add_target when a target supplies no goals[]
-      { "filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20 }
+      { "filter": "L", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20 }
     ],
     "default_scheduling": {
       "min_altitude_degrees": 20.0,

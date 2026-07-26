@@ -46,7 +46,9 @@ more than once and — worse — skipped in places:
 - Exposure `Duration` had two divergent string encodings — a hand-rolled
   `"300s"` formatter (`goal_wire::format_exposure_duration`) versus the store's
   humantime-canonical `"5m"` (`AcquisitionGoal`'s `humantime_serde`) — the
-  same value serialized two ways.
+  same value serialized two ways. (Since resolved: the hand-rolled formatter
+  was removed and every surface now uses humantime, so `"5m"` is the one
+  encoding; exposure stays a plain `Duration` in `rp`, not a vocabulary type.)
 
 The fix is not "call the validator from more places" (that only defers
 the next omission); it is to **make the invalid state unrepresentable**,

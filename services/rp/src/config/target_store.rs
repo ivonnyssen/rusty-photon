@@ -42,7 +42,7 @@ pub struct TargetStoreConfig {
 /// — the type of [`crate::config::Config::target_store`]. `db_path` and
 /// `default_goals`/`default_scheduling` mirror [`TargetStoreConfig`], but
 /// `default_goals` carries the [`GoalWire`] string shape (`binning`
-/// `"1x1"`, `exposure_duration` `"300s"`) that `parse_goal` validates, and
+/// `"1x1"`, `exposure_duration` `"5m"`) that `parse_goal` validates, and
 /// `default_scheduling` is the schemars-able [`SchedulingWire`] projection.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -125,7 +125,7 @@ mod tests {
         let wire: TargetStoreConfigWire = serde_json::from_value(serde_json::json!({
             "db_path": "/data/lights/targets.redb",
             "default_goals": [
-                {"filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20}
+                {"filter": "L", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20}
             ]
         }))
         .unwrap();
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn object_shape_rejects_bad_default_goal() {
         let wire: TargetStoreConfigWire = serde_json::from_value(serde_json::json!({
-            "default_goals": [{"filter": "L", "binning": "bad", "exposure_duration": "300s", "desired_count": 20}]
+            "default_goals": [{"filter": "L", "binning": "bad", "exposure_duration": "5m", "desired_count": 20}]
         }))
         .unwrap();
         let err = parse_target_store_config(&wire).unwrap_err();
@@ -183,7 +183,7 @@ mod tests {
         let wire: TargetStoreConfigWire = serde_json::from_value(serde_json::json!({
             "db_path": "/data/targets.redb",
             "default_goals": [
-                {"filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20}
+                {"filter": "L", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20}
             ],
             "default_scheduling": { "min_altitude_degrees": 20.0 }
         }))
