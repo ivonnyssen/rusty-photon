@@ -33,7 +33,7 @@ Feature: Target progress derivation (P1)
   # get_session_progress is still the legacy targets[]-array planner
   # tool (planner.rs) — it doesn't read the target store yet. That
   # migration is part of the Dynamic Planner cutover
-  # (target_store_planner.feature, still @wip), not this additive
+  # (target_store_planner.feature), not this additive
   # CRUD/goals/rest increment.
   Scenario: get_session_progress reports every target's per-goal progress
     Given rp is running with a target store and filter roster "Luminance, Red"

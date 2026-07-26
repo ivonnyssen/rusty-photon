@@ -5,7 +5,7 @@ Feature: Target store CRUD (P1)
   `list_targets`, `update_target`, and `delete_target` MCP tools (rp.md
   § Target Store). Coexists with the legacy `targets[]` planner tools
   (planner.feature) pending the Dynamic Planner cutover
-  (target_store_planner.feature, still @wip).
+  (target_store_planner.feature).
 
   `add_target` derives a slug from `catalog_ref` (a catalog lookup) or
   `display_name` (a custom add), then resolves it against the store:
