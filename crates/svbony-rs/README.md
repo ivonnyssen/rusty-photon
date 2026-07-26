@@ -3,7 +3,7 @@
 Safe Rust bindings for the **SVBony camera SDK**. Sibling crate to
 [`qhyccd-rs`](https://github.com/ivonnyssen/qhyccd-rs) and
 [`zwo-rs`](../zwo-rs); consumed by rusty-photon's `svbony-camera` ASCOM
-Alpaca driver (a later phase — see `docs/plans/svbony-camera.md`).
+Alpaca driver (a later phase — see `docs/plans/archive/svbony-camera.md`).
 
 > **Status: under construction (Phase A/B).** Enumeration, SDK-version
 > queries, typed SVBony error mapping, and the camera **handle** (open/close,
@@ -34,7 +34,7 @@ grant for the header text. `libsvbony-sys/lib.rs` is instead
 and named constants are reproduced from reading the header (facts like
 function names, parameter order/types, and struct field order are not
 copyrightable), the same posture `libqhyccd-sys` takes toward QHY's similarly
-unlicensed header. See `docs/plans/svbony-camera.md` ("Verified SDK ground
+unlicensed header. See `docs/plans/archive/svbony-camera.md` ("Verified SDK ground
 truth") for the full provenance trail and the source URL used.
 
 ## Enum representation
@@ -70,7 +70,7 @@ No libclang / bindgen requirement — `libsvbony-sys` is hand-written FFI.
 
 Install the SDK library at `/usr/local/lib/libSVBCameraSDK.so` (or point
 `SVBONY_SDK_LIB_DIR` at its directory). No packaging/provisioning action
-exists yet in this repo (Phase C+ of `docs/plans/svbony-camera.md`); until
+exists yet in this repo (Phase C+ of `docs/plans/archive/svbony-camera.md`); until
 then, this crate's own Bazel build (`crates/svbony-rs/libsvbony-sys/BUILD.bazel`)
 bakes in `SVBONY_SKIP_NATIVE_LINK=1` so `bazel build //...`/`bazel test //...`
 need zero SDK provisioning — a deliberate difference from `libqhyccd-sys`'s

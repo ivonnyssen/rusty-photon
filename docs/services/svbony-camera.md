@@ -186,7 +186,7 @@ workspace build by SDK availability. See *Native dependency & build gating*.
 
 Net: mechanically SVBony is ZWO-shaped (we own the FFI crate; a cleaner C
 API ports closely), legally it is QHY-shaped (no redistribution grant). See
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) for the full
+[`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md) for the full
 decision record.
 
 ---
@@ -230,7 +230,7 @@ decision record.
 
 ### This phase's link-gating shortcut (Bazel — unchanged by Phase F)
 
-Phase F (docs/plans/svbony-camera.md) added
+Phase F (docs/plans/archive/svbony-camera.md) added
 [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
 and wired it into the plain-Cargo `conformu.yml` + `native.yml` workflows
 (`scheduled.yml`'s full-workspace legs joined them in #680, mirroring the
@@ -267,7 +267,7 @@ with the SDK installed and `ldconfig`'d, to exercise the real link locally)
 — this is exactly what `native.yml`'s `install-svbony-sdk` step does per-run.
 This split (Cargo-CI real-link-provisioned, Bazel still skip-link-only) is a
 deliberate, temporary simplification recorded in
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s Status section
+[`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)'s Status section
 — revisit (drop `manual`, add a Bazel-side SDK-fetch rule) as follow-up work,
 alongside real-hardware validation (see "Real-hardware validation" below);
 Phase G's packaging work landed without either (see the Status banner above
@@ -535,7 +535,7 @@ responsive during an in-flight exposure.
 
 - **Bad-pixel correction** (`SVB_BAD_PIXEL_CORRECTION_ENABLE`) — still not
   implemented. This phase's implementation order (see
-  [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)) did not
+  [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)) did not
   include it; it is not exercised by any BDD scenario or the ASCOM `Camera`
   surface, so it remains future work, not a Phase E gap.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
@@ -725,7 +725,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    b. Calls `SVBSendSoftTrigger` to request one frame.
    c. Polls/awaits `SVBGetVideoData` with a timeout of
       **`exposure_us * 2 + 500ms`** — the SDK's own documented
-      recommendation (captured in `docs/plans/svbony-camera.md`'s
+      recommendation (captured in `docs/plans/archive/svbony-camera.md`'s
       "Verified SDK facts"). Exceeding the deadline is a failure (see E9
       below).
 3. **Stale-frame flush: not needed on the soft-trigger path
@@ -990,7 +990,7 @@ Layered per [`testing.md`](../skills/testing.md).
 
 ## Delivery phasing
 
-Mirrors [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s
+Mirrors [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)'s
 phases A–G:
 
 - **Phase A — `libsvbony-sys`:** ✅ *landed.* Hand-written FFI bindings
@@ -1334,7 +1334,7 @@ phasing; tracked here as follow-up rather than silently left undocumented.
 
 ## References
 
-- Decision record: [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) ·
+- Decision record: [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md) ·
   [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)
 - FFI crate: [`svbony-rs`](../../crates/svbony-rs/) (this repo's author;
   siblings to `qhyccd-rs` / `zwo-rs`)
@@ -1347,7 +1347,7 @@ phasing; tracked here as follow-up rather than silently left undocumented.
   [`testing.md`](../skills/testing.md)
 - Behavioural reference (read-only, clean-room): indi-3rdparty
   `indi_svbony_ccd` (GPL/LGPL-family)
-- SDK ground truth: `docs/plans/svbony-camera.md`'s "Verified SDK facts"
+- SDK ground truth: `docs/plans/archive/svbony-camera.md`'s "Verified SDK facts"
   (from `SVBCameraSDK.h` + indi-3rdparty `libsvbony` packaging, SDK 1.13.4)
 - [ADR-001 Amendment A](../decisions/001-fits-file-support.md) — the
   pure-Rust / no-system-dep posture this service is a further exception to

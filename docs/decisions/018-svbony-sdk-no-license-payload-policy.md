@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-21); implemented in Phase G of
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) (landed
+[`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md) (landed
 2026-07-21). Extends
 [ADR-013](013-native-sdk-payload-policy.md)'s two-bucket framework
 (redistribute-MIT-ZWO / download-proprietary-QHY) with a third bucket for
@@ -20,7 +20,7 @@ native camera SDK payloads, distinguished by license:
 | Bucket | Never redistribute; download on target | Redistribute in-package |
 
 `svbony-camera` (this workspace's third native-SDK camera service, see
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)) links the
+[`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)) links the
 SVBony camera SDK (`libSVBCameraSDK`, SDK version 1.13.4 as carried by
 indi-3rdparty's `libsvbony`). That SDK does not fit either existing bucket
 cleanly:
@@ -91,7 +91,7 @@ mechanical delivery differs in one respect worth flagging (see
    Phase G's runtime call: RUNPATH, not `ldconfig`.**
    indi-3rdparty's `libsvbony/CMakeLists.txt` sets a CMake **install**
    property (`SOVERSION 1`), which earlier drafts of this ADR and
-   `docs/plans/svbony-camera.md` read as "the blob carries a proper
+   `docs/plans/archive/svbony-camera.md` read as "the blob carries a proper
    versioned SONAME" — Phase F's `install-svbony-sdk` CI action
    byte-verified the actual vendored `.bin` (`readelf -d`) and found **no
    embedded DT_SONAME at all**, same as ZWO's blobs. What Phase F confirmed
@@ -123,7 +123,7 @@ mechanical delivery differs in one respect worth flagging (see
    were failing with `unable to find library -lSVBCameraSDK` (the script
    discovered `svbony-camera` via its `pkg/` directory but staged no SDK for
    it). The Bazel-side SDK-fetch rule remains separately deferred — see
-   `docs/plans/svbony-camera.md`'s Status section. On macOS,
+   `docs/plans/archive/svbony-camera.md`'s Status section. On macOS,
    `scripts/build-tarballs.sh`/`scripts/generate-brew-formulas.sh` exclude
    `svbony-camera` outright instead (no confirmed `mac_arm64` blob).
 5. **If SVBony ever grants written redistribution permission** (worth an
@@ -152,7 +152,7 @@ mechanical delivery differs in one respect worth flagging (see
    `SVBONY_SDK_LIB_DIR` can build the real Windows link today — but
    `install-svbony-sdk` gained no Windows step, and `bazel/windows-latest`
    still only exercises `SVBONY_SKIP_NATIVE_LINK=1` (see
-   `docs/plans/svbony-camera.md`'s Status section for the tracked gap).
+   `docs/plans/archive/svbony-camera.md`'s Status section for the tracked gap).
 
 ## Consequences
 
@@ -184,7 +184,7 @@ mechanical delivery differs in one respect worth flagging (see
   add a Bazel-side SDK-fetch repository rule (out of scope; not testable
   without the real SDK) — this Bazel-side simplification (distinct from
   this ADR's packaging decision) remains deferred follow-up work, recorded
-  in `docs/plans/svbony-camera.md`'s Status section and
+  in `docs/plans/archive/svbony-camera.md`'s Status section and
   `crates/svbony-rs/libsvbony-sys/BUILD.bazel`.
 - ADR-013's two-bucket framework is now a three-bucket framework:
   redistribute (MIT-clear, e.g. ZWO), download-proprietary-unresolved (e.g.
@@ -201,7 +201,7 @@ mechanical delivery differs in one respect worth flagging (see
   this ADR extends
 - [ADR-009](009-vendor-qhyccd-rs.md), [ADR-008](008-zwo-camera-native-sdk-ffi.md),
   [ADR-010](010-vendor-zwo-rs.md) — the prior native-SDK ADRs
-- Plan: [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) — the
+- Plan: [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md) — the
   full SVBony decision record, including the "Verified SDK facts" section
   this ADR's license findings are drawn from
 - Design doc: [`docs/services/svbony-camera.md`](../services/svbony-camera.md)

@@ -3,7 +3,7 @@
 //! Camera client. The binary must be pre-built with `--features simulation`
 //! (or `--all-features`).
 //!
-//! All scenarios are green as of Phase E (docs/plans/svbony-camera.md); the
+//! All scenarios are green as of Phase E (docs/plans/archive/svbony-camera.md); the
 //! `@wip` filter below is kept as the standard sanctioned mechanism
 //! (docs/skills/testing.md §2.7) for any future feature landing ahead of
 //! its implementation, not because anything is currently tagged.
