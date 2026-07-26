@@ -1,7 +1,7 @@
 use crate::Result;
 use tracing::error;
 
-use crate::{Camera, Control, QHYError::*};
+use crate::{Camera, ControlType, QHYError};
 
 #[derive(Debug, PartialEq, Clone)]
 /// Filter wheels are directly connected to the QHY camera
@@ -100,17 +100,16 @@ impl FilterWheel {
     /// println!("Number of filters: {}", number_of_filters);
     /// ```
     pub fn get_number_of_filters(&self) -> Result<u32> {
-        match self.camera.is_control_available(Control::CfwSlotsNum) {
-            Some(_) => self.camera.get_parameter(Control::CfwSlotsNum).map_or_else(
-                |e| {
-                    error!(?e, "could not get number of filters from camera");
-                    Err(e)
-                },
-                |num| Ok(num as u32),
-            ),
+        match self.camera.is_control_available(ControlType::CfwSlotsNum) {
+            Some(_) => self.camera.cfw_slot_count().map_err(|e| {
+                error!(?e, "could not get number of filters from camera");
+                e
+            }),
             None => {
                 tracing::debug!("I'm a filter wheel without filters. :(");
-                Err(GetNumberOfFiltersError)
+                Err(QHYError::Sdk {
+                    op: "get_number_of_filters",
+                })
             }
         }
     }
@@ -126,18 +125,17 @@ impl FilterWheel {
     /// println!("Current position: {}", current_position);
     /// ```
     pub fn get_fw_position(&self) -> Result<u32> {
-        match self.camera.is_control_available(Control::CfwPort) {
-            Some(_) => match self.camera.get_parameter(Control::CfwPort) {
-                //the parameter uses ASCII values to represent the position
-                Ok(position) => Ok((position - 48_f64) as u32), //removing ASCII offset
-                Err(error) => {
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
-            },
+        match self.camera.is_control_available(ControlType::CfwPort) {
+            // `cfw_position` decodes the SDK's ASCII position offset.
+            Some(_) => self.camera.cfw_position().map_err(|error| {
+                tracing::error!(error = ?error);
+                error
+            }),
             None => {
                 tracing::debug!("No filter wheel plugged in.");
-                Err(GetCfwPositionError)
+                Err(QHYError::Sdk {
+                    op: "get_fw_position",
+                })
             }
         }
     }
@@ -152,19 +150,20 @@ impl FilterWheel {
     /// fw.set_fw_position(1).expect("set_fw_position failed");
     /// ```
     pub fn set_fw_position(&self, position: u32) -> Result<()> {
-        match self.camera.is_control_available(Control::CfwPort) {
-            //the parameter uses ASCII values to represent the position
-            Some(_) => self
-                .camera
-                .set_parameter(Control::CfwPort, (position + 48_u32) as f64) //adding ASCII offset
-                .map_err(|_| {
-                    let error = SetCfwPositionError;
-                    tracing::error!(error = ?error);
-                    error
-                }),
+        match self.camera.is_control_available(ControlType::CfwPort) {
+            // `set_cfw_position` applies the SDK's ASCII position offset.
+            Some(_) => self.camera.set_cfw_position(position).map_err(|_| {
+                let error = QHYError::Sdk {
+                    op: "set_fw_position",
+                };
+                tracing::error!(error = ?error);
+                error
+            }),
             None => {
                 tracing::debug!("No filter wheel plugged in.");
-                Err(SetCfwPositionError)
+                Err(QHYError::Sdk {
+                    op: "set_fw_position",
+                })
             }
         }
     }

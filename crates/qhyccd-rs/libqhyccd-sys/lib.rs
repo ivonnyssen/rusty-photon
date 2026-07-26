@@ -11,6 +11,11 @@ pub const QHYCCD_COOL: u32 = 2;
 pub const QHYCCD_NOTCOO: u32 = 1;
 pub const QHYCCD_SUCCESS: u32 = 0;
 pub const QHYCCD_ERROR: u32 = u32::MAX;
+/// Non-error return of `ExpQHYCCDSingleFrame` (SDK `qhyccderr.h`): the single
+/// frame is already captured and may be read immediately without waiting.
+/// Callers MUST treat it as success, not failure — it is distinct from both
+/// `QHYCCD_SUCCESS` (0) and `QHYCCD_ERROR` (0xFFFFFFFF).
+pub const QHYCCD_READ_DIRECTLY: u32 = 0x2001;
 pub const QHYCCD_ERROR_F64: f64 = u32::MAX as f64;
 
 pub type QhyccdHandle = *const core::ffi::c_void;

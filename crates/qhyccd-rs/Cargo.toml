@@ -12,8 +12,8 @@ edition = "2021"
 # the root `profile.dev.debug = "line-tables-only"` needs Rust >= 1.71 and the
 # shared Cargo.lock pins newest deps. 1.85.0 is the standalone floor: the
 # `simulation` feature pulls rand 0.10 (MSRV 1.85) + its chacha20/getrandom chain;
-# the base build is held to 1.81 by derive_more 2.1. (Was 1.68 before #392 moved
-# this crate onto rand 0.10 / derive_more 2.1.) `cargo msrv find` ratchets it.
+# the base build (no `simulation`) has a lower floor. (Was 1.68 before #392 moved
+# this crate onto rand 0.10.) `cargo msrv find` ratchets it.
 rust-version = "1.85.0"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
@@ -69,14 +69,10 @@ tracing = { workspace = true }
 # is the workspace standard, already used by the consuming camera services; its
 # `RwLock` returns the guard directly, so there is no poison error to model.
 parking_lot = { workspace = true }
-# `eq` feature = derive_more::PartialEq, used with `#[partial_eq(skip)]` so Camera
-# equality ignores its backend handle.
-derive_more = { workspace = true, features = ["eq"] }
 rand = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-mockall = { workspace = true }
 # Used only by the demo programs in examples/ (FmtSubscriber), not the library,
 # so consumers of qhyccd-rs no longer pull it. Inherits the workspace pin.
 tracing-subscriber = { workspace = true }
