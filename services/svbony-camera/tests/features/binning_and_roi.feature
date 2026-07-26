@@ -10,10 +10,13 @@ Feature: Binning and region-of-interest
   violates SVBSetROIFormat's alignment rule -- width not a multiple of 8 or
   height not a multiple of 2, byte-for-byte the same rule zwo-camera enforces
   for ASI -- with INVALID_VALUE (R3). The simulated SV605CC-Simulated is
-  3008x3008 with supported bins 1-4; whether CameraXSize/CameraYSize need
-  the same "reported aligned down so every binned full frame is valid ROI"
-  treatment as zwo-camera's R4 is a Phase E implementation decision (TBD),
-  so this feature does not assert specific reduced values.
+  raw 3008x3008 with supported bins 1-4; CameraXSize/CameraYSize get the
+  same "reported aligned down so every binned full frame is a valid ROI"
+  treatment as zwo-camera's R4 (2976x3000): clients -- ConformU among
+  them -- take a full frame at every bin via NumX = CameraXSize / bin,
+  which the raw extent cannot satisfy at every bin (3008/3 = 1002 is not
+  a multiple of 8), so a full-frame StartExposure succeeds at every
+  supported bin (R4).
 
   Background:
     Given the svbony-camera service running with the simulation backend
@@ -51,6 +54,18 @@ Feature: Binning and region-of-interest
       | 64    | 4000  | 0       | 0       |
       | 64    | 64    | 3008    | 0       |
       | 64    | 64    | 0       | 3008    |
+
+  Scenario Outline: A full frame is achievable at every supported bin
+    When I StartExposure on camera device 0 with BinX <bin> BinY <bin> NumX <num_x> NumY <num_y> StartX 0 StartY 0 Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    Then camera device 0 reports ImageReady as true
+
+    Examples:
+      | bin | num_x | num_y |
+      | 1   | 2976  | 3000  |
+      | 2   | 1488  | 1500  |
+      | 3   | 992   | 1000  |
+      | 4   | 744   | 750   |
 
   Scenario Outline: A misaligned sub-frame is rejected at StartExposure
     When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX <num_x> NumY <num_y> StartX 0 StartY 0 Duration 0.01 Light true

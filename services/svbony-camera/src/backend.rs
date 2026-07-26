@@ -23,21 +23,24 @@
 //! output format + exposure control + trigger + the `exposure*2+500ms`
 //! `SVBGetVideoData` deadline, state-machine step 2), and pulse-guide.
 //!
-//! **Why `capture` has no interrupt path.** Unlike `zwo-camera`'s
-//! `ASIStopExposure` (a genuine mid-integration abort), SVBony has no
-//! data-preserving or interruptible stop at the SDK level — the design doc's
-//! "Exposure" contract point 5 is explicit that `SVBStopVideoCapture`
-//! discards whatever is in flight, and this seam does not call it
-//! concurrently with an in-flight `SVBGetVideoData` on the same handle
-//! (calling two SDK entry points from different threads on one camera
-//! handle at once is exactly the kind of undocumented-thread-safety risk the
-//! design doc's Concurrency section warns about generally). Consequently
-//! [`CameraHandle::capture`] runs to completion (success or SDK error) with
-//! no external interrupt signal; `camera.rs`'s abort path instead bumps the
-//! exposure generation counter so a late-completing capture's result is
-//! silently discarded — the same "single owner, generation-counter guard"
-//! discipline `zwo-camera`'s `run_exposure`/`result_lock` uses, just without
-//! an SDK-level short-circuit.
+//! **How `capture` aborts (hardware-verified, SV605CC).** SVBony has no
+//! data-preserving or interruptible stop at the SDK level: real-hardware
+//! probing confirmed that a concurrent `SVBStopVideoCapture` is *tolerated*
+//! (no crash, and the handle survives a restart + fresh capture) but does
+//! **not** unblock an in-flight `SVBGetVideoData`, which runs on to its full
+//! deadline and then times out with the frame discarded. So no SDK call can
+//! short-circuit a wait — but none is needed: `capture` already polls
+//! `SVBGetVideoData` in short slices (see `VIDEO_DATA_POLL_MS`), so it
+//! checks [`CaptureRequest::cancel`] between slices and bails out within
+//! one slice of an abort/disconnect. The bail-out stops video capture
+//! (discarding the in-flight frame — the SDK cannot preserve it anyway,
+//! and a frame left in the SDK's buffer would surface as a stale frame on
+//! the *next* exposure) and, for a trigger camera, re-arms it so the
+//! connect-time "armed once" invariant holds for the next exposure.
+//! `camera.rs`'s abort path additionally bumps the exposure generation
+//! counter so a capture that completes *naturally* in the same instant is
+//! still discarded — the same "single owner, generation-counter guard"
+//! discipline `zwo-camera`'s `run_exposure`/`result_lock` uses.
 //!
 //! **Staying responsive during an in-flight exposure.** The production
 //! handle's SDK mutex is released between `capture`'s ROI/control setup and
@@ -60,6 +63,7 @@
 //! exposure.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -91,7 +95,7 @@ pub type BackendResult<T> = std::result::Result<T, BackendError>;
 
 /// The ROI + exposure parameters for a single soft-trigger capture, computed
 /// and validated by the device (R1-R3, E3).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CaptureRequest {
     /// Post-binning ROI start X (`StartX`).
     pub start_x: u32,
@@ -103,8 +107,8 @@ pub struct CaptureRequest {
     pub height: u32,
     /// Symmetric binning factor.
     pub bin: u32,
-    /// Exposure time in microseconds (`SVB_EXPOSURE`'s assumed unit — see
-    /// `svbony_rs::ControlType::Exposure`'s doc comment).
+    /// Exposure time in microseconds (`SVB_EXPOSURE`'s hardware-confirmed
+    /// unit — see `svbony_rs::ControlType::Exposure`'s doc comment).
     pub exposure_us: i64,
     /// Whether this camera is trigger-capable (`IsTriggerCam`): selects the
     /// soft-trigger path vs the non-trigger free-running restart fallback
@@ -118,6 +122,11 @@ pub struct CaptureRequest {
     /// double-count the wait, so it is `#[cfg(feature = "simulation")]`-only
     /// in the production handle.
     pub duration: Duration,
+    /// Set by the device's abort/disconnect path and checked between
+    /// `SVBGetVideoData` poll slices, so an aborted capture drains within
+    /// one slice instead of the rest of the `exposure*2+500ms` deadline —
+    /// see the module docs ("How `capture` aborts").
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// `exposure_us * 2 + 500ms` — the SDK's own documented `SVBGetVideoData`
@@ -234,6 +243,29 @@ impl SvbonyCameraHandle {
             open: AtomicBool::new(false),
         }
     }
+
+    /// Drain an aborted capture: stop video capture (discarding the
+    /// in-flight frame — the SDK has no data-preserving stop, and a frame
+    /// left in its buffer would surface as a stale frame on the next
+    /// exposure) and re-arm it for a trigger camera so the connect-time
+    /// "armed once" invariant holds for the next exposure. A non-trigger
+    /// camera is left unarmed — its per-exposure restart (state-machine
+    /// step 5) arms it again. Failures here are logged, not propagated:
+    /// the capture's result is already being discarded.
+    fn abort_capture(&self, request: &CaptureRequest) -> BackendResult<Vec<u8>> {
+        let guard = self.camera.lock();
+        if let Some(camera) = guard.as_ref() {
+            if let Err(e) = camera.stop_video_capture() {
+                tracing::warn!(error = %e, "stopping video capture after an abort failed");
+            }
+            if request.is_trigger_cam {
+                if let Err(e) = camera.start_video_capture() {
+                    tracing::warn!(error = %e, "re-arming video capture after an abort failed");
+                }
+            }
+        }
+        Err(BackendError("exposure aborted".to_string()))
+    }
 }
 
 impl CameraHandle for SvbonyCameraHandle {
@@ -349,12 +381,28 @@ impl CameraHandle for SvbonyCameraHandle {
         // See `CaptureRequest::duration`'s doc comment: only the simulation
         // needs an artificial wait, since its `get_video_data` never really
         // blocks; the real SDK's `SVBGetVideoData` call below already blocks
-        // for close to the exposure duration on real hardware.
+        // for close to the exposure duration on real hardware. Sliced so an
+        // abort during the simulated integration drains promptly too.
         #[cfg(feature = "simulation")]
-        std::thread::sleep(request.duration);
+        {
+            let sim_deadline = Instant::now() + request.duration;
+            loop {
+                if request.cancel.load(Ordering::Acquire) {
+                    return self.abort_capture(&request);
+                }
+                let remaining = sim_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(VIDEO_DATA_POLL_MS as u64)));
+            }
+        }
         #[cfg(not(feature = "simulation"))]
         let _ = request.duration;
 
+        if request.cancel.load(Ordering::Acquire) {
+            return self.abort_capture(&request);
+        }
         {
             let guard = self.camera.lock();
             let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
@@ -388,6 +436,14 @@ impl CameraHandle for SvbonyCameraHandle {
                 u64::try_from(exposure_timeout_ms(request.exposure_us)).unwrap_or(0),
             );
         loop {
+            // Abort/disconnect check between slices — the only interrupt
+            // path this SDK admits (see the module docs, "How `capture`
+            // aborts": a concurrent `SVBStopVideoCapture` is tolerated but
+            // does NOT unblock a pending `SVBGetVideoData`, so short slices
+            // + this check are what keep the drain bounded).
+            if request.cancel.load(Ordering::Acquire) {
+                return self.abort_capture(&request);
+            }
             let remaining_ms = i32::try_from(
                 deadline
                     .saturating_duration_since(Instant::now())
@@ -469,9 +525,41 @@ mod handle_tests {
             exposure_us: 1_000,
             is_trigger_cam: true,
             duration: Duration::from_millis(1),
+            cancel: Arc::new(AtomicBool::new(false)),
         };
         let frame = handle.capture(request).unwrap();
         assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+
+    /// A pre-cancelled capture drains immediately with the aborted error and
+    /// leaves the trigger camera re-armed (stop + start), never waiting out
+    /// the simulated integration.
+    #[test]
+    fn production_handle_capture_honours_a_cancelled_request() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let request = CaptureRequest {
+            start_x: 0,
+            start_y: 0,
+            width: 64,
+            height: 64,
+            bin: 1,
+            exposure_us: 30_000_000,
+            is_trigger_cam: true,
+            duration: Duration::from_secs(30),
+            cancel: Arc::new(AtomicBool::new(true)),
+        };
+        let started = Instant::now();
+        let err = handle.capture(request).unwrap_err();
+        assert!(err.0.contains("aborted"), "unexpected error: {}", err.0);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancelled capture should drain promptly, took {:?}",
+            started.elapsed()
+        );
         handle.close().unwrap();
     }
 
@@ -585,6 +673,13 @@ pub(crate) mod mock {
         open: AtomicBool,
         /// Force the next `open()` call to fail (C2's open-failure branch).
         pub fail_open: AtomicBool,
+        /// Force `property()` to fail — the connect-handshake failure branch
+        /// (C2's handshake half; exercises `camera.rs::handshake_err`).
+        pub fail_property: AtomicBool,
+        /// Force control reads/writes and pulse-guide to fail, so the
+        /// device's SDK-error mappings (which must carry the SDK detail)
+        /// are exercisable.
+        pub fail_controls: AtomicBool,
 
         gain: Mutex<i64>,
         black_level: Mutex<i64>,
@@ -623,6 +718,8 @@ pub(crate) mod mock {
                 caps: Mutex::new(default_caps()),
                 open: AtomicBool::new(false),
                 fail_open: AtomicBool::new(false),
+                fail_property: AtomicBool::new(false),
+                fail_controls: AtomicBool::new(false),
                 gain: Mutex::new(100),
                 black_level: Mutex::new(0),
                 cooler_enable: AtomicBool::new(false),
@@ -681,7 +778,7 @@ pub(crate) mod mock {
 
         /// The most recent request `capture` received, if any.
         pub fn last_capture_request(&self) -> Option<CaptureRequest> {
-            *self.last_capture_request.lock()
+            self.last_capture_request.lock().clone()
         }
 
         /// How many times `start_video_capture` has been called so far.
@@ -722,6 +819,9 @@ pub(crate) mod mock {
         }
 
         fn property(&self) -> BackendResult<CameraProperty> {
+            if self.fail_property.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             Ok(self.property.lock().clone())
         }
 
@@ -738,6 +838,9 @@ pub(crate) mod mock {
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             let value = match control {
                 ControlType::Gain => *self.gain.lock(),
                 ControlType::BlackLevel => *self.black_level.lock(),
@@ -757,6 +860,9 @@ pub(crate) mod mock {
         }
 
         fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             match control {
                 ControlType::Gain => *self.gain.lock() = value,
                 ControlType::BlackLevel => *self.black_level.lock() = value,
@@ -786,10 +892,26 @@ pub(crate) mod mock {
         }
 
         fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
-            *self.last_capture_request.lock() = Some(request);
-            let delay = *self.capture_delay.lock();
-            if !delay.is_zero() {
-                std::thread::sleep(delay);
+            *self.last_capture_request.lock() = Some(request.clone());
+            // Mirror the production handle's sliced wait: an abort/disconnect
+            // (request.cancel) drains the capture promptly instead of
+            // sleeping out the whole delay.
+            let deadline = Instant::now() + *self.capture_delay.lock();
+            loop {
+                if request.cancel.load(Ordering::SeqCst) {
+                    // Mirror the production abort drain: stop, then re-arm
+                    // for a trigger camera (see SvbonyCameraHandle::abort_capture).
+                    self.stop_video_capture()?;
+                    if request.is_trigger_cam {
+                        self.start_video_capture()?;
+                    }
+                    return Err(BackendError("exposure aborted".to_string()));
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(5)));
             }
             if self.fail_capture.load(Ordering::SeqCst) {
                 return Err(BackendError(
@@ -809,6 +931,9 @@ pub(crate) mod mock {
         }
 
         fn pulse_guide(&self, _direction: GuideDirection, _duration_ms: i32) -> BackendResult<()> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             Ok(())
         }
     }
