@@ -289,6 +289,59 @@ single-consumer (e.g. `libzwo-sys`'s `bindgen` build-dep) or when the workspace
 pin would force an unwanted feature (e.g. `qhyccd-rs` keeps `tracing-subscriber`
 local to avoid the workspace's `env-filter`).
 
+### Duplicate transitive versions
+
+Dependabot bumps one package at a time, so `Cargo.lock` accumulates several
+versions of the same transitive crate. To list them:
+
+```sh
+cargo tree --workspace --target all -d
+```
+
+`--target all` matters — a large part of the split is Windows-only and is
+invisible from a Linux host.
+
+A duplicate is only *resolvable* when every consumer's requirement admits one
+common version, which in practice means some consumer carries an open range
+(`windows-sys = ">=0.52, <0.62"`). Duplicates whose consumers pin incompatible
+majors (`^0.22` vs `^0.23`) cannot be collapsed by a lock refresh at all — they
+need an upstream release or a dependency swap. Most of this workspace's
+duplicates are that second kind: either an ecosystem mid-migration (`rand`
+0.8/0.9/0.10, `syn` 2/3, `thiserror` 1/2, `hashbrown`, `getrandom`) or a single
+crate holding an old major open (`serialport` → `nix 0.26` + `windows-sys 0.52`,
+`ring` → `windows-sys 0.52`, `system-configuration` → `core-foundation 0.9`,
+`cloudflare` → `reqwest 0.12`). To find the blocker for a given crate, read the
+`req` of each dependent:
+
+```sh
+cargo metadata --format-version 1 --all-features | \
+  jq -r '.packages[] | . as $p | .dependencies[] |
+         select(.name=="windows-sys") | "\(.req)  <- \($p.name) \($p.version)"' | sort -u
+```
+
+Chasing a duplicate is not free. Forcing an open-range consumer onto a different
+version with `cargo update -p <crate> --recursive` can move *other* crates
+**down** onto an older shared version, which is worse than the split it was
+meant to fix. Take the refresh only when `cargo tree --workspace --target all -d`
+shows the version count actually dropping.
+
+### Holding a transitive dependency back
+
+A `=x.y.z` requirement in `[workspace.dependencies]` constrains only the crates
+a workspace member names directly. To hold a **transitive** crate, pin it in
+`Cargo.lock`:
+
+```sh
+cargo update -p rust-embed-utils --precise 8.11.0
+```
+
+A plain `cargo update` undoes that, so re-apply the pin (and re-run the Bazel
+repin from CLAUDE.md rule 10) whenever the lock is refreshed. Current holds:
+
+| Crate | Held at | Why |
+|---|---|---|
+| `rust-embed`, `rust-embed-impl`, `rust-embed-utils` | 8.11.0 | From 8.12, `rust-embed-utils` pulls `sha2`/`digest 0.11` in beside the `digest 0.10` chain `argon2`/`blake2` already bring. ppba-driver is the only service with a direct `rust-embed` dependency, so it is the only package that gets the duplicate — and its two largest test targets then fail `rustc` E0463 "can't find crate" under `bazel / windows-latest`, deterministically. Revisit once `argon2`/`blake2` ship on `digest 0.11`. |
+
 ### Pre-commit hooks
 
 The workspace uses `cargo-husky` as a dev-dependency configured with
