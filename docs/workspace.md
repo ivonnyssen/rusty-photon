@@ -386,6 +386,14 @@ as `settle_secs_ceil` when sub-second values must round up instead of
 truncating to `0`. See `services/phd2-guider/src/client.rs` for the
 worked example.
 
+**Operator-facing durations.** Any duration string a human operator
+reads — push notifications, UI display, doctor output, operator-read
+log lines — is rendered with `humantime::format_duration`, never a
+hand-rolled formatter or a numeric `format!("{:.1}s", …)` /
+`{:?}`-on-a-`Duration`: an operator reads `5m`, not `300.0s`. Numeric
+wire fields (`duration_secs`, `elapsed_ms`), `humantime_serde` config
+fields, and internal timing arithmetic are unaffected.
+
 ## Feature Flags
 
 - **`mock`** — Enables an in-memory mock factory with persistent device state

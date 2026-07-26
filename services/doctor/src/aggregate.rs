@@ -258,9 +258,9 @@ async fn probe_shell_out(ctx: &Context, scan: &ServiceScan, unit: &UnitFacts) ->
                 "service.doctor-probe",
                 service,
                 format!(
-                    "{} doctor did not answer within {}s and was stopped",
+                    "{} doctor did not answer within {} and was stopped",
                     binary.display(),
-                    SHELL_OUT_TIMEOUT.as_secs()
+                    humantime::format_duration(SHELL_OUT_TIMEOUT)
                 ),
                 None,
             )];
