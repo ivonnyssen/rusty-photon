@@ -2,6 +2,24 @@
 
 ## Status
 
+**Real-hardware validation PASSED (2026-07-26, physical SV605CC) — the
+plan is COMPLETE.** ASCOM ConformU 4.3.0 passes both suites with zero
+errors/issues against the production real-SDK binary serving the physical
+camera. Every "confirm against real hardware" caveat this plan carried is
+resolved, and the validation forced four driver changes (production
+enumeration wired to registration — the Phase E boundary removed;
+`MaxADU` = 65535, the SDK rescales 14-bit ADC data to full Raw16 scale;
+R4 aligned-down `CameraXSize`/`CameraYSize` = 2976×3000, adopted after
+real ConformU failed at bin 3 against the raw extent; responsive abort
+via a cancel flag checked between `SVBGetVideoData` poll slices, ~0.3 s
+drain measured vs ~8.3 s before). Full itemized results:
+[`docs/services/svbony-camera.md`](../services/svbony-camera.md)
+"Real-hardware validation". Remaining follow-ups tracked outside this
+plan: the Bazel-side SDK-fetch rule ("Future work" below), dev-machine
+USB permissions (issue #710), and the field-optics items (dark-frame
+banding revision check, e-/ADU sweep). Ready to archive per
+`docs/skills/archiving-plans.md`.
+
 **Follow-up landed (issue #679, 2026-07-22).** `scripts/build-packages.sh`
 gained the `needs_svbony` SDK-staging leg Phase G deliberately deferred (see
 below): `nightly-packages` was failing its `linux / arm64`, `linux / amd64`,

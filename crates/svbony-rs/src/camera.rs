@@ -202,10 +202,10 @@ pub struct CameraPropertyEx {
 pub enum ControlType {
     /// `SVB_GAIN`.
     Gain,
-    /// `SVB_EXPOSURE`. **Unit assumption**: the ground truth does not state
-    /// the exposure control's unit explicitly; modelled as microseconds
-    /// (µs), matching ZWO's ASI `ASI_EXPOSURE` convention — needs
-    /// confirmation against real hardware (Phase G).
+    /// `SVB_EXPOSURE`, in microseconds (µs) — **hardware-confirmed** on a
+    /// physical SV605CC (2026-07-26): a 3 s value integrates ~3 s
+    /// wall-clock, and the SDK's own quantization reads back at µs scale
+    /// (200 000 → 199 997). Matches ZWO's ASI `ASI_EXPOSURE` convention.
     Exposure,
     /// `SVB_GAMMA`.
     Gamma,

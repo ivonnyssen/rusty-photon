@@ -19,16 +19,13 @@
 //! `simulation` feature, which removes the *camera*, not the *link* (see
 //! `SVBONY_SKIP_NATIVE_LINK` in `crates/svbony-rs/libsvbony-sys/build.rs`).
 //!
-//! ## Device registration in this phase
+//! ## Device registration
 //!
-//! With the `simulation` feature, `build()` enumerates `svbony-rs`'s one
-//! fabricated `SV605CC-Simulated` camera and registers it, so BDD scenarios
-//! have a real device to address as "camera device 0". **Without**
-//! `simulation` (the production real-SDK build), `build()` intentionally
-//! registers **zero** devices — real-hardware enumeration + registration is
-//! gated on the real SDK link being provisionable in CI (Phase G, unrelated
-//! to `Camera` trait completeness, which landed in Phase E); see
-//! [`enumerate_cameras`]'s doc comment.
+//! `build()` enumerates whatever `svbony_rs::Sdk::cameras()` reports and
+//! registers each camera as an ASCOM device. With the `simulation` feature
+//! that is `svbony-rs`'s one fabricated `SV605CC-Simulated` camera (so BDD
+//! scenarios have "camera device 0" to address); the production real-SDK
+//! build registers the physically connected cameras.
 
 pub mod backend;
 mod camera;
@@ -285,18 +282,8 @@ impl BoundServer {
 /// Unlike ZWO (`ASIGetSerialNumber` requires an open camera), SVBony's
 /// `CameraSN` arrives with `SVBGetCameraInfo` at enumeration time
 /// ([`svbony_rs::Sdk::cameras`]) — no open-then-close dance is needed to mint
-/// identity.
-///
-/// **Device registration boundary (still in effect after Phase E).** With
-/// the `simulation` feature this returns the `svbony-rs` simulation's one
-/// fabricated camera, so BDD scenarios have "camera device 0" to address.
-/// Without `simulation` (the production real-SDK build) this intentionally
-/// returns zero cameras regardless of `SvbonyCamera`'s `Camera` trait
-/// surface now being real (Phase E, `docs/plans/svbony-camera.md`) — wiring
-/// real enumeration to production device registration is gated on real-SDK
-/// link availability, which is Phase G work. This is a deliberate phase
-/// boundary, not a technical constraint — real-SDK enumeration itself is
-/// trivial for SVBony (no open required).
+/// identity. Enumeration reads properties without opening any camera, so it
+/// never actuates hardware and never contends with a connected client.
 async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, SvbonyCameraError> {
     let cameras = tokio::task::spawn_blocking(enumerate_cameras_blocking).await??;
     debug!(count = cameras.len(), "enumerated SVBony cameras");
@@ -304,29 +291,21 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, SvbonyCameraError>
 }
 
 fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Error> {
-    #[cfg(not(feature = "simulation"))]
-    {
-        debug!("production SVBony enumeration deferred to Phase E; registering no devices");
-        Ok(Vec::new())
-    }
-    #[cfg(feature = "simulation")]
-    {
-        let sdk = svbony_rs::Sdk::new()?;
-        let infos = sdk.cameras()?;
-        Ok(infos
-            .into_iter()
-            .enumerate()
-            .map(|(index, info)| {
-                let (serial, unique_id) = mint_identity(&info, index);
-                EnumeratedCamera {
-                    index,
-                    info,
-                    serial,
-                    unique_id,
-                }
-            })
-            .collect())
-    }
+    let sdk = svbony_rs::Sdk::new()?;
+    let infos = sdk.cameras()?;
+    Ok(infos
+        .into_iter()
+        .enumerate()
+        .map(|(index, info)| {
+            let (serial, unique_id) = mint_identity(&info, index);
+            EnumeratedCamera {
+                index,
+                info,
+                serial,
+                unique_id,
+            }
+        })
+        .collect())
 }
 
 /// Mint the `(serial, UniqueID)` pair for an enumerated camera.
@@ -336,7 +315,6 @@ fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Erro
 /// [`enumerate_cameras`]'s doc comment). A camera reporting an empty serial
 /// falls back to a stable position-based identity (`noserial-{index}`),
 /// mirroring `zwo-camera`'s `mint_identity` fallback.
-#[allow(dead_code)] // called only under `feature = "simulation"` in this phase
 fn mint_identity(info: &CameraInfo, index: usize) -> (String, String) {
     let serial = if info.serial.is_empty() {
         warn!(
@@ -449,11 +427,16 @@ mod simulation_tests {
 mod production_default_tests {
     use super::*;
 
-    /// The production (non-`simulation`) build's default `build()` registers
-    /// zero devices in this phase — the deliberate boundary documented on
-    /// [`enumerate_cameras`].
+    /// The production (non-`simulation`) build's `build()` registers exactly
+    /// the cameras `svbony_rs::Sdk::cameras()` reports. Under `cargo test`
+    /// the dev-dependency turns on `svbony-rs/simulation` via feature
+    /// unification, so the *production* enumeration path here sees the one
+    /// simulated camera — the same code path that registers physical
+    /// cameras in the real-SDK binary.
     #[tokio::test]
-    async fn production_build_registers_no_devices_by_default() {
+    async fn production_build_enumerates_via_the_sdk() {
+        let cameras = enumerate_cameras().await.unwrap();
+        assert_eq!(cameras.len(), svbony_rs::SIM_CAMERA_COUNT);
         let config: Config = serde_json::from_str(r#"{"server":{"port":0}}"#).unwrap();
         let bound = ServerBuilder::new()
             .with_config(config)
