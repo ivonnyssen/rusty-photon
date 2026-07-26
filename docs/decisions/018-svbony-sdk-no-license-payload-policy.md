@@ -63,11 +63,30 @@ mechanical delivery differs in one respect worth flagging (see
    `libSVBCameraSDK.so` to `/usr/lib/rusty-photon/` — the same model as
    QHY's firmware-install helper: package postinst prints a pointer but
    never downloads (offline installs must not fail).
+   **The unit is gated on the helper's output** (issue #704, 2026-07-26):
+   `ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so`. Unlike
+   QHY — whose SDK *is* bundled and whose missing piece is only camera
+   firmware, so its service runs and merely finds no device — this
+   binary's `NEEDED libSVBCameraSDK.so` cannot be resolved at all without
+   the helper, so an ungated unit spends every 5 s restarting into exit
+   127. Gated, a fresh install is inert until the operator bootstraps,
+   then starts normally (and by itself from the next boot).
+   `scripts/verify-packages.sh` verifies exactly that sequence on both
+   package flavors — inert, helper, active, Alpaca probe, plus an `ldd`
+   proof that the installed blob resolves through the RUNPATH.
 3. **udev rules are authored by us**, group-scoped
    (`GROUP="rusty-photon", MODE="0660"`, never `MODE="0666"`) per
    [ADR-013 §3](013-native-sdk-payload-policy.md), installed under
    `/usr/lib/udev/rules.d/` — `pkg/90-rusty-photon-svbony.rules` (VID
    `f266`), landed in Phase C alongside the bare service skeleton.
+   **Unpackaged hosts get one from the helper** (issue #710): a developer
+   box running the binary from a checkout has no package and therefore no
+   rule, and libusb then cannot open the device node at all (`errno=13`,
+   zero cameras enumerated). Where no packaged rule is present the helper
+   writes `/etc/udev/rules.d/90-rusty-photon-svbony-dev.rules` —
+   `TAG+="uaccess"` plus a resolvable `GROUP`/`MODE="0660"` pair, still
+   never `MODE="0666"`, under a deliberately *different* basename so it
+   can never mask the packaged rule.
 4. **Packaging simplification, corrected by Phase F CI provisioning work;
    Phase G's runtime call: RUNPATH, not `ldconfig`.**
    indi-3rdparty's `libsvbony/CMakeLists.txt` sets a CMake **install**
@@ -141,7 +160,15 @@ mechanical delivery differs in one respect worth flagging (see
   precedent's risk posture.
 - SVBony operators run one extra documented command
   (`rusty-photon-svbony-sdk-install`) before first camera use, exactly like
-  QHY operators today; ZWO operators still need nothing extra.
+  QHY operators today; ZWO operators still need nothing extra. Because the
+  unit is gated on that command's output, the pre-bootstrap state is a
+  quiet inert unit rather than a restart loop — at the cost of one
+  `systemctl start` on the install boot (the helper prints it).
+- The helper is the single bootstrap step on *both* kinds of host: on a
+  packaged target it installs only the SDK (the package's udev rule is
+  already in force), on a developer box it installs the SDK and a udev
+  rule, so "the SDK is installed" and "the SDK can see the camera" can
+  never drift apart.
 - The SDK ref is pinned in the helper script
   (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) AND in
   `scripts/build-packages.sh` (issue #679), both cross-checked by

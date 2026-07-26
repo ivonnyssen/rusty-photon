@@ -61,6 +61,14 @@ for pkgdir in services/*/pkg; do
                 grep -q "^ConditionPathExists=/var/lib/rusty-photon/\.config/rusty-photon/$svc\.json\$" "$unit" \
                     || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
                 ;;
+            # The one package whose binary links an SDK it never ships
+            # (ADR-018): without the operator-installed blob the binary
+            # cannot be loaded at all, so the unit gates on it instead of
+            # restart-looping exit 127.
+            svbony-camera)
+                grep -q '^ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK\.so$' "$unit" \
+                    || err "$svc: unit must gate on ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so"
+                ;;
         esac
     done
     case "$svc" in
@@ -229,8 +237,31 @@ for pkgdir in services/*/pkg; do
         svbony-camera)
             [ -f "$pkgdir/90-rusty-photon-svbony.rules" ] \
                 || err "$svc: missing pkg/90-rusty-photon-svbony.rules"
-            [ -f "$pkgdir/rusty-photon-svbony-sdk-install" ] \
-                || err "$svc: missing pkg/rusty-photon-svbony-sdk-install"
+            helper="$pkgdir/rusty-photon-svbony-sdk-install"
+            if [ ! -f "$helper" ]; then
+                err "$svc: missing pkg/rusty-photon-svbony-sdk-install"
+            else
+                # The helper installs the very file the unit gates on; a
+                # drift between the two would make the service permanently
+                # inert on a correctly bootstrapped host.
+                grep -q '^DEST="\$DEST_DIR/libSVBCameraSDK\.so"$' "$helper" \
+                    && grep -q '^DEST_DIR="\$ROOT/usr/lib/rusty-photon"$' "$helper" \
+                    || err "$svc: helper must install /usr/lib/rusty-photon/libSVBCameraSDK.so (the unit's ConditionPathExists)"
+                # Unpackaged-host device access (issue #710). The rule the
+                # helper writes must carry the same USB VID as the packaged
+                # one, must NOT reuse its filename (an /etc file of the same
+                # name masks the packaged rule, silently keeping dev
+                # ownership after the package lands), and must never fall
+                # back to a world-writable node (ADR-013 §3).
+                vid=$(sed -n 's/.*ATTRS{idVendor}=="\([0-9a-f]*\)".*/\1/p' \
+                    "$pkgdir/90-rusty-photon-svbony.rules" | head -1)
+                grep -q "ATTRS{idVendor}==\"$vid\"" "$helper" \
+                    || err "$svc: helper's udev rule must match the packaged rule's VID ($vid)"
+                grep -q '^DEV_RULE=90-rusty-photon-svbony-dev\.rules$' "$helper" \
+                    || err "$svc: helper's dev udev rule must not reuse 90-rusty-photon-svbony.rules (it would mask the packaged rule)"
+                grep -q 'MODE="0666"' "$helper" \
+                    && err "$svc: helper must not install a world-writable udev rule (ADR-013 §3)"
+            fi
             toml_section "$toml" "package.metadata.deb" \
                 | grep -q '"pkg/rusty-photon-svbony-sdk-install", "usr/sbin/rusty-photon-svbony-sdk-install", "755"' \
                 || err "$svc: deb assets must ship rusty-photon-svbony-sdk-install"

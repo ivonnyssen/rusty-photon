@@ -202,6 +202,19 @@ no restart loop) until the operator writes the config; `systemctl start`
 then works normally. `check-pkg-assets.sh` asserts the gate on exactly
 these three, and asserts `ExecReload` on the reload-capable list above.
 
+**Missing-SDK gate:** one service gates on something other than its
+config. `svbony-camera`'s binary links `libSVBCameraSDK.so`, which
+[ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)
+forbids shipping — the operator installs it with
+`rusty-photon-svbony-sdk-install` — so until then the binary cannot be
+loaded at all and an ungated unit restart-loops on exit 127 (that is
+exactly what broke `nightly-packages`, issue #704). Its unit therefore
+carries
+`ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so`, which
+`check-pkg-assets.sh` asserts against the path the helper installs to,
+and `verify-packages.sh` treats as its own class: inert on a fresh
+install, then helper, then the ordinary active + probe contract.
+
 ### Maintainer scripts
 
 `packaging/postinst.common` (deb; byte-identical in every daemon package):

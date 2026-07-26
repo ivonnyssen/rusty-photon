@@ -72,8 +72,11 @@ packaged services by the presence of `pkg/` dirs, so adding a service means:
    `ExecReload=/bin/kill -HUP $MAINPID`; services with no defaultable
    config gate on
    `ConditionPathExists=/var/lib/rusty-photon/.config/rusty-photon/<svc>.json`
-   instead of crash-looping on a fresh install (all of these lists are
-   enforced by the checker),
+   instead of crash-looping on a fresh install, and `svbony-camera` gates
+   the same way on the SDK library its package may not ship
+   (`/usr/lib/rusty-photon/libSVBCameraSDK.so`, ADR-018 — checked against
+   the install path in its own helper) instead of restart-looping on a
+   loader error (all of these lists are enforced by the checker),
 3. add the `[package.metadata.deb]` / `[package.metadata.generate-rpm]`
    blocks to the service's `Cargo.toml` (names all `rusty-photon-<svc>`;
    copy the rpm scriptlets from filemonitor's block — they carry the `$1`

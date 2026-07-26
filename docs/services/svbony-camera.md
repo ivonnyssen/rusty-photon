@@ -324,6 +324,41 @@ SVBony devices need a udev rule (VID `f266`). Per
 [ADR-013 §3](../decisions/013-native-sdk-payload-policy.md), rules are
 **group-scoped** (`GROUP="rusty-photon", MODE="0660"`), never a
 world-writable `MODE="0666"` rule — `pkg/90-rusty-photon-svbony.rules`.
+Without a rule the SDK enumerates **zero** cameras: libusb needs write
+access to the device's `/dev/bus/usb/...` node and fails with `errno=13`,
+which the SDK reports as "no devices" rather than as a permission error.
+
+**Unpackaged hosts** (a developer box running `cargo run` or the binary
+from a checkout, a hardware smoke test, an operator poking the camera
+before installing the package) have no package and therefore no rule —
+the gap found during real-hardware validation and filed as issue #710.
+`rusty-photon-svbony-sdk-install` closes it: run from the checkout
+(`sudo services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) it
+installs the SDK *and*, when no packaged rule is present,
+`/etc/udev/rules.d/90-rusty-photon-svbony-dev.rules`, then reloads and
+re-triggers udev so an already-plugged camera picks it up without a
+replug. The rule it writes:
+
+- `TAG+="uaccess"` — logind ACLs the node to whoever holds the local
+  seat, which covers a desktop dev machine with no group juggling;
+- `GROUP="<group>", MODE="0660"` — the invoking `sudo` user's primary
+  group by default, or `--udev-group NAME`, which covers headless/ssh
+  use where there is no seat and hence no `uaccess` ACL. The group is
+  emitted only if `getent` resolves it: udev drops the **entire rule
+  line** on an unresolvable `GROUP=`, not just the assignment. (Note
+  `udevadm verify` warns that device-node ownership by a non-system
+  group is deprecated; point `--udev-group` at a system group where the
+  host has a suitable one.)
+- the same `usbfs_memory_mb` bump the packaged rule carries — a full
+  frame from a 3008×3008 sensor exceeds the 16 MB usbfs default.
+
+The dev file is deliberately **not** named like the packaged rule: udev
+takes only the highest-priority file of a given basename, so an `/etc`
+copy named `90-rusty-photon-svbony.rules` would mask the package's rule
+and silently keep dev-user ownership after a later `apt install`. Under
+its own name it sorts *before* the packaged rule (`-` < `.`), so where
+both exist the service group's ownership is applied last and wins.
+`--no-udev` skips the whole step.
 
 ---
 
@@ -1157,14 +1192,21 @@ Still open (not hardware-blockable on this camera):
   depends on the outcome.
 - **macOS Apple-Silicon SDK availability** — unchanged; no `mac_arm64`
   blob in indi-3rdparty as of SDK 1.13.4.
-- **Packaged-binary RUNPATH end-to-end on a real target install** — the
-  `build-packages.sh` staging landed (issue #679) and the mechanism is
-  byte-verified, but this validation ran a dev build against
-  `SVBONY_SDK_LIB_DIR`/`LD_LIBRARY_PATH`, not an installed package;
-  covered by the normal nightly-package rig-deploy flow.
-- **Dev-machine USB permissions** — filed as issue #710: outside the
-  packaged install (which ships the udev rule), nothing grants non-root
-  access to VID `f266`; this validation hand-installed a dev udev rule.
+
+Closed since, by the packaging work the validation itself triggered:
+
+- **Packaged-binary RUNPATH end-to-end on a real target install** —
+  closed by issue #704's fix: `scripts/verify-packages.sh` now installs
+  the package in a systemd container, runs the shipped
+  `rusty-photon-svbony-sdk-install`, starts the unit and `ldd`-proves the
+  binary resolves the operator-installed blob from
+  `/usr/lib/rusty-photon`, on both the deb and rpm flavors, on every
+  nightly run. Only "on the rig, against the physical camera" remains,
+  and that rides the normal nightly-package deploy flow.
+- **Dev-machine USB permissions** — closed by issue #710's fix: the
+  helper installs a dev udev rule on hosts with no packaged one (see
+  "udev / USB"), so the hand-written rule this validation needed is now
+  part of the same bootstrap step as the SDK.
 
 ## Packaging
 
@@ -1178,6 +1220,24 @@ at `/usr/bin/rusty-photon-svbony-camera`, hardened
 `90-rusty-photon-svbony.rules` assigning enumerated SVBony devices (VID
 `f266`) to the `rusty-photon` service group (never world-writable) plus the
 usbfs memory bump.
+
+**The unit is gated on the SDK** —
+`ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so` (issue
+#704). This package is the only one whose binary links a library it never
+ships, so before the operator has run the helper the binary cannot be
+loaded at all (`error while loading shared libraries: libSVBCameraSDK.so`,
+exit 127); ungated, systemd restarted that every 5 s forever and the
+nightly packaging run's lifecycle verification failed the service outright
+(it is not a config-gated service, so the ordinary "active + config +
+port" contract applied to it). Gated, a fresh install is inert and quiet
+until `rusty-photon-svbony-sdk-install` runs, then `systemctl start` works
+and every later boot starts it unattended. `scripts/verify-packages.sh`
+holds the whole sequence to that contract on both flavors: SDK absent from
+the payload (an ADR-018 regression guard), unit enabled-but-inert-and-not-
+failed, helper run exactly as the postinst instructs, unit active, Alpaca
+probe on port 11125, and an `ldd` proof that the freshly installed blob
+resolves through the RUNPATH — the "packaged-binary RUNPATH end-to-end"
+item real-hardware validation left open, now covered on every nightly.
 
 Unlike `zwo-camera`, SVBony's SDK carries **no license grant at all** — not
 even QHY's ambiguous "proprietary, unresolved" status, but a header and

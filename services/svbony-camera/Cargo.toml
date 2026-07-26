@@ -129,6 +129,7 @@ udevadm control --reload-rules || true
 udevadm trigger || true
 echo "rusty-photon-svbony-camera: the SVBony SDK is not bundled."
 echo "Run '/usr/sbin/rusty-photon-svbony-sdk-install' once as root before first use."
+echo "Until then the unit stays inert (it is gated on the SDK library)."
 """
 # rpm scriptlet arg $1 = package instances remaining after the operation.
 # On upgrade the old %preun runs AFTER the new %post, so an unguarded

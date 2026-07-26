@@ -514,7 +514,7 @@
           "FILE:@@//services/session-runner/Cargo.toml 4381e97003c4682cfcf8ea57554ef62d5e40fcfb716fb063c81e8cc75dc5048d",
           "FILE:@@//services/sky-survey-camera/Cargo.toml 27616927ccfb1888ea75f20c52b018626b2aad363aa1c7032dc8c3b0f6a792e9",
           "FILE:@@//services/star-adventurer-gti/Cargo.toml 9a1274465aa6567e013d86361fde0a2cedcc45bc45b6dd1a74744ba7832caad8",
-          "FILE:@@//services/svbony-camera/Cargo.toml 3b9ce0fa3f415f8483eb837527d72b3b12a109a208494fe578ca9d2120ed0bd2",
+          "FILE:@@//services/svbony-camera/Cargo.toml 2c5280d37e0179dfa3d9c24c777afcb7ae904a012135487024ff069cf403962e",
           "FILE:@@//crates/svbony-rs/Cargo.toml c843fe71093e7cdd8dcf3adb468b2e4d012f0344ff770d8e83fea7ec491567ac",
           "FILE:@@//crates/svbony-rs/libsvbony-sys/Cargo.toml a37e7e579b581f6dfdef7f73a460571e495b2de8dc84d75eb591a1867fe4f252",
           "FILE:@@//services/ui-htmx/Cargo.toml bdb6b3faad9599cd2db71667e11b25d507138407ac70659692f0fa71b31eb20b",
