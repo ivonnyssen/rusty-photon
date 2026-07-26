@@ -44,6 +44,29 @@ rust_test(
     ),
 )
 
+# Integration test: regression guard for the ERFA leap-second lazy-init
+# data race (erfadatextra.c). Its own binary so it controls the process's
+# cold start — a sibling test warming `eraDat` first would mask a
+# regression. See `src/erfars_impl.rs` `ensure_erfa_leap_seconds_initialized`.
+rust_test(
+    name = "leap_second_init_race",
+    size = "small",
+    srcs = ["tests/leap_second_init_race.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":rp-ephemeris"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 # Integration test: cross-check ErfarsEphemeris against committed
 # Astropy reference values. The CARGO_MANIFEST_DIR env var is set so
 # the test can locate `refvals/`; the directory is staged via `data`.

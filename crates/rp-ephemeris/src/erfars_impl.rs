@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::panic::{self, UnwindSafe};
+use std::sync::Once;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 use erfars::astrometry::Atco13;
@@ -58,6 +59,39 @@ where
             fallback
         }
     }
+}
+
+/// Guards the process-wide, one-time initialization of ERFA's
+/// leap-second table (see [`ensure_erfa_leap_seconds_initialized`]).
+static ERFA_LEAP_SECONDS_INIT: Once = Once::new();
+
+/// Force ERFA's user-updatable leap-second table to initialize exactly
+/// once, single-threaded, before any concurrent ephemeris call.
+///
+/// ERFA bolts a mutable, user-replaceable leap-second table onto
+/// otherwise-reentrant SOFA (`external/erfa/src/erfadatextra.c`). Its
+/// `eraDatini` lazily fills two *file-static* globals — `changes` (the
+/// table pointer) and `NDAT` (its length, sentinel `-1`) — on the first
+/// `eraDat` call, with **no lock and no atomics**. When several threads
+/// make their first `eraDat` call at once, one can observe `NDAT > 0`
+/// without a happens-before edge on `changes`, then index `changes[..]`
+/// through a null/half-written pointer → SIGSEGV. Every [`Ephemeris`]
+/// method reaches `eraDat` through [`time_jds`] (UTC→TAI), so warming it
+/// there under a [`Once`] serializes that first call; afterwards `NDAT`
+/// is positive forever and concurrent callers only ever read it. See
+/// `docs/crates/rp-ephemeris.md` § "Thread safety".
+fn ensure_erfa_leap_seconds_initialized() {
+    ERFA_LEAP_SECONDS_INIT.call_once(|| {
+        // Touch `eraDat` once via the raw erfars calls — deliberately NOT
+        // `time_jds`, which re-enters this guard and would deadlock the
+        // `Once`. J2000 is safely inside ERFA's calendar range, so `Dtf2d`
+        // succeeds and `Utctai` runs the `eraDat` lookup whose lazy init
+        // this warms. The results are discarded; only the side effect
+        // matters.
+        if let Ok(((utc1, utc2), _)) = Dtf2d(true, 2000, 1, 1, 12, 0, 0.0) {
+            let _ = Utctai(utc1, utc2);
+        }
+    });
 }
 
 /// Best-effort extraction of a panic payload as a `String`. The payload
@@ -119,6 +153,12 @@ pub(crate) struct TimeJds {
 /// service. The handler bodies live in `dtf2d_jds` and `utctai_pair`
 /// so they're directly unit-testable.
 pub(crate) fn time_jds(time: DateTime<Utc>) -> TimeJds {
+    // The first `eraDat` call ERFA ever makes lazily initializes a
+    // non-thread-safe file-static table; force that to happen once,
+    // single-threaded, before the concurrent `Dtf2d`/`Utctai` calls below
+    // can race it into a segfault. No-op (one atomic load) after warm-up.
+    ensure_erfa_leap_seconds_initialized();
+
     let year = time.year();
     let month = time.month() as i32;
     let day = time.day() as i32;
