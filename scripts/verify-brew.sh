@@ -130,15 +130,16 @@ port_of() {
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
+        session-runner) echo 11171 ;;
         *) echo "" ;;
     esac
 }
 
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
-    # expose /health.
+    # (sentinel, rp, ui-htmx, phd2-guider, session-runner) expose /health.
     case "$1" in
-        sentinel|rp|ui-htmx|phd2-guider) echo /health ;;
+        sentinel|rp|ui-htmx|phd2-guider|session-runner) echo /health ;;
         *) echo /management/apiversions ;;
     esac
 }
@@ -149,7 +150,7 @@ is_gated() {
     # `brew services start`, so the gate is not starting them (a start
     # without a config exits and keep_alive respawn-loops by design).
     case "$1" in
-        sky-survey-camera|plate-solver|calibrator-flats) return 0 ;;
+        sky-survey-camera|plate-solver|calibrator-flats|session-runner) return 0 ;;
         *) return 1 ;;
     esac
 }

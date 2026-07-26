@@ -57,7 +57,7 @@ for pkgdir in services/*/pkg; do
         # Services with no defaultable config gate on the config file existing
         # instead of crash-looping on a fresh install.
         case "$svc" in
-            sky-survey-camera|plate-solver|calibrator-flats)
+            sky-survey-camera|plate-solver|calibrator-flats|session-runner)
                 grep -q "^ConditionPathExists=/var/lib/rusty-photon/\.config/rusty-photon/$svc\.json\$" "$unit" \
                     || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
                 ;;
@@ -360,22 +360,21 @@ if [ -f "$gbf" ] && ! grep -qF '*" svbony-camera "*)' "$gbf"; then
 fi
 
 # ---- Windows suite MSI (installer/, ADR-015) --------------------------------
-# The Windows package set is the Linux one (services/*/pkg) plus
-# session-runner, which ships on Windows from day one while its Linux .deb
-# remains an open follow-up (docs/plans/windows-packaging.md).
-# svbony-camera is excluded: it has no Windows SVBony SDK at all
-# (docs/services/svbony-camera.md's Phase F notes — excluded entirely from
-# the Windows per-service matrix), unlike every other packaged service, so
-# there is no Windows package for `win_port_of()`/`installer/fragments/` to
-# describe.
+# The Windows package set is the Linux one (services/*/pkg); session-runner
+# now ships on all platforms (its Linux .deb closed the follow-up that
+# docs/plans/windows-packaging.md tracked). svbony-camera is excluded: it
+# has no Windows SVBony SDK at all (docs/services/svbony-camera.md's Phase F
+# notes — excluded entirely from the Windows per-service matrix), unlike
+# every other packaged service, so there is no Windows package for
+# `win_port_of()`/`installer/fragments/` to describe.
 WIN_SERVICES="$(for d in services/*/pkg; do
     [ -d "$d" ] || continue
     svc=$(basename "$(dirname "$d")")
     [ "$svc" = svbony-camera ] && continue
     echo "$svc"
-done | tr '\n' ' ')session-runner"
+done | tr '\n' ' ')"
 
-# Documented family ports (mirrors verify-packages.sh port_of + session-runner).
+# Documented family ports (mirrors verify-packages.sh port_of).
 win_port_of() {
     case "$1" in
         filemonitor) echo 11111 ;;
@@ -439,9 +438,9 @@ if [ -f "$pkg_wxs" ]; then
             || err "$svc: firewall exception port must be $port"
         # Demand-start on exactly the no-defaultable-config services (the
         # ConditionPathExists= translation); everything else auto-starts on
-        # install. session-runner joins the Linux-gated three: workflows_dir/
-        # state_dir are required config fields with no usable defaults (it has
-        # no Linux package yet, so no ConditionPathExists= unit to mirror).
+        # install. session-runner is one of the four gated services:
+        # workflows_dir/state_dir are required config fields with no usable
+        # defaults, mirroring its Linux ConditionPathExists= unit.
         case "$svc" in
             sky-survey-camera | plate-solver | calibrator-flats | session-runner)
                 grep -q 'Start="demand"' "$frag" \

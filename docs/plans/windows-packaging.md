@@ -111,9 +111,9 @@ rusty-photon-<version>-x64.msi
   (distinct filenames per ADR-014 — co-install is conflict-free), and the
   ZWO license file. No PATH manipulation (the old filemonitor WXS's PATH
   component is not carried over).
-- `session-runner` ships here from day one; its Linux `.deb` is still the
-  open follow-up noted in `docs/plans/service-packaging.md` — close that gap
-  Linux-side in a small PR.
+- `session-runner` shipped here from day one; its Linux `.deb`/`.rpm` and
+  macOS tarball closed the follow-up noted in
+  `docs/plans/service-packaging.md` (#699 — config-gated, port 11171).
 - A future `zwo-filterwheel` (ADR-014) becomes one more Drivers sub-feature.
 
 ### Windows service model (W1)
@@ -379,6 +379,4 @@ service per ADR-014.
   match Linux.
 - Windows Event Log entries for lifecycle events (started/stopped/crashed)
   alongside the rolling files.
-- session-runner's Linux `.deb` (the platform-coverage inversion this plan
-  creates).
 - arm64 Windows if the ecosystem ever demands it.

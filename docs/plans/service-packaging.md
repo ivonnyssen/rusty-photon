@@ -551,9 +551,13 @@ rebuilt from `main` and upgraded in place:
 
 ## Future considerations
 
-- `session-runner` postdates this plan's service inventory and is the one
+- ~~`session-runner` postdates this plan's service inventory and is the one
   unpackaged daemon (network-only class, no new pattern needed). Package it
-  in a small follow-up PR once the workflow-DSL implementation stabilizes.
+  in a small follow-up PR once the workflow-DSL implementation stabilizes.~~
+  **Done (#699):** `services/session-runner/pkg/` carries the gated
+  network-only unit + shared maintainer scripts, and its `Cargo.toml` the
+  deb/rpm metadata; `services/*/pkg` discovery now packages it on every
+  platform (config-gated, port 11171).
 - PR-7: generalize `release.yml` to a service matrix (x86_64 deb/rpm).
   The rest of its original scope arrived via
   [nightly-releases.md](nightly-releases.md): version-parameterized

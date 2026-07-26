@@ -8,8 +8,8 @@ default configs, and doctor makes the result coherent. It audits **service
 facts** — ports, TLS, auth, service-to-service references, unit wiring — and
 never learns device usage (which camera is the guide cam belongs to `rp`).
 [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) is the
-decision record; [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
-tracks the phases.
+decision record; [`docs/plans/archive/service-config-doctor.md`](../plans/archive/service-config-doctor.md)
+is the completed plan that delivered it.
 
 This document specifies the **D2–D5 scope (diagnosis, repair, the no-SDK
 hardware checks, and the per-service doctors) plus the D6a scope (TLS +
@@ -127,7 +127,7 @@ identities get declared the day the hardware is measured on a USB port —
 so the USB-presence check simply does not run for them; their device-node
 checks work regardless.
 
-The catalog today (18 packaged services):
+The catalog today (19 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -145,6 +145,7 @@ The catalog today (18 packaged services):
 | zwo-camera | alpaca | 11122 |
 | pa-scops-oag | alpaca | 11123 |
 | zwo-focuser | alpaca | 11124 |
+| svbony-camera | alpaca | 11125 |
 | phd2-guider | core | 11130 |
 | plate-solver | core | 11131 |
 | calibrator-flats | core | 11170 |
