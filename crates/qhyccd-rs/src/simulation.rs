@@ -24,7 +24,7 @@
 //!     .with_noise_level(0.02);
 //! ```
 
-use crate::{BayerMode, CCDChipArea, CCDChipInfo, ControlType, StreamMode};
+use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, StreamMode};
 use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -60,8 +60,8 @@ pub struct SimulatedCameraConfig {
     pub filter_wheel_slots: u32,
     /// Whether the camera has a cooler
     pub has_cooler: bool,
-    /// Bayer mode for color cameras (None = mono)
-    pub bayer_mode: Option<BayerMode>,
+    /// Bayer pattern for color cameras (None = mono)
+    pub bayer_pattern: Option<BayerPattern>,
     /// Available readout modes (name, (width, height))
     pub readout_modes: Vec<(String, (u32, u32))>,
     /// Camera type code
@@ -132,7 +132,7 @@ impl Default for SimulatedCameraConfig {
             supported_controls,
             filter_wheel_slots: 0,
             has_cooler: false,
-            bayer_mode: None,
+            bayer_pattern: None,
             readout_modes: vec![("Standard".to_string(), (3072, 2048))],
             camera_type: 4010,
             firmware_version: "Firmware version: 2024_1_1".to_string(),
@@ -167,11 +167,15 @@ impl SimulatedCameraConfig {
     }
 
     /// Makes this a color camera with the specified Bayer pattern
-    pub fn with_color(mut self, bayer_mode: BayerMode) -> Self {
-        self.bayer_mode = Some(bayer_mode);
+    pub fn with_color(mut self, bayer_pattern: BayerPattern) -> Self {
+        self.bayer_pattern = Some(bayer_pattern);
         self.supported_controls.insert(
             ControlType::CamColor,
-            (bayer_mode as u32 as f64, bayer_mode as u32 as f64, 0.0),
+            (
+                bayer_pattern as u32 as f64,
+                bayer_pattern as u32 as f64,
+                0.0,
+            ),
         );
         self.supported_controls
             .insert(ControlType::Wbr, (0.0, 255.0, 1.0));
@@ -386,7 +390,7 @@ impl SimulatedCameraState {
 
     /// Gets the number of channels (1 for mono, 3 for color with debayer)
     pub fn get_channels(&self) -> u32 {
-        if self.config.bayer_mode.is_some() && self.debayer_enabled {
+        if self.config.bayer_pattern.is_some() && self.debayer_enabled {
             3
         } else {
             1
@@ -1175,7 +1179,7 @@ mod image_generator_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod state_tests {
     use super::{SimulatedCameraConfig, SimulatedCameraState};
-    use crate::{BayerMode, ControlType};
+    use crate::{BayerPattern, ControlType};
 
     #[test]
     fn test_new_state() {
@@ -1330,7 +1334,7 @@ mod state_tests {
 
     #[test]
     fn test_get_channels_color_no_debayer() {
-        let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+        let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
         let state = SimulatedCameraState::new(config);
 
         // Color camera with debayer disabled should return 1 channel
@@ -1339,7 +1343,7 @@ mod state_tests {
 
     #[test]
     fn test_get_channels_color_debayer() {
-        let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+        let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
         let mut state = SimulatedCameraState::new(config);
 
         // Enable debayer
@@ -1373,7 +1377,7 @@ mod state_tests {
 
     #[test]
     fn test_buffer_size_with_binning_and_channels() {
-        let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+        let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
         let mut state = SimulatedCameraState::new(config);
 
         // Set 2x2 binning, 8-bit mode, and enable debayer (3 channels)

@@ -30,7 +30,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
-use qhyccd_rs::{BayerMode, CCDChipArea, ControlType};
+use qhyccd_rs::{BayerPattern, CCDChipArea, ControlType};
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
@@ -409,12 +409,12 @@ fn max_adu_from_bits(bits: u32) -> u32 {
 }
 
 /// Bayer-pattern → ASCOM `BayerOffsetX/Y`.
-fn bayer_offsets(mode: BayerMode) -> (u8, u8) {
+fn bayer_offsets(mode: BayerPattern) -> (u8, u8) {
     match mode {
-        BayerMode::GBRG => (0, 1),
-        BayerMode::GRBG => (1, 0),
-        BayerMode::BGGR => (1, 1),
-        BayerMode::RGGB => (0, 0),
+        BayerPattern::GBRG => (0, 1),
+        BayerPattern::GRBG => (1, 0),
+        BayerPattern::BGGR => (1, 1),
+        BayerPattern::RGGB => (0, 0),
     }
 }
 
@@ -987,7 +987,7 @@ impl Camera for QhyCameraDevice {
             .handle
             .is_control_available(ControlType::CamColor)
             .ok_or(ASCOMError::INVALID_VALUE)?;
-        let mode = BayerMode::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
+        let mode = BayerPattern::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
         Ok(bayer_offsets(mode).0)
     }
 
@@ -1004,7 +1004,7 @@ impl Camera for QhyCameraDevice {
             .handle
             .is_control_available(ControlType::CamColor)
             .ok_or(ASCOMError::INVALID_VALUE)?;
-        let mode = BayerMode::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
+        let mode = BayerPattern::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
         Ok(bayer_offsets(mode).1)
     }
 
@@ -1376,10 +1376,10 @@ mod tests {
 
     #[test]
     fn bayer_offset_mapping() {
-        assert_eq!(bayer_offsets(BayerMode::RGGB), (0, 0));
-        assert_eq!(bayer_offsets(BayerMode::GBRG), (0, 1));
-        assert_eq!(bayer_offsets(BayerMode::GRBG), (1, 0));
-        assert_eq!(bayer_offsets(BayerMode::BGGR), (1, 1));
+        assert_eq!(bayer_offsets(BayerPattern::RGGB), (0, 0));
+        assert_eq!(bayer_offsets(BayerPattern::GBRG), (0, 1));
+        assert_eq!(bayer_offsets(BayerPattern::GRBG), (1, 0));
+        assert_eq!(bayer_offsets(BayerPattern::BGGR), (1, 1));
     }
 
     #[test]
@@ -1551,7 +1551,7 @@ mod tests {
         // A colour model the mono simulation backend cannot exercise via BDD.
         let handle = MockCameraHandle::default()
             .with_control(ControlType::CamIsColor, 1)
-            .with_control(ControlType::CamColor, BayerMode::RGGB as u32);
+            .with_control(ControlType::CamColor, BayerPattern::RGGB as u32);
         let device = connected_device(handle);
         assert_eq!(device.sensor_type().await.unwrap(), SensorType::RGGB);
         assert_eq!(device.bayer_offset_x().await.unwrap(), 0);

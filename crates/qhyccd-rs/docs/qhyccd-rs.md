@@ -412,7 +412,7 @@ classDiagram
         LiveMode
     }
 
-    class BayerMode {
+    class BayerPattern {
         <<enumeration>>
         GBRG
         GRBG
@@ -448,7 +448,7 @@ Two imaging modes:
 - `SingleFrameMode` (0): Long exposure mode for single frames
 - `LiveMode` (1): Continuous video streaming
 
-**BayerMode:**
+**BayerPattern:**
 Color filter array patterns for color cameras. Implements `TryFrom<u32>` for conversion from SDK values.
 
 #### Error Handling
@@ -660,7 +660,7 @@ Located in `src/simulation.rs`. Provides configuration for simulated cameras usi
 - `supported_controls`: HashMap of ControlType -> (min, max, step)
 - `filter_wheel_slots`: Number of filter positions (0 = no wheel)
 - `has_cooler`: Cooler availability
-- `bayer_mode`: Color pattern (None for mono)
+- `bayer_pattern`: Color pattern (None for mono)
 - `readout_modes`: List of (name, (width, height))
 - `camera_type`: Type code
 - `firmware_version`: Version string
@@ -1093,7 +1093,7 @@ fw.close()?;
         .with_model("Custom Model")
         .with_filter_wheel(5)
         .with_cooler()
-        .with_color(BayerMode::RGGB);
+        .with_color(BayerPattern::RGGB);
     sdk.add_simulated_camera(config);
 
     // Use identically to real hardware
@@ -1241,7 +1241,7 @@ In-source `#[cfg(test)]` modules, run against the **simulated** backend (there i
 `zwo-rs` / `svbony-rs`):
 - `src/error.rs`: `QHYError` construction (incl. `BufferTooSmall`), the `check` helper, `Display`, and the `#[from]` conversions
 - `src/camera.rs`: `ControlType` ⇄ raw `CONTROL_ID` round-trip
-- `src/types.rs`: `BayerMode::try_from`
+- `src/types.rs`: `BayerPattern::try_from`
 - `src/simulation.rs`: `SimulatedCameraState` and `ImageGenerator` behaviour (state management, timing, parameter handling)
 
 The former `src/tests/` `#[automock]` FFI-mock suite and `src/mocks.rs` were removed

@@ -1,7 +1,7 @@
 //! Tests for the SimulatedCameraConfig module
 
 use qhyccd_rs::simulation::SimulatedCameraConfig;
-use qhyccd_rs::{BayerMode, CCDChipInfo, ControlType};
+use qhyccd_rs::{BayerPattern, CCDChipInfo, ControlType};
 
 #[test]
 fn test_default_config() {
@@ -9,7 +9,7 @@ fn test_default_config() {
     assert_eq!(config.id, "SIM-001");
     assert_eq!(config.filter_wheel_slots, 0);
     assert!(!config.has_cooler);
-    assert!(config.bayer_mode.is_none());
+    assert!(config.bayer_pattern.is_none());
 }
 
 #[test]
@@ -36,8 +36,8 @@ fn test_with_cooler() {
 
 #[test]
 fn test_with_color() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
-    assert_eq!(config.bayer_mode, Some(BayerMode::RGGB));
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
+    assert_eq!(config.bayer_pattern, Some(BayerPattern::RGGB));
     assert!(config
         .supported_controls
         .contains_key(&ControlType::CamColor));
@@ -50,13 +50,13 @@ fn test_builder_chaining() {
         .with_model("Test Camera")
         .with_filter_wheel(7)
         .with_cooler()
-        .with_color(BayerMode::GBRG);
+        .with_color(BayerPattern::GBRG);
 
     assert_eq!(config.id, "TEST-001");
     assert_eq!(config.model, "Test Camera");
     assert_eq!(config.filter_wheel_slots, 7);
     assert!(config.has_cooler);
-    assert_eq!(config.bayer_mode, Some(BayerMode::GBRG));
+    assert_eq!(config.bayer_pattern, Some(BayerPattern::GBRG));
 }
 
 #[test]

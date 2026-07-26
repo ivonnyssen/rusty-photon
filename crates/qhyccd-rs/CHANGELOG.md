@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the colour-filter-array enum is renamed `BayerMode` →
+  `BayerPattern`, matching the sibling `zwo-rs` / `svbony-rs` crates (which both
+  already expose `BayerPattern`). The type name was a wrapper invention — the QHY
+  SDK has no such type — so it was incidental cross-crate divergence, not
+  SDK-forced. The `GBRG`..`RGGB` variants and their 1-based discriminants are
+  **unchanged** (they mirror the QHY SDK's own numbering, exactly as ZWO's 0-based
+  `Rg`..`Gb` mirror ASI's). The `SimulatedCameraConfig` field and helper param
+  `bayer_mode` are likewise renamed to `bayer_pattern`. Update `use`s and pattern
+  matches accordingly (`qhyccd_rs::BayerMode` → `qhyccd_rs::BayerPattern`).
 - The simulated cooler now **ramps**: reading `CONTROL_CURTEMP` advances the
   reported sensor temperature one step (1 °C) per poll toward the `CONTROL_COOLER`
   set-point and reflects a plausible `CONTROL_CURPWM`, matching real auto-cooling

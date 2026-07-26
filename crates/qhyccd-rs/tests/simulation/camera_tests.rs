@@ -5,8 +5,8 @@
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
 use qhyccd_rs::{
-    BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, FrameInfo, QHYError, SDKVersion, Sdk,
-    StreamMode,
+    BayerPattern, CCDChipArea, Camera, ControlType, FilterWheel, FrameInfo, QHYError, SDKVersion,
+    Sdk, StreamMode,
 };
 
 /// Bytes in a frame with the given [`FrameInfo`] — mirrors the simulated
@@ -425,14 +425,14 @@ fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
 
 #[test]
 fn test_simulated_color_camera() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
 
     // Check color mode is available
     let bayer = camera.is_control_available(ControlType::CamColor);
     assert!(bayer.is_some());
-    assert_eq!(bayer.unwrap(), BayerMode::RGGB as u32);
+    assert_eq!(bayer.unwrap(), BayerPattern::RGGB as u32);
 
     camera.close().unwrap();
 }
@@ -632,7 +632,7 @@ fn test_abort_exposure_and_readout() {
 
 #[test]
 fn test_set_debayer() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
     camera.set_stream_mode(StreamMode::LiveMode).unwrap();
@@ -969,7 +969,7 @@ fn test_set_roi_not_open_error() {
 
 #[test]
 fn test_set_debayer_not_open_error() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
     let camera = Camera::new_simulated(config);
 
     // set_debayer() without opening should fail

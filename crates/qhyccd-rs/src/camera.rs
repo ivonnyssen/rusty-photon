@@ -1741,9 +1741,9 @@ impl Camera {
             }
             // Check if control is in supported_controls
             if state.config.supported_controls.contains_key(&control) {
-                // For CamColor, return the bayer mode value
+                // For CamColor, return the Bayer pattern value
                 if control == ControlType::CamColor {
-                    return state.config.bayer_mode.map(|m| m as u32);
+                    return state.config.bayer_pattern.map(|m| m as u32);
                 }
                 // Real `IsQHYCCDControlAvailable` returns `QHYCCD_SUCCESS` (0) for an
                 // available non-color control, and the real arm passes that raw

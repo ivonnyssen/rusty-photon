@@ -63,10 +63,12 @@ try to. Verified against the `libqhyccd-sys` bindings.
 2. **Opaque-pointer handle.** `QhyccdHandle = *const c_void`
    (`libqhyccd-sys/lib.rs:16`), vs zwo/svbony's `int` id/index. The
    `unsafe impl Send/Sync` on the handle wrapper is a forced consequence.
-3. **Discriminant values.** `BayerMode` is 1-based `GBRG=1..RGGB=4` and `Control`
-   discriminants are the SDK's `CONTROL_ID` constants (incl. the 1024+ block and
-   the gap at 38); `StreamMode` is consumed as `u8`. These *values* match the
-   SDK's own numbering, exactly as zwo's 0-based `Rg..Gb` match ASI's.
+3. **Discriminant values and variant names.** `BayerPattern` is 1-based
+   `GBRG=1..RGGB=4` and `Control` discriminants are the SDK's `CONTROL_ID`
+   constants (incl. the 1024+ block and the gap at 38); `StreamMode` is consumed
+   as `u8`. These *values and variant names* match the SDK's own numbering,
+   exactly as zwo's 0-based `Rg..Gb` match ASI's. (The *type name* is not
+   SDK-forced and was unified to `BayerPattern` — see the "What to unify" table.)
 4. **Two capture paths.** `ExpQHYCCDSingleFrame`/`GetQHYCCDSingleFrame` *and*
    `BeginQHYCCDLive`/`GetQHYCCDLiveFrame` are four separate C entry points
    (`libqhyccd-sys/lib.rs:58-93`) — the dual single-frame/live API is real, not a
@@ -93,6 +95,7 @@ publishing/dependency friction**. Ordered by the phases that follow.
 | Module layout | 6-file `camera/` + `backend.rs` + `control.rs` + `mocks.rs` | one file per device with `impl` blocks |
 | Frame buffer | fresh `Vec` per frame | caller-owned `&mut [u8]` |
 | Public surface | hides `sys`, no `check` helper | re-exports `sys` + a `check` helper |
+| CFA enum type name | `BayerMode` (wrapper-invented; the QHY SDK has no such type) | `BayerPattern` — **done**; the `GBRG..RGGB` variants + 1-based discriminants stay SDK-native per item 3 above |
 
 Worth **propagating the other direction:** qhy's `QHYCCD_SKIP_NATIVE_LINK`
 no-link build capability is genuinely useful and zwo/svbony lack the full
@@ -316,7 +319,7 @@ no longer part of the routine surface; suites green.
   scan/enumeration pipeline, and the `HandleCell::Drop` / teardown-order
   mock-call-count checks — all in the now-compiled-out FFI arm, so legitimately
   untested, exactly as in zwo/svbony), and **7 GAP** → re-expressed as **5 new
-  simulation-path tests** (`Sdk::version` sim value; `BayerMode::try_from` in a
+  simulation-path tests** (`Sdk::version` sim value; `BayerPattern::try_from` in a
   `types.rs` `#[cfg(test)]` mod; `get_live_frame` open-but-not-live;
   `get_single_frame` open-but-no-image; a `FilterWheel` over an open no-CFW camera).
 - **`simulation/` subtree flattened** to a single `src/simulation.rs`, preserving

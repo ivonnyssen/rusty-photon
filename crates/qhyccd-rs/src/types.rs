@@ -60,25 +60,29 @@ pub struct CCDChipArea {
     pub height: u32,
 }
 
+/// Bayer colour-filter pattern, returned from `is_control_available` with
+/// `ControlType::CamColor`. The variant names and 1-based discriminants are the
+/// QHY SDK's own numbering (`GBRG=1..RGGB=4`) — the sibling `zwo-rs`/`svbony-rs`
+/// crates expose the same `BayerPattern` type with their SDKs' 0-based
+/// `Rg..Gb` variants (the names differ because each mirrors its vendor SDK).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[allow(missing_docs)]
-/// this struct is returned from `is_control_available` when used with `ControlType::CamColor`
-pub enum BayerMode {
+pub enum BayerPattern {
     GBRG = 1,
     GRBG = 2,
     BGGR = 3,
     RGGB = 4,
 }
 
-impl TryFrom<u32> for BayerMode {
+impl TryFrom<u32> for BayerPattern {
     type Error = ();
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            x if x == BayerMode::GBRG as u32 => Ok(BayerMode::GBRG),
-            x if x == BayerMode::GRBG as u32 => Ok(BayerMode::GRBG),
-            x if x == BayerMode::BGGR as u32 => Ok(BayerMode::BGGR),
-            x if x == BayerMode::RGGB as u32 => Ok(BayerMode::RGGB),
+            x if x == BayerPattern::GBRG as u32 => Ok(BayerPattern::GBRG),
+            x if x == BayerPattern::GRBG as u32 => Ok(BayerPattern::GRBG),
+            x if x == BayerPattern::BGGR as u32 => Ok(BayerPattern::BGGR),
+            x if x == BayerPattern::RGGB as u32 => Ok(BayerPattern::RGGB),
             _ => Err(()),
         }
     }
@@ -109,21 +113,21 @@ pub struct SDKVersion {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))] // test code: don't count toward coverage
 mod tests {
-    use super::BayerMode;
+    use super::BayerPattern;
 
-    // `BayerMode::try_from` is backend-independent pure logic; it was previously
+    // `BayerPattern::try_from` is backend-independent pure logic; it was previously
     // only exercised by the deleted FFI-mock `camera_tests::bayer_mode_try_from`.
     #[test]
-    fn bayer_mode_try_from_maps_the_four_sdk_codes() {
-        assert_eq!(BayerMode::try_from(1), Ok(BayerMode::GBRG));
-        assert_eq!(BayerMode::try_from(2), Ok(BayerMode::GRBG));
-        assert_eq!(BayerMode::try_from(3), Ok(BayerMode::BGGR));
-        assert_eq!(BayerMode::try_from(4), Ok(BayerMode::RGGB));
+    fn bayer_pattern_try_from_maps_the_four_sdk_codes() {
+        assert_eq!(BayerPattern::try_from(1), Ok(BayerPattern::GBRG));
+        assert_eq!(BayerPattern::try_from(2), Ok(BayerPattern::GRBG));
+        assert_eq!(BayerPattern::try_from(3), Ok(BayerPattern::BGGR));
+        assert_eq!(BayerPattern::try_from(4), Ok(BayerPattern::RGGB));
     }
 
     #[test]
-    fn bayer_mode_try_from_rejects_codes_outside_1_to_4() {
-        assert_eq!(BayerMode::try_from(0), Err(()));
-        assert_eq!(BayerMode::try_from(5), Err(()));
+    fn bayer_pattern_try_from_rejects_codes_outside_1_to_4() {
+        assert_eq!(BayerPattern::try_from(0), Err(()));
+        assert_eq!(BayerPattern::try_from(5), Err(()));
     }
 }
