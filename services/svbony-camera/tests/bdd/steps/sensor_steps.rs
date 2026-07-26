@@ -1,5 +1,5 @@
 //! Sensor geometry, type, and signal steps (`@wip` — Phase E,
-//! docs/plans/svbony-camera.md).
+//! docs/plans/archive/svbony-camera.md).
 
 use ascom_alpaca::api::camera::SensorType;
 use cucumber::gherkin::Step;

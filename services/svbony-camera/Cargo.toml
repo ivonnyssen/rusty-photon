@@ -84,7 +84,7 @@ priority = "optional"
 # NEEDED entry. Direct runtime needs: glibc, libgcc, C++ runtime (what
 # libSVBCameraSDK.so itself links, per readelf -d) + libusb-1.0 (the
 # *binary's own* -lusb-1.0 link — the SDK blob has no NEEDED entry for it
-# at all, see docs/plans/svbony-camera.md Phase F); adduser is used by
+# at all, see docs/plans/archive/svbony-camera.md Phase F); adduser is used by
 # postinst.
 depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, adduser"
 assets = [

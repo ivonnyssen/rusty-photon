@@ -24,7 +24,7 @@ exports_files(
 # default — unlike zwo-camera/qhy-camera, whose production binaries link
 # fine because CI provisions their SDKs first.
 #
-# Phase F (docs/plans/svbony-camera.md) added `.github/actions/install-svbony-sdk`
+# Phase F (docs/plans/archive/svbony-camera.md) added `.github/actions/install-svbony-sdk`
 # and wired it into `conformu.yml` + `native.yml`, but deliberately did NOT
 # flip this tag: that action is a plain-Cargo, GitHub-Actions-only
 # provisioning mechanism (composite-action shell steps against `cargo build`),
@@ -33,7 +33,7 @@ exports_files(
 # and must keep working with zero SVBony SDK provisioning. Revisit (drop
 # `manual`, add a Bazel-side SDK-fetch rule, stop baking the skip in
 # libsvbony-sys/BUILD.bazel) at Phase G alongside real hardware validation;
-# see docs/plans/svbony-camera.md's Status section.
+# see docs/plans/archive/svbony-camera.md's Status section.
 #
 # The BDD + ConformU suites RUN under Bazel (no `requires-cargo`): `bdd` via
 # the `bazel.yml` BDD step spawning the sim binary like every other service,
