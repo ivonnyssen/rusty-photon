@@ -6,8 +6,6 @@
 //! bodies) and [`crate::config::target_store`] (parsing
 //! `targets.default_goals`) so the two stay byte-for-byte consistent.
 
-use std::time::Duration;
-
 use rp_targets::{AcquisitionGoal, Binning};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -62,26 +60,17 @@ pub(crate) fn parse_binning(s: &str) -> Result<Binning, String> {
     Ok(Binning { x, y })
 }
 
-/// Renders an exposure `Duration` back to the wire string, exactly —
-/// whole-second exposures round-trip byte-for-byte (`"300s"` in,
-/// `"300s"` out), since [`humantime::format_duration`] would otherwise
-/// pick a coarser unit (`"5m"`) that fails a literal round-trip
-/// comparison.
-pub fn format_exposure_duration(d: Duration) -> String {
-    if d.subsec_nanos() == 0 {
-        format!("{}s", d.as_secs())
-    } else {
-        humantime::format_duration(d).to_string()
-    }
-}
-
 /// Renders one goal back to its wire JSON shape (the inverse of
-/// [`parse_goal`]).
+/// [`parse_goal`]). `exposure_duration` uses [`humantime::format_duration`]
+/// — the exact encoding `AcquisitionGoal`'s `humantime_serde` field uses
+/// for the redb store, so the MCP wire and the store agree (a 300 s sub is
+/// `"5m"`, a 32 µs bias is `"32us"`; the file-naming template renders the
+/// same string with humantime's inter-unit spaces removed).
 pub fn goal_to_json(g: &AcquisitionGoal) -> Value {
     json!({
         "filter": g.filter,
         "binning": g.binning.to_string(),
-        "exposure_duration": format_exposure_duration(g.exposure_duration),
+        "exposure_duration": humantime::format_duration(g.exposure_duration).to_string(),
         "desired_count": g.desired_count,
     })
 }
@@ -89,6 +78,8 @@ pub fn goal_to_json(g: &AcquisitionGoal) -> Value {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn wire(filter: &str, binning: &str, exposure_duration: &str, desired_count: u32) -> GoalWire {
@@ -101,16 +92,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_goal_round_trips_whole_second_exposure_duration() {
+    fn parse_goal_round_trips_exposure_duration_through_humantime() {
+        // Wire in as `300s`, back out as humantime's `5m` — the same
+        // rollup `humantime_serde` applies for the store, so the wire and
+        // the store agree. The `Duration` itself round-trips exactly.
         let goal = parse_goal(&wire("Ha", "1x1", "300s", 20)).unwrap();
         assert_eq!(goal.binning, Binning { x: 1, y: 1 });
         assert_eq!(goal.exposure_duration, Duration::from_secs(300));
         assert_eq!(
             goal_to_json(&goal),
             json!({
-                "filter": "Ha", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20
+                "filter": "Ha", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20
             })
         );
+    }
+
+    #[test]
+    fn goal_to_json_encodes_a_sub_second_bias_exposure() {
+        // The motivating case: a sub-second exposure the old whole-second
+        // encoding could not represent now survives the wire.
+        let goal = parse_goal(&wire("Dark", "1x1", "32us", 50)).unwrap();
+        assert_eq!(goal.exposure_duration, Duration::from_micros(32));
+        assert_eq!(goal_to_json(&goal)["exposure_duration"], "32us");
     }
 
     #[test]

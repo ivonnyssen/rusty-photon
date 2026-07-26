@@ -426,7 +426,7 @@ file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure_dur
 Target rendering example (note the lowercase `{target}` slug — the
 renderer emits the slug verbatim and the parser's `[a-z0-9-]+` shape
 requires it):
-`m33/2026-06-02/Light/m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4.fits`
+`m33/2026-06-02/Light/m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4.fits`
 
 Each token has a **typed shape** so the template compiles to an anchored
 regex with named captures — never a naive `split('_')`, which the
@@ -438,22 +438,24 @@ regex with named captures — never a naive `split('_')`, which the
 | `{filter}` | `[A-Za-z0-9]+` | filter name |
 | `{binning}` | `\d+x\d+` | `Binning` |
 | `{frame_number}` | `\d+` | per-spec sequence, rendered zero-padded to width 4 (`0002`) |
-| `{exposure_duration}` | `\d+sec` | whole-second `Duration`, rendered `format!("{}sec", d.as_secs())` |
+| `{exposure_duration}` | `(?:\d+(?:ns\|us\|ms\|s\|m\|h\|d))+` | `Duration` as space-free humantime (`2m`, `5m`, `32us`) |
 | `{filter_position}` | `\d+` | wheel slot |
 | `{sensor_temp}` | `-?\d+C` | measured at capture |
 | `{night_date}` | `\d{4}-\d{2}-\d{2}` | observing-night date |
 | `{frame_type}` | `Light\|Dark\|Flat\|Bias` | capture intent |
 | `{uuid8}` | `[0-9a-f]{8}` | exposure-document id (sidecar link) |
 
-Token encodings are filename-specific and **distinct from** the
-config/value encodings: `{exposure_duration}` renders
-`format!("{}sec", exposure_duration.as_secs())` (so goal exposures are constrained
-to whole seconds — sub-second/non-integer exposures are unsupported in
-filenames, independent of the `humantime_serde` *value* encoding, which
-uses `120s`/`500ms`), and `{frame_number}` renders zero-padded to width
-4. `{frame_type}` names all capture intents, but only `FrameType=Light`
-frames bucket against `AcquisitionGoal` quotas (Dark/Flat/Bias live under
-their own dirs).
+`{exposure_duration}` uses the **same** humantime encoding as the goal
+wire and the `humantime_serde` store value — `humantime::format_duration`
+(so 300 s is `5m`, 120 s is `2m`), with humantime's inter-unit spaces
+stripped (`1s 500ms` → `1s500ms`) so it stays a single filename token;
+`humantime::parse_duration` reads the space-free form back unchanged. This
+deliberately supersedes the earlier whole-second-only `\d+sec` form, whose
+`as_secs()` truncation rounded a sub-second calibration exposure (a 32 µs
+bias) to `0s`; humantime carries `32us`/`500ms` faithfully. `{frame_number}`
+renders zero-padded to width 4. `{frame_type}` names all capture intents,
+but only `FrameType=Light` frames bucket against `AcquisitionGoal` quotas
+(Dark/Flat/Bias live under their own dirs).
 
 **Config-load validation (parse-don't-validate) — landed**
 (`rp::config::naming_template`). Both patterns are parsed and checked

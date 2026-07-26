@@ -20,14 +20,14 @@ Feature: Target progress derivation (P1)
     And the MCP client has added a target named "Fresh Frame" at ra_hours 5.0 dec_degrees 10.0
     And the MCP client has set its goals to:
       | filter    | binning | exposure_duration | desired_count |
-      | Luminance | 1x1     | 300s     | 40            |
-      | Red       | 1x1     | 300s     | 20            |
+      | Luminance | 1x1     | 5m       | 40            |
+      | Red       | 1x1     | 5m       | 20            |
     When the MCP client calls "get_target" for slug "fresh-frame"
     Then the tool call should succeed
     And the reported progress should be exactly:
       | filter    | binning | exposure_duration | good | total | desired |
-      | Luminance | 1x1     | 300s     | 0    | 0     | 40      |
-      | Red       | 1x1     | 300s     | 0    | 0     | 20      |
+      | Luminance | 1x1     | 5m       | 0    | 0     | 40      |
+      | Red       | 1x1     | 5m       | 0    | 0     | 20      |
 
   @wip
   # get_session_progress is still the legacy targets[]-array planner
@@ -41,16 +41,16 @@ Feature: Target progress derivation (P1)
     And the MCP client has added a target named "First Frame" at ra_hours 5.0 dec_degrees 10.0
     And the MCP client has set its goals to:
       | filter    | binning | exposure_duration | desired_count |
-      | Luminance | 1x1     | 300s     | 40            |
+      | Luminance | 1x1     | 5m       | 40            |
     And the MCP client has added a target named "Second Frame" at ra_hours 6.0 dec_degrees 12.0
     And the MCP client has set its goals to:
       | filter | binning | exposure_duration | desired_count |
-      | Red    | 1x1     | 300s     | 20            |
+      | Red    | 1x1     | 5m       | 20            |
     When the MCP client calls "get_session_progress"
     Then the tool call should succeed
     And the progress for target "first-frame" should be exactly:
       | filter    | binning | exposure_duration | good | total | desired |
-      | Luminance | 1x1     | 300s     | 0    | 0     | 40      |
+      | Luminance | 1x1     | 5m       | 0    | 0     | 40      |
     And the progress for target "second-frame" should be exactly:
       | filter | binning | exposure_duration | good | total | desired |
-      | Red    | 1x1     | 300s     | 0    | 0     | 20      |
+      | Red    | 1x1     | 5m       | 0    | 0     | 20      |

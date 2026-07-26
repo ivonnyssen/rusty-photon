@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
 
 use crate::equipment::EquipmentRegistry;
-use crate::planner::goal_wire::{format_exposure_duration, parse_goal, GoalWire};
+use crate::planner::goal_wire::{parse_goal, GoalWire};
 
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
@@ -567,7 +567,7 @@ fn progress_for(t: &Target) -> Vec<Value> {
             json!({
                 "filter": g.filter,
                 "binning": g.binning.to_string(),
-                "exposure_duration": format_exposure_duration(g.exposure_duration),
+                "exposure_duration": humantime::format_duration(g.exposure_duration).to_string(),
                 "good": 0,
                 "total": 0,
                 "desired": g.desired_count,

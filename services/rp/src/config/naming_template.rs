@@ -115,10 +115,26 @@ impl Token {
                 shape: r"\d+",
             },
             Token::ExposureDuration => TokenSpec {
+                // Space-free humantime: one or more `<int><unit>` groups,
+                // largest-unit-first with rollup (`120s` → `2m`, `3600s` →
+                // `1h`), down to sub-second (`500ms`, `32us`) — the same
+                // encoding the goal wire and store use, with humantime's
+                // inter-unit spaces stripped so it is a single token. Units
+                // are alternated longest-first so `ms`/`us`/`ns` win over
+                // the bare `s`.
+                //
+                // Even though a rendered value *ends* in a unit letter,
+                // the leading/trailing edge classes are `[0-9]`, not the
+                // letters: each `<int><unit>` group must start with a
+                // digit, so the only separator character this token could
+                // ambiguously absorb (at either end) is a digit — a
+                // letter can never extend the match. Using the letters
+                // here would spuriously reject the default pattern's
+                // `_fpos_` separator over the `s` in `fpos`.
                 canonical: "exposure_duration",
                 leading: "[0-9]",
-                trailing: "c",
-                shape: r"\d+sec",
+                trailing: "[0-9]",
+                shape: r"(?:\d+(?:ns|us|ms|s|m|h|d))+",
             },
             Token::FilterPosition => TokenSpec {
                 canonical: "filter_position",
@@ -330,9 +346,10 @@ pub struct TemplateFields {
     /// Per-spec sequence number; rendered zero-padded to width 4
     /// (`0002`).
     pub frame_number: Option<u32>,
-    /// Rendered `format!("{}sec", d.as_secs())` — `render` rejects a
-    /// non-whole-second value, since sub-second exposure durations have
-    /// no naming-template representation (rp-targets.md § File-naming
+    /// Rendered as space-free humantime — the same encoding the goal wire
+    /// and store use, so a two-minute exposure is `2m` and a sub-second
+    /// calibration exposure is `32us` / `500ms` (a microsecond bias frame
+    /// is representable, not rounded to `0s`; rp-targets.md § File-naming
     /// template).
     pub exposure_duration: Option<Duration>,
     pub filter_position: Option<u32>,
@@ -351,25 +368,22 @@ pub struct TemplateFields {
 
 impl TemplateFields {
     /// The value `render` should substitute for `token`, or an error
-    /// naming the missing field or, for [`Token::ExposureDuration`], the
-    /// violated whole-second business rule. The `match` is exhaustive, so
-    /// a new token can't be added without deciding how it renders.
+    /// naming the missing field. The `match` is exhaustive, so a new
+    /// token can't be added without deciding how it renders.
     fn rendered_value(&self, token: Token) -> Result<String, String> {
         let value = match token {
             Token::Target => self.target.as_ref().map(ToString::to_string),
             Token::Filter => self.filter.clone(),
             Token::Binning => self.binning.as_ref().map(ToString::to_string),
             Token::FrameNumber => self.frame_number.map(|n| format!("{n:04}")),
-            Token::ExposureDuration => match self.exposure_duration {
-                Some(d) if d.subsec_nanos() == 0 => Some(format!("{}sec", d.as_secs())),
-                Some(d) => {
-                    return Err(format!(
-                        "exposure_duration {d:?} is not a whole number of seconds; the \
-                         naming template only supports whole-second exposure durations"
-                    ))
-                }
-                None => None,
-            },
+            // Humantime, with its inter-unit spaces removed so the result
+            // is a single filename token — the same encoding the goal wire
+            // and the redb store use, except space-free. A sub-second
+            // calibration exposure keeps its true value (`32us`) instead
+            // of the old whole-second-only formatter that rounded it away.
+            Token::ExposureDuration => self
+                .exposure_duration
+                .map(|d| humantime::format_duration(d).to_string().replace(' ', "")),
             Token::FilterPosition => self.filter_position.map(|n| n.to_string()),
             Token::SensorTemp => self.sensor_temp_c.map(|c| format!("{c}C")),
             Token::NightDate => self.night_date.map(|d| d.format("%Y-%m-%d").to_string()),
@@ -394,10 +408,7 @@ impl TemplateFields {
             Token::Binning => self.binning = parse_binning(value).ok(),
             Token::FrameNumber => self.frame_number = value.parse().ok(),
             Token::ExposureDuration => {
-                self.exposure_duration = value
-                    .strip_suffix("sec")
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .map(Duration::from_secs);
+                self.exposure_duration = humantime::parse_duration(value).ok();
             }
             Token::FilterPosition => self.filter_position = value.parse().ok(),
             Token::SensorTemp => {
@@ -521,15 +532,14 @@ impl CompiledTemplate {
 
     /// Renders `fields` through the pattern, producing the filename
     /// base (no extension) — e.g.
-    /// `"m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4"`.
+    /// `"m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4"`.
     ///
     /// # Errors
     ///
     /// Names the missing token when `fields` lacks a value the
     /// pattern references, or names the offending value when a
     /// supplied value doesn't match the token's shape (e.g. a filter
-    /// name containing a character outside `[A-Za-z0-9]`, or a
-    /// non-whole-second exposure duration).
+    /// name containing a character outside `[A-Za-z0-9]`).
     pub fn render(&self, fields: &TemplateFields) -> Result<String, String> {
         let mut out = String::new();
         for part in &self.parts {
@@ -771,7 +781,7 @@ mod tests {
     fn render_reproduces_the_documented_example() {
         let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
         let rendered = template.render(&documented_example_fields()).unwrap();
-        assert_eq!(rendered, "m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4");
+        assert_eq!(rendered, "m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4");
     }
 
     #[test]
@@ -802,12 +812,36 @@ mod tests {
     }
 
     #[test]
-    fn render_rejects_a_non_whole_second_exposure_duration() {
+    fn render_and_parse_round_trip_sub_second_exposures() {
+        // The motivating case: a microsecond bias frame must keep its
+        // true exposure in the filename (`32us`), not collapse to `0s`
+        // as the old whole-second-only encoding did. Fractional exposures
+        // (`1s500ms`) round-trip too via the shared humantime encoding.
+        let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
+        for exposure in [
+            Duration::from_micros(32),
+            Duration::from_millis(500),
+            Duration::from_millis(1500),
+        ] {
+            let mut fields = documented_example_fields();
+            fields.exposure_duration = Some(exposure);
+            let rendered = template.render(&fields).unwrap();
+            assert!(
+                !rendered.contains(' '),
+                "filename must not contain spaces: {rendered:?}"
+            );
+            let parsed = template.parse(&rendered).unwrap();
+            assert_eq!(parsed.exposure_duration, Some(exposure), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn render_encodes_a_microsecond_bias_exposure_as_humantime() {
         let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
         let mut fields = documented_example_fields();
-        fields.exposure_duration = Some(Duration::from_millis(1500));
-        let err = template.render(&fields).unwrap_err();
-        assert!(err.contains("whole"), "{err}");
+        fields.exposure_duration = Some(Duration::from_micros(32));
+        let rendered = template.render(&fields).unwrap();
+        assert!(rendered.contains("_32us_"), "{rendered}");
     }
 
     #[test]
@@ -832,10 +866,7 @@ mod tests {
             ..Default::default()
         };
         let rendered = template.render(&fields).unwrap();
-        assert_eq!(
-            rendered,
-            "ngc7000_L_2x2_30sec_0001_Dark_2026-06-02_deadbeef"
-        );
+        assert_eq!(rendered, "ngc7000_L_2x2_30s_0001_Dark_2026-06-02_deadbeef");
         assert_eq!(template.parse(&rendered).unwrap(), fields);
     }
 
