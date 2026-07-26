@@ -1450,9 +1450,12 @@ mod tests {
             assert_eq!((2976 / bin) % 8, 0, "width at bin {bin}");
             assert_eq!((3000 / bin) % 2, 0, "height at bin {bin}");
         }
-        // Degenerate inputs fall back to the raw extent.
+        // Degenerate inputs fall back to the raw extent, and lcm's zero
+        // guard keeps a hypothetical zero step from dividing by zero.
         assert_eq!(aligned_sensor_extent(3008, &[], 8), 3008);
         assert_eq!(aligned_sensor_extent(10, &[1, 2, 3, 4], 8), 10);
+        assert_eq!(lcm(0, 5), 0);
+        assert_eq!(lcm(5, 0), 0);
     }
 
     #[test]
@@ -1972,6 +1975,91 @@ mod tests {
             }
         }
         wait_image_ready(&cam).await;
+    }
+
+    /// Every SDK-error mapping carries the SDK's own error detail in the
+    /// ASCOM error message — a bare error code is undiagnosable from a
+    /// client or the service log (a real-hardware gain-write transient
+    /// motivated this contract).
+    #[tokio::test]
+    async fn sdk_control_failures_surface_the_sdk_detail() {
+        let handle = Arc::new(MockCameraHandle::default().with_pulse_guide());
+        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        cam.connect().unwrap();
+        handle.fail_controls.store(true, AtomicOrdering::SeqCst);
+        let cases: [(ASCOMError, &str); 11] = [
+            (cam.gain().await.unwrap_err(), "failed to read gain"),
+            (cam.set_gain(50).await.unwrap_err(), "failed to set gain"),
+            (cam.offset().await.unwrap_err(), "failed to read offset"),
+            (cam.set_offset(5).await.unwrap_err(), "failed to set offset"),
+            (
+                cam.ccd_temperature().await.unwrap_err(),
+                "failed to read sensor temperature",
+            ),
+            (
+                cam.set_ccd_temperature().await.unwrap_err(),
+                "failed to read target temperature",
+            ),
+            (
+                cam.set_set_ccd_temperature(0.0).await.unwrap_err(),
+                "failed to set target temperature",
+            ),
+            (
+                cam.cooler_on().await.unwrap_err(),
+                "failed to read cooler state",
+            ),
+            (
+                cam.set_cooler_on(true).await.unwrap_err(),
+                "failed to set cooler state",
+            ),
+            (
+                cam.cooler_power().await.unwrap_err(),
+                "failed to read cooler power",
+            ),
+            (
+                cam.pulse_guide(GuideDirection::North, Duration::from_millis(1))
+                    .await
+                    .unwrap_err(),
+                "pulse guide failed",
+            ),
+        ];
+        for (err, needle) in cases {
+            let msg = err.to_string();
+            assert!(msg.contains(needle), "{msg:?} missing {needle:?}");
+            assert!(
+                msg.contains("injected SDK failure"),
+                "{msg:?} lost the SDK detail"
+            );
+        }
+    }
+
+    /// A handshake-step SDK failure leaves the device disconnected (C2's
+    /// handshake half) — the camera must not be left opened-but-unusable.
+    #[tokio::test]
+    async fn a_failed_handshake_step_leaves_the_device_disconnected() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.fail_property.store(true, AtomicOrdering::SeqCst);
+        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        let err = cam.connect().unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+        assert!(!handle.is_open(), "failed handshake must close the camera");
+    }
+
+    /// Reconnecting while a previous session's capture-cancel slot is still
+    /// populated cancels that capture (reset_exposure_state's take-branch).
+    #[tokio::test]
+    async fn reconnecting_cancels_a_previous_sessions_capture_slot() {
+        let cam = connected_device(MockCameraHandle::default());
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_image_ready(&cam).await;
+        // The completed exposure leaves its cancel flag in the slot; a
+        // reconnect must drain (take + set) it rather than leak it.
+        cam.connect().unwrap();
+        assert!(!cam.image_ready().await.unwrap(), "reconnect resets state");
     }
 
     #[tokio::test]

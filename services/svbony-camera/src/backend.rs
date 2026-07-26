@@ -673,6 +673,13 @@ pub(crate) mod mock {
         open: AtomicBool,
         /// Force the next `open()` call to fail (C2's open-failure branch).
         pub fail_open: AtomicBool,
+        /// Force `property()` to fail — the connect-handshake failure branch
+        /// (C2's handshake half; exercises `camera.rs::handshake_err`).
+        pub fail_property: AtomicBool,
+        /// Force control reads/writes and pulse-guide to fail, so the
+        /// device's SDK-error mappings (which must carry the SDK detail)
+        /// are exercisable.
+        pub fail_controls: AtomicBool,
 
         gain: Mutex<i64>,
         black_level: Mutex<i64>,
@@ -711,6 +718,8 @@ pub(crate) mod mock {
                 caps: Mutex::new(default_caps()),
                 open: AtomicBool::new(false),
                 fail_open: AtomicBool::new(false),
+                fail_property: AtomicBool::new(false),
+                fail_controls: AtomicBool::new(false),
                 gain: Mutex::new(100),
                 black_level: Mutex::new(0),
                 cooler_enable: AtomicBool::new(false),
@@ -810,6 +819,9 @@ pub(crate) mod mock {
         }
 
         fn property(&self) -> BackendResult<CameraProperty> {
+            if self.fail_property.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             Ok(self.property.lock().clone())
         }
 
@@ -826,6 +838,9 @@ pub(crate) mod mock {
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             let value = match control {
                 ControlType::Gain => *self.gain.lock(),
                 ControlType::BlackLevel => *self.black_level.lock(),
@@ -845,6 +860,9 @@ pub(crate) mod mock {
         }
 
         fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             match control {
                 ControlType::Gain => *self.gain.lock() = value,
                 ControlType::BlackLevel => *self.black_level.lock() = value,
@@ -881,10 +899,11 @@ pub(crate) mod mock {
             let deadline = Instant::now() + *self.capture_delay.lock();
             loop {
                 if request.cancel.load(Ordering::SeqCst) {
-                    self.stop_video_capture_calls.fetch_add(1, Ordering::SeqCst);
+                    // Mirror the production abort drain: stop, then re-arm
+                    // for a trigger camera (see SvbonyCameraHandle::abort_capture).
+                    self.stop_video_capture()?;
                     if request.is_trigger_cam {
-                        self.start_video_capture_calls
-                            .fetch_add(1, Ordering::SeqCst);
+                        self.start_video_capture()?;
                     }
                     return Err(BackendError("exposure aborted".to_string()));
                 }
@@ -912,6 +931,9 @@ pub(crate) mod mock {
         }
 
         fn pulse_guide(&self, _direction: GuideDirection, _duration_ms: i32) -> BackendResult<()> {
+            if self.fail_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
             Ok(())
         }
     }
