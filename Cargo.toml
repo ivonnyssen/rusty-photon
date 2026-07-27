@@ -110,6 +110,17 @@ async-trait = "0.1.89"
 # (absent in 2.0.0/2.0.1). A looser "2.0" breaks the dual-homed crate's
 # direct-minimal-versions build (caught by the publish-readiness check).
 derive_more = { version = "2.1", features = ["debug"] }
+# Variant iteration / count / discriminant-conversion derives (`VariantArray`,
+# `EnumCount`, `FromRepr`) plus `&'static str` variant constants. `derive_more`
+# stays the tool for Display with interpolated fields; see docs/workspace.md
+# § Enum derive conventions for which crate to reach for.
+#
+# Keep this pinned to the same minor `jsonschema` requires (it depends on strum
+# with `features = ["derive"]`, so strum + strum_macros are already in the graph
+# and this entry adds zero packages). Bumping ahead of jsonschema resolves a
+# SECOND strum + strum_macros into Cargo.lock — the duplicate-dependency debt
+# PR #715 was cleaning up.
+strum = { version = "0.28.0", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tokio-test = "0.4.5"
