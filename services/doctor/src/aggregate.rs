@@ -228,17 +228,29 @@ fn describe_devices(devices: &[ConfiguredDevice]) -> String {
 /// old binary is not a broken rig.
 async fn probe_shell_out(ctx: &Context, scan: &ServiceScan, unit: &UnitFacts) -> Vec<Check> {
     let name = scan.entry.name;
-    let service = Some(name.to_string());
     let Some(binary) = &unit.binary_path else {
         return vec![Check::warn(
             "service.doctor-probe",
-            service,
+            Some(name.to_string()),
             "the unit is installed but its service manager entry records no binary path, \
              so its own doctor could not be asked",
             None,
         )];
     };
     let config = ctx.config_dir.join(scan.entry.config_file());
+    run_child_doctor(name, binary, &config, SHELL_OUT_TIMEOUT).await
+}
+
+/// Run `<binary> doctor --json --config <config>` bounded by `timeout` and
+/// interpret the outcome. The timeout is a parameter so tests can exercise
+/// the timeout arm without waiting out the production bound.
+async fn run_child_doctor(
+    name: &str,
+    binary: &std::path::Path,
+    config: &std::path::Path,
+    timeout: Duration,
+) -> Vec<Check> {
+    let service = Some(name.to_string());
     debug!(service = name, binary = %binary.display(), "running the per-service doctor");
 
     let mut command = tokio::process::Command::new(binary);
@@ -246,21 +258,21 @@ async fn probe_shell_out(ctx: &Context, scan: &ServiceScan, unit: &UnitFacts) ->
         .arg("doctor")
         .arg("--json")
         .arg("--config")
-        .arg(&config)
+        .arg(config)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let output = match tokio::time::timeout(SHELL_OUT_TIMEOUT, command.output()).await {
+    let output = match tokio::time::timeout(timeout, command.output()).await {
         Err(_elapsed) => {
             return vec![Check::warn(
                 "service.doctor-probe",
                 service,
                 format!(
-                    "{} doctor did not answer within {}s and was stopped",
+                    "{} doctor did not answer within {} and was stopped",
                     binary.display(),
-                    SHELL_OUT_TIMEOUT.as_secs()
+                    humantime::format_duration(timeout)
                 ),
                 None,
             )];
@@ -330,6 +342,48 @@ fn merge_child_checks(child: Report, service: &str) -> Vec<Check> {
 mod tests {
     use super::*;
     use crate::report::Status;
+
+    /// Stage an executable that hangs far longer than any test timeout: a
+    /// `.cmd` on Windows, a `chmod +x` shell script elsewhere (the same two
+    /// shapes the BDD aggregation steps stage as stub binaries).
+    fn stage_hanging_binary(dir: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(windows)]
+        {
+            let path = dir.join("hang.cmd");
+            std::fs::write(&path, "@ping -n 60 127.0.0.1 > nul\r\n").unwrap();
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("hang.sh");
+            std::fs::write(&path, "#!/bin/sh\nsleep 60\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_child_doctor_timeout_warns_with_humantime_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = stage_hanging_binary(dir.path());
+        let config = dir.path().join("svc.json");
+        std::fs::write(&config, "{}").unwrap();
+
+        let checks = run_child_doctor("svc", &binary, &config, Duration::from_millis(50)).await;
+
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "service.doctor-probe");
+        assert_eq!(checks[0].status, Status::Warn);
+        assert_eq!(checks[0].service.as_deref(), Some("svc"));
+        assert!(
+            checks[0]
+                .detail
+                .ends_with("doctor did not answer within 50ms and was stopped"),
+            "{}",
+            checks[0].detail
+        );
+    }
 
     #[test]
     fn test_merge_scopes_unscoped_child_checks_to_the_service() {

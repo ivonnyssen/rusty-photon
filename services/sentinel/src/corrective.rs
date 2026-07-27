@@ -301,7 +301,8 @@ pub(crate) async fn run_shell(command: &str, budget: Duration) -> crate::Result<
         Err(_) => {
             let _ = child.start_kill();
             Err(crate::SentinelError::Monitor(format!(
-                "`{command}` exceeded {budget:?}"
+                "`{command}` exceeded {}",
+                humantime::format_duration(budget)
             )))
         }
     }

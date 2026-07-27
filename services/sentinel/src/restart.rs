@@ -151,7 +151,10 @@ impl RestartManager {
             .ok_or_else(|| RestartError::AlreadyInFlight(name.to_string()))?;
 
         let budget = self.budget;
-        info!("restarting service '{name}' (unit {unit}, budget {budget:?})");
+        info!(
+            "restarting service '{name}' (unit {unit}, budget {})",
+            humantime::format_duration(budget)
+        );
         let started = Instant::now();
         match self.manager.restart(&unit, budget).await {
             Ok(()) => {
