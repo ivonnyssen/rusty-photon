@@ -310,14 +310,27 @@ duplicates are that second kind: either an ecosystem mid-migration (`rand`
 0.8/0.9/0.10, `syn` 2/3, `thiserror` 1/2, `hashbrown`, `getrandom`) or a single
 crate holding an old major open (`serialport` → `nix 0.26` + `windows-sys 0.52`,
 `ring` → `windows-sys 0.52`, `system-configuration` → `core-foundation 0.9`,
-`cloudflare` → `reqwest 0.12`). To find the blocker for a given crate, read the
-`req` of each dependent:
+`cloudflare` → `reqwest 0.12`). `cargo tree` is the authority on which consumers
+actually pull a given version:
+
+```sh
+cargo tree --workspace --target all -i windows-sys@0.52.0 --depth 1
+```
+
+To see the requirements behind that, read the `req` of each dependent — but
+filter the edges Cargo actually resolves, or the answer is wrong:
 
 ```sh
 cargo metadata --format-version 1 --all-features | \
   jq -r '.packages[] | . as $p | .dependencies[] |
-         select(.name=="windows-sys") | "\(.req)  <- \($p.name) \($p.version)"' | sort -u
+         select(.name=="windows-sys" and .kind==null and .optional==false) |
+         "\(.req)  <- \($p.name) \($p.version)"' | sort -u
 ```
+
+`.kind` is `"dev"`, `"build"`, or null for a normal dependency. Cargo does not
+resolve dev-dependencies of non-workspace packages, and an unactivated
+`optional` dependency constrains nothing either — so without both filters the
+recipe reports crates that hold nothing as blockers.
 
 Chasing a duplicate is not free. Forcing an open-range consumer onto a different
 version with `cargo update -p <crate> --recursive` can move *other* crates
@@ -332,15 +345,23 @@ a workspace member names directly. To hold a **transitive** crate, pin it in
 `Cargo.lock`:
 
 ```sh
+# Order matters: rust-embed-impl 8.12 requires rust-embed-utils ^8.12, so
+# pinning utils first aborts with a resolver error. Pin impl, then utils.
+cargo update -p rust-embed-impl  --precise 8.11.0
 cargo update -p rust-embed-utils --precise 8.11.0
 ```
 
-A plain `cargo update` undoes that, so re-apply the pin (and re-run the Bazel
-repin from CLAUDE.md rule 10) whenever the lock is refreshed. Current holds:
+Pinning only one of a lockstep pair is not enough either: with `impl` alone held,
+`utils` stays on 8.12 and still drags the `digest 0.11` chain in. Verify with
+`cargo tree --workspace --target all -i digest` showing a single version.
+
+A plain `cargo update` undoes all of it, so re-apply the pins (and re-run the
+Bazel repin from CLAUDE.md rule 10) whenever the lock is refreshed. Current
+holds:
 
 | Crate | Held at | Why |
 |---|---|---|
-| `rust-embed`, `rust-embed-impl`, `rust-embed-utils` | 8.11.0 | From 8.12, `rust-embed-utils` pulls `sha2`/`digest 0.11` in beside the `digest 0.10` chain `argon2`/`blake2` already bring. ppba-driver is the only service with a direct `rust-embed` dependency, so it is the only package that gets the duplicate — and its two largest test targets then fail `rustc` E0463 "can't find crate" under `bazel / windows-latest`, deterministically. Revisit once `argon2`/`blake2` ship on `digest 0.11`. |
+| `rust-embed`, `rust-embed-impl`, `rust-embed-utils` | 8.11.0 | `rust-embed` embeds the Fluent translation assets into ppba-driver's binary. From 8.12, `rust-embed-utils` pulls `sha2`/`digest 0.11` in beside the `digest 0.10` chain `argon2`/`blake2` already bring. ppba-driver is the only service with a direct `rust-embed` dependency, so it is the only package that gets the duplicate — and its two largest test targets then fail `rustc` E0463 "can't find crate" under `bazel / windows-latest`, deterministically. **The mechanism is not confirmed**: the duplicate graph was the strongest remaining lead when the investigation stopped after a revert fixed the symptom, not a demonstrated cause. Deduplicating `digest` — which needs `argon2`/`blake2` stable on `digest 0.11`, both still release-candidate only — is the most promising untested angle; re-verify on `bazel / windows-latest` before lifting the hold. |
 
 ### Pre-commit hooks
 
