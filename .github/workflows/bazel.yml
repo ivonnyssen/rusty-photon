@@ -137,9 +137,9 @@ jobs:
       - name: bazel build
         # Step budget: a fully cold build fits well under 30 minutes on every
         # OS, and a wedged build must not eat the whole 40-minute job budget
-        # (the tests after this step need ~10). The fine-grained hang handling
-        # lives in the macOS watchdog below; this bounds the case where even
-        # its retry hangs.
+        # (the tests after this step need ~10). This is also the backstop for
+        # the macOS remote-cache download wedge, whose primary mitigation is
+        # `build:macos --remote_max_connections` in .bazelrc.
         timeout-minutes: 30
         run: |
           REMOTE_FLAGS=(--config=remote-cache)
@@ -156,24 +156,7 @@ jobs:
           # attempt instead of just the first one, which is what actually
           # lets PR builds converge on a cache-eviction wave. No need to set
           # it here too.
-          # macOS intermittently wedges inside Bazel's HTTP remote-cache
-          # client during the bulk-download tail of the build: every in-flight
-          # transfer stalls at once, the step goes silent, and
-          # --remote_timeout never fires (it bounds an established RPC, not a
-          # wedged connection pool), leaving the job to burn the full timeout.
-          # The watchdog detects the output silence, dumps the hung server's
-          # thread stacks + socket state into the step log, kills the server,
-          # and retries once on a warm output base. It also handles the
-          # abrupt gRPC-reset variant (exit 37, client's loopback stream to
-          # the server dies while the server survives): dump the server logs,
-          # then retry once against the still-alive server. Linux has never
-          # shown the stall and Windows has its own diagnostics above, so
-          # both keep the plain invocation.
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            bash tools/ci/bazel-build-watchdog.sh bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
-          else
-            bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
-          fi
+          bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
 
       # TEMP DIAGNOSTIC (see PR #474): windows-latest deterministically fails
       # a couple of ppba-driver rust_test targets (bdd, conformu_integration)

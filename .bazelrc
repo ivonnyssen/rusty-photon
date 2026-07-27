@@ -412,6 +412,23 @@ build:remote-cache --experimental_remote_cache_eviction_retries=30
 # that actually matters here.
 build:remote-cache --keep_going
 
+# macOS runners intermittently wedge inside Bazel's HTTP remote-cache client
+# during the bulk-download tail of a warm build: with `build:ci --jobs=64`
+# up to ~60 downloads run concurrently and the client's connection pool
+# (default cap 100) opens one TLS connection per transfer. Under that
+# concurrency either every in-flight transfer black-holes at once (total
+# output silence — `--remote_timeout` above never fires because it bounds an
+# established RPC, not a wedged pool) or the client<->server loopback stream
+# collapses (`Server terminated abruptly`, exit 37). Linux and Windows read
+# the same cache at the same parallelism without ever wedging, so the cap is
+# macOS-only. 16 keeps the download tail fast — connections are reused
+# across queued transfers — while staying far below the concurrency where
+# the wedge appears. Placed on the platform config rather than
+# `build:remote-cache` deliberately: the flag is inert when no remote cache
+# is configured, and this way local macOS builds that opt into a cache get
+# the same protection.
+build:macos --remote_max_connections=16
+
 # --- Conformu config -------------------------------------------------------
 
 # Run the per-service ConformU suites under Bazel:
