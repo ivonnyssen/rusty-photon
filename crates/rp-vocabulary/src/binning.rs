@@ -10,14 +10,53 @@ use serde::{Deserialize, Serialize};
 /// `x`/`y` stay public: any `u8 × u8` is shape-valid, so there is no bound
 /// to protect. [`FromStr`] is the exact inverse of the derived `Display`,
 /// so a rendered `{binning}` token round-trips.
+///
+/// Serde uses the same `"AxB"` string, not the derived struct shape:
+/// `#[serde(into = "String", try_from = "String")]` delegates to
+/// `Display`/`FromStr` (the same derive-plus-wire-conversion pattern
+/// [`crate::IcrsCoord`] uses) — one canonical encoding across the redb
+/// store, the MCP wire, config, and the filename token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[display("{x}x{y}")]
+#[serde(into = "String", try_from = "String")]
 pub struct Binning {
     /// Horizontal binning factor.
     pub x: u8,
     /// Vertical binning factor.
     pub y: u8,
+}
+
+impl From<Binning> for String {
+    fn from(b: Binning) -> Self {
+        b.to_string()
+    }
+}
+
+impl TryFrom<String> for Binning {
+    type Error = BinningParseError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+/// Manual because the derive generates the *struct* schema from the
+/// fields — it cannot follow `#[serde(into/try_from)]` to the string
+/// wire shape. (`IcrsCoord` gets away with deriving only because its
+/// private fields happen to mirror its wire type field-for-field.)
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Binning {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("Binning")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": "^[0-9]+x[0-9]+$",
+            "description": "Frame binning as \"AxB\", e.g. \"1x1\", \"2x2\"",
+        })
+    }
 }
 
 impl FromStr for Binning {
@@ -70,5 +109,19 @@ mod tests {
     #[test]
     fn from_str_rejects_out_of_u8_range() {
         assert!("999x1".parse::<Binning>().is_err());
+    }
+
+    #[test]
+    fn serde_round_trips_as_the_axb_string() {
+        let b = Binning { x: 2, y: 2 };
+        let v = serde_json::to_value(b).unwrap();
+        assert_eq!(v, serde_json::json!("2x2"));
+        assert_eq!(serde_json::from_value::<Binning>(v).unwrap(), b);
+    }
+
+    #[test]
+    fn deserialize_rejects_the_old_struct_shape_and_bad_strings() {
+        assert!(serde_json::from_value::<Binning>(serde_json::json!({"x": 2, "y": 2})).is_err());
+        assert!(serde_json::from_value::<Binning>(serde_json::json!("2x")).is_err());
     }
 }

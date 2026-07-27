@@ -196,6 +196,7 @@ shape on disk and on the MCP wire alike. Read sites migrate from
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, /* serde, [schema] */)]
 #[display("{x}x{y}")]
+#[serde(into = "String", try_from = "String")]
 pub struct Binning { pub x: u8, pub y: u8 }
 
 impl FromStr for Binning { /* "AxB" → Binning; errors on non-"AxB" or non-u8 */ }
@@ -205,6 +206,13 @@ impl FromStr for Binning { /* "AxB" → Binning; errors on non-"AxB" or non-u8 *
 no bound to protect and no bypass to close — the fix is simply to put the
 `FromStr` **next to** the `Display` it inverts, retiring
 `goal_wire::parse_binning` and the config→planner import that borrowed it.
+Serde goes through the same string
+(`#[serde(into = "String", try_from = "String")]` delegating to
+`Display`/`FromStr`), so the redb store, the MCP wire, config, and the
+filename token all share the one canonical `"AxB"` encoding — the same
+one-shape doctrine `IcrsCoord` applies to coordinates. (The `schema`
+feature's `JsonSchema` impl is manual — the derive can't follow
+`into`/`try_from` to the string shape.)
 (The naming-token grammar `\d+x\d+` in `rp` is laxer than `u8`; that
 mismatch is pre-existing and tracked as a follow-up, not fixed here.)
 

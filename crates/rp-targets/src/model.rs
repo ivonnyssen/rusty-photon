@@ -88,7 +88,8 @@ pub enum TargetSlugError {
 pub struct AcquisitionGoal {
     /// Filter name, e.g. `"Ha"`, `"L"`, `"R"`.
     pub filter: String,
-    /// Frame binning ([`rp_vocabulary::Binning`], rendered `"1x1"`).
+    /// Frame binning ([`rp_vocabulary::Binning`], serialized as its
+    /// canonical `"1x1"` string).
     pub binning: Binning,
     /// Per-frame exposure length, encoded as a humantime string on the wire.
     #[serde(with = "humantime_serde")]

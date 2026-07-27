@@ -134,7 +134,7 @@ pub struct Target {
 /// not a sub-spec dimension — it is a fixed per-setup camera setting).
 pub struct AcquisitionGoal {
     pub filter: String,          // "Ha", "L", "R", ...
-    pub binning: Binning,        // rp_vocabulary::Binning, renders as "1x1"
+    pub binning: Binning,        // rp_vocabulary::Binning, serde = "1x1"
     #[serde(with = "humantime_serde")]
     pub exposure_duration: std::time::Duration,
     pub desired_count: u32,
@@ -142,8 +142,9 @@ pub struct AcquisitionGoal {
 
 // Binning and IcrsCoord are the shared plan value types from
 // `rp-vocabulary` (ADR-019), re-exported here as `rp_targets::{Binning,
-// IcrsCoord}`. `Binning { pub x: u8, pub y: u8 }`; `IcrsCoord` is a
-// validated newtype (private fields, `try_new`).
+// IcrsCoord}`. `Binning { pub x: u8, pub y: u8 }` serializes as its
+// canonical `"AxB"` string; `IcrsCoord` is a validated newtype (private
+// fields, `try_new`).
 
 /// Per-target scheduling constraints. Each `None` field falls back to
 /// the rp-config global default. *Stored here; evaluated by rp's

@@ -3787,10 +3787,18 @@ Document).
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
 
-`goals[]` entries are the wire shape `{filter, binning, exposure_duration,
-desired_count}` — `binning` as `"AxB"` (e.g. `"1x1"`) and `exposure_duration` as
-a humantime string (e.g. `"5m"`), not `AcquisitionGoal`'s internal
-struct/`Duration` shapes.
+The `target` objects these tools return are `Target`'s **derived** serde
+serialization — there is no separate hand-maintained response shape. That
+works because the plan value types serialize as their canonical wire
+strings: `binning` as `"AxB"` (e.g. `"1x1"`), `exposure_duration` as a
+humantime string (e.g. `"5m"`), `coord` as `{ra_hours, dec_degrees}`
+(ADR-019). Input `goals[]` entries use the same
+`{filter, binning, exposure_duration, desired_count}` shape (deserialized
+via `GoalWire` first, for friendlier per-field errors than raw serde's), so
+what a tool accepts is byte-for-byte what it returns. One consequence of
+deriving: every stored field appears in responses — including `grading`,
+which is always `null` today (it is still **not accepted** on input; see
+`add_target` above).
 
 ### Progress derivation
 

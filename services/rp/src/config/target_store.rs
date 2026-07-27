@@ -17,7 +17,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::planner::goal_wire::{parse_goal, GoalWire};
+use crate::planner::goal_wire::GoalWire;
 
 /// Parsed, validated `target_store` config block feeding the target-store
 /// MCP tools (`add_target`'s `default_goals` fallback, the store's on-disk
@@ -42,7 +42,8 @@ pub struct TargetStoreConfig {
 /// — the type of [`crate::config::Config::target_store`]. `db_path` and
 /// `default_goals`/`default_scheduling` mirror [`TargetStoreConfig`], but
 /// `default_goals` carries the [`GoalWire`] string shape (`binning`
-/// `"1x1"`, `exposure_duration` `"5m"`) that `parse_goal` validates, and
+/// `"1x1"`, `exposure_duration` `"5m"`) that the `TryFrom<&GoalWire>`
+/// conversion validates, and
 /// `default_scheduling` is the schemars-able [`SchedulingWire`] projection.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -94,13 +95,13 @@ impl From<SchedulingWire> for rp_targets::SchedulingConstraints {
 /// # Errors
 ///
 /// Returns a human-readable message if a `default_goals` entry fails
-/// [`parse_goal`].
+/// its `TryFrom<&GoalWire>` conversion into [`rp_targets::AcquisitionGoal`].
 pub fn parse_target_store_config(
     wire: &TargetStoreConfigWire,
 ) -> Result<TargetStoreConfig, String> {
     let mut default_goals = Vec::with_capacity(wire.default_goals.len());
     for g in &wire.default_goals {
-        default_goals.push(parse_goal(g)?);
+        default_goals.push(rp_targets::AcquisitionGoal::try_from(g)?);
     }
     Ok(TargetStoreConfig {
         db_path: wire.db_path.clone(),

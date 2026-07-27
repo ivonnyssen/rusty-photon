@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
 
 use crate::equipment::EquipmentRegistry;
-use crate::planner::goal_wire::{goal_to_wire, parse_goal, GoalWire};
+use crate::planner::goal_wire::GoalWire;
 
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
@@ -267,7 +267,7 @@ impl McpHandler {
             Some(wire_goals) => {
                 let mut parsed = Vec::with_capacity(wire_goals.len());
                 for g in wire_goals {
-                    match parse_goal(g) {
+                    match AcquisitionGoal::try_from(g) {
                         Ok(pg) => parsed.push(pg),
                         Err(e) => return Ok(tool_error!("{}", e)),
                     }
@@ -452,7 +452,7 @@ impl McpHandler {
         };
         let mut goals = Vec::with_capacity(params.goals.len());
         for g in &params.goals {
-            match parse_goal(g) {
+            match AcquisitionGoal::try_from(g) {
                 Ok(pg) => goals.push(pg),
                 Err(e) => return Ok(tool_error!("{}", e)),
             }
@@ -534,26 +534,16 @@ fn validate_goal_filters(
     Ok(())
 }
 
+/// The MCP wire shape of one target is [`Target`]'s **derived**
+/// `Serialize` (rp.md § Target MCP tools) — no hand-keyed re-statement.
+/// The derived shape and the [`GoalWire`] input shape agree because
+/// `Binning` serializes as its canonical `"AxB"` string and
+/// `exposure_duration` as humantime; `grading` rides along as `null`
+/// until the grading plugin lands (rp.md: "Not yet accepted").
 fn target_to_json(t: &Target) -> Value {
-    json!({
-        "slug": t.slug.as_str(),
-        "display_name": t.display_name,
-        "coord": {
-            "ra_hours": t.coord.ra_hours(),
-            "dec_degrees": t.coord.dec_degrees()
-        },
-        "catalog_ref": t.catalog_ref,
-        "object_type": t.object_type,
-        "magnitude": t.magnitude,
-        "size_arcmin": t.size_arcmin,
-        "priority": t.priority,
-        "active": t.active,
-        "goals": t.goals.iter().map(goal_to_wire).collect::<Vec<_>>(),
-        "scheduling": t.scheduling.map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
-        "notes": t.notes,
-        "created_at": t.created_at,
-        "updated_at": t.updated_at,
-    })
+    // Infallible for `Target` (string map keys, infallible Serialize
+    // impls); `Null` could only surface a serializer bug.
+    serde_json::to_value(t).unwrap_or(Value::Null)
 }
 
 /// Per-goal `{filter, binning, exposure_duration, good, total, desired}`
@@ -566,9 +556,10 @@ fn progress_for(t: &Target) -> Vec<Value> {
         .map(|g| {
             // Progress rows add `good`/`total`/`desired` to the goal key, so
             // this is a distinct shape — but the goal encodings themselves
-            // (binning, humantime exposure) come from `goal_to_wire`, not a
+            // (binning, humantime exposure) come from the `GoalWire` `From`
+            // impl, not a
             // third hand-rolled copy.
-            let wire = goal_to_wire(g);
+            let wire = GoalWire::from(g);
             json!({
                 "filter": wire.filter,
                 "binning": wire.binning,
