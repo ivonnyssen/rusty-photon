@@ -347,19 +347,23 @@ mod tests {
     /// `.cmd` on Windows, a `chmod +x` shell script elsewhere (the same two
     /// shapes the BDD aggregation steps stage as stub binaries).
     ///
-    /// Neither body lets the sleeping process inherit the probe's stdout and
-    /// stderr pipes. `kill_on_drop` reaches only the direct child — the
-    /// interpreter — so a surviving grandchild holds its end of those pipes
-    /// open for the whole sleep, and tokio backs child stdio with blocking
-    /// reads on Windows: that read parks a blocking-pool thread until EOF and
-    /// stalls the runtime's drop long past the timeout under test. `exec`
-    /// replaces the shell outright, leaving no grandchild; `.cmd` has no
-    /// equivalent, so redirect both handles away from the pipes instead.
+    /// Neither body leaves a grandchild behind. `kill_on_drop` reaches only
+    /// the direct child — the interpreter — and a surviving grandchild keeps
+    /// its inherited copy of the probe's stdout/stderr pipes open for its
+    /// whole lifetime, so those pipes never reach EOF. Tokio backs child
+    /// stdio with blocking reads on Windows, and a read that cannot be
+    /// cancelled parks a blocking-pool thread that the runtime's drop then
+    /// waits out — far past the timeout under test. Redirecting the
+    /// grandchild's output is not enough: it only reassigns the std handles,
+    /// while the pipe handles stay inheritable and come along regardless.
+    /// So `exec` replaces the shell outright, and the `.cmd` spins inside
+    /// `cmd.exe` on the internal `for /l` (step 0 never reaches its bound)
+    /// rather than shelling out to `ping` or `timeout` for the delay.
     fn stage_hanging_binary(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         {
             let path = dir.join("hang.cmd");
-            std::fs::write(&path, "@ping -n 60 127.0.0.1 >nul 2>&1\r\n").unwrap();
+            std::fs::write(&path, "@for /l %%i in (1,0,2) do @rem\r\n").unwrap();
             path
         }
         #[cfg(not(windows))]
