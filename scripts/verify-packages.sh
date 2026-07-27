@@ -11,10 +11,10 @@
 # is_serial); the cameras, zwo-focuser, and phd2-guider never self-create a
 # config (see self_creates_config); phd2-guider's /health legitimately
 # answers 503 in the container (no PHD2), so its probe accepts 200 or 503.
-# svbony-camera ships no SDK at all (ADR-018) and its unit is gated on the
-# operator installing one, so it verifies that whole path: inert-on-install,
-# then rusty-photon-svbony-sdk-install, then the ordinary active + probe
-# contract (see is_sdk_gated).
+# svbony-camera links an SDK its package may not ship (ADR-018), so the
+# container walks the operator bootstrap — assert the blob is absent, run
+# the packaged rusty-photon-svbony-sdk-install, then the ordinary contract
+# (see needs_operator_sdk).
 # The zwo services additionally prove via ldd that each binary resolves
 # exactly its own bundled SDK blob through the RUNPATH (ADR-014), as does
 # svbony-camera for its operator-installed one; sentinel additionally
@@ -174,12 +174,13 @@ is_gated() {
 SVBONY_SDK=/usr/lib/rusty-photon/libSVBCameraSDK.so
 SVBONY_SDK_INSTALL=/usr/sbin/rusty-photon-svbony-sdk-install
 
-is_sdk_gated() {
-    # svbony-camera's binary NEEDs libSVBCameraSDK.so, which SVBony grants
-    # no license to redistribute (ADR-018), so the package ships the
-    # download-on-target helper instead and the unit is ConditionPathExists-
-    # gated on the blob. Fresh install → inert; after the helper → ordinary
-    # active service. This script verifies both halves.
+needs_operator_sdk() {
+    # svbony-camera links libSVBCameraSDK.so, which SVBony grants no license
+    # to redistribute (ADR-018) — unlike zwo-camera, whose MIT blob rides in
+    # the package, and unlike qhy-camera, which links its SDK statically and
+    # defers only firmware. So this is the one package whose service cannot
+    # start until the operator has run its download-on-target helper. The
+    # container walks that same bootstrap.
     case "$1" in
         svbony-camera) return 0 ;;
         *) return 1 ;;
@@ -371,28 +372,24 @@ for s in $SERVICES; do
         continue
     fi
 
-    if is_sdk_gated "$s"; then
-        # Half one: the package must NOT have shipped the SDK (ADR-018) and
-        # the unit must sit out the gap enabled-but-inert rather than
-        # restart-looping on a loader error.
+    if needs_operator_sdk "$s"; then
+        # First the ADR-018 guard: the package must have withheld the blob
+        # (a bundled one would make every other assertion here vacuous).
+        cx systemctl is-enabled --quiet "rusty-photon-$s" || fail "$s" "unit not enabled"
         cx test ! -e "$SVBONY_SDK" \
             || fail "$s" "package ships $SVBONY_SDK — ADR-018 forbids bundling it"
-        cx systemctl is-enabled --quiet "rusty-photon-$s" || fail "$s" "unit not enabled"
-        if cx systemctl is-active --quiet "rusty-photon-$s"; then
-            fail "$s" "unit is active without the SDK it links against"
-        fi
-        if cx systemctl is-failed --quiet "rusty-photon-$s"; then
-            fail "$s" "unit failed instead of waiting on ConditionPathExists=$SVBONY_SDK"
-        fi
-        # Half two: the documented operator recovery, run exactly as the
-        # postinst tells an operator to (this also proves the helper's
-        # pinned sha256 and per-arch blob names still resolve upstream).
-        echo "== $s: inert without the SDK; running $SVBONY_SDK_INSTALL"
+        # Then the documented bootstrap, run exactly as the postinst tells
+        # an operator to — which also proves the helper's pinned sha256 and
+        # per-arch blob names still resolve upstream. Deliberately no
+        # `systemctl start` afterwards: until the blob lands the binary
+        # cannot be loaded (exit 127) and the unit's Restart=on-failure is
+        # what retries, exactly as the serial drivers retry an absent
+        # device, so the ordinary active-within-30s check below is also the
+        # proof that a bootstrapped host heals itself with no operator step.
+        echo "== $s: installing the operator-supplied SDK ($SVBONY_SDK_INSTALL)"
         cx "$SVBONY_SDK_INSTALL" > /dev/null \
             || fail "$s" "$SVBONY_SDK_INSTALL failed"
         cx test -s "$SVBONY_SDK" || fail "$s" "helper did not install $SVBONY_SDK"
-        cx systemctl start "rusty-photon-$s" || fail "$s" "unit did not start once the SDK was installed"
-        # From here the ordinary active + probe contract applies.
     fi
 
     if is_serial "$s"; then

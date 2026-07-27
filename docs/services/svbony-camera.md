@@ -1221,23 +1221,37 @@ at `/usr/bin/rusty-photon-svbony-camera`, hardened
 `f266`) to the `rusty-photon` service group (never world-writable) plus the
 usbfs memory bump.
 
-**The unit is gated on the SDK** —
-`ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so` (issue
-#704). This package is the only one whose binary links a library it never
-ships, so before the operator has run the helper the binary cannot be
-loaded at all (`error while loading shared libraries: libSVBCameraSDK.so`,
-exit 127); ungated, systemd restarted that every 5 s forever and the
-nightly packaging run's lifecycle verification failed the service outright
-(it is not a config-gated service, so the ordinary "active + config +
-port" contract applied to it). Gated, a fresh install is inert and quiet
-until `rusty-photon-svbony-sdk-install` runs, then `systemctl start` works
-and every later boot starts it unattended. `scripts/verify-packages.sh`
-holds the whole sequence to that contract on both flavors: SDK absent from
-the payload (an ADR-018 regression guard), unit enabled-but-inert-and-not-
-failed, helper run exactly as the postinst instructs, unit active, Alpaca
-probe on port 11125, and an `ldd` proof that the freshly installed blob
-resolves through the RUNPATH — the "packaged-binary RUNPATH end-to-end"
-item real-hardware validation left open, now covered on every nightly.
+**The pre-bootstrap install retries; it does not gate** (issue #704). This
+is the only package whose binary links a library the package itself may not
+ship, so between `apt install` and the operator running
+`rusty-photon-svbony-sdk-install` the binary cannot be loaded at all
+(`error while loading shared libraries: libSVBCameraSDK.so`, exit 127).
+The unit's existing `Restart=on-failure`/`RestartSec=5` is exactly the
+right mechanism for that — the same shape as the serial drivers retrying
+an absent device — so the service picks the SDK up within seconds of the
+helper finishing, with no `systemctl` step and no
+`ConditionPathExists`-style gate to keep in sync. What was missing was the
+*verification*: `svbony-camera` is not a config-gated service, so
+`scripts/verify-packages.sh` held it to the ordinary "active + config +
+port" contract without ever installing the SDK, and every nightly failed
+there. It now walks the operator bootstrap instead, on both flavors: SDK
+absent from the payload (an ADR-018 regression guard), then
+`rusty-photon-svbony-sdk-install` run exactly as the postinst instructs,
+then unit active (that wait is also the proof that the retry heals
+itself — nothing issues a start), Alpaca probe on port 11125, and an `ldd`
+proof that the freshly installed blob resolves through the RUNPATH — the
+"packaged-binary RUNPATH end-to-end" item real-hardware validation left
+open, now covered on every nightly.
+
+Compared with the sibling services: `zwo-camera` bundles its MIT blob, so
+nothing is deferred; `qhy-camera` links `libqhyccd.a` **statically** and
+defers only camera *firmware*, so its service always starts and merely
+finds no device. SVBony is the only one where the deferred piece is a
+link-time `NEEDED` entry. Collapsing it into QHY's shape would mean
+`dlopen`ing the SDK behind a function-pointer table instead of linking it,
+so the service would start and report "SDK not installed" through the
+normal no-device path (and `doctor` could name it) — a `libsvbony-sys`
+rework worth its own issue, deliberately out of scope under this fix.
 
 Unlike `zwo-camera`, SVBony's SDK carries **no license grant at all** — not
 even QHY's ambiguous "proprietary, unresolved" status, but a header and

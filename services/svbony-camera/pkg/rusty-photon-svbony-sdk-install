@@ -235,7 +235,8 @@ echo ""
 echo "rusty-photon-svbony-camera resolves the SDK at runtime via its RUNPATH"
 echo "(/usr/lib/rusty-photon) — no ldconfig step needed."
 if [ -f "$ROOT/usr/lib/systemd/system/rusty-photon-svbony-camera.service" ]; then
-    echo "Its unit is gated on the SDK being present, so start it once now:"
-    echo "  systemctl start rusty-photon-svbony-camera"
-    echo "(it starts on its own from the next boot, and after every upgrade)."
+    echo "An installed rusty-photon-svbony-camera.service could not load it"
+    echo "until now and has been retrying; it starts serving within seconds,"
+    echo "with no systemctl needed (force it with: systemctl restart"
+    echo "rusty-photon-svbony-camera)."
 fi

@@ -1,14 +1,6 @@
 [Unit]
 Description=Rusty Photon svbony-camera - ASCOM Alpaca Camera for SVBony cameras (port 11125)
 After=network.target
-# The SVBony SDK is never bundled (ADR-018, no license grant): the operator
-# installs it with rusty-photon-svbony-sdk-install, which drops the blob in
-# this binary's RUNPATH dir. Until then the binary cannot even be loaded
-# (NEEDED libSVBCameraSDK.so -> exit 127), so gate the unit on the blob
-# instead of restart-looping a loader error at RestartSec forever. The unit
-# stays enabled throughout: once the helper has run it starts on the next
-# boot by itself (the helper prints the systemctl start for this one).
-ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so
 
 [Service]
 Type=simple

@@ -379,15 +379,11 @@ to `/usr/lib/rusty-photon/` (the package's binary is linked with the
 matching RUNPATH, mirroring `zwo-camera`'s mechanism). Offline installs
 work; the camera just stays unusable until the helper has run.
 
-The unit is gated on that library
-(`ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so`), so
-before the helper runs it sits inert instead of restart-looping on a
-loader error. Start it once after bootstrapping — the helper prints the
-command — and every later boot starts it unattended:
-
-```sh
-sudo systemctl start rusty-photon-svbony-camera
-```
+Until it has, the service cannot load the SDK and systemd keeps retrying it
+(a loader error every few seconds in `journalctl -u
+rusty-photon-svbony-camera`) — that retry is the recovery path: the service
+starts serving within seconds of the helper finishing, with no `systemctl`
+step needed.
 
 The same helper is the supported bootstrap on a machine with **no**
 `rusty-photon-svbony-camera` package (a developer box running the binary

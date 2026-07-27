@@ -22,6 +22,10 @@ toml_section() { # $1=file $2=exact table name
 
 [ -f packaging/postinst.common ] || { echo "check-pkg-assets: run from the repo root" >&2; exit 2; }
 
+# The build script carries the SDK pins and the RUNPATH every package's
+# binaries are linked with; several checks below cross-reference it.
+bp=scripts/build-packages.sh
+
 for pkgdir in services/*/pkg; do
     [ -d "$pkgdir" ] || continue
     svc=$(basename "$(dirname "$pkgdir")")
@@ -60,14 +64,6 @@ for pkgdir in services/*/pkg; do
             sky-survey-camera|plate-solver|calibrator-flats|session-runner)
                 grep -q "^ConditionPathExists=/var/lib/rusty-photon/\.config/rusty-photon/$svc\.json\$" "$unit" \
                     || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
-                ;;
-            # The one package whose binary links an SDK it never ships
-            # (ADR-018): without the operator-installed blob the binary
-            # cannot be loaded at all, so the unit gates on it instead of
-            # restart-looping exit 127.
-            svbony-camera)
-                grep -q '^ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK\.so$' "$unit" \
-                    || err "$svc: unit must gate on ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so"
                 ;;
         esac
     done
@@ -241,12 +237,15 @@ for pkgdir in services/*/pkg; do
             if [ ! -f "$helper" ]; then
                 err "$svc: missing pkg/rusty-photon-svbony-sdk-install"
             else
-                # The helper installs the very file the unit gates on; a
-                # drift between the two would make the service permanently
-                # inert on a correctly bootstrapped host.
+                # The helper's install directory must be the RUNPATH
+                # build-packages.sh bakes into the binary: the operator
+                # installs the blob at runtime, and nothing else makes the
+                # loader look there (that directory is deliberately off
+                # ldconfig's scan path — ADR-013/ADR-018).
+                rpath=$(sed -n 's/.*-Wl,-rpath,\([^"]*\)".*/\1/p' "$bp" | head -1)
                 grep -q '^DEST="\$DEST_DIR/libSVBCameraSDK\.so"$' "$helper" \
-                    && grep -q '^DEST_DIR="\$ROOT/usr/lib/rusty-photon"$' "$helper" \
-                    || err "$svc: helper must install /usr/lib/rusty-photon/libSVBCameraSDK.so (the unit's ConditionPathExists)"
+                    && grep -q "^DEST_DIR=\"\\\$ROOT$rpath\"\$" "$helper" \
+                    || err "$svc: helper must install libSVBCameraSDK.so into build-packages.sh's RUNPATH ($rpath)"
                 # Unpackaged-host device access (issue #710). The rule the
                 # helper writes must carry the same USB VID as the packaged
                 # one, must NOT reuse its filename (an /etc file of the same
@@ -281,7 +280,6 @@ done
 
 # The QHY SDK pins (version + archive sha256s) live in two shipped places
 # (ADR-013); they must match.
-bp=scripts/build-packages.sh
 fw=services/qhy-camera/pkg/rusty-photon-qhy-firmware-install
 if [ -f "$bp" ] && [ -f "$fw" ]; then
     v1=$(sed -n 's/^QHY_SDK_VERSION="\(.*\)"$/\1/p' "$bp" | head -1)

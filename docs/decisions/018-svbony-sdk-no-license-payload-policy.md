@@ -63,17 +63,22 @@ mechanical delivery differs in one respect worth flagging (see
    `libSVBCameraSDK.so` to `/usr/lib/rusty-photon/` — the same model as
    QHY's firmware-install helper: package postinst prints a pointer but
    never downloads (offline installs must not fail).
-   **The unit is gated on the helper's output** (issue #704, 2026-07-26):
-   `ConditionPathExists=/usr/lib/rusty-photon/libSVBCameraSDK.so`. Unlike
-   QHY — whose SDK *is* bundled and whose missing piece is only camera
-   firmware, so its service runs and merely finds no device — this
-   binary's `NEEDED libSVBCameraSDK.so` cannot be resolved at all without
-   the helper, so an ungated unit spends every 5 s restarting into exit
-   127. Gated, a fresh install is inert until the operator bootstraps,
-   then starts normally (and by itself from the next boot).
-   `scripts/verify-packages.sh` verifies exactly that sequence on both
-   package flavors — inert, helper, active, Alpaca probe, plus an `ldd`
-   proof that the installed blob resolves through the RUNPATH.
+   **Where this bites harder than QHY's** (issue #704, 2026-07-26): QHY
+   links its SDK *statically* and defers only camera firmware, so a
+   qhy-camera install always starts and merely finds no device. SVBony's
+   SDK exists only as a `.so`, so the deferred piece is a link-time
+   `NEEDED` entry: until the helper runs, the loader kills the binary
+   with exit 127 and the unit's `Restart=on-failure`/`RestartSec=5`
+   retries — the same shape as a serial driver retrying an absent device,
+   and self-healing within seconds of the helper finishing, with no
+   operator `systemctl` step. `scripts/verify-packages.sh` walks that
+   whole bootstrap on both package flavors — blob absent from the payload,
+   helper, service active, Alpaca probe, plus an `ldd` proof that the
+   installed blob resolves through the RUNPATH. Removing the asymmetry
+   entirely would mean `dlopen`ing the SDK instead of linking it, so the
+   service starts and reports "SDK not installed" like any other missing
+   device; that is a libsvbony-sys rework worth its own issue, deliberately
+   out of scope here.
 3. **udev rules are authored by us**, group-scoped
    (`GROUP="rusty-photon", MODE="0660"`, never `MODE="0666"`) per
    [ADR-013 §3](013-native-sdk-payload-policy.md), installed under
@@ -160,10 +165,10 @@ mechanical delivery differs in one respect worth flagging (see
   precedent's risk posture.
 - SVBony operators run one extra documented command
   (`rusty-photon-svbony-sdk-install`) before first camera use, exactly like
-  QHY operators today; ZWO operators still need nothing extra. Because the
-  unit is gated on that command's output, the pre-bootstrap state is a
-  quiet inert unit rather than a restart loop — at the cost of one
-  `systemctl start` on the install boot (the helper prints it).
+  QHY operators today; ZWO operators still need nothing extra. Unlike QHY's
+  case the pre-bootstrap service cannot start at all, so it restart-loops on
+  a loader error until the helper runs — visible in the journal, harmless,
+  and self-healing (no `systemctl` step) the moment the blob lands.
 - The helper is the single bootstrap step on *both* kinds of host: on a
   packaged target it installs only the SDK (the package's udev rule is
   already in force), on a developer box it installs the SDK and a udev
