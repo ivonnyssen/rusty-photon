@@ -346,18 +346,31 @@ mod tests {
     /// Stage an executable that hangs far longer than any test timeout: a
     /// `.cmd` on Windows, a `chmod +x` shell script elsewhere (the same two
     /// shapes the BDD aggregation steps stage as stub binaries).
+    ///
+    /// Neither body leaves a grandchild behind. `kill_on_drop` reaches only
+    /// the direct child — the interpreter — and a surviving grandchild keeps
+    /// its inherited copy of the probe's stdout/stderr pipes open for its
+    /// whole lifetime, so those pipes never reach EOF. Tokio backs child
+    /// stdio with blocking reads on Windows, and a read that cannot be
+    /// cancelled parks a blocking-pool thread that the runtime's drop then
+    /// waits out — far past the timeout under test. Redirecting the
+    /// grandchild's output is not enough: it only reassigns the std handles,
+    /// while the pipe handles stay inheritable and come along regardless.
+    /// So `exec` replaces the shell outright, and the `.cmd` spins inside
+    /// `cmd.exe` on the internal `for /l` (step 0 never reaches its bound)
+    /// rather than shelling out to `ping` or `timeout` for the delay.
     fn stage_hanging_binary(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         {
             let path = dir.join("hang.cmd");
-            std::fs::write(&path, "@ping -n 60 127.0.0.1 > nul\r\n").unwrap();
+            std::fs::write(&path, "@for /l %%i in (1,0,2) do @rem\r\n").unwrap();
             path
         }
         #[cfg(not(windows))]
         {
             use std::os::unix::fs::PermissionsExt;
             let path = dir.join("hang.sh");
-            std::fs::write(&path, "#!/bin/sh\nsleep 60\n").unwrap();
+            std::fs::write(&path, "#!/bin/sh\nexec sleep 60\n").unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             path
         }
