@@ -3794,9 +3794,7 @@ dependencies = [
 name = "qhyccd-rs"
 version = "0.1.9"
 dependencies = [
- "derive_more",
  "libqhyccd-sys",
- "mockall",
  "parking_lot",
  "rand 0.10.2",
  "rayon",

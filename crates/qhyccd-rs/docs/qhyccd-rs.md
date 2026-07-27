@@ -107,15 +107,16 @@ classDiagram
 
     class Camera {
         -String id
-        -CameraBackend backend
-        +new(id) Camera
-        +new_simulated(config) Camera
+        -Arc~HandleCell~ handle «real, cfg»
+        -Arc~RwLock~SimulatedCameraState~~ state «sim, cfg»
+        +new(id) Camera «real»
+        +new_simulated(config) Camera «sim»
         +open() Result
         +close() Result
         +set_stream_mode(mode) Result
         +get_ccd_info() Result~CCDChipInfo~
         +start_single_frame_exposure() Result
-        +get_single_frame() Result~ImageData~
+        +get_single_frame(buf) Result~FrameInfo~
     }
 
     class FilterWheel {
@@ -181,45 +182,59 @@ The `Camera` struct represents a single camera device and provides all control f
 classDiagram
     class Camera {
         -String id
-        -CameraBackend backend
+        -Arc~HandleCell~ handle «cfg not simulation»
+        -Arc~RwLock~SimulatedCameraState~~ state «cfg simulation»
     }
 
-    class CameraBackend {
-        <<enumeration>>
-        Real
-        Simulated
+    class HandleCell {
+        -RwLock~Option~QHYCCDHandle~~ inner
+        +Drop closes on last strong ref
     }
 
-    class RealBackend {
-        -Arc~RwLock~Option~QHYCCDHandle~~ handle
-    }
-
-    class SimulatedBackend {
-        -Arc~RwLock~SimulatedCameraState~ state
-    }
-
-    Camera *-- CameraBackend
-    CameraBackend <|-- RealBackend
-    CameraBackend <|-- SimulatedBackend
+    Camera ..> HandleCell : real build only
+    Camera ..> SimulatedCameraState : sim build only
 ```
 
-**Backend Pattern:**
+**Backend Pattern (compile-time `#[cfg]` fork):**
 
-The camera uses an enum-based backend pattern to support both real hardware and simulation:
+The real/simulated backend is selected at **compile time** by the `simulation`
+feature, matching the sibling `zwo-rs` / `svbony-rs` crates. Exactly one backend
+field exists per build — `handle` without the feature, `state` with it:
 
 ```rust
-enum CameraBackend {
-    Real {
-        handle: Arc<RwLock<Option<QHYCCDHandle>>>,
-    },
+pub struct Camera {
+    id: String,
+    #[cfg(not(feature = "simulation"))]
+    handle: Arc<HandleCell>, // shared open-handle cell; Drop-closes on last ref
     #[cfg(feature = "simulation")]
-    Simulated {
-        state: Arc<RwLock<SimulatedCameraState>>,
-    },
+    state: Arc<RwLock<SimulatedCameraState>>,
 }
 ```
 
-Every public method on `Camera` matches on the backend and dispatches to either FFI calls or simulated state updates. This provides a transparent interface where the same code works for both real and simulated cameras.
+Every public method on `Camera` forks with two `#[cfg]` blocks — the real block
+calls `libqhyccd-sys` FFI (via `crate::sys`), the simulation block updates
+`SimulatedCameraState`. The FFI block is compiled **out** entirely under
+`simulation`, so a simulated build has no FFI arm to test (as in zwo/svbony) and
+the hard-to-cover FFI path never counts as uncovered.
+
+**FFI-arm behaviour the simulation does not reproduce is hardware-verified, not
+sim-verified.** Because the real arm is compiled out under `simulation`, any SDK
+return semantics the simulated backend does not model are validated only against
+physical hardware / ConformU-on-real. Concretely: `ExpQHYCCDSingleFrame` can
+return `QHYCCD_READ_DIRECTLY` (`0x2001`) rather than `QHYCCD_SUCCESS` on the
+cameras/modes where the frame is already captured — a *success* return meaning
+"read it immediately." `start_single_frame_exposure` accepts it as success
+(matching INDI's indi-qhy; only `QHYCCD_ERROR` is a failure), but the
+`simulation` arm always succeeds, so no test in this crate exercises that branch.
+When touching an FFI arm, treat the SDK's non-`SUCCESS`/non-`ERROR` returns as a
+hardware-only concern the suite will not catch.
+
+This replaced an earlier **runtime `CameraBackend` enum** (both arms always
+compiled) plus a `#[automock]` FFI-mock test layer (`src/mocks.rs`), removed in
+Phase 4 of the [convention-alignment plan](../../../docs/plans/qhyccd-convention-alignment.md).
+The backend stays **`Arc`-shared** (not a single-owner `Mutex` like zwo's
+`SimState`) because a QHY filter wheel drives the *same* camera handle, so
+`Camera: Clone` + handle-sharing with its `FilterWheel` is SDK-forced (Phase 1).
 
 **Camera Operations:**
 
@@ -257,12 +272,12 @@ sequenceDiagram
     Cam->>Backend: Start exposure
     Backend->>SDK: ExpQHYCCDSingleFrame()
 
-    App->>Cam: get_single_frame()
-    Cam->>Backend: Get frame
-    Backend->>SDK: GetQHYCCDSingleFrame()
-    SDK-->>Backend: Image data
-    Backend-->>Cam: ImageData
-    Cam-->>App: Ok(ImageData)
+    App->>Cam: get_single_frame(buf)
+    Cam->>Backend: Get frame (into caller's buf)
+    Backend->>SDK: GetQHYCCDSingleFrame(buf)
+    SDK-->>Backend: pixels written into buf
+    Backend-->>Cam: FrameInfo
+    Cam-->>App: Ok(FrameInfo)
 
     App->>Cam: close()
     Cam->>Backend: Close
@@ -361,8 +376,7 @@ classDiagram
         +u32 height
     }
 
-    class ImageData {
-        +Vec~u8~ data
+    class FrameInfo {
         +u32 width
         +u32 height
         +u32 bits_per_pixel
@@ -381,16 +395,15 @@ classDiagram
         +u32 subday
     }
 
-    class Control {
+    class ControlType {
         <<enumeration>>
-        Brightness
-        Contrast
         Gain
         Offset
         Exposure
         Cooler
         CfwPort
-        +85 more...
+        +26 more named
+        Other(i32)
     }
 
     class StreamMode {
@@ -399,7 +412,7 @@ classDiagram
         LiveMode
     }
 
-    class BayerMode {
+    class BayerPattern {
         <<enumeration>>
         GBRG
         GRBG
@@ -417,25 +430,25 @@ Defines rectangular regions on the sensor. Used for:
 - Effective imaging area via `get_effective_area()`
 - Overscan area via `get_overscan_area()`
 
-**ImageData:**
-Contains captured image data along with metadata. The `data` field is a flat `Vec<u8>` containing raw pixel data. The structure depends on `bits_per_pixel` (8 or 16) and `channels` (1 for mono, 3 for debayered color).
+**FrameInfo:**
+Describes a downloaded frame's dimensions (`width`, `height`, `bits_per_pixel`, `channels`). The pixel bytes are **not** carried here — `get_single_frame` / `get_live_frame` write them into a **caller-owned `&mut [u8]`** buffer (the `zwo-rs` / `svbony-rs` convention, since Phase 5), returning `FrameInfo` for the layout. The valid byte count is the frame's own size; the pixel structure depends on `bits_per_pixel` (8 or 16) and `channels` (1 for mono, 3 for debayered color). A buffer shorter than the frame is rejected with `QHYError::BufferTooSmall` before any pixels are written.
 
-**Control:**
-Enum with 92 variants representing camera parameters. Each variant corresponds to a control ID in the QHYCCD SDK (values 0-86 plus 1024-1029). Controls are organized into categories:
-- Basic imaging: Gain, Offset, Exposure, Brightness, Contrast
-- Color: Wbr, Wbb, Wbg (white balance)
-- Temperature: Cooler, CurTemp, CurPWM, ManualPWM
+**ControlType:**
+A small **semantic subset** of the SDK's `CONTROL_ID`s — the ~31 controls actually referenced across the workspace — plus an `Other(i32)` escape hatch carrying the raw id for any control not named. The discriminant values still match the SDK's own `CONTROL_ID` numbering, exposed via `to_raw` (renamed from the former exhaustive `Control` enum in Phase 2 of the convention-alignment plan). Named controls include:
+- Basic imaging: Gain, Offset, Exposure, Brightness, Speed, TransferBit, UsbTraffic
+- Color: Wbr, Wbb, Wbg (white balance), CamColor, CamIsColor
+- Temperature/cooler: Cooler, CurTemp, CurPWM, ManualPWM
 - Binning modes: CamBin1x1mode through CamBin8x8mode
-- Capabilities: Various Cam* controls indicating feature support
+- Frame / bit modes: CamSingleFrameMode, CamLiveVideoMode, Cam8bits, Cam16bits, OutputDataActualBits
 - Filter wheel: CfwPort, CfwSlotsNum
-- Advanced: UsbTraffic, Speed, TransferBit, DDR, GPS, Humidity, Pressure, etc.
+- Misc capabilities: CamMechanicalShutter, DDR
 
 **StreamMode:**
 Two imaging modes:
 - `SingleFrameMode` (0): Long exposure mode for single frames
 - `LiveMode` (1): Continuous video streaming
 
-**BayerMode:**
+**BayerPattern:**
 Color filter array patterns for color cameras. Implements `TryFrom<u32>` for conversion from SDK values.
 
 #### Error Handling
@@ -444,24 +457,26 @@ Color filter array patterns for color cameras. Implements `TryFrom<u32>` for con
 classDiagram
     class QHYError {
         <<enumeration>>
-        InitSDKError
-        OpenCameraError
-        SetParameterError
-        GetParameterError
-        GetSingleFrameError
-        +39 more variants...
+        Sdk
+        CameraNotOpen
+        GetParameter
+        IsControlAvailable
+        GetMinMaxStep
+        BufferTooSmall
+        InvalidUtf8
+        InvalidCameraId
     }
 
-    note for QHYError "Uses thiserror for typed error definitions"
+    note for QHYError "Flat enum (thiserror). Sdk { op } carries a &'static operation label; the QHY ABI exposes no error codes"
 ```
 
 **Error Design:**
 
-The `QHYError` enum uses `thiserror` to derive the `Error` trait. Each variant includes an `error_code` field when applicable, and some include the `Control` that failed; foreign errors are captured via `#[from]` (`InvalidUtf8`, `InvalidCameraId`). The library exports a `Result<T>` alias (`Result<T, QHYError>`) and uses it as the return type for all fallible operations.
+The `QHYError` enum uses `thiserror` and is deliberately **flat**, matching the sibling `zwo-rs` / `svbony-rs` crates. Because most QHY SDK calls return a bare `u32` (`0` == success, `u32::MAX` == error) with **no discriminating error codes**, a failed plain call is reported as `Sdk { op }`, carrying a `&'static` operation label rather than a per-call-site variant. The remaining variants capture the genuinely-distinct cases: `CameraNotOpen`; the control-scoped `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` (which carry the `ControlType` that failed); `BufferTooSmall { needed, got }` (the caller-owned frame buffer is shorter than the frame — detected before the SDK write); and the `#[from]` foreign errors `InvalidUtf8` / `InvalidCameraId`. The library exports a `Result<T>` alias (`Result<T, QHYError>`) and a `check(status, op)` helper — the analogue of zwo's `asi_check` / svbony's `svb_check` — that funnels the void SDK calls; both are re-exported at the crate root alongside `pub use libqhyccd_sys as sys;`.
 
 Error handling flow:
-1. FFI call returns error code (typically `QHYCCD_ERROR` = `u32::MAX`)
-2. Rust wrapper creates the appropriate `QHYError` variant
+1. FFI call returns its status word (`u32`; `QHYCCD_SUCCESS` == `0`, `QHYCCD_ERROR` == `u32::MAX`)
+2. `check(status, op)` maps a non-zero status to `QHYError::Sdk { op }` (value-returning calls build the variant directly)
 3. Error is logged via `tracing::error!`
 4. The `QHYError` propagates to the caller via `?`
 
@@ -624,17 +639,17 @@ sequenceDiagram
     ImgGen-->>SimState: image_data
     SimState->>SimState: Store captured_image and metadata
 
-    App->>Camera: get_single_frame()
+    App->>Camera: get_single_frame(buf)
     Camera->>SimState: is_exposure_complete()?
     SimState-->>Camera: true
-    Camera->>SimState: Take captured_image
-    SimState-->>Camera: ImageData
-    Camera-->>App: Ok(ImageData)
+    Camera->>SimState: Take captured_image (copy into buf)
+    SimState-->>Camera: FrameInfo
+    Camera-->>App: Ok(FrameInfo)
 ```
 
 #### SimulatedCameraConfig
 
-Located in `src/simulation/config.rs`. Provides configuration for simulated cameras using the builder pattern.
+Located in `src/simulation.rs`. Provides configuration for simulated cameras using the builder pattern.
 
 **Structure:**
 - `id`: Camera identifier string
@@ -642,10 +657,10 @@ Located in `src/simulation/config.rs`. Provides configuration for simulated came
 - `chip_info`: Sensor specifications
 - `effective_area`: Imaging area
 - `overscan_area`: Overscan region
-- `supported_controls`: HashMap of Control -> (min, max, step)
+- `supported_controls`: HashMap of ControlType -> (min, max, step)
 - `filter_wheel_slots`: Number of filter positions (0 = no wheel)
 - `has_cooler`: Cooler availability
-- `bayer_mode`: Color pattern (None for mono)
+- `bayer_pattern`: Color pattern (None for mono)
 - `readout_modes`: List of (name, (width, height))
 - `camera_type`: Type code
 - `firmware_version`: Version string
@@ -672,7 +687,7 @@ Mimics a QHY178M monochrome camera:
 
 #### SimulatedCameraState
 
-Located in `src/simulation/state.rs`. Maintains runtime state for simulated cameras.
+Located in `src/simulation.rs`. Maintains runtime state for simulated cameras.
 
 **State Fields:**
 - `config`: Reference to configuration
@@ -733,7 +748,7 @@ This design prevents double-binning issues and ensures the simulation generates 
 
 #### ImageGenerator
 
-Located in `src/simulation/image_generator.rs`. Generates test images for simulated captures.
+Located in `src/simulation.rs`. Generates test images for simulated captures.
 
 **Pattern Types:**
 - `Gradient`: Linear gradient with noise
@@ -758,7 +773,7 @@ Uses the `rand` crate to generate random noise and `rayon` for parallel processi
 
 ## Control System
 
-The library provides extensive control over camera parameters through the `Control` enum with 92 control types.
+The library provides extensive control over camera parameters through the `ControlType` enum — a semantic subset of the SDK's `CONTROL_ID`s plus an `Other(i32)` escape hatch.
 
 ### Control Categories
 
@@ -816,21 +831,21 @@ sequenceDiagram
     participant Camera
     participant Backend
 
-    App->>Camera: is_control_available(Control::Gain)
+    App->>Camera: is_control_available(ControlType::Gain)
     Camera->>Backend: Check availability
     Backend-->>Camera: Some(100.0) or None
     Camera-->>App: Option<f64>
 
     opt Control is available
-        App->>Camera: get_parameter_min_max_step(Control::Gain)
+        App->>Camera: get_parameter_min_max_step(ControlType::Gain)
         Camera->>Backend: Get range
         Backend-->>App: (0.0, 100.0, 1.0)
 
-        App->>Camera: set_parameter(Control::Gain, 50.0)
+        App->>Camera: set_parameter(ControlType::Gain, 50.0)
         Camera->>Backend: Set value
         Backend-->>App: Ok()
 
-        App->>Camera: get_parameter(Control::Gain)
+        App->>Camera: get_parameter(ControlType::Gain)
         Camera->>Backend: Get current value
         Backend-->>App: Ok(50.0)
     end
@@ -838,15 +853,15 @@ sequenceDiagram
 
 **Control Checking:**
 
-The `is_control_available()` method returns `Option<f64>`:
-- `Some(value)`: Control is supported, with the given default/current value
-- `None`: Control is not supported by this camera
+The `is_control_available()` method returns `Option<u32>`:
+- `Some(value)`: control is supported (the `u32` is the SDK's support flag, or the Bayer mode for `CamColor`)
+- `None`: control is not supported by this camera
 
 For real hardware, this calls `IsQHYCCDControlAvailable()`. For simulation, it checks the `supported_controls` HashMap.
 
 **Parameter Operations:**
 
-All parameter operations use the `Control` enum:
+All parameter operations use the `ControlType` enum:
 1. Check availability with `is_control_available()`
 2. Optionally get valid range with `get_parameter_min_max_step()`
 3. Set value with `set_parameter(control, value)`
@@ -879,9 +894,9 @@ sequenceDiagram
         Camera-->>App: remaining_time_us
     end
 
-    App->>Camera: get_single_frame()
+    App->>Camera: get_single_frame(buf)
     Note over Camera: Wait for exposure to complete
-    Camera-->>App: ImageData
+    Camera-->>App: FrameInfo (pixels in buf)
 ```
 
 **Single Frame Workflow:**
@@ -889,10 +904,10 @@ sequenceDiagram
 1. Set stream mode to `SingleFrameMode`
 2. Initialize camera with `init()`
 3. Configure ROI, binning, bit depth as needed
-4. Set exposure time via `set_parameter(Control::Exposure, microseconds)`
+4. Set exposure time via `set_parameter(ControlType::Exposure, microseconds)`
 5. Call `start_single_frame_exposure()` to begin
 6. Optionally poll with `get_remaining_exposure_us()`
-7. Call `get_single_frame()` to retrieve data (blocks if not ready)
+7. Allocate a `&mut [u8]` of `get_image_size()` bytes and call `get_single_frame(&mut buf)` to retrieve the frame (blocks if not ready; pixels land in `buf`, dimensions in the returned `FrameInfo`)
 
 For simulation, the exposure timing is tracked with `Instant` and `exposure_duration_us`. The simulated camera pre-generates image data when `start_single_frame_exposure()` is called, making it available for later retrieval.
 
@@ -930,8 +945,8 @@ sequenceDiagram
     App->>Camera: begin_live()
 
     loop Continuous capture
-        App->>Camera: get_live_frame()
-        Camera-->>App: ImageData
+        App->>Camera: get_live_frame(buf)
+        Camera-->>App: FrameInfo (pixels in buf)
         Note over App: Display frame
     end
 
@@ -972,23 +987,24 @@ graph TB
 
 **Thread Safety Implementation:**
 
-The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state:
-- `CameraBackend::Real`: Contains `Arc<RwLock<Option<QHYCCDHandle>>>`
-- `CameraBackend::Simulated`: Contains `Arc<RwLock<SimulatedCameraState>>`
+The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state — the
+compile-time-selected field (see *Backend Pattern* above):
+- Real build (`#[cfg(not(feature = "simulation"))]`): `handle: Arc<HandleCell>`, wrapping `RwLock<Option<QHYCCDHandle>>`
+- Sim build (`#[cfg(feature = "simulation")]`): `state: Arc<RwLock<SimulatedCameraState>>`
 
 `parking_lot::RwLock` is used (not `std::sync::RwLock`) because it cannot be poisoned: `read()`/`write()` return the guard directly, so lock acquisition is infallible and no panic in another thread can wedge later lock users. This matches the consuming camera services, which already use `parking_lot`.
 
-`Camera::clone()` is cheap - it clones the backend which clones the `Arc`, incrementing the reference count. Multiple clones share the same underlying state.
+`Camera::clone()` is cheap - it clones the `Arc` backend field, incrementing the reference count. Multiple clones (and a camera's `FilterWheel`) share the same underlying state.
 
 **Locking Strategy:**
 
-The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it reports as `CameraNotOpenError` — the accurate cause, matching the simulation backend (rather than a misleading operation-specific error):
+The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it reports as `CameraNotOpen` — the accurate cause, matching the simulation backend (rather than a misleading operation-specific error):
 ```rust
 macro_rules! read_lock {
     ($var:expr) => {
         match *$var.read() {
             Some(handle) => Ok(handle.ptr),
-            None => Err(QHYError::CameraNotOpenError),
+            None => Err(QHYError::CameraNotOpen),
         }
     }
 }
@@ -1013,7 +1029,7 @@ Multiple threads can safely:
 ### Basic Camera Operation
 
 ```rust
-use qhyccd_rs::{Sdk, StreamMode, Control};
+use qhyccd_rs::{Sdk, StreamMode, ControlType};
 
 // Initialize SDK and find cameras
 let sdk = Sdk::new()?;
@@ -1029,12 +1045,13 @@ let chip_info = camera.get_ccd_info()?;
 println!("Sensor: {}x{} pixels", chip_info.image_width, chip_info.image_height);
 
 // Set exposure
-camera.set_parameter(Control::Exposure, 1_000_000.0)?; // 1 second
+camera.set_parameter(ControlType::Exposure, 1_000_000.0)?; // 1 second
 
-// Capture image
+// Capture image into a caller-owned buffer
 camera.start_single_frame_exposure()?;
-let image = camera.get_single_frame()?;
-println!("Captured {} bytes", image.data.len());
+let mut buf = vec![0u8; camera.get_image_size()?];
+let info = camera.get_single_frame(&mut buf)?;
+println!("Captured {}x{} frame ({} bytes)", info.width, info.height, buf.len());
 
 camera.close()?;
 ```
@@ -1076,7 +1093,7 @@ fw.close()?;
         .with_model("Custom Model")
         .with_filter_wheel(5)
         .with_cooler()
-        .with_color(BayerMode::RGGB);
+        .with_color(BayerPattern::RGGB);
     sdk.add_simulated_camera(config);
 
     // Use identically to real hardware
@@ -1092,14 +1109,14 @@ fw.close()?;
 use std::time::Duration;
 
 // Check if cooler is available
-if camera.is_control_available(Control::Cooler).is_some() {
+if camera.is_control_available(ControlType::Cooler).is_some() {
     // Set target temperature to -10°C
-    camera.set_parameter(Control::Cooler, -10.0)?;
+    camera.set_parameter(ControlType::Cooler, -10.0)?;
 
     // Monitor cooling
     loop {
-        let current = camera.get_parameter(Control::CurTemp)?;
-        let pwm = camera.get_parameter(Control::CurPWM)?;
+        let current = camera.get_parameter(ControlType::CurTemp)?;
+        let pwm = camera.get_parameter(ControlType::CurPWM)?;
         println!("Temp: {:.1}°C, PWM: {:.0}%", current, pwm / 255.0 * 100.0);
 
         if (current - (-10.0)).abs() < 0.5 {
@@ -1144,9 +1161,15 @@ Each `with_*()` method consumes `self` and returns `Self`, enabling method chain
 
 `FilterWheel` wraps `Camera` to provide a specialized interface for filter wheel operations. This reflects the hardware architecture where filter wheels are connected to and controlled through cameras. The wrapper delegates all operations to the underlying camera's parameter API.
 
-### Strategy Pattern
+### Compile-time backend selection
 
-`CameraBackend` enum implements the strategy pattern, allowing runtime selection between real hardware and simulation backends. Every public `Camera` method pattern-matches on the backend and dispatches to the appropriate implementation. This provides complete transparency - user code works identically for both backends.
+The real vs. simulated backend is chosen at **compile time** by the `simulation`
+feature (the sibling `zwo-rs` / `svbony-rs` convention). Every public `Camera`
+method forks with two `#[cfg]` blocks, one calling `libqhyccd-sys` FFI and one
+updating `SimulatedCameraState`; only the selected block is compiled. User code
+works identically against either build. This replaced an earlier runtime
+`CameraBackend` enum + `#[automock]` FFI-mock test layer (removed in Phase 4 of the
+convention-alignment plan).
 
 ### Resource Acquisition Is Initialization (RAII)
 
@@ -1156,7 +1179,7 @@ The `Sdk` struct follows RAII principles:
 - Ensures proper cleanup even during panics
 - Prevents resource leaks
 
-Individual cameras do not implement `Drop` for `CloseQHYCCD()` because users need explicit control over connection lifetime.
+The shared real handle cell (`HandleCell`, real build only) *also* follows RAII: its `Drop` calls `CloseQHYCCD()` when the last strong reference (the `Camera` and any clones, including its `FilterWheel`) is released, so a dropped-open camera no longer leaks the handle. `Sdk::drop` additionally closes every still-open camera handle *before* `ReleaseQHYCCDResource()`, per the SDK's documented Close-then-Release ordering (Phase 1 of the convention plan).
 
 ### Interior Mutability
 
@@ -1189,18 +1212,20 @@ graph TD
 
 **Error Flow:**
 
-1. FFI call returns error code
-2. Check against `QHYCCD_SUCCESS` or `QHYCCD_ERROR`
-3. Create typed `QHYError` variant with error code
+1. FFI call returns its status word (or a value with a `u32::MAX` sentinel)
+2. `check(status, op)` (for void calls) or an explicit sentinel check (for value-returning calls) detects failure against `QHYCCD_SUCCESS` / `QHYCCD_ERROR`
+3. Build the typed `QHYError` (`Sdk { op }`, or a control-scoped variant)
 4. Log error with `tracing::error!(?error)`
 5. Propagate with the `?` operator (foreign errors convert via `#[from]`)
 
 **Error Types:**
 
-All 44 `QHYError` variants follow the pattern:
-- Descriptive name (e.g., `InitSDKError`, `GetParameterError`)
-- `error_code` field when applicable
-- Some include context (e.g., `GetParameterError` includes the `Control` that failed)
+`QHYError` is a flat 8-variant enum:
+- `Sdk { op }` — any plain SDK success/fail call, tagged with a `&'static` operation label (the QHY ABI carries no error code to preserve)
+- `CameraNotOpen`
+- `GetParameter` / `IsControlAvailable` / `GetMinMaxStep` — carry the `ControlType` that failed
+- `BufferTooSmall { needed, got }` — the caller-owned frame buffer is shorter than the frame (Phase 5)
+- `InvalidUtf8` / `InvalidCameraId` — foreign errors captured via `#[from]`
 - Formatted error messages using `thiserror`
 
 **Logging:**
@@ -1211,18 +1236,19 @@ Every error path includes a `tracing::error!` call with the error details. This 
 
 ### Unit Tests
 
-Located in `src/tests/`:
-- `sdk_tests.rs`: SDK initialization and enumeration
-- `camera_tests.rs`: Camera operations
-- `filter_wheel_tests.rs`: Filter wheel operations
+In-source `#[cfg(test)]` modules, run against the **simulated** backend (there is
+**no FFI-mock layer** — the real FFI arm is `#[cfg]`'d out under `simulation`, as in
+`zwo-rs` / `svbony-rs`):
+- `src/error.rs`: `QHYError` construction (incl. `BufferTooSmall`), the `check` helper, `Display`, and the `#[from]` conversions
+- `src/camera.rs`: `ControlType` ⇄ raw `CONTROL_ID` round-trip
+- `src/types.rs`: `BayerPattern::try_from`
+- `src/simulation.rs`: `SimulatedCameraState` and `ImageGenerator` behaviour (state management, timing, parameter handling)
 
-Tests use the `mockall` crate to mock FFI functions via `src/mocks.rs`. This allows testing the Rust wrapper logic without calling actual SDK functions.
-
-### Simulation Tests
-
-Located in `src/simulation/`:
-- `test_state.rs`: SimulatedCameraState tests
-- Tests verify state management, timing, parameter handling
+The former `src/tests/` `#[automock]` FFI-mock suite and `src/mocks.rs` were removed
+in Phase 4 of the convention-alignment plan. Behaviour that lived only in the real
+FFI arm — the `u32::MAX` / `QHYCCD_ERROR_F64` sentinel decodes, C-string (`CStr` /
+`CString`) handling, the scan/enumeration pipeline, and `Drop` / teardown ordering —
+is exercised on real hardware via ConformU, not unit-tested, matching the siblings.
 
 ### Integration Tests
 
@@ -1255,14 +1281,14 @@ Example programs in `examples/` (run with `--features simulation`):
 
 ### Memory Management
 
-Image buffer handling:
-1. Query buffer size with `GetQHYCCDMemLength()`
-2. Pre-allocate `Vec<u8>` with exact capacity
-3. Pass raw pointer to FFI
-4. FFI fills buffer directly
-5. Return as `ImageData` with metadata
+Image buffer handling (caller-owned, since Phase 5):
+1. Query frame size with `get_image_size()` (`GetQHYCCDMemLength()`)
+2. The **caller** allocates a `&mut [u8]` of at least that size
+3. `get_single_frame` / `get_live_frame` bounds-check it, then pass its raw pointer to the FFI
+4. FFI fills the caller's buffer directly (the simulated backend copies its generated frame in)
+5. Return a `FrameInfo` with the dimensions; the pixels are already in the caller's buffer
 
-No intermediate copies or allocations. Buffer reuse is possible by keeping `ImageData` instances.
+No `Vec` is allocated per frame inside the library. Buffer reuse is natural: the caller owns the buffer and can reuse it across frames.
 
 ### Locking Strategy
 
@@ -1274,9 +1300,9 @@ No intermediate copies or allocations. Buffer reuse is possible by keeping `Imag
 ### Conditional Compilation
 
 Features and conditional compilation minimize compiled code:
-- `#[cfg(feature = "simulation")]`: Simulation code only when enabled
+- `#[cfg(feature = "simulation")]`: Simulation arms only when enabled
+- `#[cfg(not(feature = "simulation"))]`: Real FFI arms + handle machinery only without the simulation feature
 - `#[cfg(test)]`: Test code only in test builds
-- `#[cfg(not(test))]`: Real FFI imports only in production
 
 ## Platform Support
 
@@ -1313,22 +1339,18 @@ From `Cargo.toml`:
 - `libqhyccd-sys` (0.1.4, path): Internal FFI crate
 - `thiserror` (workspace): Typed error enum (`QHYError`)
 - `tracing` (workspace): Structured logging
-- `derive_more` (workspace, `eq` feature): `PartialEq` derive with `#[partial_eq(skip)]`
-- `lazy_static` (1.0.2): Static initialization
-- `tracing-attributes` (0.1.28): Tracing support
-- `enum-ordinalize-derive` (4.3.1): Enum utilities
+- `parking_lot` (workspace): Non-poisoning `RwLock` guarding the camera handle / simulated state
 
 **Dev-dependencies:**
 - `tracing-subscriber` (workspace): Logging setup for the `examples/` demos
-- `mockall` (0.14.0): FFI mocking for unit tests
 
 **Optional (simulation feature only):**
 - `rand` (workspace): Random number generation for image noise
 - `rayon` (workspace): Parallel processing for improved simulation performance
 
-### Development Dependencies
-
-- `mockall` (0.14.0): Mocking framework for tests
+`Camera`'s id-only `PartialEq` is hand-rolled, so the crate no longer depends on
+`derive_more`; the `#[automock]` FFI-mock layer is gone, so it no longer depends on
+`mockall` (both removed in Phase 4 of the convention-alignment plan).
 
 ### System Dependencies
 
@@ -1345,33 +1367,14 @@ The `libqhyccd-sys` crate links against the system-installed QHYCCD library via:
 ```
 qhyccd-rs/
 ├── src/
-│   ├── lib.rs              # Main library root (103 lines) - module declarations and re-exports
-│   ├── backend.rs          # Internal backend types (74 lines, pub(crate))
-│   ├── control.rs          # Control enum with 92 variants (236 lines)
-│   ├── error.rs            # QHYError enum with 44 error types (108 lines)
-│   ├── types.rs            # Public data types (101 lines)
-│   ├── sdk.rs              # Sdk implementation (315 lines)
-│   ├── filter_wheel.rs     # FilterWheel implementation (171 lines)
-│   ├── camera/             # Camera module (7 sub-modules by responsibility)
-│   │   ├── mod.rs          # Camera struct, basic methods (89 lines)
-│   │   ├── lifecycle.rs    # open, close, init, is_open (203 lines)
-│   │   ├── configuration.rs # stream mode, ROI, binning, debayer (264 lines)
-│   │   ├── readout_modes.rs # readout mode queries (203 lines)
-│   │   ├── info.rs         # model, firmware, chip info (331 lines)
-│   │   ├── imaging.rs      # live/single frame capture (497 lines)
-│   │   └── parameters.rs   # parameter get/set/check (304 lines)
-│   ├── mocks.rs            # Mock FFI for testing (214 lines)
-│   ├── simulation/         # Simulation feature
-│   │   ├── mod.rs          # Public API
-│   │   ├── config.rs       # SimulatedCameraConfig
-│   │   ├── state.rs        # SimulatedCameraState
-│   │   ├── image_generator.rs  # Image generation
-│   │   └── test_state.rs   # State tests
-│   └── tests/              # Unit tests (with mocked FFI)
-│       ├── mod.rs
-│       ├── sdk_tests.rs
-│       ├── camera_tests.rs
-│       └── filter_wheel_tests.rs
+│   ├── lib.rs              # Library root - module declarations and re-exports
+│   ├── camera.rs           # Camera device (impl blocks) + ControlType + real-only handle machinery
+│   ├── error.rs            # Flat QHYError enum + check() helper
+│   ├── types.rs            # Public data types (FrameInfo, CCDChipInfo, …)
+│   ├── sdk.rs              # Sdk implementation (real/sim #[cfg] fork)
+│   ├── filter_wheel.rs     # FilterWheel implementation (delegates to Camera)
+│   └── simulation.rs       # Simulation backend (feature-gated): SimulatedCameraConfig,
+│                           #   SimulatedCameraState, ImageGenerator + in-source tests
 ├── examples/               # Demo programs (run with --features simulation)
 │   ├── LiveFrameMode.rs
 │   ├── SingleFrameMode.rs
@@ -1391,27 +1394,32 @@ qhyccd-rs/
     └── build.rs            # Build script (if needed)
 ```
 
-The library is organized into 13 well-defined modules, reducing the original monolithic `lib.rs` from 2,866 lines to just 103 lines. The public API is now composed of:
+The library follows the sibling `zwo-rs` / `svbony-rs` **device-file-major**
+layout: one file per device with behaviour grouped into `impl` blocks, rather
+than a folder of responsibility sub-modules. Phase 5 of the convention-alignment
+plan merged the former six-file `camera/` split, `backend.rs`, and `control.rs`
+into a single `src/camera.rs`. The public API is composed of:
 
-**Top-level modules** (6 modules + 7 camera sub-modules):
 - `lib.rs`: Module declarations and public re-exports only
-- `control.rs`: Control enum with 92 camera control parameters
-- `error.rs`: QHYError enum with 44 error variants using thiserror
-- `types.rs`: Public data types (StreamMode, CCDChipInfo, ImageData, etc.)
+- `camera.rs`: the `Camera` device (constructors, lifecycle, configuration,
+  device info, imaging, parameters + typed accessors, readout modes — each an
+  `impl Camera` block); `ControlType` (the semantic `CONTROL_ID` subset +
+  `Other(i32)` + `to_raw`); and, compiled only **without** the `simulation`
+  feature, the real-hardware handle machinery (`HandleCell` / `QHYCCDHandle` /
+  `read_lock!`, `pub(crate)`)
+- `error.rs`: flat `QHYError` enum (`thiserror`) + the `check()` helper
+- `types.rs`: Public data types (StreamMode, CCDChipInfo, FrameInfo, etc.)
 - `sdk.rs`: SDK initialization, camera discovery, resource management
-- `filter_wheel.rs`: Filter wheel control and operations
-- `backend.rs`: Internal backend abstraction (pub(crate) only)
+- `filter_wheel.rs`: Filter wheel control and operations (delegates to `Camera`)
+- `simulation.rs`: Simulation backend (feature-gated) — config builder, runtime state, image generation
 
-**Camera sub-modules** (organized by functional responsibility):
-- `camera/mod.rs`: Camera struct definition and basic accessors
-- `camera/lifecycle.rs`: Device lifecycle (open, close, init)
-- `camera/configuration.rs`: Stream mode, ROI, binning, debayer settings
-- `camera/readout_modes.rs`: Readout mode queries and selection
-- `camera/info.rs`: Device information (model, firmware, chip specs)
-- `camera/imaging.rs`: Image capture (live mode, single frame)
-- `camera/parameters.rs`: Generic parameter get/set/availability checks
-
-The public API remains 100% backward compatible. All public types are re-exported from `lib.rs`, maintaining the same import paths for library users
+All public types are re-exported from `lib.rs`, so `use qhyccd_rs::{…}` paths are
+unaffected by the internal file moves. The **public API surface** is not fully
+backward compatible across the convention alignment, however: `Camera::new` is
+now available only without the `simulation` feature (Phase 4), fallible methods
+return `qhyccd_rs::QHYError` rather than `eyre` (Phase 3), and the frame download
+takes a caller-owned `&mut [u8]` returning `FrameInfo` instead of a `Vec`-owning
+`ImageData` (Phase 5).
 
 ## Glossary
 

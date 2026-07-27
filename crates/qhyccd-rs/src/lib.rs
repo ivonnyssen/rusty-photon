@@ -69,52 +69,33 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![warn(missing_debug_implementations, rust_2018_idioms, missing_docs)]
 
-// Module declarations
-mod backend;
+/// Raw, unsafe FFI bindings (`libqhyccd-sys`). Prefer the safe API in this crate.
+///
+/// Re-exported at the crate root to match the sibling `zwo-rs` / `svbony-rs`
+/// convention (`pub use libzwo_sys as sys;` / `pub use libsvbony_sys as sys;`).
+pub use libqhyccd_sys as sys;
+
+// Module declarations. `camera` is the single device-file-major module holding
+// the `Camera` device, its `ControlType` address space, and (only without the
+// `simulation` feature) the real-hardware handle machinery — the compile-time
+// real/sim split used by the sibling `zwo-rs` / `svbony-rs` crates (a per-method
+// `#[cfg]` fork), replacing the former runtime `CameraBackend` enum + `#[automock]`
+// FFI-mock layer. It merges the former `camera/` submodule split, `backend.rs`,
+// and `control.rs`.
 mod camera;
-mod control;
 mod error;
 mod filter_wheel;
 mod sdk;
 mod types;
 
-// Available under `test` (mockall-generated FFI mocks for unit tests) and under
-// `simulation` (the plain `unimplemented!()` stubs let the unreachable real-backend
-// arms compile + link with no QHYCCD SDK present — see libqhyccd-sys/build.rs's
-// QHYCCD_SKIP_NATIVE_LINK gate). Never part of a real (non-simulation) release.
-#[cfg(any(test, feature = "simulation"))]
-pub mod mocks;
-
-// Single cfg-resolved alias for the camera/filter-wheel FFI surface: the real
-// `libqhyccd-sys` for production, the mockall mock for unit tests, and the plain
-// `unimplemented!()` stubs under `simulation`. Under `simulation` the real-backend
-// match arms are never reached (every camera is a `Simulated` backend), so the
-// stubs are compiled-but-unreachable and let those arms link with no QHYCCD SDK
-// present (see libqhyccd-sys/build.rs's QHYCCD_SKIP_NATIVE_LINK gate). `sdk.rs`
-// does NOT use this alias — its FFI is called directly (not behind a backend
-// match), so it is `#[cfg]`'d out under `simulation` instead.
-#[cfg(all(not(test), feature = "simulation"))]
-pub(crate) use crate::mocks::libqhyccd_sys as ffi;
-#[cfg(test)]
-pub(crate) use crate::mocks::mock_libqhyccd_sys as ffi;
-#[cfg(all(not(test), not(feature = "simulation")))]
-pub(crate) use libqhyccd_sys as ffi;
-
 #[cfg(feature = "simulation")]
 pub mod simulation;
 
 // Public re-exports
-pub use camera::Camera;
-pub use control::Control;
-pub use error::{QHYError, Result};
+pub use camera::{Camera, ControlType};
+pub use error::{check, QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;
 pub use types::{
-    BayerMode, CCDChipArea, CCDChipInfo, ImageData, ReadoutMode, SDKVersion, StreamMode,
+    BayerPattern, CCDChipArea, CCDChipInfo, FrameInfo, ReadoutMode, SDKVersion, StreamMode,
 };
-
-// Unit tests requiring FFI mocking are in src/tests/
-// Simulation integration tests are in tests/simulation/
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))] // test code: don't count toward coverage
-mod tests;

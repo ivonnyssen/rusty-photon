@@ -28,14 +28,16 @@ comment:
   layout: "files"
   require_changes: true
 
-# Flag carryforward (ref: https://docs.codecov.com/docs/carryforward-flags).
-# When a commit does not re-upload a given flag, Codecov backfills that flag's
-# last-known coverage so the per-service badges stay populated instead of
-# flipping to "unknown". `bazel coverage` (bazel-coverage.yml) is the sole
-# coverage uploader — it uploads every canonical `<pkg>` flag each run — so
-# carryforward only matters when a run is cancelled or fails (e.g. it hits its
-# time cap): the badges keep their last-known value until the next successful run.
-# Declaring it here makes that explicit and version-controlled for every flag.
+# Flag carryforward is OFF (ref: https://docs.codecov.com/docs/carryforward-flags).
+# `bazel coverage` (bazel-coverage.yml) is the sole coverage uploader and it
+# uploads every canonical `<pkg>` flag on every run, so no live flag ever needs
+# backfilling. Carryforward would also resurrect retired flags (old flag
+# namings, renamed crates) whose last-known reports reference source layouts
+# that no longer exist; those phantom files are merged into the report as
+# missed lines and corrupt the project totals the `codecov/project` gate
+# compares. The cost of OFF: when a coverage run is cancelled or fails, the
+# per-service badges show "unknown" until the next successful run instead of
+# holding their last-known value.
 flag_management:
   default_rules:
-    carryforward: true
+    carryforward: false

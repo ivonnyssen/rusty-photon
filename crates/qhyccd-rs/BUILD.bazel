@@ -48,15 +48,19 @@ rust_library(
     deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
 )
 
-# The crate's own unit tests (src/tests/{camera,filter_wheel,sdk}_tests.rs), run
-# under Bazel against the sim variant — mirrors crates/zwo-rs:zwo-rs_unit_test.
-# Without this the suite only ran under `cargo test`, so it was both
-# ungated by the Bazel gate and absent from `bazel coverage` (qhyccd-rs read ~34%
-# vs Cargo's ~93%, only incidentally covered via qhy-camera's sim usage). The
-# `simulation` `crate_features` must be set explicitly — rust_test does NOT inherit
-# it from the wrapped `crate` — or the `#[cfg(feature = "simulation")]` tests (the
-# bulk) compile out. `mockall` arrives via the dev-deps. The sim variant still
-# links the SDK (simulation removes the camera, not the link), so this runs in the
+# The crate's own IN-SOURCE unit tests — the `#[cfg(test)]` modules in error.rs,
+# camera.rs (the `ControlType` round-trip), types.rs, and simulation.rs — run
+# under Bazel against the sim variant, mirroring crates/zwo-rs:zwo-rs_unit_test.
+# The `tests/simulation/*` integration suite is a SEPARATE crate, gated by the
+# `qhyccd-rs_integration_test` target below (unlike zwo-rs / svbony-rs, which have
+# no `tests/` dir — all their tests are in-source). Since Phase 4 of the qhyccd-rs
+# convention alignment there is NO FFI-mock layer (the `#[automock]` `src/mocks.rs`
+# and the `src/tests/` mock suite are gone): the real FFI arms are compiled out
+# under `simulation` and the simulated backend is exercised directly, like the
+# siblings. The `simulation` `crate_features` must be set explicitly — rust_test
+# does NOT inherit it from the wrapped `crate` — or the `#[cfg(feature =
+# "simulation")]` tests (the bulk) compile out. The sim variant still links the SDK
+# (simulation removes the camera, not the link), so this runs in the
 # SDK-provisioned bazel.yml / bazel-coverage.yml jobs, like zwo-rs.
 rust_test(
     name = "qhyccd-rs_unit_test",
@@ -72,6 +76,40 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The `tests/simulation/*` integration suite: the simulated-camera workflow tests
+# (camera_tests.rs), image-generator tests, and config-builder tests. As a Cargo
+# integration test it is a SEPARATE crate that consumes the public `qhyccd_rs` API,
+# so it depends on the `qhyccd-rs_sim` rlib rather than wrapping it with `crate =`
+# (that attribute is only for the in-source unit tests above). Entry point
+# `tests/simulation_tests.rs` (`#![cfg(feature = "simulation")]`) pulls in the
+# `simulation/` + `common/` submodules; `crate_features` and the sim variant are
+# set for the same reasons as the unit test. This suite previously ran only under
+# `cargo test` (the nightly Cargo safety net); wiring it here puts it in the per-PR
+# Bazel gate + `bazel coverage`.
+rust_test(
+    name = "qhyccd-rs_integration_test",
+    size = "medium",
+    srcs = ["tests/simulation_tests.rs"] + glob([
+        "tests/simulation/*.rs",
+        "tests/common/*.rs",
+    ]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["simulation"],
+    crate_root = "tests/simulation_tests.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":qhyccd-rs_sim"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

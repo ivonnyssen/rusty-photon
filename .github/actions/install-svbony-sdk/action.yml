@@ -6,7 +6,7 @@ description: >-
   even for `--features simulation`/`conformu` builds (it removes the camera,
   not the link — SVBONY_SKIP_NATIVE_LINK is the only way to omit the link
   entirely). See docs/services/svbony-camera.md "Native dependency & build
-  gating" and docs/plans/svbony-camera.md.
+  gating" and docs/plans/archive/svbony-camera.md.
 
   No bindgen: unlike install-zwo-sdk, this action does not install
   clang/libclang — libsvbony-sys's FFI is hand-written (`lib.rs`, no
@@ -29,12 +29,12 @@ description: >-
   Windows CDN URL — there is no automatable fetch to script here. Callers
   must not invoke this action on `windows-latest`; build with
   SVBONY_SKIP_NATIVE_LINK=1 there instead (bazel/windows-latest and
-  native.yml both do). See docs/plans/svbony-camera.md's Future Work for
+  native.yml both do). See docs/plans/archive/svbony-camera.md's Future Work for
   the tracked gap.
 
   macOS: x86_64 (`mac64`) only. indi-3rdparty's libsvbony packaging ships no
   `mac_arm64` blob (SVBony's own direct SDK download has not been
-  independently byte-verified for one — see docs/plans/svbony-camera.md
+  independently byte-verified for one — see docs/plans/archive/svbony-camera.md
   "Packaging"), so this action fails loudly with an actionable message on
   Apple Silicon runners (`macos-latest` today) rather than attempting a
   cross-arch link that would fail confusingly at the final link step.
@@ -121,7 +121,7 @@ runs:
           Linux-ARM64)  ARCH=armv8 ;;
           macOS-X64)    ARCH=mac64 ;;
           macOS-ARM64)
-            echo "::error::install-svbony-sdk: no confirmed arm64 macOS libSVBCameraSDK blob (indi-3rdparty's libsvbony packaging ships mac64/Intel only as of SDK 1.13.4). Pin an Intel runner (e.g. macos-13) for real-SDK SVBony coverage, or skip this action and build with SVBONY_SKIP_NATIVE_LINK=1 on macos-latest. See docs/plans/svbony-camera.md Packaging."
+            echo "::error::install-svbony-sdk: no confirmed arm64 macOS libSVBCameraSDK blob (indi-3rdparty's libsvbony packaging ships mac64/Intel only as of SDK 1.13.4). Pin an Intel runner (e.g. macos-13) for real-SDK SVBony coverage, or skip this action and build with SVBONY_SKIP_NATIVE_LINK=1 on macos-latest. See docs/plans/archive/svbony-camera.md Packaging."
             exit 1
             ;;
           *) echo "::error::install-svbony-sdk: unsupported arch: ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;

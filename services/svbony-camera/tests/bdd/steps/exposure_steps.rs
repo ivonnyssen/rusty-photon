@@ -1,5 +1,5 @@
 //! Exposure-lifecycle steps (`@wip` — the soft-trigger video-capture state
-//! machine is Phase E, docs/plans/svbony-camera.md; see
+//! machine is Phase E, docs/plans/archive/svbony-camera.md; see
 //! docs/services/svbony-camera.md "Behavioral contracts → Exposure"). The
 //! `StartExposure` step is shared with the binning/ROI feature.
 

@@ -4,7 +4,42 @@
 //! requiring actual QHYCCD hardware.
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
-use qhyccd_rs::{BayerMode, CCDChipArea, Camera, Control, FilterWheel, Sdk, StreamMode};
+use qhyccd_rs::{
+    BayerPattern, CCDChipArea, Camera, ControlType, FilterWheel, FrameInfo, QHYError, SDKVersion,
+    Sdk, StreamMode,
+};
+
+/// Bytes in a frame with the given [`FrameInfo`] — mirrors the simulated
+/// backend's `calculate_buffer_size` (`width * height * channels *
+/// bytes_per_pixel`, 1 byte per pixel at ≤8-bit, 2 otherwise). Since the download
+/// now writes into a caller-owned buffer and returns only `FrameInfo`, assertions
+/// use this to check the frame the download *reports*, not the caller's
+/// fixed-length buffer (whose `len()` is always `get_image_size()`).
+fn frame_bytes(info: &FrameInfo) -> usize {
+    let bytes_per_pixel = if info.bits_per_pixel <= 8 { 1 } else { 2 };
+    (info.width * info.height * info.channels) as usize * bytes_per_pixel
+}
+
+/// Poll the simulated filter wheel to arrival — the move settles over a few polls
+/// (advance-on-poll), so a single read after a command still reports the old slot.
+fn cfw_arrive(camera: &Camera, target: u32) {
+    for _ in 0..10 {
+        if camera.cfw_position().unwrap() == target {
+            return;
+        }
+    }
+    panic!("filter wheel did not reach slot {target} within 10 polls");
+}
+
+/// Poll a crate [`FilterWheel`] to arrival (the move settles over a few polls).
+fn fw_arrive(fw: &FilterWheel, target: u32) {
+    for _ in 0..10 {
+        if fw.get_fw_position().unwrap() == target {
+            return;
+        }
+    }
+    panic!("filter wheel did not reach slot {target} within 10 polls");
+}
 
 #[test]
 fn test_simulated_camera_creation() {
@@ -78,17 +113,19 @@ fn test_simulated_camera_parameters() {
     camera.open().unwrap();
 
     // Set and get exposure
-    camera.set_parameter(Control::Exposure, 1000.0).unwrap();
-    let exposure = camera.get_parameter(Control::Exposure).unwrap();
+    camera.set_parameter(ControlType::Exposure, 1000.0).unwrap();
+    let exposure = camera.get_parameter(ControlType::Exposure).unwrap();
     assert!((exposure - 1000.0).abs() < f64::EPSILON);
 
     // Set and get gain
-    camera.set_parameter(Control::Gain, 50.0).unwrap();
-    let gain = camera.get_parameter(Control::Gain).unwrap();
+    camera.set_parameter(ControlType::Gain, 50.0).unwrap();
+    let gain = camera.get_parameter(ControlType::Gain).unwrap();
     assert!((gain - 50.0).abs() < f64::EPSILON);
 
     // Get parameter min/max/step
-    let (min, max, step) = camera.get_parameter_min_max_step(Control::Gain).unwrap();
+    let (min, max, step) = camera
+        .get_parameter_min_max_step(ControlType::Gain)
+        .unwrap();
     assert!((min - 0.0).abs() < f64::EPSILON);
     assert!((max - 100.0).abs() < f64::EPSILON);
     assert!((step - 1.0).abs() < f64::EPSILON);
@@ -103,15 +140,15 @@ fn test_simulated_camera_is_control_available() {
     camera.open().unwrap();
 
     // Default controls should be available
-    assert!(camera.is_control_available(Control::Gain).is_some());
-    assert!(camera.is_control_available(Control::Exposure).is_some());
+    assert!(camera.is_control_available(ControlType::Gain).is_some());
+    assert!(camera.is_control_available(ControlType::Exposure).is_some());
 
     // Cooler controls should be available
-    assert!(camera.is_control_available(Control::Cooler).is_some());
-    assert!(camera.is_control_available(Control::CurTemp).is_some());
+    assert!(camera.is_control_available(ControlType::Cooler).is_some());
+    assert!(camera.is_control_available(ControlType::CurTemp).is_some());
 
     // CFW controls should NOT be available (no filter wheel)
-    assert!(camera.is_control_available(Control::CfwPort).is_none());
+    assert!(camera.is_control_available(ControlType::CfwPort).is_none());
 
     camera.close().unwrap();
 }
@@ -123,14 +160,16 @@ fn test_simulated_camera_with_filter_wheel() {
     camera.open().unwrap();
 
     // CFW controls should be available
-    assert!(camera.is_control_available(Control::CfwPort).is_some());
-    assert!(camera.is_control_available(Control::CfwSlotsNum).is_some());
+    assert!(camera.is_control_available(ControlType::CfwPort).is_some());
+    assert!(camera
+        .is_control_available(ControlType::CfwSlotsNum)
+        .is_some());
 
     // Check filter wheel plugged in
     assert!(camera.is_cfw_plugged_in().unwrap());
 
     // Get number of slots
-    let slots = camera.get_parameter(Control::CfwSlotsNum).unwrap();
+    let slots = camera.get_parameter(ControlType::CfwSlotsNum).unwrap();
     assert!((slots - 5.0).abs() < f64::EPSILON);
 
     camera.close().unwrap();
@@ -144,18 +183,20 @@ fn test_simulated_camera_single_frame_mode() {
 
     camera.set_stream_mode(StreamMode::SingleFrameMode).unwrap();
     camera.init().unwrap();
-    camera.set_parameter(Control::Exposure, 1000.0).unwrap(); // 1ms
+    camera.set_parameter(ControlType::Exposure, 1000.0).unwrap(); // 1ms
 
     let buffer_size = camera.get_image_size().unwrap();
     assert!(buffer_size > 0);
 
     camera.start_single_frame_exposure().unwrap();
-    let image = camera.get_single_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_single_frame(&mut buf).unwrap();
 
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
     assert_eq!(image.bits_per_pixel, 16);
-    assert!(!image.data.is_empty());
+    // the reported frame exactly fills the buffer we sized from get_image_size
+    assert_eq!(frame_bytes(&image), buffer_size);
 
     camera.close().unwrap();
 }
@@ -171,11 +212,12 @@ fn test_simulated_camera_live_mode() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
-    assert!(!image.data.is_empty());
+    assert_eq!(frame_bytes(&image), buffer_size);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -197,7 +239,8 @@ fn test_simulated_camera_binning() {
     // Get baseline dimensions with 1x1 binning
     camera.begin_live().unwrap();
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
     camera.end_live().unwrap();
@@ -207,7 +250,8 @@ fn test_simulated_camera_binning() {
 
     camera.begin_live().unwrap();
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Dimensions should NOT change - binning alone doesn't affect ROI.
     // This proves we fixed the double-binning bug.
@@ -231,11 +275,12 @@ fn test_simulated_camera_bit_mode() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     assert_eq!(image.bits_per_pixel, 8);
-    // 8-bit mode uses 1 byte per pixel
-    assert_eq!(image.data.len(), (3072 * 2048) as usize);
+    // 8-bit mode uses 1 byte per pixel: the reported frame is exactly W*H bytes
+    assert_eq!(frame_bytes(&image), (3072 * 2048) as usize);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -284,7 +329,7 @@ fn test_sdk_new_with_default_simulated_camera() {
 
     // Verify camera has cooler support
     assert!(
-        camera.is_control_available(Control::Cooler).is_some(),
+        camera.is_control_available(ControlType::Cooler).is_some(),
         "Camera should have cooler support"
     );
 
@@ -334,24 +379,60 @@ fn test_simulated_filter_wheel() {
     let pos = fw.get_fw_position().unwrap();
     assert_eq!(pos, 0);
 
-    // Set position
+    // Set position; the move settles over a few polls (poll-to-arrival).
     fw.set_fw_position(3).unwrap();
-    let pos = fw.get_fw_position().unwrap();
-    assert_eq!(pos, 3);
+    fw_arrive(&fw, 3);
 
     fw.close().unwrap();
 }
 
 #[test]
+fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
+    // Phase 1(B): the SDK builds the filter wheel from a CLONE of the camera, so
+    // both share ONE backend state (a real QHY CFW is driven through the camera
+    // handle). Opening the camera therefore also opens the wheel, and the wheel
+    // position is one shared value visible through the camera's CFW control.
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("SHARED-CAM")
+            .with_filter_wheel(7),
+    );
+
+    let camera = sdk.cameras().next().unwrap();
+    let wheel = sdk.filter_wheels().next().unwrap();
+    // The wheel delegates its id to the shared camera.
+    assert_eq!(wheel.id(), "SHARED-CAM");
+
+    // Opening the camera opens the shared handle the wheel reads through.
+    camera.open().unwrap();
+    assert!(wheel.is_open().unwrap());
+    assert_eq!(wheel.get_number_of_filters().unwrap(), 7);
+
+    // A position set on the wheel is visible through the camera's CFW control
+    // (ASCII-offset by 48), proving the single shared state.
+    wheel.set_fw_position(3).unwrap();
+    fw_arrive(wheel, 3);
+    assert_eq!(
+        camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
+        3 + 48
+    );
+
+    // Closing the camera closes the wheel (shared open state).
+    camera.close().unwrap();
+    assert!(!wheel.is_open().unwrap());
+}
+
+#[test]
 fn test_simulated_color_camera() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
 
     // Check color mode is available
-    let bayer = camera.is_control_available(Control::CamColor);
+    let bayer = camera.is_control_available(ControlType::CamColor);
     assert!(bayer.is_some());
-    assert_eq!(bayer.unwrap(), BayerMode::RGGB as u32);
+    assert_eq!(bayer.unwrap(), BayerPattern::RGGB as u32);
 
     camera.close().unwrap();
 }
@@ -446,7 +527,8 @@ fn test_set_roi() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Image dimensions should match ROI
     assert_eq!(image.width, 1000);
@@ -481,10 +563,10 @@ fn test_get_overscan_area() {
 
     let overscan_area = camera.get_overscan_area().unwrap();
 
-    // Default config overscan area matches effective area
+    // Default config overscan is a distinct strip (not the full effective area).
     assert_eq!(overscan_area.start_x, 0);
     assert_eq!(overscan_area.start_y, 0);
-    assert_eq!(overscan_area.width, 3072);
+    assert_eq!(overscan_area.width, 24);
     assert_eq!(overscan_area.height, 2048);
 
     camera.close().unwrap();
@@ -500,7 +582,7 @@ fn test_stop_exposure() {
 
     // Set a long exposure
     camera
-        .set_parameter(Control::Exposure, 10_000_000.0)
+        .set_parameter(ControlType::Exposure, 10_000_000.0)
         .unwrap(); // 10 seconds
 
     camera.start_single_frame_exposure().unwrap();
@@ -529,7 +611,7 @@ fn test_abort_exposure_and_readout() {
 
     // Set a long exposure
     camera
-        .set_parameter(Control::Exposure, 10_000_000.0)
+        .set_parameter(ControlType::Exposure, 10_000_000.0)
         .unwrap(); // 10 seconds
 
     camera.start_single_frame_exposure().unwrap();
@@ -550,7 +632,7 @@ fn test_abort_exposure_and_readout() {
 
 #[test]
 fn test_set_debayer() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
     camera.set_stream_mode(StreamMode::LiveMode).unwrap();
@@ -561,13 +643,14 @@ fn test_set_debayer() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image_debayer_on = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let info = camera.get_live_frame(&mut buf).unwrap();
 
-    // With debayer enabled, should get 3-channel RGB image
-    // Check buffer size is 3x larger than mono
+    // With debayer enabled, the reported frame is 3-channel RGB, 3x the mono size
     let mono_pixels = 3072 * 2048;
     let expected_rgb_size = mono_pixels * 2 * 3; // 16-bit * 3 channels
-    assert_eq!(image_debayer_on.data.len(), expected_rgb_size as usize);
+    assert_eq!(info.channels, 3);
+    assert_eq!(frame_bytes(&info), expected_rgb_size as usize);
 
     camera.end_live().unwrap();
 
@@ -576,11 +659,13 @@ fn test_set_debayer() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image_debayer_off = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let info = camera.get_live_frame(&mut buf).unwrap();
 
-    // With debayer disabled, should get 1-channel image
+    // With debayer disabled, the reported frame is 1-channel
     let expected_mono_size = mono_pixels * 2; // 16-bit * 1 channel
-    assert_eq!(image_debayer_off.data.len(), expected_mono_size as usize);
+    assert_eq!(info.channels, 1);
+    assert_eq!(frame_bytes(&info), expected_mono_size as usize);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -597,8 +682,8 @@ fn test_camera_not_open_errors() {
     assert!(camera.get_firmware_version().is_err());
     assert!(camera.get_effective_area().is_err());
     assert!(camera.get_overscan_area().is_err());
-    assert!(camera.set_parameter(Control::Gain, 50.0).is_err());
-    assert!(camera.get_parameter(Control::Gain).is_err());
+    assert!(camera.set_parameter(ControlType::Gain, 50.0).is_err());
+    assert!(camera.get_parameter(ControlType::Gain).is_err());
     assert!(camera.stop_exposure().is_err());
     assert!(camera.abort_exposure_and_readout().is_err());
 }
@@ -610,16 +695,18 @@ fn test_parameter_not_available_error() {
     camera.open().unwrap();
 
     // Cooler control should not be available
-    assert!(camera.is_control_available(Control::Cooler).is_none());
+    assert!(camera.is_control_available(ControlType::Cooler).is_none());
 
     // Getting an unavailable control should fail
-    assert!(camera.get_parameter(Control::Cooler).is_err());
+    assert!(camera.get_parameter(ControlType::Cooler).is_err());
 
     // get_parameter_min_max_step should fail for unavailable control
-    assert!(camera.get_parameter_min_max_step(Control::Cooler).is_err());
+    assert!(camera
+        .get_parameter_min_max_step(ControlType::Cooler)
+        .is_err());
 
     // set_if_available should fail for unavailable control
-    assert!(camera.set_if_available(Control::Cooler, -10.0).is_err());
+    assert!(camera.set_if_available(ControlType::Cooler, -10.0).is_err());
 
     camera.close().unwrap();
 }
@@ -631,12 +718,12 @@ fn test_set_if_available() {
     camera.open().unwrap();
 
     // set_if_available should work for available control
-    camera.set_if_available(Control::Gain, 50.0).unwrap();
-    let gain = camera.get_parameter(Control::Gain).unwrap();
+    camera.set_if_available(ControlType::Gain, 50.0).unwrap();
+    let gain = camera.get_parameter(ControlType::Gain).unwrap();
     assert!((gain - 50.0).abs() < f64::EPSILON);
 
     // set_if_available should work for cooler (available due to with_cooler)
-    camera.set_if_available(Control::Cooler, -10.0).unwrap();
+    camera.set_if_available(ControlType::Cooler, -10.0).unwrap();
 
     camera.close().unwrap();
 }
@@ -700,7 +787,7 @@ fn test_no_filter_wheel() {
     assert!(!camera.is_cfw_plugged_in().unwrap());
 
     // CFW control should not be available
-    assert!(camera.is_control_available(Control::CfwPort).is_none());
+    assert!(camera.is_control_available(ControlType::CfwPort).is_none());
 
     camera.close().unwrap();
 }
@@ -832,7 +919,8 @@ fn test_get_live_frame_not_open_error() {
     let camera = Camera::new_simulated(config);
 
     // get_live_frame() without opening should fail
-    assert!(camera.get_live_frame(1000).is_err());
+    let mut buf = vec![0u8; 1000];
+    assert!(camera.get_live_frame(&mut buf).is_err());
 }
 
 #[test]
@@ -841,7 +929,8 @@ fn test_get_single_frame_not_open_error() {
     let camera = Camera::new_simulated(config);
 
     // get_single_frame() without opening should fail
-    assert!(camera.get_single_frame(1000).is_err());
+    let mut buf = vec![0u8; 1000];
+    assert!(camera.get_single_frame(&mut buf).is_err());
 }
 
 #[test]
@@ -880,7 +969,7 @@ fn test_set_roi_not_open_error() {
 
 #[test]
 fn test_set_debayer_not_open_error() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
     let camera = Camera::new_simulated(config);
 
     // set_debayer() without opening should fail
@@ -948,7 +1037,7 @@ fn test_is_control_available_not_open_error() {
 
     // is_control_available() without opening returns None (not an error, but no result)
     // This is expected behavior - returns None when camera not open
-    let result = camera.is_control_available(Control::Gain);
+    let result = camera.is_control_available(ControlType::Gain);
     assert!(result.is_none());
 }
 
@@ -958,7 +1047,9 @@ fn test_get_parameter_min_max_step_not_open_error() {
     let camera = Camera::new_simulated(config);
 
     // get_parameter_min_max_step() without opening should fail
-    assert!(camera.get_parameter_min_max_step(Control::Gain).is_err());
+    assert!(camera
+        .get_parameter_min_max_step(ControlType::Gain)
+        .is_err());
 }
 
 #[test]
@@ -1094,18 +1185,208 @@ fn test_cooler_controls() {
     camera.open().unwrap();
 
     // Check cooler control is available
-    assert!(camera.is_control_available(Control::Cooler).is_some());
-    assert!(camera.is_control_available(Control::CurTemp).is_some());
+    assert!(camera.is_control_available(ControlType::Cooler).is_some());
+    assert!(camera.is_control_available(ControlType::CurTemp).is_some());
 
     // Get current temperature
-    let temp = camera.get_parameter(Control::CurTemp).unwrap();
+    let temp = camera.get_parameter(ControlType::CurTemp).unwrap();
     assert!(temp > -50.0 && temp < 50.0); // Reasonable range
 
     // Set cooler target temperature
-    camera.set_parameter(Control::Cooler, -10.0).unwrap();
-    let cooler_target = camera.get_parameter(Control::Cooler).unwrap();
+    camera.set_parameter(ControlType::Cooler, -10.0).unwrap();
+    let cooler_target = camera.get_parameter(ControlType::Cooler).unwrap();
     assert!((cooler_target - (-10.0)).abs() < 0.001);
 
+    camera.close().unwrap();
+}
+
+/// The typed accessors are the routine surface over the generic
+/// `get_parameter`/`set_parameter` controls, so exercise the full set against
+/// the simulation backend (Phase 2 of the convention-alignment plan).
+#[test]
+fn test_camera_typed_accessors() {
+    let config = SimulatedCameraConfig::default()
+        .with_cooler()
+        .with_filter_wheel(5);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // gain / offset / exposure round-trip through the typed setters + getters.
+    camera.set_gain(50.0).unwrap();
+    assert!((camera.gain().unwrap() - 50.0).abs() < f64::EPSILON);
+    camera.set_offset(20.0).unwrap();
+    assert!((camera.offset().unwrap() - 20.0).abs() < f64::EPSILON);
+    camera.set_exposure_us(1000.0).unwrap();
+    assert!((camera.exposure_us().unwrap() - 1000.0).abs() < f64::EPSILON);
+
+    // Ranges come from the simulated control table.
+    let (gain_min, gain_max, _) = camera.gain_range().unwrap();
+    assert!(gain_min <= gain_max);
+    assert!(camera.offset_range().unwrap().1 >= camera.offset_range().unwrap().0);
+    assert!(camera.exposure_range_us().unwrap().1 > 0.0);
+
+    // Temperature is already whole °C — no decode.
+    let temp = camera.current_temperature_celsius().unwrap();
+    assert!((-50.0..50.0).contains(&temp));
+
+    // Cooler set-point and manual PWM route to the same controls the generic
+    // path reads back.
+    camera.set_target_temperature_celsius(-15.0).unwrap();
+    assert!((camera.get_parameter(ControlType::Cooler).unwrap() - (-15.0)).abs() < 0.001);
+    camera.set_manual_cooler_pwm(80.0).unwrap();
+    assert!((camera.cooler_power_raw().unwrap() - 80.0).abs() < f64::EPSILON);
+
+    // CFW accessors encode the slot as a hex-ASCII code; the move settles over a
+    // few polls (poll-to-arrival), so read until it reports the target.
+    assert_eq!(camera.cfw_slot_count().unwrap(), 5);
+    camera.set_cfw_position(3).unwrap();
+    cfw_arrive(&camera, 3);
+
+    camera.close().unwrap();
+}
+
+/// Audit #2: reading `CurTemp` after a set-point drives the reported sensor
+/// temperature toward it, one poll-step at a time (advance-on-poll, like the
+/// sibling `svbony-rs` sim), instead of staying frozen at ambient.
+#[test]
+fn cooling_ramps_toward_target_over_polls() {
+    let config = SimulatedCameraConfig::default().with_cooler();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // No set-point yet: the temperature holds at ambient across polls.
+    let ambient = camera.current_temperature_celsius().unwrap();
+    assert!((camera.current_temperature_celsius().unwrap() - ambient).abs() < f64::EPSILON);
+
+    // Engage cooling; the reported temperature must descend toward the target and
+    // eventually settle there.
+    camera.set_target_temperature_celsius(-10.0).unwrap();
+    let mut previous = camera.current_temperature_celsius().unwrap();
+    for _ in 0..200 {
+        let next = camera.current_temperature_celsius().unwrap();
+        assert!(next <= previous, "temperature must not rise while cooling");
+        previous = next;
+    }
+    assert!(
+        (camera.current_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON,
+        "temperature should reach the set-point after enough polls"
+    );
+    // Auto-cooling now reports a nonzero cooler PWM (was frozen at 0 before).
+    assert!(camera.cooler_power_raw().unwrap() > 0.0);
+
+    camera.close().unwrap();
+}
+
+/// Audit #11: a `close()` -> `open()` cycle presents a clean device. Real
+/// `CloseQHYCCD` destroys the handle, so retained live/exposure/frame state must
+/// not survive to make a frame call falsely succeed without re-arming.
+#[test]
+fn close_then_open_clears_session_state() {
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // Engage live mode and confirm a frame flows.
+    camera.begin_live().unwrap();
+    let size = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; size];
+    camera.get_live_frame(&mut buf).unwrap();
+
+    // Reconnect. Live mode must NOT still be engaged on the fresh device.
+    camera.close().unwrap();
+    camera.open().unwrap();
+    let err = camera.get_live_frame(&mut buf).unwrap_err();
+    assert!(
+        matches!(err, QHYError::Sdk { .. }),
+        "live frame must fail after reconnect until begin_live() is called again, got {err:?}"
+    );
+
+    camera.close().unwrap();
+}
+
+/// Audit #3: the CFW position is carried on `CONTROL_CFWPORT` as a HEX ASCII
+/// digit, so slot 10 encodes to 'A' (65), not ':' (58). Exercise a >= 10 slot.
+#[test]
+fn cfw_position_uses_hex_ascii_for_high_slots() {
+    let config = SimulatedCameraConfig::default().with_filter_wheel(16);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    camera.set_cfw_position(10).unwrap();
+    cfw_arrive(&camera, 10);
+    // On the wire the value is the hex-ASCII code 'A' == 65, not decimal 10 + 48 == 58.
+    assert_eq!(
+        camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
+        65
+    );
+
+    camera.close().unwrap();
+}
+
+/// Audit #4: the simulated CFW move is NOT instantaneous — the first read after a
+/// command still reports the old slot (a consumer must poll to arrival), unlike
+/// the former synchronous update that hid the real hardware settle time.
+#[test]
+fn cfw_move_is_not_instantaneous() {
+    let config = SimulatedCameraConfig::default().with_filter_wheel(7);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // Start at slot 0, command slot 5. The next read must still report a
+    // non-target (moving) slot...
+    camera.set_cfw_position(5).unwrap();
+    assert_ne!(
+        camera.cfw_position().unwrap(),
+        5,
+        "move should not be instantaneous"
+    );
+    // ...but it converges to the target with a few more polls.
+    cfw_arrive(&camera, 5);
+
+    camera.close().unwrap();
+}
+
+/// Audit #6: with a configured not-ready probability, live-mode reads
+/// intermittently return the retryable error (as real `GetQHYCCDLiveFrame` does
+/// between frames), so a consumer must poll/retry. Over 200 reads at p=0.5 both
+/// outcomes are effectively certain (P(all one outcome) = 0.5^200).
+#[test]
+fn live_frame_reports_not_ready_with_configured_probability() {
+    let config = SimulatedCameraConfig::default().with_live_not_ready_probability(0.5);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+    // A small ROI keeps each generated frame cheap over many reads.
+    camera
+        .set_roi(CCDChipArea {
+            start_x: 0,
+            start_y: 0,
+            width: 8,
+            height: 8,
+        })
+        .unwrap();
+    camera.begin_live().unwrap();
+
+    let size = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; size];
+
+    let mut not_ready = 0;
+    let mut frames = 0;
+    for _ in 0..200 {
+        match camera.get_live_frame(&mut buf) {
+            Ok(info) => {
+                assert_eq!(frame_bytes(&info), size);
+                frames += 1;
+            }
+            Err(QHYError::Sdk { .. }) => not_ready += 1,
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+    assert!(frames > 0, "should deliver frames");
+    assert!(not_ready > 0, "should report some not-ready reads at p=0.5");
+
+    camera.end_live().unwrap();
     camera.close().unwrap();
 }
 
@@ -1116,17 +1397,19 @@ fn test_usb_traffic_control() {
     camera.open().unwrap();
 
     // Check USB traffic control is available
-    assert!(camera.is_control_available(Control::UsbTraffic).is_some());
+    assert!(camera
+        .is_control_available(ControlType::UsbTraffic)
+        .is_some());
 
     // Get and set USB traffic
     let (min, max, step) = camera
-        .get_parameter_min_max_step(Control::UsbTraffic)
+        .get_parameter_min_max_step(ControlType::UsbTraffic)
         .unwrap();
     assert!(min <= max);
     assert!(step > 0.0);
 
-    camera.set_parameter(Control::UsbTraffic, 50.0).unwrap();
-    let traffic = camera.get_parameter(Control::UsbTraffic).unwrap();
+    camera.set_parameter(ControlType::UsbTraffic, 50.0).unwrap();
+    let traffic = camera.get_parameter(ControlType::UsbTraffic).unwrap();
     assert!((traffic - 50.0).abs() < f64::EPSILON);
 
     camera.close().unwrap();
@@ -1139,11 +1422,11 @@ fn test_offset_control() {
     camera.open().unwrap();
 
     // Check offset control is available
-    assert!(camera.is_control_available(Control::Offset).is_some());
+    assert!(camera.is_control_available(ControlType::Offset).is_some());
 
     // Get and set offset
-    camera.set_parameter(Control::Offset, 10.0).unwrap();
-    let offset = camera.get_parameter(Control::Offset).unwrap();
+    camera.set_parameter(ControlType::Offset, 10.0).unwrap();
+    let offset = camera.get_parameter(ControlType::Offset).unwrap();
     assert!((offset - 10.0).abs() < f64::EPSILON);
 
     camera.close().unwrap();
@@ -1163,12 +1446,13 @@ fn test_image_with_custom_generator() {
     camera.begin_live().unwrap();
 
     let buffer_size = camera.get_image_size().unwrap();
-    let image = camera.get_live_frame(buffer_size).unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Image should have expected dimensions
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
-    assert!(!image.data.is_empty());
+    assert_eq!(frame_bytes(&image), buffer_size);
 
     camera.end_live().unwrap();
     camera.close().unwrap();
@@ -1190,9 +1474,9 @@ fn test_filter_wheel_close_then_reopen() {
     fw.open().unwrap();
     assert!(fw.is_open().unwrap());
 
-    // Set position
+    // Set position; the move settles over a few polls (poll-to-arrival).
     fw.set_fw_position(2).unwrap();
-    assert_eq!(fw.get_fw_position().unwrap(), 2);
+    fw_arrive(&fw, 2);
 
     // Close
     fw.close().unwrap();
@@ -1207,4 +1491,102 @@ fn test_filter_wheel_close_then_reopen() {
     assert!(pos < 10); // Valid position range
 
     fw.close().unwrap();
+}
+
+// The tests below preserve coverage of behaviour formerly reached only through
+// the deleted FFI-mock unit tests (src/tests/), re-expressed against the
+// simulated backend (the mock layer is gone — see the convention plan, Phase 4).
+
+#[test]
+fn test_simulated_sdk_version_is_the_targeted_release() {
+    // The simulated `Sdk::version()` returns the synthetic SDK release this crate
+    // targets — previously only asserted (on the FFI byte-decode) by the deleted
+    // `sdk_tests::version_success`.
+    let sdk = Sdk::new_simulated();
+    assert_eq!(
+        sdk.version().unwrap(),
+        SDKVersion {
+            year: 26,
+            month: 6,
+            day: 4,
+            subday: 0,
+        }
+    );
+}
+
+#[test]
+fn test_get_live_frame_without_begin_live_errors() {
+    // Open + init in live mode but never call `begin_live`: `get_live_frame`
+    // must fail (formerly `camera_tests::get_live_frame_fail`).
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+
+    let buffer_size = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    assert!(camera.get_live_frame(&mut buf).is_err());
+
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_get_single_frame_without_exposure_errors() {
+    // Open + init in single-frame mode but never start an exposure: no image is
+    // captured, so `get_single_frame` must fail (formerly
+    // `camera_tests::get_single_frame_fail`).
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::SingleFrameMode).unwrap();
+    camera.init().unwrap();
+
+    let buffer_size = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; buffer_size];
+    assert!(camera.get_single_frame(&mut buf).is_err());
+
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_get_live_frame_rejects_undersized_buffer() {
+    // A buffer smaller than the frame is rejected with `BufferTooSmall` before any
+    // pixels are written — the caller-owned-buffer bounds check (Phase 5).
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+    camera.begin_live().unwrap();
+
+    let need = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; need - 1];
+    let error = camera.get_live_frame(&mut buf).unwrap_err();
+    assert_eq!(
+        error,
+        QHYError::BufferTooSmall {
+            needed: need,
+            got: need - 1,
+        }
+    );
+
+    camera.end_live().unwrap();
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_filter_wheel_methods_error_when_camera_has_no_cfw_control() {
+    // A `FilterWheel` wrapping an OPEN camera whose config has no CFW control:
+    // every wheel method must fail on the control-unavailable branch — distinct
+    // from the not-open branch. Preserves the three deleted
+    // `filter_wheel_tests::*_fail_no_filter_wheel` cases.
+    let config = SimulatedCameraConfig::default(); // no `.with_filter_wheel(..)`
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    let fw = FilterWheel::new(camera);
+
+    assert!(fw.get_number_of_filters().is_err());
+    assert!(fw.get_fw_position().is_err());
+    assert!(fw.set_fw_position(1).is_err());
 }

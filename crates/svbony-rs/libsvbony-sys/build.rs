@@ -56,7 +56,7 @@ fn main() {
     // `#[cfg(not(feature = "simulation"))]` — links with no SVBony SDK
     // installed. Used by SDK-less dev builds, the sim-only CI jobs
     // (test/conformu/safety), and — until an `install-svbony-sdk` CI
-    // provisioning action exists (see docs/plans/svbony-camera.md Phase C) —
+    // provisioning action exists (see docs/plans/archive/svbony-camera.md Phase C) —
     // the default local Bazel build too (crates/svbony-rs/libsvbony-sys/BUILD.bazel
     // bakes this env var into its `cargo_build_script`, unlike
     // libqhyccd-sys/libzwo-sys's Bazel targets, which link the real,
@@ -91,7 +91,7 @@ fn main() {
             // just a `mac64` (Intel) blob. No `mac_arm64` blob has been
             // confirmed via that source as of SDK 1.13.4 (SVBony's own direct
             // SDK download has not yet been byte-verified — see
-            // docs/plans/svbony-camera.md "Packaging"), so this link may fail
+            // docs/plans/archive/svbony-camera.md "Packaging"), so this link may fail
             // on Apple Silicon until that is checked/staged.
             println!("cargo:rustc-link-search=native=/usr/local/lib");
             let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();

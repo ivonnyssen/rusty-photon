@@ -1,5 +1,5 @@
 //! Gain, offset, and readout-mode steps (`@wip` — Phase E,
-//! docs/plans/svbony-camera.md; `Offset` maps to `SVB_BLACK_LEVEL`).
+//! docs/plans/archive/svbony-camera.md; `Offset` maps to `SVB_BLACK_LEVEL`).
 
 use cucumber::{then, when};
 
