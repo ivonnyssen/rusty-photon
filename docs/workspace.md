@@ -289,6 +289,80 @@ single-consumer (e.g. `libzwo-sys`'s `bindgen` build-dep) or when the workspace
 pin would force an unwanted feature (e.g. `qhyccd-rs` keeps `tracing-subscriber`
 local to avoid the workspace's `env-filter`).
 
+### Duplicate transitive versions
+
+Dependabot bumps one package at a time, so `Cargo.lock` accumulates several
+versions of the same transitive crate. To list them:
+
+```sh
+cargo tree --workspace --target all -d
+```
+
+`--target all` matters — a large part of the split is Windows-only and is
+invisible from a Linux host.
+
+A duplicate is only *resolvable* when every consumer's requirement admits one
+common version, which in practice means some consumer carries an open range
+(`windows-sys = ">=0.52, <0.62"`). Duplicates whose consumers pin incompatible
+majors (`^0.22` vs `^0.23`) cannot be collapsed by a lock refresh at all — they
+need an upstream release or a dependency swap. Most of this workspace's
+duplicates are that second kind: either an ecosystem mid-migration (`rand`
+0.8/0.9/0.10, `syn` 2/3, `thiserror` 1/2, `hashbrown`, `getrandom`) or a single
+crate holding an old major open (`serialport` → `nix 0.26` + `windows-sys 0.52`,
+`ring` → `windows-sys 0.52`, `system-configuration` → `core-foundation 0.9`,
+`cloudflare` → `reqwest 0.12`). `cargo tree` is the authority on which consumers
+actually pull a given version:
+
+```sh
+cargo tree --workspace --target all -i windows-sys@0.52.0 --depth 1
+```
+
+To see the requirements behind that, read the `req` of each dependent — but
+filter the edges Cargo actually resolves, or the answer is wrong:
+
+```sh
+cargo metadata --format-version 1 --all-features | \
+  jq -r '.packages[] | . as $p | .dependencies[] |
+         select(.name=="windows-sys" and .kind==null and .optional==false) |
+         "\(.req)  <- \($p.name) \($p.version)"' | sort -u
+```
+
+`.kind` is `"dev"`, `"build"`, or null for a normal dependency. Cargo does not
+resolve dev-dependencies of non-workspace packages, and an unactivated
+`optional` dependency constrains nothing either — so without both filters the
+recipe reports crates that hold nothing as blockers.
+
+Chasing a duplicate is not free. Forcing an open-range consumer onto a different
+version with `cargo update -p <crate> --recursive` can move *other* crates
+**down** onto an older shared version, which is worse than the split it was
+meant to fix. Take the refresh only when `cargo tree --workspace --target all -d`
+shows the version count actually dropping.
+
+### Holding a transitive dependency back
+
+A `=x.y.z` requirement in `[workspace.dependencies]` constrains only the crates
+a workspace member names directly. To hold a **transitive** crate, pin it in
+`Cargo.lock`:
+
+```sh
+# Order matters: rust-embed-impl 8.12 requires rust-embed-utils ^8.12, so
+# pinning utils first aborts with a resolver error. Pin impl, then utils.
+cargo update -p rust-embed-impl  --precise 8.11.0
+cargo update -p rust-embed-utils --precise 8.11.0
+```
+
+Pinning only one of a lockstep pair is not enough either: with `impl` alone held,
+`utils` stays on 8.12 and still drags the `digest 0.11` chain in. Verify with
+`cargo tree --workspace --target all -i digest` showing a single version.
+
+A plain `cargo update` undoes all of it, so re-apply the pins (and re-run the
+Bazel repin from CLAUDE.md rule 10) whenever the lock is refreshed. Current
+holds:
+
+| Crate | Held at | Why |
+|---|---|---|
+| `rust-embed`, `rust-embed-impl`, `rust-embed-utils` | 8.11.0 | `rust-embed` embeds the Fluent translation assets into ppba-driver's binary. From 8.12, `rust-embed-utils` pulls `sha2`/`digest 0.11` in beside the `digest 0.10` chain `argon2`/`blake2` already bring. ppba-driver is the only service with a direct `rust-embed` dependency, so it is the only package that gets the duplicate — and its two largest test targets then fail `rustc` E0463 "can't find crate" under `bazel / windows-latest`, deterministically. The duplicate graph is the confirmed cause: bumping `rust-embed` to 8.12 together with `argon2` 0.6 / `blake2` 0.11, which puts the whole graph on `digest 0.11`, builds and tests green on Windows. **Lift the hold when `argon2` 0.6 and `blake2` 0.11 go stable** — both are release-candidate only today — and bump all three together. |
+
 ### Pre-commit hooks
 
 The workspace uses `cargo-husky` as a dev-dependency configured with
@@ -413,6 +487,17 @@ fields, and internal timing arithmetic are unaffected.
   drop the fork/git dependency in favor of upstream `main` directly. The old
   `integration` branch, which used to combine several open PRs, is retired now
   that all but #14 have merged upstream.
+- `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
+  Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
+  pkg-config for a system AWS-LC and links it dynamically when it finds one —
+  which would give the shipped `.deb`/`.rpm` (built by
+  `scripts/build-packages.sh` with a plain `cargo build --release`) a runtime
+  dependency the field rig does not have. Bazel does not read that file, so the
+  same pin is applied there through the `aws-lc-sys` `crate.annotation` in
+  `MODULE.bazel`, which additionally keeps the build-script action hermetic:
+  none of the probed host state is part of its action key, so an unpinned build
+  on a host that has AWS-LC installed would publish a dynamically-linked
+  artifact into the shared disk and remote caches.
 
 ### Bazel
 
