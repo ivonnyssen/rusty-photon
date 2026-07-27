@@ -39,10 +39,18 @@ Two details of the trait surface:
   "every element of the array (or key of the object) at this position" — e.g.
   `/equipment/cameras/*/auth/password` redacts the password of every configured
   camera. Patterns are expanded against the concrete config value at
-  redact/persist time; exact (no-`*`) pointers behave as before. (Entries are
-  paired by index between the submitted and on-disk values, so a submission
-  that *reorders* an array pairs secrets positionally — acceptable because the
-  UI always round-trips the whole config.)
+  redact/persist time; exact (no-`*`) pointers behave as before. When a
+  round-tripped sentinel is carried forward on persist, an array element is
+  paired with its on-disk prior **by identity, not by index**: a `*` over an
+  array re-locates the element whose `id` member matches the submitted one, so
+  a submission that removes or reorders sibling entries never pairs a sentinel
+  with another entry's stored secret. A submitted `id` with no on-disk match is
+  treated as a rename when it is the *only* change to the array's id sequence
+  (same length, every other position's id pairs up) — the entry keeps its
+  stored secret; in any other case there is no prior and the apply fails loudly
+  with `status:"invalid"` (the same error as a sentinel with nothing stored),
+  never a silent cross-pairing. Elements without a string `id` keep positional
+  pairing (no driver ships such a shape today).
 - **`ApplyDisposition`.** `Reload` (the default, used by all six drivers) means
   changed fields take effect via in-process reload: they are reported in
   `reload[]` with `status:"applying"`. `Restart` is for services with **no**

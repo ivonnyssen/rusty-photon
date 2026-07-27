@@ -104,8 +104,9 @@ pub trait ConfigurableDriver {
     /// A pointer segment may be the wildcard `*`, matching every element of
     /// the array (or every value of the object) at that position — e.g.
     /// `/equipment/cameras/*/auth/password` names that leaf in every camera
-    /// entry. See [`expand_secret_pointer`] for the expansion semantics and
-    /// the array-reordering limitation.
+    /// entry. See [`expand_secret_pointer`] for the expansion semantics;
+    /// on persist, array elements pair with their stored prior by `id`,
+    /// not by index.
     fn secret_pointers() -> &'static [&'static str];
 
     /// Dotted paths currently pinned by a CLI override; surfaced in
@@ -300,15 +301,17 @@ pub fn config_apply<D: ConfigurableDriver>(
     // nothing stored there is nothing to keep, so honouring it would bake the
     // sentinel in as the real secret. Reject as a domain error. Wildcard
     // patterns expand against the *submitted* value, and each concrete
-    // pointer is looked up at the same position in the file (positional
-    // pairing — see [`expand_secret_pointer`] on array reordering).
+    // pointer pairs with its stored prior by identity — see
+    // [`prior_secret_pointer`].
     for pattern in D::secret_pointers() {
         for ptr in expand_secret_pointer(pattern, &submitted_value) {
-            if redacted_secret_without_prior(&submitted_value, &file_current, &ptr) {
+            if sentinel_at(&submitted_value, &ptr)
+                && prior_secret(pattern, &ptr, &submitted_value, &file_current).is_none()
+            {
                 errors.push(FieldError {
                     path: pointer_to_dotted(&ptr),
                     msg:
-                        "cannot keep an unchanged secret when none is stored; provide the password hash"
+                        "cannot keep an unchanged secret when none is stored; provide the secret value"
                             .to_string(),
                 });
             }
@@ -377,12 +380,9 @@ pub fn config_apply<D: ConfigurableDriver>(
 /// indices), so a pattern without `*` expands to itself when the pointer
 /// resolves and to nothing otherwise.
 ///
-/// **Array-reordering limitation (accepted):** wildcard matches over arrays
-/// are positional. `config_apply` expands patterns against the
-/// submitted/to-write value and looks each concrete pointer up **by the same
-/// index** in the on-disk file, so reordering array entries between
-/// `config.get` and `config.apply` pairs secrets with the wrong prior entry.
-/// A reorder that matters must resubmit real secrets instead of sentinels.
+/// Expansion names leaves in **one** value; pairing a round-tripped sentinel
+/// with its stored prior across the submitted and on-disk values is
+/// `prior_secret_pointer`'s job (array elements pair by `id`, not index).
 pub fn expand_secret_pointer(pattern: &str, value: &Value) -> Vec<String> {
     if pattern.is_empty() {
         // `Value::pointer("")` resolves to the root.
@@ -448,22 +448,100 @@ fn redact_value(value: &mut Value, secret_pointers: &[&str]) {
     }
 }
 
-/// Whether `submitted` carries the redaction sentinel at `secret_pointer` while
-/// `file_current` has no stored string there to restore.
-fn redacted_secret_without_prior(
+/// Whether `value` carries the redaction sentinel at `pointer`.
+fn sentinel_at(value: &Value, pointer: &str) -> bool {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .is_some_and(|s| s == REDACTED)
+}
+
+/// The stored secret paired with a round-tripped sentinel: resolve the
+/// file-side pointer for `concrete` (see [`prior_secret_pointer`]) and return
+/// the string stored there. `None` means "nothing stored to keep" — the
+/// caller rejects the sentinel as a domain error rather than persisting it.
+fn prior_secret(
+    pattern: &str,
+    concrete: &str,
     submitted: &Value,
     file_current: &Value,
-    secret_pointer: &str,
-) -> bool {
-    let submitted_is_sentinel = submitted
-        .pointer(secret_pointer)
-        .and_then(Value::as_str)
-        .is_some_and(|s| s == REDACTED);
-    submitted_is_sentinel
-        && file_current
-            .pointer(secret_pointer)
-            .and_then(Value::as_str)
-            .is_none()
+) -> Option<Value> {
+    let file_pointer = prior_secret_pointer(pattern, concrete, submitted, file_current)?;
+    file_current
+        .pointer(&file_pointer)
+        .filter(|stored| stored.is_string())
+        .cloned()
+}
+
+/// Map a concrete submitted-side secret pointer onto the file-side pointer
+/// naming the same **logical** leaf. Literal segments (and `*` matches over
+/// object keys) resolve to the same token on both sides; a `*` match over an
+/// **array** re-locates the file element by identity ([`paired_file_index`])
+/// instead of by index, so a submission that removes or reorders sibling
+/// entries between `config.get` and `config.apply` never pairs a sentinel
+/// with another entry's stored secret. `None` when the file has no
+/// counterpart for the submitted element.
+fn prior_secret_pointer(
+    pattern: &str,
+    concrete: &str,
+    submitted: &Value,
+    file_current: &Value,
+) -> Option<String> {
+    let pattern_segments: Vec<&str> = pattern.split('/').skip(1).collect();
+    let concrete_segments: Vec<&str> = concrete.split('/').skip(1).collect();
+    // `expand_secret_pointer` emits one concrete segment per pattern segment.
+    if pattern_segments.len() != concrete_segments.len() {
+        return None;
+    }
+    let mut submitted_node = submitted;
+    let mut file_node = file_current;
+    let mut file_pointer = String::new();
+    for (pattern_segment, concrete_segment) in pattern_segments.iter().zip(&concrete_segments) {
+        let file_segment = match (*pattern_segment, submitted_node, file_node) {
+            ("*", Value::Array(submitted_items), Value::Array(file_items)) => {
+                let index: usize = concrete_segment.parse().ok()?;
+                paired_file_index(submitted_items, file_items, index)?.to_string()
+            }
+            _ => (*concrete_segment).to_string(),
+        };
+        submitted_node = submitted_node.pointer(&format!("/{concrete_segment}"))?;
+        file_node = file_node.pointer(&format!("/{file_segment}"))?;
+        file_pointer.push('/');
+        file_pointer.push_str(&file_segment);
+    }
+    Some(file_pointer)
+}
+
+/// An array element's identity for secret pairing: its `"id"` member.
+fn element_id(element: &Value) -> Option<&str> {
+    element.get("id").and_then(Value::as_str)
+}
+
+/// The file-side index paired with `submitted[index]` for a secret-pointer
+/// `*` over an array. Elements pair by id: the file element with the same id,
+/// wherever it moved. A submitted id absent from the file pairs positionally
+/// only when it is the array's lone id change (same length, every other
+/// position's id equal on both sides) — a renamed entry keeps its stored
+/// secret, while a removal or reorder alongside the unknown id yields `None`
+/// (no prior, a loud apply error) rather than a silent cross-pairing.
+/// Elements without a string id pair positionally.
+fn paired_file_index(submitted: &[Value], file: &[Value], index: usize) -> Option<usize> {
+    let Some(id) = submitted.get(index).and_then(element_id) else {
+        return (index < file.len()).then_some(index);
+    };
+    if let Some(found) = file
+        .iter()
+        .position(|element| element_id(element) == Some(id))
+    {
+        return Some(found);
+    }
+    let lone_id_change = submitted.len() == file.len()
+        && submitted.iter().zip(file).enumerate().all(
+            |(position, (submitted_element, file_element))| {
+                position == index || element_id(submitted_element) == element_id(file_element)
+            },
+        );
+    lone_id_change.then_some(index)
 }
 
 /// Build the value to persist from a validated `submitted` config value:
@@ -499,19 +577,17 @@ fn build_persist_value(
     }
 
     // Wildcard patterns expand against the to-write value; each concrete
-    // sentinel is restored from the same pointer in the file (positional
-    // pairing — see `expand_secret_pointer` on array reordering).
+    // sentinel is restored from the file entry it pairs with by identity
+    // (see `prior_secret_pointer` — array elements pair by id, not index).
     for pattern in secret_pointers {
         for secret_pointer in expand_secret_pointer(pattern, &to_write) {
-            let is_sentinel = to_write
-                .pointer(&secret_pointer)
-                .and_then(Value::as_str)
-                .is_some_and(|s| s == REDACTED);
-            if is_sentinel {
-                if let (Some(file_secret), Some(slot)) = (
-                    file_current.pointer(&secret_pointer).cloned(),
-                    to_write.pointer_mut(&secret_pointer),
-                ) {
+            if !sentinel_at(&to_write, &secret_pointer) {
+                continue;
+            }
+            if let Some(file_secret) =
+                prior_secret(pattern, &secret_pointer, &to_write, file_current)
+            {
+                if let Some(slot) = to_write.pointer_mut(&secret_pointer) {
                     *slot = file_secret;
                 }
             }
@@ -998,7 +1074,7 @@ mod tests {
             vec![FieldError {
                 path: "server.auth.password_hash".to_string(),
                 msg:
-                    "cannot keep an unchanged secret when none is stored; provide the password hash"
+                    "cannot keep an unchanged secret when none is stored; provide the secret value"
                         .to_string(),
             }]
         );
@@ -1281,10 +1357,176 @@ mod tests {
             vec![FieldError {
                 path: "cameras.1.auth.password".to_string(),
                 msg:
-                    "cannot keep an unchanged secret when none is stored; provide the password hash"
+                    "cannot keep an unchanged secret when none is stored; provide the secret value"
                         .to_string(),
             }],
             "only element 1 (no prior) errors; element 0's sentinel is fine"
+        );
+    }
+
+    // --- identity pairing of array-element sentinels ---------------------------
+
+    /// Run a fleet `config_apply` against a file seeded with `file_cfg` and
+    /// return the response plus the file's JSON afterwards (unchanged when the
+    /// apply is rejected).
+    fn fleet_apply(file_cfg: &FleetConfig, submitted: &Value) -> (ConfigApplyResponse, Value) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        save(&path, &serde_json::to_value(file_cfg).unwrap()).unwrap();
+        let resp =
+            config_apply::<FleetDriver>(&path, &(), file_cfg, &submitted.to_string()).unwrap();
+        let on_disk = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        (resp, on_disk)
+    }
+
+    /// The submitted shape a UI produces: the redacted `config.get` round-trip
+    /// of `file_cfg` (every stored password replaced by the sentinel).
+    fn redacted_round_trip(file_cfg: &FleetConfig) -> Value {
+        let mut cfg = file_cfg.clone();
+        for camera in &mut cfg.cameras {
+            if let Some(auth) = &mut camera.auth {
+                auth.password = REDACTED.to_string();
+            }
+        }
+        serde_json::to_value(&cfg).unwrap()
+    }
+
+    #[test]
+    fn config_apply_removing_the_first_camera_keeps_the_survivors_own_secret() {
+        // The equipment-page delete flow: round-trip the redacted config with
+        // entry 0 removed, shifting cam-1 down to index 0. Positional pairing
+        // would persist cam-0's stored password into cam-1.
+        let file_cfg = fleet_config(&[Some("stored-0"), Some("stored-1")]);
+        let mut submitted = redacted_round_trip(&file_cfg);
+        submitted["cameras"].as_array_mut().unwrap().remove(0);
+
+        let (resp, on_disk) = fleet_apply(&file_cfg, &submitted);
+
+        assert_eq!(resp.errors, vec![]);
+        assert_eq!(
+            on_disk.pointer("/cameras/0/id").and_then(Value::as_str),
+            Some("cam-1")
+        );
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-1"),
+            "the survivor must keep its own secret, not the deleted entry's"
+        );
+    }
+
+    #[test]
+    fn config_apply_reordering_cameras_keeps_each_secret_with_its_entry() {
+        let file_cfg = fleet_config(&[Some("stored-0"), Some("stored-1")]);
+        let mut submitted = redacted_round_trip(&file_cfg);
+        submitted["cameras"].as_array_mut().unwrap().reverse();
+
+        let (resp, on_disk) = fleet_apply(&file_cfg, &submitted);
+
+        assert_eq!(resp.errors, vec![]);
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-1"),
+            "cam-1 moved to index 0 and must carry its own secret along"
+        );
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/1/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-0")
+        );
+    }
+
+    #[test]
+    fn config_apply_lone_rename_keeps_the_entrys_stored_secret() {
+        // Renaming one entry in place is the array's lone id change, so the
+        // entry pairs positionally and keeps its credential.
+        let file_cfg = fleet_config(&[Some("stored-0"), Some("stored-1")]);
+        let mut submitted = redacted_round_trip(&file_cfg);
+        submitted["cameras"][0]["id"] = json!("cam-renamed");
+
+        let (resp, on_disk) = fleet_apply(&file_cfg, &submitted);
+
+        assert_eq!(resp.errors, vec![]);
+        assert_eq!(
+            on_disk.pointer("/cameras/0/id").and_then(Value::as_str),
+            Some("cam-renamed")
+        );
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-0")
+        );
+    }
+
+    #[test]
+    fn config_apply_rename_alongside_removal_is_rejected_not_cross_paired() {
+        // An unknown id in an array whose shape changed in other ways too has
+        // no unambiguous prior — reject loudly, never guess positionally.
+        let file_cfg = fleet_config(&[Some("stored-0"), Some("stored-1")]);
+        let submitted = json!({
+            "cameras": [
+                { "id": "cam-renamed", "auth": { "username": "obs", "password": REDACTED } }
+            ],
+            "name": "fleet"
+        });
+
+        let (resp, on_disk) = fleet_apply(&file_cfg, &submitted);
+
+        assert_eq!(resp.status, ApplyStatus::Invalid);
+        assert_eq!(resp.errors.len(), 1, "{:?}", resp.errors);
+        assert_eq!(resp.errors[0].path, "cameras.0.auth.password");
+        // The file is untouched — both stored secrets survive.
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-0")
+        );
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/1/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-1")
+        );
+    }
+
+    #[test]
+    fn build_persist_value_pairs_id_less_array_elements_positionally() {
+        // Elements without an "id" member keep the positional pairing (no
+        // driver ships such a shape; the behaviour is pinned regardless).
+        let submitted = json!({ "clients": [ { "password": REDACTED } ] });
+        let file = json!({ "clients": [ { "password": "stored" } ] });
+        let (to_write, _) = build_persist_value(&submitted, &file, &[], &["/clients/*/password"]);
+        assert_eq!(
+            to_write
+                .pointer("/clients/0/password")
+                .and_then(Value::as_str),
+            Some("stored")
+        );
+    }
+
+    #[test]
+    fn build_persist_value_pairs_object_wildcard_secrets_by_key() {
+        // A `*` over an object pairs by key, so dropping a sibling key cannot
+        // rewire the survivor's secret.
+        let submitted = json!({ "clients": { "beta": { "password": REDACTED } } });
+        let file = json!({
+            "clients": {
+                "alpha": { "password": "pa" },
+                "beta": { "password": "pb" }
+            }
+        });
+        let (to_write, _) = build_persist_value(&submitted, &file, &[], &["/clients/*/password"]);
+        assert_eq!(
+            to_write
+                .pointer("/clients/beta/password")
+                .and_then(Value::as_str),
+            Some("pb")
         );
     }
 

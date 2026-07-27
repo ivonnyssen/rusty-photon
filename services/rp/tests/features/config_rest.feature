@@ -11,7 +11,10 @@ Feature: Plain-REST configuration endpoints
   status "invalid" and errors[], leaving the file untouched; a malformed
   JSON body is HTTP 400; a body over axum's default 2 MiB request limit is
   HTTP 413. Secrets are redacted to the sentinel "********";
-  submitting the sentinel back means "keep the stored secret unchanged".
+  submitting the sentinel back means "keep the stored secret unchanged" — and
+  an equipment-array element keeps ITS OWN stored secret, paired by the
+  entry's id rather than its array position, so removing or reordering
+  sibling entries never rewires a credential onto the wrong device.
   These endpoints spawn rp with a temp config only — no simulator needed.
 
   Scenario: GET /api/config redacts a stored device password
@@ -86,6 +89,27 @@ Feature: Plain-REST configuration endpoints
     Then the config response status should be 200
     And the apply status should be "ok"
     And the config file JSON at "/equipment/cameras/0/auth/password" should be "hunter2"
+
+  Scenario: Removing the first camera keeps the second camera's own stored password
+    Given a temp rp config with cameras "cam-one" and "cam-two" whose stored auth passwords are "first-secret" and "second-secret"
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after removing camera "cam-one"
+    Then the config response status should be 200
+    And the apply status should be "ok"
+    And the config file JSON at "/equipment/cameras/0/id" should be "cam-two"
+    And the config file JSON at "/equipment/cameras/0/auth/password" should be "second-secret"
+
+  Scenario: Renaming a camera keeps its stored password
+    Given a temp rp config with cameras "cam-one" and "cam-two" whose stored auth passwords are "first-secret" and "second-secret"
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/cameras/0/id" to "cam-renamed"
+    Then the config response status should be 200
+    And the apply status should be "ok"
+    And the config file JSON at "/equipment/cameras/0/id" should be "cam-renamed"
+    And the config file JSON at "/equipment/cameras/0/auth/password" should be "first-secret"
+    And the config file JSON at "/equipment/cameras/1/auth/password" should be "second-secret"
 
   Scenario: PUT /api/config with an off-grid cooler target is rejected and the file is untouched
     Given a temp rp config with a camera whose stored auth password is "hunter2"
