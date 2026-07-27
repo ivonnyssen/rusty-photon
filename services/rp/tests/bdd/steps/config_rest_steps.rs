@@ -101,6 +101,31 @@ fn temp_config_with_camera_password(world: &mut RpWorld, password: String) {
     );
 }
 
+#[given(
+    expr = "a temp rp config with cameras {string} and {string} whose stored auth passwords are {string} and {string}"
+)]
+fn temp_config_with_two_camera_passwords(
+    world: &mut RpWorld,
+    first_id: String,
+    second_id: String,
+    first_password: String,
+    second_password: String,
+) {
+    let camera = |id: &str, password: &str| {
+        serde_json::json!({
+            "id": id,
+            "alpaca_url": "http://127.0.0.1:1",
+            "auth": { "username": "observatory", "password": password }
+        })
+    };
+    write_scenario_config(
+        world,
+        serde_json::json!({
+            "cameras": [camera(&first_id, &first_password), camera(&second_id, &second_password)]
+        }),
+    );
+}
+
 #[given("rp is started with that config file")]
 async fn rp_started_with_config_file(world: &mut RpWorld) {
     let path = config_rest_path(world);
@@ -172,6 +197,26 @@ async fn put_config_with_site_latitude(world: &mut RpWorld, latitude: f64) {
         "latitude_degrees": latitude,
         "longitude_degrees": 0.0
     });
+    send_put_config(world, config.to_string()).await;
+}
+
+#[when(expr = "I PUT \\/api\\/config with the fetched config after removing camera {string}")]
+async fn put_config_with_camera_removed(world: &mut RpWorld, id: String) {
+    let mut config = world
+        .fetched_config
+        .clone()
+        .expect("no fetched config — add a 'When I GET /api/config' step first");
+    let cameras = config
+        .pointer_mut("/equipment/cameras")
+        .and_then(Value::as_array_mut)
+        .expect("fetched config carries an equipment.cameras array");
+    let before = cameras.len();
+    cameras.retain(|camera| camera.get("id").and_then(Value::as_str) != Some(id.as_str()));
+    assert_eq!(
+        cameras.len(),
+        before - 1,
+        "no camera with id {id} in the fetched config"
+    );
     send_put_config(world, config.to_string()).await;
 }
 

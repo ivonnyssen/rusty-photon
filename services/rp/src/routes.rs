@@ -1167,6 +1167,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_put_removing_the_first_camera_keeps_the_seconds_password_on_disk() {
+        let config: crate::config::Config = serde_json::from_value(serde_json::json!({
+            "session": { "data_directory": "/tmp/rp-test" },
+            "equipment": {
+                "cameras": [
+                    {
+                        "id": "cam-one",
+                        "alpaca_url": "http://127.0.0.1:1",
+                        "auth": { "username": "obs", "password": "first-secret" }
+                    },
+                    {
+                        "id": "cam-two",
+                        "alpaca_url": "http://127.0.0.1:1",
+                        "auth": { "username": "obs", "password": "second-secret" }
+                    }
+                ]
+            },
+            "server": { "port": 0 }
+        }))
+        .unwrap();
+        let (state, _dir, path) = config_test_state(config);
+        // The equipment page's delete flow: PUT the redacted config with
+        // camera 0 removed, which shifts cam-two down to index 0. The
+        // sentinel must pair with cam-two's stored password by id, not with
+        // the deleted camera's by position.
+        let mut submitted = serde_json::to_value(&*state.config).unwrap();
+        submitted["equipment"]["cameras"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        submitted["equipment"]["cameras"][0]["auth"]["password"] =
+            serde_json::json!(crate::config_actions::REDACTED);
+
+        let response = put_config(State(state), submitted.to_string()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "ok");
+
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk
+                .pointer("/equipment/cameras/0/id")
+                .and_then(Value::as_str),
+            Some("cam-two")
+        );
+        assert_eq!(
+            on_disk
+                .pointer("/equipment/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some("second-secret"),
+            "the surviving camera must keep its own password, not the deleted one's"
+        );
+    }
+
+    #[tokio::test]
     async fn config_put_unwritable_path_is_500() {
         // A read/persist failure surfaces as 500, not a panic. A regular
         // *file* as the path's parent fails on every platform (and even as
