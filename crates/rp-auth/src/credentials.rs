@@ -1,5 +1,3 @@
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 
 use crate::error::{AuthError, Result};
@@ -8,10 +6,9 @@ use crate::error::{AuthError, Result};
 ///
 /// Returns the hash in PHC string format (e.g. `$argon2id$v=19$m=19456,t=2,p=1$...`).
 pub fn hash_password(password: &str) -> Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let hash = argon2
-        .hash_password(password.as_bytes(), &salt)
+    let hash: PasswordHash = argon2
+        .hash_password(password.as_bytes())
         .map_err(|e| AuthError::HashingError(e.to_string()))?;
     Ok(hash.to_string())
 }
