@@ -2,17 +2,22 @@
 
 ## Status
 
-**Phase 0 done (2026-05-15, re-verified 2026-05-16).** Round-trip
-`:e1\r` → `=03300C\r` confirmed against a real Star Adventurer GTi on
-an ESP32-S3-DevKitC-1; cold-boot to first response **~1.6 s** with
-octal-PSRAM init enabled (the `open` → response leg is ~400 ms). See
-[`firmware/spikes/usb-cdc-hello/README.md`](../../firmware/spikes/usb-cdc-hello/README.md)
-for the captured monitor log and reproducer. Phases 1+ not started.
+**Status: OBSOLETE (archived 2026-07-26).** Shelved after Phase 0 to
+cut distraction and bit-rot; the port is not going forward at this
+time and nothing supersedes it. Phase 0 (USB-CDC host spike) was
+delivered by PR #211 (commit `ab4a6b2a`) and hardware-verified against
+a real Star Adventurer GTi (round-trip `:e1\r` → `=03300C\r` on an
+ESP32-S3-DevKitC-1, 2026-05-15, re-verified 2026-05-16); Phases 1–9
+were never started and `crates/skywatcher-motor-protocol` was never
+touched. The `firmware/` tree was removed when this plan was archived
+— recover it with `git show ab4a6b2a` (or `git log -- firmware/`).
+Everything Phase 0 taught us is preserved in the
+[appendix](#appendix-phase-0-findings) below.
 
 This plan captures the design discussion from the conversation on
 2026-05-11 so future sessions can pick it up without re-deriving the
 architecture. Parent service:
-[`docs/services/star-adventurer-gti.md`](../services/star-adventurer-gti.md).
+[`docs/services/star-adventurer-gti.md`](../../services/star-adventurer-gti.md).
 
 ## Goal
 
@@ -367,7 +372,7 @@ portable.
    may hit cipher-suite gaps.
 5. **Bazel migration interaction.** Firmware crates won't have Bazel
    targets initially. The migration plan
-   ([`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md)) treats
+   ([`docs/plans/archive/bazel-migration.md`](bazel-migration.md)) treats
    non-Bazel crates as a known interim state, so this is fine — but
    document it as a follow-up.
 6. **Cert provisioning UX.** Users have to import a CA cert into their
@@ -389,14 +394,137 @@ portable.
 
 ## References
 
-- [`docs/services/star-adventurer-gti.md`](../services/star-adventurer-gti.md)
+- [`docs/services/star-adventurer-gti.md`](../../services/star-adventurer-gti.md)
   — parent design doc, source of truth for ASCOM mapping + protocol behaviour.
-- [`docs/references/skywatcher-motor-controller-command-set.md`](../references/skywatcher-motor-controller-command-set.md)
+- [`docs/references/skywatcher-motor-controller-command-set.md`](../../references/skywatcher-motor-controller-command-set.md)
   — wire-protocol reference + empirical findings from Phase 4 hardware
   bring-up.
-- [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md) — interaction
+- [`docs/plans/archive/bazel-migration.md`](bazel-migration.md) — interaction
   with the in-flight Bazel work.
 - [Embassy book](https://embassy.dev/book/) — async embedded Rust framework.
 - [esp-rs book](https://docs.esp-rs.org/book/) — Espressif Rust toolchain.
 - [picoserve docs](https://docs.rs/picoserve/) — no_std HTTP server.
 - [esp-mbedtls](https://github.com/esp-rs/esp-mbedtls) — TLS for ESP32.
+
+## Appendix: Phase 0 findings
+
+Preserved from the removed `firmware/` tree (its two READMEs, the
+manifests, and `src/main.rs` doc comments) so the spike's hard-won
+knowledge survives the deletion. The full working code is one
+`git show ab4a6b2a` away.
+
+### Outcome
+
+Round-trip confirmed against real hardware on 2026-05-15, re-verified
+post-fixes on 2026-05-16. Captured boot log from the final build:
+
+```
+I (1159) usb_cdc_hello: USB-CDC spike booting on ESP32-S3
+I (1169) usb_cdc_hello: installing USB host library
+I (1199) usb_cdc_hello: installing cdc_acm host driver
+I (1199) usb_cdc_hello: opening GTi (VID=0483 PID=5740)
+I (1599) usb_cdc_hello: → ":e1\r"
+I (1599) usb_cdc_hello: ← "=03300C"
+I (1599) usb_cdc_hello: alive
+```
+
+Cold boot to first round-trip: **1.6 s** (~1 s of which is octal-PSRAM
+init); the `open` → response leg is 400 ms. The mount reports type
+`0x03` (Star Adventurer GTi), firmware `0x30.0x0C` — the same banner
+the desktop driver gets. The three Phase 0 unknowns were all answered:
+
+- The ESP-IDF USB Host Library works on the ESP32-S3.
+- The managed `espressif/usb_host_cdc_acm` component links cleanly
+  when threaded through a local extras component (see below).
+- The GTi's STM32 Virtual COM Port (VID/PID `0483:5740`) enumerates at
+  full-speed and accepts bulk TX/RX at 115200 8N1 with DTR=RTS=1 — no
+  reset gymnastics required.
+
+### Build-wiring gotchas
+
+- esp-idf-sys synthesizes its own ESP-IDF "main" component and
+  **silently ignores** a bare `idf_component.yml` placed next to
+  `Cargo.toml`. The reliable path: declare a local ESP-IDF "extras"
+  component (`components/cdc_acm_pull/`) whose own
+  `idf_component.yml` pulls the managed component from the registry,
+  and point `[[package.metadata.esp-idf-sys.extra_components]]` at
+  that directory (with a `bindings_header` for the C API).
+- `ESP_IDF_SYS_ROOT_CRATE = "<crate>"` must be set in
+  `.cargo/config.toml` `[env]`: a virtual nested workspace reports no
+  `root_package` from `cargo metadata`, so esp-idf-sys otherwise
+  silently falls back to defaults (no extra components, no managed
+  deps).
+- `esp_idf_sdkconfig_defaults` in `[package.metadata.esp-idf-sys]`
+  resolves relative to the *nested workspace root*, not the crate
+  directory — the path must be workspace-relative or the file is
+  never read.
+- The public C name `cdc_acm_host_open` is a `_Generic` macro
+  dispatching between a legacy 5-arg form and a newer struct-based
+  form; bind the FFI directly to the resolved symbol with
+  `#[link_name = "cdc_acm_host_open_v1_dispatch"]`.
+- `usb_host_config_t`'s layout drifts across ESP-IDF versions (v5.3
+  added `root_port_unpowered`) — zero-init the struct and set only the
+  fields you use rather than pinning a field set.
+- `[profile.*]` must live at the nested-workspace root (Cargo ignores
+  profiles in member crates). Size-optimized output (`opt-level =
+  "s"`, `lto = true`, `codegen-units = 1`) is a net win — the link
+  step dominates ESP-IDF build time.
+- Rust API coverage: `esp-idf-svc` does not wrap the CDC-ACM host
+  driver — the driver entry points were declared `extern "C"` by hand.
+  Versions used: esp-idf-sys 0.36, esp-idf-svc 0.51, embuild 0.33,
+  `ESP_IDF_VERSION = "v5.3.1"`, target `xtensa-esp32s3-espidf`,
+  toolchain `channel = "esp"`.
+
+### sdkconfig essentials
+
+- `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256` — the default 64 is
+  too small for the GTi's enumeration descriptors plus line-coding
+  control transfers.
+- `CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192` — the USB host event loop
+  sits on FreeRTOS and blocking calls run from main.
+- Pin the flash size to the actual board variant
+  (`CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y` for N8R8; 16MB for N16R8), plus
+  `CONFIG_SPIRAM=y` + `CONFIG_SPIRAM_MODE_OCT=y`.
+- USB-hub enumeration (`CONFIG_USB_HOST_EXT_HUB_SUPPORT`) is
+  experimental in IDF v5.3 and unnecessary for direct-attached
+  single-device topologies.
+
+### Toolchain + bench
+
+One-time install: `cargo install espup espflash ldproxy --locked`,
+then `espup install` (Xtensa rustc fork + LLVM + GCC, ~2 GB) and
+`source ~/export-esp.sh` in the shell rc. The first build also
+compiles the ESP-IDF C framework (~15 min, cached in `~/.espressif`).
+`cargo run --release` flashes and opens the monitor via `espflash`.
+
+Bench facts worth remembering:
+
+- Only one USB host at a time — while the ESP32 has the mount
+  enumerated, the workstation can't see it (and vice versa).
+- The DevKitC-1 has two USB-C ports: **USB** (native OTG, host to the
+  mount) and **UART** (CP2102 bridge, flashing + monitor at 115200
+  8N1). Cabling them backwards is the top failure mode.
+- The dev board sourcing VBUS as host is harmless — the GTi is
+  self-powered.
+
+### Failure-mode crib sheet
+
+| Symptom | Likely cause | First thing to try |
+|---|---|---|
+| `cdc_acm_host_open failed: rc=0x103` (`ESP_ERR_TIMEOUT`) | device not enumerated | check the cable goes into the **USB** port not the **UART** one; check `lsusb` from the workstation still sees `0483:5740` after re-attach |
+| `usb_host_install failed: rc=0x102` (`ESP_ERR_INVALID_STATE`) | host stack already up | should not happen on a cold boot — power-cycle the board |
+| `cdc_acm_host_data_tx_blocking failed: rc=0x103` | tx endpoint NAKed too long | the mount's USB stack may want DTR/RTS held low first; flip the `set_control_line_state` arguments |
+| TX OK but no response within 2 s | RX callback never fired, or terminator mismatch | print the raw RX-buf bytes |
+| Garbled / partial response | line coding mismatch, mount expects 9600 | drop the baud rate to 9600 |
+
+### Escalation ladder (if the spike is ever revived and fights)
+
+1. TinyUSB host via C bindings — a more compact CDC-ACM host driver
+   than ESP-IDF's `cdc_acm_host`.
+2. Board change to RP2350 (Pico 2 W) — Phase 9 already lists it as a
+   validation target; promote it to primary.
+3. Architecture change (USB-to-WiFi bridge dongle, dedicated USB-host
+   MCU front-ending the ESP32).
+
+Closest working C reference (same API, no Rust glue):
+<https://github.com/espressif/esp-idf/tree/v5.3.1/examples/peripherals/usb/host/cdc/cdc_acm_host>
