@@ -1,7 +1,6 @@
 //! Common types used across the PHD2 guider client
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 /// Rectangle for specifying regions of interest
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -61,7 +60,11 @@ pub struct Equipment {
 }
 
 /// Target for calibration operations (mount or adaptive optics)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Display` renders the variant name verbatim (`Mount`, `AO`, `Both`); the
+/// lowercase and get-specific PHD2 JSON-RPC spellings live in the inherent
+/// `to_*_api_string` methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 pub enum CalibrationTarget {
     /// Primary mount
     Mount,
@@ -91,20 +94,14 @@ impl CalibrationTarget {
     }
 }
 
-impl fmt::Display for CalibrationTarget {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CalibrationTarget::Mount => write!(f, "Mount"),
-            CalibrationTarget::AO => write!(f, "AO"),
-            CalibrationTarget::Both => write!(f, "Both"),
-        }
-    }
-}
-
 /// Guide axis for algorithm parameter operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Display` renders the human-facing axis label (`RA`, `Dec`); the lowercase
+/// PHD2 JSON-RPC spelling lives in [`GuideAxis::to_api_string`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 pub enum GuideAxis {
     /// Right Ascension axis
+    #[strum(to_string = "RA")]
     Ra,
     /// Declination axis
     Dec,
@@ -116,15 +113,6 @@ impl GuideAxis {
         match self {
             GuideAxis::Ra => "ra",
             GuideAxis::Dec => "dec",
-        }
-    }
-}
-
-impl fmt::Display for GuideAxis {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            GuideAxis::Ra => write!(f, "RA"),
-            GuideAxis::Dec => write!(f, "Dec"),
         }
     }
 }
@@ -372,6 +360,17 @@ mod tests {
     fn test_guide_axis_display() {
         assert_eq!(format!("{}", GuideAxis::Ra), "RA");
         assert_eq!(format!("{}", GuideAxis::Dec), "Dec");
+    }
+
+    // `Display` is the human-facing label ("RA"/"Dec"); `to_api_string` is the
+    // PHD2 JSON-RPC wire value ("ra"/"dec"). Two distinct string families for
+    // one enum -- neither may be substituted for the other.
+    #[test]
+    fn test_guide_axis_display_and_api_string_are_distinct() {
+        assert_eq!(GuideAxis::Ra.to_string(), "RA");
+        assert_eq!(GuideAxis::Ra.to_api_string(), "ra");
+        assert_eq!(GuideAxis::Dec.to_string(), "Dec");
+        assert_eq!(GuideAxis::Dec.to_api_string(), "dec");
     }
 
     #[test]

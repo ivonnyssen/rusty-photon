@@ -24,7 +24,12 @@ pub struct MonitorStatus {
 }
 
 /// Health of a discovered service as seen by its health supervisor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The two casings below are deliberately different and must not be unified:
+/// `Display` yields the PascalCase variant name, which is the operator-facing
+/// text (the dashboard badge), while serde yields lowercase, which is the
+/// JSON wire form served by `GET /api/services`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceHealth {
     /// Never probed, no derivable probe URL, or not in a probed run state.
@@ -38,17 +43,6 @@ pub enum ServiceHealth {
     /// Last probe failed (other status, timeout, or connection error), or
     /// the unit is in the `failed` run state.
     Down,
-}
-
-impl std::fmt::Display for ServiceHealth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceHealth::Unknown => write!(f, "Unknown"),
-            ServiceHealth::Up => write!(f, "Up"),
-            ServiceHealth::Degraded => write!(f, "Degraded"),
-            ServiceHealth::Down => write!(f, "Down"),
-        }
-    }
 }
 
 /// Snapshot of one discovered service. Set membership, `unit`, and
@@ -267,6 +261,31 @@ pub fn new_state_handle(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_health_display_is_pascal_case() {
+        assert_eq!(ServiceHealth::Unknown.to_string(), "Unknown");
+        assert_eq!(ServiceHealth::Up.to_string(), "Up");
+        assert_eq!(ServiceHealth::Degraded.to_string(), "Degraded");
+        assert_eq!(ServiceHealth::Down.to_string(), "Down");
+    }
+
+    #[test]
+    fn service_health_serde_form_is_lowercase_and_differs_from_display() {
+        assert_eq!(
+            serde_json::to_string(&ServiceHealth::Unknown).unwrap(),
+            "\"unknown\""
+        );
+        assert_eq!(serde_json::to_string(&ServiceHealth::Up).unwrap(), "\"up\"");
+        assert_eq!(
+            serde_json::to_string(&ServiceHealth::Degraded).unwrap(),
+            "\"degraded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ServiceHealth::Down).unwrap(),
+            "\"down\""
+        );
+    }
 
     #[test]
     fn new_state_has_unknown_monitors() {

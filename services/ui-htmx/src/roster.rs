@@ -8,6 +8,7 @@
 //! ten equipment kinds, which are rp's wire contract per `rp.md`).
 
 use serde_json::Value;
+use strum::VariantArray;
 
 /// The fixed id under which the singular mount is addressed in roster routes
 /// and `rp:{kind}:{id}` keys (rp's mount entry has no id of its own).
@@ -18,7 +19,11 @@ pub const MOUNT_ID: &str = "mount";
 /// membership and connectivity status only (rp.md § Equipment Integration) —
 /// same generic add/edit/remove/config-page treatment as every other kind,
 /// but rp exposes no MCP tool integration for them yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variant declaration order is `VariantArray::VARIANTS` order, which is the
+/// order [`parse_roster`] walks the equipment block in and the order the
+/// equipment page renders its sections in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, VariantArray)]
 pub enum EquipKind {
     Cameras,
     FilterWheels,
@@ -33,19 +38,6 @@ pub enum EquipKind {
 }
 
 impl EquipKind {
-    pub const ALL: [EquipKind; 10] = [
-        EquipKind::Cameras,
-        EquipKind::FilterWheels,
-        EquipKind::CoverCalibrators,
-        EquipKind::Focusers,
-        EquipKind::SafetyMonitors,
-        EquipKind::Switches,
-        EquipKind::Rotators,
-        EquipKind::ObservingConditions,
-        EquipKind::Domes,
-        EquipKind::Mount,
-    ];
-
     /// The key in rp's config `equipment` block (also the `{kind}` route
     /// segment and the middle of an `rp:{kind}:{id}` service key).
     pub fn config_key(self) -> &'static str {
@@ -102,7 +94,10 @@ impl EquipKind {
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.config_key() == key)
+        Self::VARIANTS
+            .iter()
+            .copied()
+            .find(|k| k.config_key() == key)
     }
 }
 
@@ -166,7 +161,7 @@ pub fn parse_roster(config: &Value) -> Vec<RosterEntry> {
     let Some(equipment) = config.get("equipment") else {
         return entries;
     };
-    for kind in EquipKind::ALL {
+    for kind in EquipKind::VARIANTS.iter().copied() {
         let node = equipment.get(kind.config_key());
         if kind.is_singular() {
             if let Some(mount) = node.filter(|v| !v.is_null()) {
@@ -394,6 +389,122 @@ mod tests {
                 "mount": { "alpaca_url": "http://127.0.0.1:11116", "device_number": 0 }
             }
         })
+    }
+
+    /// The order `parse_roster` walks the equipment block in and the order the
+    /// equipment page renders its sections in.
+    #[test]
+    fn all_kinds_are_listed_in_declaration_order() {
+        let all: &[EquipKind] = EquipKind::VARIANTS;
+        assert_eq!(
+            all.to_vec(),
+            vec![
+                EquipKind::Cameras,
+                EquipKind::FilterWheels,
+                EquipKind::CoverCalibrators,
+                EquipKind::Focusers,
+                EquipKind::SafetyMonitors,
+                EquipKind::Switches,
+                EquipKind::Rotators,
+                EquipKind::ObservingConditions,
+                EquipKind::Domes,
+                EquipKind::Mount,
+            ]
+        );
+    }
+
+    /// rp's on-disk config object keys, the `/equipment/{kind}` route segments
+    /// and the middle of every `rp:{kind}:{id}` service key — a wire contract
+    /// shared with rp and with committed snapshots.
+    #[test]
+    fn config_keys_are_pinned() {
+        let keys: Vec<&str> = EquipKind::VARIANTS.iter().map(|k| k.config_key()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "cameras",
+                "filter_wheels",
+                "cover_calibrators",
+                "focusers",
+                "safety_monitors",
+                "switches",
+                "rotators",
+                "observing_conditions",
+                "domes",
+                "mount",
+            ]
+        );
+    }
+
+    /// The ASCOM Alpaca device-type path segments a roster-derived config page
+    /// addresses the device's own server with.
+    #[test]
+    fn ascom_types_are_pinned() {
+        let types: Vec<&str> = EquipKind::VARIANTS.iter().map(|k| k.ascom_type()).collect();
+        assert_eq!(
+            types,
+            vec![
+                "camera",
+                "filterwheel",
+                "covercalibrator",
+                "focuser",
+                "safetymonitor",
+                "switch",
+                "rotator",
+                "observingconditions",
+                "dome",
+                "telescope",
+            ]
+        );
+    }
+
+    /// Sentence-case section headings on the equipment page.
+    #[test]
+    fn display_names_are_pinned() {
+        let names: Vec<&str> = EquipKind::VARIANTS.iter().map(|k| k.display()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Cameras",
+                "Filter wheels",
+                "Cover calibrators",
+                "Focusers",
+                "Safety monitors",
+                "Switches",
+                "Rotators",
+                "Observing conditions",
+                "Domes",
+                "Mount",
+            ]
+        );
+    }
+
+    #[test]
+    fn from_key_round_trips_every_kind() {
+        for kind in EquipKind::VARIANTS.iter().copied() {
+            assert_eq!(EquipKind::from_key(kind.config_key()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn from_key_rejects_near_misses() {
+        // Singular/plural, casing, the dotted-path spelling, and the ASCOM type
+        // names are all distinct from the config keys.
+        for key in [
+            "camera",
+            "Cameras",
+            "filterwheel",
+            "filter_wheel",
+            "cover_calibrator",
+            "observing_condition",
+            "safetymonitor",
+            "telescope",
+            "mounts",
+            "equipment.cameras",
+            "",
+        ] {
+            assert_eq!(EquipKind::from_key(key), None, "{key}");
+        }
     }
 
     #[test]

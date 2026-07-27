@@ -35,14 +35,21 @@ pub enum RestartError {
 }
 
 /// Recovery-confirmation outcome, reported in the response body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+///
+/// `Display` yields the lowercase label used in operator-facing notification
+/// text; serde yields the same lowercase strings as the `recovery` field of
+/// [`RestartReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum Recovery {
     /// The platform's recovery check passed within the remaining budget.
+    #[strum(serialize = "healthy")]
     Healthy,
     /// The recovery check never passed before the budget elapsed.
+    #[strum(serialize = "timeout")]
     Timeout,
     /// The platform has no recovery check (Homebrew) — confirmation skipped.
+    #[strum(serialize = "skipped")]
     Skipped,
 }
 
@@ -306,6 +313,22 @@ mod tests {
             ),
             scripted,
         )
+    }
+
+    #[test]
+    fn recovery_serde_form_is_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&Recovery::Healthy).unwrap(),
+            "\"healthy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Recovery::Timeout).unwrap(),
+            "\"timeout\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Recovery::Skipped).unwrap(),
+            "\"skipped\""
+        );
     }
 
     #[tokio::test]

@@ -33,32 +33,39 @@ pub const REDACTED: &str = "********";
 
 /// The three config actions. Drivers advertise these via `supported_actions()`
 /// and dispatch on them in `action()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The per-variant strings are the ASCOM Alpaca vendor Action names on the
+/// wire, so each is pinned explicitly rather than derived from its variant
+/// name; matching is exact — case-sensitive and untrimmed.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::VariantArray,
+)]
 pub enum ConfigAction {
+    #[strum(serialize = "config.get")]
     Get,
+    #[strum(serialize = "config.apply")]
     Apply,
+    #[strum(serialize = "config.schema")]
     Schema,
 }
 
 impl ConfigAction {
-    pub const ALL: [ConfigAction; 3] =
-        [ConfigAction::Get, ConfigAction::Apply, ConfigAction::Schema];
-
+    /// The action's wire name.
     pub fn name(self) -> &'static str {
-        match self {
-            ConfigAction::Get => "config.get",
-            ConfigAction::Apply => "config.apply",
-            ConfigAction::Schema => "config.schema",
-        }
+        self.into()
     }
 
+    /// The action a wire name denotes, or `None` if it denotes none.
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "config.get" => Some(ConfigAction::Get),
-            "config.apply" => Some(ConfigAction::Apply),
-            "config.schema" => Some(ConfigAction::Schema),
-            _ => None,
-        }
+        name.parse().ok()
     }
 }
 
@@ -661,6 +668,7 @@ fn pointer_to_dotted(pointer: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use strum::VariantArray;
 
     // --- a minimal fake driver covering every protocol feature ---------------
 
@@ -777,11 +785,55 @@ mod tests {
 
     #[test]
     fn config_action_names_round_trip() {
-        for action in ConfigAction::ALL {
+        for &action in ConfigAction::VARIANTS {
             assert_eq!(ConfigAction::from_name(action.name()), Some(action));
         }
         assert_eq!(ConfigAction::from_name("config.nope"), None);
+        // The three names are the Alpaca vendor Action strings on the wire.
+        assert_eq!(ConfigAction::Get.name(), "config.get");
+        assert_eq!(ConfigAction::Apply.name(), "config.apply");
         assert_eq!(ConfigAction::Schema.name(), "config.schema");
+    }
+
+    #[test]
+    fn config_action_displays_its_wire_name() {
+        // `Display` renders the same wire string `name()` returns, so an action
+        // interpolated into a log line or an error message stays recognisable.
+        assert_eq!(ConfigAction::Get.to_string(), "config.get");
+        assert_eq!(ConfigAction::Apply.to_string(), "config.apply");
+        assert_eq!(ConfigAction::Schema.to_string(), "config.schema");
+    }
+
+    #[test]
+    fn config_action_all_lists_the_three_variants_in_declaration_order() {
+        assert_eq!(
+            ConfigAction::VARIANTS,
+            [ConfigAction::Get, ConfigAction::Apply, ConfigAction::Schema]
+        );
+    }
+
+    #[test]
+    fn config_action_from_name_rejects_near_misses() {
+        // Matching is exact: case-sensitive, no trimming, no bare variant names.
+        for near_miss in [
+            "config.list",
+            "Get",
+            "get",
+            "Config.Get",
+            "CONFIG.GET",
+            "config.Get",
+            "config.get ",
+            " config.get",
+            "config_get",
+            "configget",
+            "",
+        ] {
+            assert_eq!(
+                ConfigAction::from_name(near_miss),
+                None,
+                "{near_miss:?} must not parse"
+            );
+        }
     }
 
     #[test]

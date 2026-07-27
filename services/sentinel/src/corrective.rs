@@ -104,22 +104,21 @@ impl CorrectiveTarget {
 }
 
 /// Whether a service answered its health probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Display` yields the lowercase label that appears in the ladder's
+/// `health=<label>` rung, which reaches operators verbatim in escalation
+/// notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 pub enum Healthiness {
     /// A clean `200` — the service is alive (the *operation* is stuck).
+    #[strum(serialize = "responsive")]
     Responsive,
     /// Non-200, timeout, or transport error — the service itself is down.
+    #[strum(serialize = "unresponsive")]
     Unresponsive,
     /// No probe was possible (the family has no Alpaca device).
+    #[strum(serialize = "unknown")]
     Unknown,
-}
-
-fn health_label(h: Healthiness) -> &'static str {
-    match h {
-        Healthiness::Responsive => "responsive",
-        Healthiness::Unresponsive => "unresponsive",
-        Healthiness::Unknown => "unknown",
-    }
 }
 
 // ---- rung traits -------------------------------------------------------
@@ -456,7 +455,7 @@ impl Corrective for CorrectiveLadder {
         // Rung 1 — health check.
         let health = self.health.check(target).await;
         debug!("ladder '{}': health {:?}", target.service_name, health);
-        outcome.push(format!("health={}", health_label(health)));
+        outcome.push(format!("health={health}"));
 
         // Rung 2 — abort, but only a responsive service with an abort verb.
         let aborted = if health == Healthiness::Responsive && target.binding.is_some() {
@@ -829,6 +828,13 @@ mod tests {
         );
         assert!(t.connected_url().is_none());
         assert!(t.abort_url().is_none());
+    }
+
+    #[test]
+    fn healthiness_labels_are_lowercase() {
+        assert_eq!(Healthiness::Responsive.to_string(), "responsive");
+        assert_eq!(Healthiness::Unresponsive.to_string(), "unresponsive");
+        assert_eq!(Healthiness::Unknown.to_string(), "unknown");
     }
 
     #[test]

@@ -33,7 +33,13 @@ use rp_vocabulary::FrameType;
 /// user-facing `{name}` spelling and regex data live in exactly one
 /// place, [`Token::spec`], so renaming a token is a one-line change the
 /// compiler then propagates to every use site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `VariantArray` supplies `VARIANTS`: every variant, in declaration
+/// order. It is the one list the string→[`Token`] boundary lookup
+/// ([`Token::from_canonical`]) iterates, and it is regenerated from the
+/// variant list below on every compile, so a newly declared token is
+/// recognized in patterns as soon as it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::VariantArray)]
 enum Token {
     Target,
     Filter,
@@ -65,25 +71,6 @@ struct TokenSpec {
 }
 
 impl Token {
-    /// Every token, in the order they appear in the documented default
-    /// pattern. The one list the string→[`Token`] boundary lookup
-    /// ([`Token::from_canonical`]) iterates; a variant added without an
-    /// entry here becomes unrecognized in every pattern, which the
-    /// per-token tests (each token appears in some tested pattern) catch
-    /// as an "unknown token" failure.
-    const ALL: [Token; 10] = [
-        Token::Target,
-        Token::Filter,
-        Token::Binning,
-        Token::FrameNumber,
-        Token::ExposureDuration,
-        Token::FilterPosition,
-        Token::SensorTemp,
-        Token::NightDate,
-        Token::FrameType,
-        Token::Uuid8,
-    ];
-
     /// This token's canonical `{name}` and regex data — the single place
     /// each token's spelling and shape are written.
     fn spec(self) -> TokenSpec {
@@ -176,7 +163,10 @@ impl Token {
     /// no token owns that spelling (an unknown token, which
     /// [`parse_segments`] rejects).
     fn from_canonical(name: &str) -> Option<Token> {
-        Token::ALL.into_iter().find(|t| t.canonical() == name)
+        <Token as strum::VariantArray>::VARIANTS
+            .iter()
+            .copied()
+            .find(|t| t.canonical() == name)
     }
 }
 
@@ -721,10 +711,71 @@ mod tests {
 
     // --- Token table ------------------------------------------------
 
+    /// Every token in declaration order, paired with its canonical
+    /// `{name}`, written out longhand here so both the order and the
+    /// spellings are pinned independently of the table they come from.
+    /// These strings are operator-facing config vocabulary in
+    /// `session.file_naming_pattern` / `session.directory_pattern`:
+    /// changing one silently invalidates every deployed config that
+    /// uses it, so it is a wire contract, not an implementation detail.
+    const EXPECTED_TOKENS: [(Token, &str); 10] = [
+        (Token::Target, "target"),
+        (Token::Filter, "filter"),
+        (Token::Binning, "binning"),
+        (Token::FrameNumber, "frame_number"),
+        (Token::ExposureDuration, "exposure_duration"),
+        (Token::FilterPosition, "filter_position"),
+        (Token::SensorTemp, "sensor_temp"),
+        (Token::NightDate, "night_date"),
+        (Token::FrameType, "frame_type"),
+        (Token::Uuid8, "uuid8"),
+    ];
+
+    #[test]
+    fn token_canonical_spellings_are_exactly_the_documented_names() {
+        for (token, canonical) in EXPECTED_TOKENS {
+            assert_eq!(token.canonical(), canonical, "{token:?}");
+        }
+    }
+
+    #[test]
+    fn from_canonical_recovers_every_token_from_its_spelling() {
+        for (token, canonical) in EXPECTED_TOKENS {
+            assert_eq!(Token::from_canonical(canonical), Some(token));
+        }
+    }
+
+    #[test]
+    fn token_iteration_order_is_declaration_order() {
+        let iterated: Vec<Token> = <Token as strum::VariantArray>::VARIANTS.to_vec();
+        let expected: Vec<Token> = EXPECTED_TOKENS.into_iter().map(|(t, _)| t).collect();
+        assert_eq!(iterated, expected);
+    }
+
+    #[test]
+    fn from_canonical_rejects_near_miss_spellings() {
+        // `from_canonical` is an exact, case-sensitive, whole-string
+        // match: no casing tolerance, no separator tolerance, no
+        // prefix/substring matching.
+        for name in [
+            "uuid_8",
+            "uuid",
+            "Target",
+            "frametype",
+            "frame-number",
+            "exposureduration",
+            " target",
+            "",
+            "unknown",
+        ] {
+            assert_eq!(Token::from_canonical(name), None, "{name:?}");
+        }
+    }
+
     #[test]
     fn token_table_is_self_consistent() {
         let mut seen = std::collections::HashSet::new();
-        for token in Token::ALL {
+        for token in <Token as strum::VariantArray>::VARIANTS.iter().copied() {
             let spec = token.spec();
             // Canonical `{name}`s must be unique — `from_canonical`
             // returns the first match, so a duplicate would shadow a
@@ -745,12 +796,14 @@ mod tests {
                 )
             });
             // The string→Token boundary must recover exactly this token
-            // from its own canonical spelling (ALL and `canonical` agree).
+            // from its own canonical spelling.
             assert_eq!(Token::from_canonical(spec.canonical), Some(token));
         }
-        // Guards the fixed-size ALL against a variant added to `spec`'s
-        // exhaustive match but forgotten here.
-        assert_eq!(seen.len(), Token::ALL.len());
+        // The loop visits every declared variant, so this ties the enum
+        // to `EXPECTED_TOKENS`: a token added to the enum (and, because
+        // `spec`'s match is exhaustive, to the table) without a matching
+        // entry in the hand-written list fails here.
+        assert_eq!(seen.len(), EXPECTED_TOKENS.len());
     }
 
     // --- CompiledTemplate: render / parse ---------------------------
