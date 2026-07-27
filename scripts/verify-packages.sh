@@ -11,10 +11,15 @@
 # is_serial); the cameras, zwo-focuser, and phd2-guider never self-create a
 # config (see self_creates_config); phd2-guider's /health legitimately
 # answers 503 in the container (no PHD2), so its probe accepts 200 or 503.
+# svbony-camera links an SDK its package may not ship (ADR-018), so the
+# container walks the operator bootstrap — assert the blob is absent, run
+# the packaged rusty-photon-svbony-sdk-install, then the ordinary contract
+# (see needs_operator_sdk).
 # The zwo services additionally prove via ldd that each binary resolves
-# exactly its own bundled SDK blob through the RUNPATH (ADR-014); sentinel
-# additionally proves its polkit rule (the restart privilege path) is
-# installed. Runs natively on arm64 (the rig) and x86_64 (dev box).
+# exactly its own bundled SDK blob through the RUNPATH (ADR-014), as does
+# svbony-camera for its operator-installed one; sentinel additionally
+# proves its polkit rule (the restart privilege path) is installed. Runs
+# natively on arm64 (the rig) and x86_64 (dev box).
 #
 # The --rpm flavor differs where rpm's lifecycle genuinely differs:
 # the scriptlets enable units without starting them (Fedora convention —
@@ -137,6 +142,7 @@ port_of() {
         zwo-camera) echo 11122 ;;
         pa-scops-oag) echo 11123 ;;
         zwo-focuser) echo 11124 ;;
+        svbony-camera) echo 11125 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
@@ -159,6 +165,24 @@ is_gated() {
     # No defaultable config → unit gated on ConditionPathExists (see plan).
     case "$1" in
         sky-survey-camera|plate-solver|calibrator-flats|session-runner) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The one SDK the packages never ship (ADR-018) and the helper that
+# installs it — both flavors put them at the same paths.
+SVBONY_SDK=/usr/lib/rusty-photon/libSVBCameraSDK.so
+SVBONY_SDK_INSTALL=/usr/sbin/rusty-photon-svbony-sdk-install
+
+needs_operator_sdk() {
+    # svbony-camera links libSVBCameraSDK.so, which SVBony grants no license
+    # to redistribute (ADR-018) — unlike zwo-camera, whose MIT blob rides in
+    # the package, and unlike qhy-camera, which links its SDK statically and
+    # defers only firmware. So this is the one package whose service cannot
+    # start until the operator has run its download-on-target helper. The
+    # container walks that same bootstrap.
+    case "$1" in
+        svbony-camera) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -348,6 +372,26 @@ for s in $SERVICES; do
         continue
     fi
 
+    if needs_operator_sdk "$s"; then
+        # First the ADR-018 guard: the package must have withheld the blob
+        # (a bundled one would make every other assertion here vacuous).
+        cx systemctl is-enabled --quiet "rusty-photon-$s" || fail "$s" "unit not enabled"
+        cx test ! -e "$SVBONY_SDK" \
+            || fail "$s" "package ships $SVBONY_SDK — ADR-018 forbids bundling it"
+        # Then the documented bootstrap, run exactly as the postinst tells
+        # an operator to — which also proves the helper's pinned sha256 and
+        # per-arch blob names still resolve upstream. Deliberately no
+        # `systemctl start` afterwards: until the blob lands the binary
+        # cannot be loaded (exit 127) and the unit's Restart=on-failure is
+        # what retries, exactly as the serial drivers retry an absent
+        # device, so the ordinary active-within-30s check below is also the
+        # proof that a bootstrapped host heals itself with no operator step.
+        echo "== $s: installing the operator-supplied SDK ($SVBONY_SDK_INSTALL)"
+        cx "$SVBONY_SDK_INSTALL" > /dev/null \
+            || fail "$s" "$SVBONY_SDK_INSTALL failed"
+        cx test -s "$SVBONY_SDK" || fail "$s" "helper did not install $SVBONY_SDK"
+    fi
+
     if is_serial "$s"; then
         # Verifiable without hardware: the binary starts, self-creates its
         # config, and fails on the absent device — not earlier (loader,
@@ -463,6 +507,13 @@ for s in $SERVICES; do
         if cx sh -c "ldd /usr/bin/rusty-photon-zwo-camera | grep -qE 'libEFWFilter|libEAFFocuser'"; then
             fail "$s" "binary links EFW/EAF SDKs it must not (ADR-014 per-device link)"
         fi
+    fi
+    if [ "$s" = svbony-camera ]; then
+        # Same RUNPATH proof the zwo services get, for the blob the operator
+        # installed a moment ago: the package's own binary must resolve it
+        # from /usr/lib/rusty-photon with no ldconfig step anywhere.
+        cx sh -c "ldd /usr/bin/rusty-photon-svbony-camera | grep -q /usr/lib/rusty-photon/libSVBCameraSDK.so" \
+            || fail "$s" "libSVBCameraSDK.so does not resolve to /usr/lib/rusty-photon (RUNPATH)"
     fi
     if [ "$s" = zwo-focuser ]; then
         # Same proof for the focuser: exactly its own blob, nothing else.

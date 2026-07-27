@@ -9,6 +9,15 @@
 #
 #   /usr/lib/rusty-photon/libSVBCameraSDK.so   the SDK's shared library
 #
+# On a host with no rusty-photon-svbony-camera package it also installs a
+# udev rule so the SDK can open the camera at all (issue #710): libusb
+# needs write access to /dev/bus/usb/... and nothing grants it for VID
+# f266 by default, so the SDK enumerates zero devices (errno 13) on a
+# developer box running the binary straight out of a checkout. The
+# packaged rule (90-rusty-photon-svbony.rules, GROUP="rusty-photon") is
+# the supported path when the package IS installed; this one is skipped
+# entirely then. See --no-udev / --udev-group below.
+#
 # **RUNPATH, not ldconfig.** `libSVBCameraSDK.so` itself carries no
 # embedded DT_SONAME (byte-verified via `readelf -d`, see
 # docs/plans/archive/svbony-camera.md Phase F/G and install-svbony-sdk's header
@@ -31,10 +40,15 @@
 # convention.
 #
 # Usage: rusty-photon-svbony-sdk-install [--force] [--root DIR]
-#   --force      reinstall even if already installed
-#   --root DIR   install under DIR instead of / (container testing;
-#                skips the root requirement). `--root /` is normalized
-#                to a plain root install.
+#                                        [--no-udev] [--udev-group GROUP]
+#   --force            reinstall even if already installed
+#   --root DIR         install under DIR instead of / (container testing;
+#                      skips the root requirement). `--root /` is normalized
+#                      to a plain root install.
+#   --no-udev          never touch udev (the caller manages device access)
+#   --udev-group GROUP own the device nodes with GROUP instead of the
+#                      auto-detected one (the invoking sudo user's primary
+#                      group)
 
 set -eu
 
@@ -52,11 +66,14 @@ SHA256_AMD64="371bcf7f515b4d273c461a41fd494e079637d74ee5f7a26238b022979d4613e4"
 SHA256_ARMV8="d8c6c1848d4cc95de6594449f43ee339693dfe52a8341bc857a3fe183d16e0e3"
 
 usage() {
-    echo "usage: rusty-photon-svbony-sdk-install [--force] [--root DIR]"
+    echo "usage: rusty-photon-svbony-sdk-install [--force] [--root DIR]" \
+        "[--no-udev] [--udev-group GROUP]"
 }
 
 FORCE=0
 ROOT=""
+UDEV=1
+UDEV_GROUP=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --force) FORCE=1 ;;
@@ -64,6 +81,12 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || { echo "--root needs a directory" >&2; exit 2; }
             ROOT="$1"
+            ;;
+        --no-udev) UDEV=0 ;;
+        --udev-group)
+            shift
+            [ $# -gt 0 ] || { echo "--udev-group needs a group name" >&2; exit 2; }
+            UDEV_GROUP="$1"
             ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -94,39 +117,126 @@ esac
 DEST_DIR="$ROOT/usr/lib/rusty-photon"
 DEST="$DEST_DIR/libSVBCameraSDK.so"
 
+# ---- the SDK library ----------------------------------------------------
 if [ "$FORCE" != 1 ] && [ -f "$DEST" ]; then
     echo "libSVBCameraSDK.so already installed at $DEST; use --force to reinstall"
-    exit 0
-fi
-
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT INT TERM
-
-FILE="libSVBCameraSDK_${ARCH}.bin"
-echo "Downloading SVBony camera SDK ($FILE, indi-3rdparty $REF)..."
-if command -v curl > /dev/null 2>&1; then
-    curl -fsSL --retry 3 --retry-delay 2 -o "$TMP/$FILE" "$BASE/$FILE"
-elif command -v wget > /dev/null 2>&1; then
-    wget -q -O "$TMP/$FILE" "$BASE/$FILE"
 else
-    echo "rusty-photon-svbony-sdk-install: needs curl or wget" >&2
-    exit 1
+    TMP=$(mktemp -d)
+    trap 'rm -rf "$TMP"' EXIT INT TERM
+
+    FILE="libSVBCameraSDK_${ARCH}.bin"
+    echo "Downloading SVBony camera SDK ($FILE, indi-3rdparty $REF)..."
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL --retry 3 --retry-delay 2 -o "$TMP/$FILE" "$BASE/$FILE"
+    elif command -v wget > /dev/null 2>&1; then
+        wget -q -O "$TMP/$FILE" "$BASE/$FILE"
+    else
+        echo "rusty-photon-svbony-sdk-install: needs curl or wget" >&2
+        exit 1
+    fi
+
+    if ! echo "$SHA256  $TMP/$FILE" | sha256sum -c --status -; then
+        echo "rusty-photon-svbony-sdk-install: sha256 mismatch for $FILE" >&2
+        echo "  expected: $SHA256" >&2
+        echo "  actual:   $(sha256sum "$TMP/$FILE" | cut -d' ' -f1)" >&2
+        exit 1
+    fi
+    echo "sha256 verified."
+
+    install -d -m 0755 "$DEST_DIR"
+    # Bare linker name, mode 644 (loaded via mmap, not executed) — mirrors
+    # zwo-camera's libASICamera2.so packaging convention exactly (see the
+    # header comment above for why no SOVERSION/symlink pair is needed here).
+    install -m 0644 "$TMP/$FILE" "$DEST"
+
+    echo "SVBony camera SDK installed to $DEST."
 fi
 
-if ! echo "$SHA256  $TMP/$FILE" | sha256sum -c --status -; then
-    echo "rusty-photon-svbony-sdk-install: sha256 mismatch for $FILE" >&2
-    echo "  expected: $SHA256" >&2
-    echo "  actual:   $(sha256sum "$TMP/$FILE" | cut -d' ' -f1)" >&2
-    exit 1
+# ---- device access (issue #710) -----------------------------------------
+# The package's own rule, group-scoped to the service account (ADR-013 §3).
+# Present in any of udev's rule directories, it means this host runs the
+# packaged path and this helper leaves device access alone.
+PKG_RULE=90-rusty-photon-svbony.rules
+# Deliberately a different basename: an /etc file named like the packaged
+# one would MASK it (udev takes only the highest-priority file per name),
+# so a later `apt install` would silently keep this dev rule's ownership
+# instead of the service group's. As a distinct name it sorts before the
+# packaged rule ('-' < '.'), so on a host that gains the package the
+# packaged GROUP/MODE is applied last and wins; this file then contributes
+# only its uaccess tag.
+DEV_RULE=90-rusty-photon-svbony-dev.rules
+DEV_RULE_PATH="$ROOT/etc/udev/rules.d/$DEV_RULE"
+
+packaged_rule_installed() {
+    for d in /usr/lib/udev/rules.d /lib/udev/rules.d /etc/udev/rules.d; do
+        [ -f "$ROOT$d/$PKG_RULE" ] && return 0
+    done
+    return 1
+}
+
+if [ "$UDEV" = 0 ]; then
+    echo "Device access: --no-udev, leaving udev rules untouched."
+elif packaged_rule_installed; then
+    echo "Device access: the packaged $PKG_RULE is installed; leaving it in"
+    echo "charge (SVBony nodes belong to the rusty-photon service group)."
+else
+    # No package on this host: without a rule, libusb cannot open the
+    # camera's /dev/bus/usb node (errno 13) and the SDK enumerates zero
+    # devices. TAG+="uaccess" covers a local desktop session; the group
+    # assignment covers headless/ssh use, where logind grants no ACL.
+    grp=""
+    if [ -n "$UDEV_GROUP" ]; then
+        getent group "$UDEV_GROUP" > /dev/null 2>&1 || {
+            echo "rusty-photon-svbony-sdk-install: no such group: $UDEV_GROUP" >&2
+            exit 1
+        }
+        grp="$UDEV_GROUP"
+    elif [ -n "${SUDO_USER:-}" ]; then
+        grp=$(id -gn "$SUDO_USER" 2> /dev/null || true)
+    fi
+    # An unresolvable GROUP= makes udev drop the WHOLE rule line, not just
+    # the assignment — only ever emit a group getent resolves.
+    if [ -n "$grp" ] && ! getent group "$grp" > /dev/null 2>&1; then
+        grp=""
+    fi
+    if [ -n "$grp" ]; then
+        access="TAG+=\"uaccess\", GROUP=\"$grp\", MODE=\"0660\""
+    else
+        access='TAG+="uaccess"'
+    fi
+
+    install -d -m 0755 "$ROOT/etc/udev/rules.d"
+    cat > "$DEV_RULE_PATH" <<EOF
+# Rusty Photon SVBony camera access on a host WITHOUT the
+# rusty-photon-svbony-camera package, written by
+# rusty-photon-svbony-sdk-install. The packaged $PKG_RULE
+# supersedes this file's ownership wherever both are installed.
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="f266", $access
+# High-resolution sensors need more than the usbfs default (16 MB) for
+# bulk transfers; mirrors the packaged rule's usbfs_memory_mb bump.
+ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="f266", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb || true'"
+EOF
+    chmod 0644 "$DEV_RULE_PATH"
+    echo "Device access: wrote $DEV_RULE_PATH ($access)."
+    if [ -z "$grp" ]; then
+        echo "  No group could be determined (run via sudo, or pass"
+        echo "  --udev-group GROUP): only a local desktop session gets access."
+    fi
+    # Reload + re-emit add events so an already-plugged camera picks the
+    # rule up without a replug (the QHY firmware helper's trick). Skipped
+    # under --root: that is a staged install, not this host's udev.
+    if [ -z "$ROOT" ] && command -v udevadm > /dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=usb --action=add || true
+    fi
 fi
-echo "sha256 verified."
 
-install -d -m 0755 "$DEST_DIR"
-# Bare linker name, mode 644 (loaded via mmap, not executed) — mirrors
-# zwo-camera's libASICamera2.so packaging convention exactly (see the
-# header comment above for why no SOVERSION/symlink pair is needed here).
-install -m 0644 "$TMP/$FILE" "$DEST"
-
-echo "SVBony camera SDK installed to $DEST."
-echo "rusty-photon-svbony-camera resolves it at runtime via its RUNPATH"
-echo "(/usr/lib/rusty-photon); restart the service if it is already running."
+echo ""
+echo "rusty-photon-svbony-camera resolves the SDK at runtime via its RUNPATH"
+echo "(/usr/lib/rusty-photon) — no ldconfig step needed."
+if [ -f "$ROOT/usr/lib/systemd/system/rusty-photon-svbony-camera.service" ]; then
+    echo "An installed rusty-photon-svbony-camera.service could not load it"
+    echo "until now and has been retrying; it starts serving within seconds,"
+    echo "with no systemctl needed (force it with: systemctl restart"
+    echo "rusty-photon-svbony-camera)."
+fi

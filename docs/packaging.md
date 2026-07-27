@@ -379,6 +379,22 @@ to `/usr/lib/rusty-photon/` (the package's binary is linked with the
 matching RUNPATH, mirroring `zwo-camera`'s mechanism). Offline installs
 work; the camera just stays unusable until the helper has run.
 
+Until it has, the service cannot load the SDK and systemd keeps retrying it
+(a loader error every few seconds in `journalctl -u
+rusty-photon-svbony-camera`) — that retry is the recovery path: the service
+starts serving within seconds of the helper finishing, with no `systemctl`
+step needed.
+
+The same helper is the supported bootstrap on a machine with **no**
+`rusty-photon-svbony-camera` package (a developer box running the binary
+from a checkout): run it from the source tree
+(`sudo services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) and it
+installs a udev rule for VID `f266` alongside the SDK, since nothing else
+would grant USB access there. It never touches udev when the packaged rule
+is already installed; `--no-udev` opts out entirely and `--udev-group
+NAME` picks the owning group. See
+[docs/services/svbony-camera.md](services/svbony-camera.md#udev--usb).
+
 Every camera package installs a udev rule assigning their USB VID's
 device nodes to the `rusty-photon` service group (the account's own
 primary group — no supplementary groups needed, and no reliance on

@@ -17,9 +17,29 @@ extent; responsive abort via a cancel flag checked between
 `SVBGetVideoData` poll slices, ~0.3 s drain measured vs ~8.3 s before).
 Full itemized results: [`docs/services/svbony-camera.md`](../../services/svbony-camera.md)
 "Real-hardware validation". Deliberately deferred, tracked outside this
-plan: the Bazel-side SDK-fetch rule ("Future work" below), dev-machine
-USB permissions (issue #710), and the field-optics items (dark-frame
-banding revision check, e-/ADU sweep).
+plan: the Bazel-side SDK-fetch rule ("Future work" below) and the
+field-optics items (dark-frame banding revision check, e-/ADU sweep).
+
+**Follow-up landed (issues #704 + #710, 2026-07-26).** Installing the
+package for real exposed the other half of "the SDK is not bundled":
+`nightly-packages` had been failing every run since the #679 fix because
+the installed unit restart-looped on `error while loading shared
+libraries: libSVBCameraSDK.so` (exit 127) — nothing had ever run the
+packaged binary before that leg started building it. The unit is left
+alone — `Restart=on-failure` is the same retry the serial drivers use for
+an absent device, and it heals seconds after the SDK lands, so no gate
+and no operator `systemctl start`. What changed is
+`scripts/verify-packages.sh`, which now walks the operator bootstrap on
+both flavors (blob absent from the payload →
+`rusty-photon-svbony-sdk-install` → active → Alpaca probe → RUNPATH `ldd`
+proof) instead of holding an unbootstrapped install to a contract it
+cannot meet. The helper additionally installs a udev rule on hosts
+without the packaged one, closing the dev-machine USB permission gap
+(#710) at the same bootstrap step. Structurally collapsing this into
+qhy-camera's shape (which links its SDK statically and defers only
+firmware, so its service always starts) would mean `dlopen`ing
+`libSVBCameraSDK` instead of linking it — worth its own issue, not done
+here.
 
 **Follow-up landed (issue #679, 2026-07-22).** `scripts/build-packages.sh`
 gained the `needs_svbony` SDK-staging leg Phase G deliberately deferred (see
