@@ -14,7 +14,7 @@
 //! facts — function names, parameter order/types, struct field order, enum
 //! ordinal values — are not copyrightable), the same posture `libqhyccd-sys`
 //! takes toward QHY's similarly unlicensed header. See
-//! `docs/plans/svbony-camera.md` ("Verified SDK ground truth") for the full
+//! `docs/plans/archive/svbony-camera.md` ("Verified SDK ground truth") for the full
 //! provenance trail and citation of the source URL.
 //!
 //! ## Enum representation

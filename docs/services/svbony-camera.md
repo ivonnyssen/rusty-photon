@@ -1,5 +1,30 @@
 # Svbony-Camera Service Design
 
+> **Real-hardware validation PASSED (2026-07-26, physical SV605CC).** The
+> camera arrived and the full validation pass ran on a Linux dev machine
+> against the real SDK (staged from the pinned indi-3rdparty blob):
+> enumeration/identity from the hardware `CameraSN`, connect handshake,
+> gain/offset/cooling round-trips, the soft-trigger exposure state machine
+> at multiple ROIs/bins including the full 3008×3008 frame (~18 MB Raw16,
+> needs the udev rule's `usbfs_memory_mb` bump), abort + prompt recovery,
+> and ASCOM **ConformU 4.3.0: both the `alpacaprotocol` and full
+> `conformance` suites pass with zero errors/issues** against the physical
+> camera. Four hardware-driven changes landed with the validation (all in
+> the same PR): (1) production `build()` now registers real enumerated
+> cameras — the long-standing simulation-only registration boundary is
+> gone; (2) `MaxADU` is now 65535 (the SDK rescales the 14-bit ADC to full
+> 16-bit Raw16 scale — saturated pixels read 65535, not 16383); (3)
+> `CameraXSize`/`CameraYSize` now report the extent aligned down so every
+> binned full frame is a valid ROI (2976×3000 for the SV605CC), adopting
+> `zwo-camera`'s R4 after real ConformU failed at bin 3 against the raw
+> extent, exactly as Phase E's "revisit once ConformU coverage exists"
+> anticipated; (4) `AbortExposure` now drains within ~one 250 ms poll slice
+> (a cancel flag checked between `SVBGetVideoData` slices + a
+> stop/re-arm), replacing the run-to-deadline drain that left the device
+> reporting `Idle` while rejecting new exposures for the rest of the
+> aborted exposure's deadline. Every open punch-list item below is
+> resolved — see "Real-hardware validation" for the itemized results.
+>
 > **Follow-up landed (issue #679, 2026-07-22): `scripts/build-packages.sh`
 > now has the `needs_svbony` SDK-staging leg this Status section's Phase G
 > entry (below) originally deferred.** `nightly-packages` was failing on
@@ -82,8 +107,9 @@
 > [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
 > composite action (mirroring `install-zwo-sdk`) provisions the real SVBony
 > SDK from a pinned indi-3rdparty commit, wired into `conformu.yml` (Linux +
-> macOS x86_64; excluded from the Windows per-service matrix — indi-3rdparty
-> declares Windows unsupported) and `native.yml` (the nightly real-link
+> macOS x86_64; the Windows per-service matrix runs svbony-camera against the
+> `simulation` backend with `SVBONY_SKIP_NATIVE_LINK`, since SVBony's Windows
+> SDK download is not scriptable) and `native.yml` (the nightly real-link
 > build + a Linux `svbony-rs` FFI smoke test). See "Native dependency & build
 > gating" below for what did and did not change under Bazel, and "Delivery
 > phasing" for the full rundown incl. two bonus findings (no embedded SONAME
@@ -114,15 +140,6 @@
 > covered by mock-backend unit tests instead, per the design's own call
 > (the simulation cannot force an SDK error). See "Delivery phasing" for
 > what Phase E resolved vs. left open for Phase G hardware validation.
->
-> **Correction (PR #658 review, 2026-07-21): "Windows unsupported" was
-> wrong.** Phase F's "excluded from the Windows per-service matrix —
-> indi-3rdparty declares Windows unsupported" (below) conflated
-> indi-3rdparty's own Linux/macOS-only packaging with SVBony's SDK itself.
-> SVBony does publish a Windows SDK directly, and `libsvbony-sys/build.rs`
-> now has real, byte-verified Windows link directives — see "Native
-> dependency & build gating → Windows" below for what's actually true (real
-> code support; CI automation still blocked by a CAPTCHA-gated download).
 
 ## Overview
 
@@ -161,7 +178,7 @@ workspace build by SDK availability. See *Native dependency & build gating*.
 
 Net: mechanically SVBony is ZWO-shaped (we own the FFI crate; a cleaner C
 API ports closely), legally it is QHY-shaped (no redistribution grant). See
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) for the full
+[`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md) for the full
 decision record.
 
 ---
@@ -205,7 +222,7 @@ decision record.
 
 ### This phase's link-gating shortcut (Bazel — unchanged by Phase F)
 
-Phase F (docs/plans/svbony-camera.md) added
+Phase F (docs/plans/archive/svbony-camera.md) added
 [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
 and wired it into the plain-Cargo `conformu.yml` + `native.yml` workflows
 (`scheduled.yml`'s full-workspace legs joined them in #680, mirroring the
@@ -242,7 +259,7 @@ with the SDK installed and `ldconfig`'d, to exercise the real link locally)
 — this is exactly what `native.yml`'s `install-svbony-sdk` step does per-run.
 This split (Cargo-CI real-link-provisioned, Bazel still skip-link-only) is a
 deliberate, temporary simplification recorded in
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s Status section
+[`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)'s Status section
 — revisit (drop `manual`, add a Bazel-side SDK-fetch rule) as follow-up work,
 alongside real-hardware validation (see "Real-hardware validation" below);
 Phase G's packaging work landed without either (see the Status banner above
@@ -299,6 +316,41 @@ SVBony devices need a udev rule (VID `f266`). Per
 [ADR-013 §3](../decisions/013-native-sdk-payload-policy.md), rules are
 **group-scoped** (`GROUP="rusty-photon", MODE="0660"`), never a
 world-writable `MODE="0666"` rule — `pkg/90-rusty-photon-svbony.rules`.
+Without a rule the SDK enumerates **zero** cameras: libusb needs write
+access to the device's `/dev/bus/usb/...` node and fails with `errno=13`,
+which the SDK reports as "no devices" rather than as a permission error.
+
+**Unpackaged hosts** (a developer box running `cargo run` or the binary
+from a checkout, a hardware smoke test, an operator poking the camera
+before installing the package) have no package and therefore no rule —
+the gap found during real-hardware validation and filed as issue #710.
+`rusty-photon-svbony-sdk-install` closes it: run from the checkout
+(`sudo services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) it
+installs the SDK *and*, when no packaged rule is present,
+`/etc/udev/rules.d/90-rusty-photon-svbony-dev.rules`, then reloads and
+re-triggers udev so an already-plugged camera picks it up without a
+replug. The rule it writes:
+
+- `TAG+="uaccess"` — logind ACLs the node to whoever holds the local
+  seat, which covers a desktop dev machine with no group juggling;
+- `GROUP="<group>", MODE="0660"` — the invoking `sudo` user's primary
+  group by default, or `--udev-group NAME`, which covers headless/ssh
+  use where there is no seat and hence no `uaccess` ACL. The group is
+  emitted only if `getent` resolves it: udev drops the **entire rule
+  line** on an unresolvable `GROUP=`, not just the assignment. (Note
+  `udevadm verify` warns that device-node ownership by a non-system
+  group is deprecated; point `--udev-group` at a system group where the
+  host has a suitable one.)
+- the same `usbfs_memory_mb` bump the packaged rule carries — a full
+  frame from a 3008×3008 sensor exceeds the 16 MB usbfs default.
+
+The dev file is deliberately **not** named like the packaged rule: udev
+takes only the highest-priority file of a given basename, so an `/etc`
+copy named `90-rusty-photon-svbony.rules` would mask the package's rule
+and silently keep dev-user ownership after a later `apt install`. Under
+its own name it sorts *before* the packaged rule (`-` < `.`), so where
+both exist the service group's ownership is applied last and wins.
+`--no-udev` skips the whole step.
 
 ---
 
@@ -368,15 +420,21 @@ two `Sdk` instances opening different cameras concurrently would race
 against the SDK's process-global camera/handle table with no synchronization
 at all; see `svbony-rs::SDK_CALL_LOCK`'s doc comment.
 
-Unlike `zwo-camera`, `AbortExposure` never signals the SDK (there is no
-data-preserving or interruptible stop — see the Exposure contract below): it
-only bumps the generation counter, so a capture already running against
-`SVBGetVideoData` runs to completion (up to its `exposure*2+500ms` deadline)
-before its (discarded) result is checked. `CameraState`/`PercentCompleted`
-do not wait for that drain, though: an `aborted` flag (cleared on the next
-`StartExposure`/reconnect) makes them report idle/`0` immediately once
-`AbortExposure`/`Disconnect` is called, rather than continuing to report
-`Exposing`/a climbing percentage for the rest of that deadline.
+Unlike `zwo-camera`, `AbortExposure` has no SDK-level interrupt to lean on
+(there is no data-preserving or interruptible stop — hardware-verified, see
+the Exposure contract below): it bumps the generation counter **and sets
+the in-flight capture's cancel flag**, which the capture task checks
+between its short `SVBGetVideoData` poll slices — so an aborted capture
+drains within ~one slice (`VIDEO_DATA_POLL_MS`, 250 ms), stops video
+capture to discard the in-flight frame (which the SDK cannot preserve
+anyway, and which would otherwise surface as a stale frame on the next
+exposure), and re-arms capture for a trigger camera. `CameraState`/
+`PercentCompleted` report idle/`0` immediately via the `aborted` flag
+(cleared on the next `StartExposure`/reconnect) without waiting even for
+that short drain, and a new `StartExposure` is accepted as soon as the
+drain clears `exposure_in_flight` (~0.3 s measured on hardware, vs. the
+rest of the aborted exposure's `exposure*2+500ms` deadline — 8.3 s on a
+10 s exposure — before this fix).
 
 A consequence worth flagging explicitly: property/control reads that need
 the open `Camera` handle (gain, offset, temperature, …) can still block
@@ -405,15 +463,15 @@ responsive during an in-flight exposure.
   `SVB_MODE_TRIG_SOFT` when `IsTriggerCam` and start video capture once.
 - Sensor geometry from cached `SVB_CAMERA_PROPERTY` (`MaxWidth`/`MaxHeight`,
   `SVBGetSensorPixelSize`); `PixelSizeX == PixelSizeY` (a single SDK
-  pixel-size call). `CameraXSize`/`CameraYSize` report the **raw** sensor
-  extent — Phase E's resolution of the "R4-style aligned-down reporting"
-  open question above: unlike `zwo-camera`, this driver does **not** reduce
-  the reported size so every binned full frame satisfies the width%8/
-  height%2 rule, chosen to keep `CameraXSize`/`CameraYSize` exact simulated
-  values (3008×3008) rather than a derived, harder-to-eyeball number; a
-  binned full-frame `StartExposure` may therefore be rejected at some bins
-  (e.g. 3008/3 is not an integer at all). Revisit once ConformU coverage
-  exists (Phase F) if this proves too strict in practice.
+  pixel-size call). `CameraXSize`/`CameraYSize` report the sensor extent
+  **aligned down** so the full frame divided by *every* supported bin
+  satisfies the width%8/height%2 ROI rule (`aligned_sensor_extent`, the
+  same mechanism as `zwo-camera`'s R4; SV605CC: raw 3008×3008 → reported
+  2976×3000). Phase E originally reported the raw extent and deferred this
+  decision to real ConformU coverage — which then failed exactly as
+  predicted (real-hardware ConformU takes a full frame at every bin via
+  `NumX = CameraXSize / bin`; 3008/3 = 1002 is not a multiple of 8), so
+  the R4 treatment was adopted during real-hardware validation.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y`
   from `SupportedBins`.
 - **ROI** — `SVBSetROIFormat` constraints: `width % 8 == 0`,
@@ -443,12 +501,20 @@ responsive during an in-flight exposure.
   to `set_control_value(CoolerEnable, …)`/`set_control_value(TargetTemperature, …)`
   anywhere in the file.
 - **Sensor type** — `Monochrome` vs `RGGB` from `IsColorCam` / `BayerPattern`.
-- **`MaxADU`** = `(2^MaxBitDepth) - 1` from `SVB_CAMERA_PROPERTY.MaxBitDepth`.
-- **`ElectronsPerADU`** — **`NOT_IMPLEMENTED` placeholder**, permanently in
-  this phase: unlike ZWO's `ASI_CAMERA_INFO.ElecPerADU`, `SVB_CAMERA_PROPERTY`
-  carries no native electrons-per-ADU field. Confirm via real-hardware
-  validation whether the SDK exposes this some other way (a control, a
-  separate query) before ruling it out permanently.
+- **`MaxADU`** = **65535, the Raw16 full scale** — NOT
+  `(2^MaxBitDepth) - 1`: hardware-verified on the 14-bit SV605CC that the
+  SDK rescales sub-16-bit ADC data to the full 16-bit range in Raw16
+  output (saturated pixels read 65535, with the low two bits populated —
+  a genuine rescale, not a bare left shift), so the delivered data's
+  ceiling is the format's, not the ADC's. (`zwo-camera` computes MaxADU
+  from the ADC bit depth; whether ASI's Raw16 output has the same
+  rescaling behaviour on a sub-16-bit model is untested there and out of
+  scope here.)
+- **`ElectronsPerADU`** — **`NOT_IMPLEMENTED`, confirmed permanent**:
+  `SVB_CAMERA_PROPERTY` carries no native electrons-per-ADU field (unlike
+  ZWO's `ElecPerADU`), and real-hardware validation confirmed the SDK
+  exposes no other path either — no control type and no exported function
+  in the whole SDK 1.13.4 surface relates to a conversion factor.
 - **Pulse guiding** — `CanPulseGuide` from `bSupportPulseGuide`;
   `PulseGuide` kept a **literal blocking** `SVBPulseGuide` call in v0 (not
   `zwo-camera`'s asynchronous fire-and-forget-with-deadline wrapper) — see
@@ -461,7 +527,7 @@ responsive during an in-flight exposure.
 
 - **Bad-pixel correction** (`SVB_BAD_PIXEL_CORRECTION_ENABLE`) — still not
   implemented. This phase's implementation order (see
-  [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)) did not
+  [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)) did not
   include it; it is not exercised by any BDD scenario or the ASCOM `Camera`
   surface, so it remains future work, not a Phase E gap.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
@@ -550,22 +616,23 @@ logged at `warn!`. Consequences (same as `zwo-camera`/`qhy-camera`): **no
 `resolve_and_init` in `main.rs`, and **no locked identity field** in the
 config-actions tiers.
 
-### Device registration boundary (still in effect)
+### Device registration (boundary removed at real-hardware validation)
 
-`enumerate_cameras()` behaves differently depending on the `simulation`
-feature, a **deliberate, temporary phase boundary** (not a technical
-constraint — real-SDK enumeration is trivial for SVBony, no open
-required) that Phase E's `Camera` work did not change:
+`enumerate_cameras()` always registers whatever `svbony_rs::Sdk::cameras()`
+reports — the Phase E "production build registers zero devices" boundary
+was removed when the physical SV605CC arrived (2026-07-26):
 
 - **With `simulation`:** enumerates `svbony-rs`'s one fabricated
   `SV605CC-Simulated` camera and registers it, so BDD scenarios have
   "camera device 0" to address.
-- **Without `simulation`** (the production real-SDK build): returns **zero**
-  cameras unconditionally, regardless of `SvbonyCamera`'s `Camera` trait
-  surface now being real — wiring real enumeration to production device
-  registration is still gated on real-SDK link availability (see "Native
-  dependency & build gating"), which remains deferred follow-up work (the
-  Bazel-side SDK-fetch rule; see the Status banner above).
+- **Without `simulation`** (the production real-SDK build): registers the
+  physically connected cameras — verified against the real SV605CC
+  (enumeration, identity from the hardware `CameraSN`, ConformU).
+
+Under `cargo test` with no features, the dev-dependency's
+`svbony-rs/simulation` feature unifies into the service's `svbony-rs`
+dependency, so the *production* enumeration code path is exercised against
+the simulated camera (`production_default_tests`).
 
 `ServerBuilder::with_empty(bool)` additionally forces zero cameras
 regardless of the feature (mirrors `zwo-camera`'s `--simulation-empty`
@@ -642,53 +709,55 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    post-Phase-E, per PR #658 review: an earlier revision started video
    capture unconditionally at connect regardless of `IsTriggerCam`.)
 2. **Each ASCOM `StartExposure`:**
-   a. Sets `SVB_EXPOSURE` to the requested duration. **Unit assumption:**
-      the ground truth does not state the control's unit explicitly;
-      `svbony-rs`'s `ControlType::Exposure` doc comment models it as
-      **microseconds (µs)**, matching ZWO's `ASI_EXPOSURE` convention —
-      this needs confirmation against real hardware (pending; see
-      "Real-hardware validation" below).
+   a. Sets `SVB_EXPOSURE` to the requested duration in **microseconds
+      (µs) — hardware-confirmed** (was an assumption by analogy with ZWO's
+      `ASI_EXPOSURE`): a 3 s request integrates for ~3.2 s wall-clock, and
+      the SDK's own value quantization reads back at µs scale (200 000 →
+      199 997).
    b. Calls `SVBSendSoftTrigger` to request one frame.
    c. Polls/awaits `SVBGetVideoData` with a timeout of
       **`exposure_us * 2 + 500ms`** — the SDK's own documented
-      recommendation (captured in `docs/plans/svbony-camera.md`'s
+      recommendation (captured in `docs/plans/archive/svbony-camera.md`'s
       "Verified SDK facts"). Exceeding the deadline is a failure (see E9
       below).
-3. **Stale-frame flush.** A buffered frame from before a ROI/exposure
-   change must be drained before the first post-change frame is trusted —
-   the `indi_svbony_ccd` reference documents this workaround; Phase E must
-   verify against real hardware whether `svbony-rs`'s
-   `SVBGetVideoData`/soft-trigger pairing already avoids this or needs an
-   explicit flush.
-4. **There is no data-preserving stop at the SDK level**
-   (`SVBStopVideoCapture` discards whatever is in flight). Consequently:
-   - `CanStopExposure = false`; `StopExposure` returns `NOT_IMPLEMENTED`
-     unconditionally rather than pretending to gracefully preserve data it
-     cannot preserve.
-   - `CanAbortExposure = true`; `AbortExposure` discards the frame — but
-     **implementation-wise it never calls `SVBStopVideoCapture`, or any
-     other SDK entry point.** It only bumps the exposure generation
-     counter, so the in-flight `capture` (already running against
-     `SVBGetVideoData` under the backend's SDK lock) is left to run to
-     completion; its result is silently discarded once the generation
-     mismatch is observed. This is a deliberate divergence from calling
-     `SVBStopVideoCapture` concurrently from a second thread while another
-     thread's `SVBGetVideoData` is blocked on the same handle — exactly the
-     kind of undocumented-thread-safety risk the Concurrency section above
-     warns about generally, and calling it would additionally leave video
-     capture stopped for a trigger camera, whose step 1 invariant ("started
-     once at connect, never restarted") assumes it stays armed — a
-     non-trigger camera's step 5 restart already stops/starts it per
-     exposure regardless. **To be confirmed/revised after real-hardware
-     validation** (still pending, see below): if the SDK turns out to
-     tolerate a concurrent `SVBStopVideoCapture` call
-     safely (some vendor video APIs are explicitly designed to unblock a
-     pending read this way), wiring that in would make `AbortExposure`
-     responsive mid-exposure instead of only at the next natural
-     `SVBGetVideoData` return; if the SDK instead turns out to support a
-     genuine data-preserving stop, `CanStopExposure` flips to `true` to
-     match `zwo-camera`. `CameraState`/`PercentCompleted` do not wait for
-     this drain either way — see the Concurrency section above.
+3. **Stale-frame flush: not needed on the soft-trigger path
+   (hardware-verified).** The `indi_svbony_ccd` reference documents a
+   drain-buffered-frame workaround for its free-running capture, but with
+   trigger-gated capture each `SVBGetVideoData` follows its own
+   `SVBSendSoftTrigger`, and no stale frame was observed across
+   ROI/exposure/bin changes on the real SV605CC (a 0.1 s exposure taken
+   immediately after a 3 s one returns a fresh frame in ~0.3 s). The one
+   place a buffered frame *could* linger — an aborted exposure's
+   already-triggered frame — is closed by the abort path's
+   stop-then-re-arm, which discards it (step 4).
+4. **There is no data-preserving stop at the SDK level — hardware-
+   verified.** Probed on the real SV605CC: a concurrent
+   `SVBStopVideoCapture` while another thread is blocked in
+   `SVBGetVideoData` is *tolerated* (returns `SVB_SUCCESS` in ~11 ms, no
+   crash, and the handle survives a restart + fresh capture) but does
+   **not** unblock the pending read — it runs on to its full
+   `exposure*2+500ms` deadline and then times out, the interrupted frame
+   never delivered. Consequently:
+   - `CanStopExposure = false`, **confirmed permanent**: no SDK mechanism
+     preserves a partially-integrated frame. `StopExposure` returns
+     `NOT_IMPLEMENTED` unconditionally.
+   - `CanAbortExposure = true`; `AbortExposure` discards the frame. The
+     implementation needs no concurrent SDK call at all: `capture` polls
+     `SVBGetVideoData` in short slices (backend `VIDEO_DATA_POLL_MS`,
+     250 ms) and checks the request's **cancel flag** between slices, so
+     an abort drains within ~one slice. The bail-out then calls
+     `SVBStopVideoCapture` *from the capture task itself* (single-owner,
+     no cross-thread SDK concurrency) to discard the already-triggered
+     frame — otherwise it would surface as a stale frame on the next
+     exposure — and, for a trigger camera, `SVBStartVideoCapture` to
+     re-arm, preserving step 1's "armed once" invariant (a non-trigger
+     camera is left unarmed; step 5's per-exposure restart re-arms it).
+     Measured on hardware: a new exposure is accepted ~0.3 s after
+     aborting a 10 s exposure (previously ~8.3 s, the rest of the
+     deadline, during which the device inconsistently reported `Idle`
+     while rejecting `StartExposure`). `CameraState`/`PercentCompleted`
+     report idle/`0` immediately, without waiting even for the short
+     drain — see the Concurrency section above.
 5. **Non-trigger cameras** (`IsTriggerCam = false`): fall back to
    `SVB_MODE_NORMAL` (free-running video capture) with a per-exposure
    capture restart (no soft trigger available) — armed for the first time
@@ -759,12 +828,15 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   `Monochrome`; `BayerOffsetX/Y` follow `BayerPattern` — read at runtime,
   never hardcoded to the SV605CC's own pattern (a future mono/other-pattern
   model must report correctly).
-- **ST2.** `ElectronsPerADU` is a **`NOT_IMPLEMENTED` placeholder** —
-  `SVB_CAMERA_PROPERTY` has no native electrons-per-ADU field (unlike
-  ZWO's `ElecPerADU`). Confirm via real-hardware validation whether the SDK
-  exposes this another way before treating this as permanent.
-- **ST3.** `MaxADU` = `(2^MaxBitDepth) - 1` from
-  `SVB_CAMERA_PROPERTY.MaxBitDepth` (16383 for the SV605CC's 14-bit ADC).
+- **ST2.** `ElectronsPerADU` is **`NOT_IMPLEMENTED`, confirmed permanent**
+  — `SVB_CAMERA_PROPERTY` has no native electrons-per-ADU field (unlike
+  ZWO's `ElecPerADU`), and real-hardware validation confirmed no control
+  type or exported function anywhere in SDK 1.13.4 exposes a conversion
+  factor either.
+- **ST3.** `MaxADU` = **65535, the Raw16 full scale** — hardware-verified:
+  the SDK rescales the SV605CC's 14-bit ADC data to the full 16-bit range
+  in Raw16 output (saturated pixels read 65535), so `MaxBitDepth`-derived
+  16383 would understate the delivered data's ceiling.
 
 ### Pulse guiding (capability-driven)
 
@@ -793,14 +865,14 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 | Property / Method | v0 behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
-| `CameraXSize` / `CameraYSize` | Cached `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` (raw, not aligned down) | **Real** |
+| `CameraXSize` / `CameraYSize` | `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` aligned down so every binned full frame is a valid ROI (R4; SV605CC 3008×3008 → 2976×3000) | **Real** |
 | `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | **Real** |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | **Real** |
 | `CanAsymmetricBin` | `false` | **Real** |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | **Real** |
-| `MaxADU` | `(2^MaxBitDepth) - 1` | **Real** |
-| `ElectronsPerADU` | `NOT_IMPLEMENTED` placeholder (no native field) | **Permanent stub (ST2)** |
-| `ExposureMin` / `Max` / `Resolution` | From `SVBGetControlCaps(SVB_EXPOSURE)` (µs, assumed) | **Real** |
+| `MaxADU` | 65535 — Raw16 full scale (hardware-verified; NOT `2^MaxBitDepth - 1`) | **Real** |
+| `ElectronsPerADU` | `NOT_IMPLEMENTED` (no SDK surface, hardware-confirmed) | **Permanent stub (ST2)** |
+| `ExposureMin` / `Max` / `Resolution` | From `SVBGetControlCaps(SVB_EXPOSURE)` (µs, hardware-confirmed) | **Real** |
 | `Gain` / `GainMin` / `GainMax` | `SVB_GAIN` control | **Real** |
 | `Offset` / `OffsetMin` / `OffsetMax` | `SVB_BLACK_LEVEL` control | **Real** |
 | `ReadoutMode` / `ReadoutModes` | Driver-named list (`SoftTrigger`/`FreeRunning`) | **Real** |
@@ -868,7 +940,8 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 65 tests) — config parse/newtype
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 74 no-features / 80 with
+  `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
   the `exposure_timeout_ms` protocol-encoding pure function
@@ -883,8 +956,8 @@ Layered per [`testing.md`](../skills/testing.md).
   an SDK error, and never runs a non-trigger camera). The production
   `SvbonyCameraHandle` itself is also unit-tested against the real
   `svbony-rs` simulation backend (`backend::handle_tests`).
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 60 scenarios /
-  242 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 64 scenarios /
+  262 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
@@ -909,7 +982,7 @@ Layered per [`testing.md`](../skills/testing.md).
 
 ## Delivery phasing
 
-Mirrors [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s
+Mirrors [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md)'s
 phases A–G:
 
 - **Phase A — `libsvbony-sys`:** ✅ *landed.* Hand-written FFI bindings
@@ -991,10 +1064,10 @@ phases A–G:
   `Cargo.toml` `TODO Phase G` markers filled in (asset entries, explicit
   `depends`/`requires` instead of `$auto`/rpm auto-detection); the RUNPATH
   decision made and documented (see "Packaging" below) — matching
-  `zwo-camera`'s mechanism. Real-hardware validation itself is **not
-  performed** (no physical SV605CC in this environment; hardware is on
-  order) — see "Real-hardware validation" below for the explicit,
-  itemized punch list hardware access must resolve. **Deliberately NOT
+  `zwo-camera`'s mechanism. Real-hardware validation was not possible in
+  that phase (no physical SV605CC yet); **it has since been performed and
+  PASSED (2026-07-26)** — see "Real-hardware validation" below for the
+  itemized results, including the four driver changes it forced. **Deliberately NOT
   done this phase** (out of the scope handed down for it, tracked as
   follow-up, not attempted since neither can be tested without the real
   SDK/hardware either way): a Bazel-side SDK-fetch repository rule
@@ -1035,50 +1108,97 @@ phases A–G:
 
 ## Real-hardware validation
 
-**Not yet performed** — no physical SV605CC is available in this
-environment; hardware is on order but has not arrived. `svbony-camera` is
-therefore **v0-complete pending real-hardware validation**: every
-behavioral contract above is implemented and covered by the mock-backend
-unit tests / BDD suite / ConformU (simulation-backed), but none of it has
-run against the physical SDK + camera. Mirroring
-[`zwo-focuser.md`](zwo-focuser.md)'s real-hardware validation precedent,
-this section will be replaced with actual results once hardware arrives.
-The specific open items already flagged elsewhere in this document that
-hardware validation must resolve:
+**PASSED (2026-07-26)** against a physical SV605CC (hardware serial
+`0123481353808C03EE2512150035`, USB VID `f266`) on a Linux x86_64 dev
+machine, real SDK staged from the pinned indi-3rdparty blob
+(`SVBONY_SDK_LIB_DIR`, sha256 matching `rusty-photon-svbony-sdk-install`'s
+pinned hash). Headline: **ASCOM ConformU 4.3.0 passes both the
+`alpacaprotocol` and full `conformance` suites with zero errors, zero
+issues, and every member inside its response-time budget**, against the
+production (non-simulation) binary serving the physical camera.
 
-- **The `SVB_EXPOSURE` microseconds-unit assumption** (see "Exposure"
-  contract, step 3a) — `svbony-rs`'s `ControlType::Exposure` doc comment
-  models the control as µs by analogy with ZWO's `ASI_EXPOSURE`; the SDK
-  ground truth does not state the unit explicitly.
-- **Whether stale-frame-flush is needed** (see "Exposure" contract, step
-  4) — a buffered frame from before a ROI/exposure change may need an
-  explicit drain, per `indi_svbony_ccd`'s documented workaround; unverified
-  against real hardware.
-- **Whether `CanStopExposure` should flip to `true`** (see "Exposure"
-  contract, step 5) — contingent on whether the SDK tolerates a concurrent
-  `SVBStopVideoCapture` call safely, or exposes a genuine data-preserving
-  stop; currently `false` on the conservative assumption that it does not.
-- **`ElectronsPerADU`'s permanent-vs-confirmable status** (ST2) — currently
-  a permanent `NOT_IMPLEMENTED` stub because `SVB_CAMERA_PROPERTY` has no
-  native electrons-per-ADU field; unconfirmed whether the SDK exposes this
-  some other way (a control, a separate query).
-- **macOS Apple-Silicon SDK availability** — indi-3rdparty's `libsvbony`
-  packaging ships no `mac_arm64` blob as of SDK 1.13.4 (confirmed absent;
-  see `install-svbony-sdk`'s explicit failure on `macos-latest`/ARM64
-  runners); SVBony's own direct SDK download has not been independently
-  byte-verified for one.
-- **Whether the RUNPATH approach resolves the library at runtime on a real
-  install** (new, from Phase G) — `rusty-photon-svbony-sdk-install` itself
-  is verified end-to-end (download, sha256 verify, install), but the
-  packaged binary's `-Wl,-rpath,/usr/lib/rusty-photon` linking is not yet
-  wired into `scripts/build-packages.sh` (see "Packaging" below), so the
-  full "package-installed binary finds the operator-installed SDK at
-  runtime" path has not been exercised end-to-end on a real target.
-- The broader hardware-validation checklist `docs/plans/svbony-camera.md`
-  calls out: dark-frame banding (revision confirmation — the SV605CC has a
-  known early-revision banding issue SVBony fixed in a later revision),
-  gain/offset sweep against advertised e-/ADU curves, cooler ramp/overshoot
-  behaviour, and long-exposure + abort timing.
+What ran, and what each open item resolved to:
+
+- **Enumeration & identity** — the production build registers the real
+  camera with `UniqueID` minted from the enumeration-time `CameraSN`
+  (`SVBONY:SVBONY-SV605CC:<serial>`); `doctor` reports it. (The Phase E
+  simulation-only registration boundary was removed as part of this
+  validation — see "Device registration".)
+- **`SVB_EXPOSURE` unit = microseconds, CONFIRMED** — a 3 s request
+  integrates ~3.2 s wall-clock; SDK value quantization reads back at µs
+  scale (200 000 → 199 997).
+- **Stale-frame flush NOT needed on the soft-trigger path, CONFIRMED** —
+  fresh frames with correct integration times immediately after
+  ROI/exposure/bin changes; the aborted-frame case is closed by the abort
+  path's stop-then-re-arm (Exposure contract, steps 3-4).
+- **`CanStopExposure` stays `false`, CONFIRMED** — probed concurrently:
+  `SVBStopVideoCapture` during a blocked `SVBGetVideoData` is tolerated
+  (no crash; handle survives restart + capture) but does not unblock the
+  read and the interrupted frame is never delivered — no data-preserving
+  stop exists.
+- **`ElectronsPerADU` permanently `NOT_IMPLEMENTED`, CONFIRMED** — no
+  control type or exported function in SDK 1.13.4 exposes any conversion
+  factor.
+- **`MaxADU` corrected to 65535** — saturated Raw16 pixels read 65535 on
+  the 14-bit sensor (full-range rescale, low bits populated), so the
+  original `2^MaxBitDepth - 1` = 16383 understated the delivered scale.
+- **`CameraXSize`/`CameraYSize` switched to R4 aligned-down reporting
+  (2976×3000)** — real ConformU's binned full frame at bin 3 failed
+  against the raw 3008 extent (1002 % 8 ≠ 0), the exact case Phase E
+  deferred; every binned full frame (bins 1-4) is now BDD-pinned
+  achievable and ConformU passes.
+- **Abort made responsive** — measured drain to next accepted exposure
+  ~0.3 s (was ~8.3 s on an aborted 10 s exposure), via the cancel flag
+  checked between `SVBGetVideoData` poll slices + stop/re-arm; recovery
+  exposures verified clean.
+- **Gain/offset/cooling** — set/read round-trips against the real
+  controls (gain 0-600, offset 0-100 on this camera); operator cooling
+  cycle verified: TEC engages only on `CoolerOn` (tenet 3 honoured — the
+  connect handshake was watched doing nothing to the cooler), power
+  ramps (9→12 % toward a 20 °C setpoint from 28.7 °C ambient, sensor
+  temperature falling), `CoolerOn=false` returns power to 0.
+- **Full-frame transfer** — 3008×3008 Raw16 (~18 MB) downloads correctly;
+  needs the udev rule's `usbfs_memory_mb` bump (the 16 MB usbfs default
+  is below one full frame). Binned/ROI geometry byte counts verified
+  exact at 640×480, 320×240, 1504×1504 (bin 2 full frame), 2976×3000.
+- **SDK side effect discovered: parameter dumps in the working
+  directory** — `libSVBCameraSDK` writes per-model auto-save config files
+  (`U3SM900C-AST_Cfg_A.bin` / `_Cfg_SAVE.bin` for the SV605CC) into the
+  process CWD whenever a camera is opened. Harmless for the packaged
+  service (its unit's `WorkingDirectory` is service-writable state), but
+  now `.gitignore`d so dev-machine runs from a checkout can't commit
+  them.
+- **One unreproduced transient** — a single `SVBSetControlValue(SVB_GAIN)`
+  failure shortly after the camera's very first connect (immediately
+  after the udev re-trigger), never seen again across >1000 subsequent
+  Alpaca requests incl. two full ConformU runs. The seam previously
+  discarded the SDK error detail, making it undiagnosable; error mapping
+  now carries the SDK error text through every control/handshake path so
+  any recurrence is attributable.
+
+Still open (not hardware-blockable on this camera):
+
+- **Dark-frame banding revision check and a gain/offset sweep against
+  advertised e-/ADU curves** (plan checklist) — needs a dark, temperature-
+  controlled optical setup, deferred to field use; nothing in the driver
+  depends on the outcome.
+- **macOS Apple-Silicon SDK availability** — unchanged; no `mac_arm64`
+  blob in indi-3rdparty as of SDK 1.13.4.
+
+Closed since, by the packaging work the validation itself triggered:
+
+- **Packaged-binary RUNPATH end-to-end on a real target install** —
+  closed by issue #704's fix: `scripts/verify-packages.sh` now installs
+  the package in a systemd container, runs the shipped
+  `rusty-photon-svbony-sdk-install`, starts the unit and `ldd`-proves the
+  binary resolves the operator-installed blob from
+  `/usr/lib/rusty-photon`, on both the deb and rpm flavors, on every
+  nightly run. Only "on the rig, against the physical camera" remains,
+  and that rides the normal nightly-package deploy flow.
+- **Dev-machine USB permissions** — closed by issue #710's fix: the
+  helper installs a dev udev rule on hosts with no packaged one (see
+  "udev / USB"), so the hand-written rule this validation needed is now
+  part of the same bootstrap step as the SDK.
 
 ## Packaging
 
@@ -1092,6 +1212,38 @@ at `/usr/bin/rusty-photon-svbony-camera`, hardened
 `90-rusty-photon-svbony.rules` assigning enumerated SVBony devices (VID
 `f266`) to the `rusty-photon` service group (never world-writable) plus the
 usbfs memory bump.
+
+**The pre-bootstrap install retries; it does not gate** (issue #704). This
+is the only package whose binary links a library the package itself may not
+ship, so between `apt install` and the operator running
+`rusty-photon-svbony-sdk-install` the binary cannot be loaded at all
+(`error while loading shared libraries: libSVBCameraSDK.so`, exit 127).
+The unit's existing `Restart=on-failure`/`RestartSec=5` is exactly the
+right mechanism for that — the same shape as the serial drivers retrying
+an absent device — so the service picks the SDK up within seconds of the
+helper finishing, with no `systemctl` step and no
+`ConditionPathExists`-style gate to keep in sync. What was missing was the
+*verification*: `svbony-camera` is not a config-gated service, so
+`scripts/verify-packages.sh` held it to the ordinary "active + config +
+port" contract without ever installing the SDK, and every nightly failed
+there. It now walks the operator bootstrap instead, on both flavors: SDK
+absent from the payload (an ADR-018 regression guard), then
+`rusty-photon-svbony-sdk-install` run exactly as the postinst instructs,
+then unit active (that wait is also the proof that the retry heals
+itself — nothing issues a start), Alpaca probe on port 11125, and an `ldd`
+proof that the freshly installed blob resolves through the RUNPATH — the
+"packaged-binary RUNPATH end-to-end" item real-hardware validation left
+open, now covered on every nightly.
+
+Compared with the sibling services: `zwo-camera` bundles its MIT blob, so
+nothing is deferred; `qhy-camera` links `libqhyccd.a` **statically** and
+defers only camera *firmware*, so its service always starts and merely
+finds no device. SVBony is the only one where the deferred piece is a
+link-time `NEEDED` entry. Collapsing it into QHY's shape would mean
+`dlopen`ing the SDK behind a function-pointer table instead of linking it,
+so the service would start and report "SDK not installed" through the
+normal no-device path (and `doctor` could name it) — a `libsvbony-sys`
+rework worth its own issue, deliberately out of scope under this fix.
 
 Unlike `zwo-camera`, SVBony's SDK carries **no license grant at all** — not
 even QHY's ambiguous "proprietary, unresolved" status, but a header and
@@ -1188,7 +1340,7 @@ phasing; tracked here as follow-up rather than silently left undocumented.
 
 ## References
 
-- Decision record: [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) ·
+- Decision record: [`docs/plans/archive/svbony-camera.md`](../plans/archive/svbony-camera.md) ·
   [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)
 - FFI crate: [`svbony-rs`](../../crates/svbony-rs/) (this repo's author;
   siblings to `qhyccd-rs` / `zwo-rs`)
@@ -1201,7 +1353,7 @@ phasing; tracked here as follow-up rather than silently left undocumented.
   [`testing.md`](../skills/testing.md)
 - Behavioural reference (read-only, clean-room): indi-3rdparty
   `indi_svbony_ccd` (GPL/LGPL-family)
-- SDK ground truth: `docs/plans/svbony-camera.md`'s "Verified SDK facts"
+- SDK ground truth: `docs/plans/archive/svbony-camera.md`'s "Verified SDK facts"
   (from `SVBCameraSDK.h` + indi-3rdparty `libsvbony` packaging, SDK 1.13.4)
 - [ADR-001 Amendment A](../decisions/001-fits-file-support.md) — the
   pure-Rust / no-system-dep posture this service is a further exception to

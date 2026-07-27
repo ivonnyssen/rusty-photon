@@ -1,12 +1,29 @@
 # Align `qhyccd-rs` to the `zwo-rs` / `svbony-rs` conventions
 
-**Status:** Draft — not started. Analysis complete 2026-07-23; awaiting
-prioritisation/scheduling.
+**Status: COMPLETE (archived 2026-07-26).** Delivered by PR #705 (merged
+`2df162e1`, 2026-07-26) — all five phases on one branch, plus real-hardware
+validation on a QHY178 Cool + 7-slot CFW: ConformU camera and filter-wheel
+conformance clean, shared-handle lifecycle (CFW read + move with the camera
+disconnected, reconnect + expose after), mid-exposure abort, and sustained
+cooler regulation all proven on the device. The cross-vendor shared camera
+trait remains follow-on work, out of scope here (see Motivation).
+
+Phase summary: Phase 1: shared handle cell + RAII last-drop close + `Sdk::drop`
+Close-before-Release. Phase 2: `Control` → `ControlType` (31-variant subset +
+`Other(i32)` + `to_raw`), typed accessors on `Camera` + the service seam. Phase 3:
+flat `QHYError` (`Sdk { op }` + the genuinely-distinct cases) + a `check` helper +
+`pub use libqhyccd_sys as sys`. Phase 4: runtime `CameraBackend` enum → compile-time
+`#[cfg(feature = "simulation")]` per-method fork; `mocks.rs` `#[automock]` FFI-mock
+layer deleted; `simulation/` subtree flattened to one `simulation.rs`. Phase 5:
+six-file `camera/` split + `backend.rs` + `control.rs` consolidated into one
+device-file-major `camera.rs` (5a); single-frame/live download switched from a
+`Vec`-owning `ImageData` to a caller-owned `&mut [u8]` returning `FrameInfo`, with a
+`BufferTooSmall` bounds check (5b). Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
-([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
+([vendor-qhyccd-rs.md](../vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
 only tractable now that both crates are first-party and editable in-tree.
-**Related:** [vendor-zwo-rs.md](vendor-zwo-rs.md), ADR-009
+**Related:** [vendor-zwo-rs.md](../vendor-zwo-rs.md), ADR-009
 (`docs/decisions/009-vendor-qhyccd-rs.md`).
 
 ## Motivation
@@ -52,10 +69,12 @@ try to. Verified against the `libqhyccd-sys` bindings.
 2. **Opaque-pointer handle.** `QhyccdHandle = *const c_void`
    (`libqhyccd-sys/lib.rs:16`), vs zwo/svbony's `int` id/index. The
    `unsafe impl Send/Sync` on the handle wrapper is a forced consequence.
-3. **Discriminant values.** `BayerMode` is 1-based `GBRG=1..RGGB=4` and `Control`
-   discriminants are the SDK's `CONTROL_ID` constants (incl. the 1024+ block and
-   the gap at 38); `StreamMode` is consumed as `u8`. These *values* match the
-   SDK's own numbering, exactly as zwo's 0-based `Rg..Gb` match ASI's.
+3. **Discriminant values and variant names.** `BayerPattern` is 1-based
+   `GBRG=1..RGGB=4` and `Control` discriminants are the SDK's `CONTROL_ID`
+   constants (incl. the 1024+ block and the gap at 38); `StreamMode` is consumed
+   as `u8`. These *values and variant names* match the SDK's own numbering,
+   exactly as zwo's 0-based `Rg..Gb` match ASI's. (The *type name* is not
+   SDK-forced and was unified to `BayerPattern` — see the "What to unify" table.)
 4. **Two capture paths.** `ExpQHYCCDSingleFrame`/`GetQHYCCDSingleFrame` *and*
    `BeginQHYCCDLive`/`GetQHYCCDLiveFrame` are four separate C entry points
    (`libqhyccd-sys/lib.rs:58-93`) — the dual single-frame/live API is real, not a
@@ -82,6 +101,7 @@ publishing/dependency friction**. Ordered by the phases that follow.
 | Module layout | 6-file `camera/` + `backend.rs` + `control.rs` + `mocks.rs` | one file per device with `impl` blocks |
 | Frame buffer | fresh `Vec` per frame | caller-owned `&mut [u8]` |
 | Public surface | hides `sys`, no `check` helper | re-exports `sys` + a `check` helper |
+| CFA enum type name | `BayerMode` (wrapper-invented; the QHY SDK has no such type) | `BayerPattern` — **done**; the `GBRG..RGGB` variants + 1-based discriminants stay SDK-native per item 3 above |
 
 Worth **propagating the other direction:** qhy's `QHYCCD_SKIP_NATIVE_LINK`
 no-link build capability is genuinely useful and zwo/svbony lack the full
@@ -91,7 +111,7 @@ plan).
 ## Phases
 
 Each phase is independently shippable and revertible, and follows the standard
-[development-workflow.md](../skills/development-workflow.md) design→test→code
+[development-workflow.md](../../skills/development-workflow.md) design→test→code
 order (the crate's own unit/sim suite is the test surface here). Land them in
 order; the correctness fix goes first.
 
@@ -140,6 +160,16 @@ single-owner shape.
   instead of minting a second `Camera::new(id)`, so the wheel and camera share
   **one** open handle. This both removes the double-open path and makes the
   shared-handle abstraction earn its keep.
+- **`Sdk::drop` closes every open camera handle *before* `ReleaseQHYCCDResource`.**
+  The SDK manual documents Close-each-then-Release and warns the reverse is unsafe
+  (§ *Disconnecting the camera*, `docs/references/qhyccd-sdk-manual.md`).
+  `HandleCell::Drop` alone cannot guarantee this: a consumer (the qhy-camera
+  service) holds a *clone* of the camera handle that can outlive this `Sdk`, so
+  its last-drop close would otherwise run **after** `ReleaseQHYCCDResource`.
+  Closing on the shared cell in `Sdk::drop` sets it to `None`, so any surviving
+  clone's `HandleCell::Drop` becomes a no-op. *(Discovered during
+  implementation — the original target design omitted this ordering; a
+  `drop_closes_cameras_before_releasing_sdk` unit test locks it in.)*
 
 **Go/no-go gate — RESOLVED 2026-07-23 from the SDK manual: share one handle
 (the fix is required, not optional).** The QHYCCD SDK's documented model is
@@ -163,9 +193,10 @@ crate's use of `GetQHYCCDParam` over `GetQHYCCDCFWStatus` matches the manual's o
 recommendation.)
 
 **Exit:** `Camera`/shared-handle closes on last-drop; filter wheel shares the
-camera's handle (or the double-open is proven safe and explicitly documented);
-crate sim + unit suites green; `docs/services/qhy-camera.md` /
-`docs/services/qhy-focuser.md` updated if the observable lifecycle changes.
+camera's handle; `Sdk::drop` closes handles before releasing the SDK; crate sim +
+unit suites green; `docs/services/qhy-camera.md` updated for the teardown change.
+(`qhy-focuser` is a serial-port EAF driver and does **not** consume `qhyccd-rs` —
+it is unaffected by this plan, despite the shared "QHY" name.)
 
 ### Phase 2 — Control representation
 
@@ -179,12 +210,44 @@ crate sim + unit suites green; `docs/services/qhy-camera.md` /
   `CfwSlotsNum`) that Phase 1's wheel needs, so the wheel keeps working through
   typed accessors rather than raw `Control` variants.
 
+**Concrete design (decided 2026-07-23 during implementation):**
+- **Rename `Control` → `ControlType`** (sibling name) and reduce it to the
+  **subset actually referenced anywhere in the workspace** (crate src + crate
+  tests + crate **examples** + the `qhy-camera` service + sim scaffolding) — 31
+  variants — plus `Other(i32)`. The ~60 never-referenced SDK `CONTROL_ID`s are
+  dropped; the escape hatch carries their raw id if one is ever needed. (`DDR`
+  is kept only because a crate example uses it — the rule is literal:
+  referenced anywhere ⇒ named.) The kept variants
+  are no longer `#[repr]`-discriminated (a data-carrying enum can't be
+  `as u32`-cast), so an explicit `to_raw(self) -> u32` match replaces every
+  `control as u32`, and a `#[cfg(test)]` `from_raw` + round-trip test guards the
+  two hand-written matches from drifting. The discriminant *values* returned by
+  `to_raw` still equal the SDK `CONTROL_ID`s (forced fact #3).
+- **Typed accessors on `qhyccd_rs::Camera`** wrap the retained generic
+  `get_parameter`/`set_parameter`/`get_parameter_min_max_step`: `gain`/`set_gain`/
+  `gain_range`, `offset`/`set_offset`/`offset_range`, `exposure_us`/
+  `set_exposure_us`/`exposure_range_us`, `current_temperature_celsius`,
+  `set_cooler_target_celsius`, `set_manual_cooler_pwm`, `cooler_power_raw`, and
+  the CFW accessors `cfw_slot_count`/`cfw_position`/`set_cfw_position` (which
+  own the ASCII ±48 offset, so `filter_wheel.rs` stops open-coding it). QHY
+  temperatures are already whole °C — no 0.1 °C decode like svbony. Capability
+  *probes* stay on the generic `is_control_available(ControlType)` (they are
+  boolean presence queries, not value accessors).
+- **Service migration is low-churn.** `qhy-camera`'s `CameraHandle` seam keeps
+  its generic `get_parameter`/`set_parameter`/… as the required methods and
+  gains the same typed accessors as **default trait methods** built on them.
+  The service's mock is hand-written, so it inherits the defaults for free
+  (routing to the same underlying controls its existing test setup keys on);
+  only `camera.rs`'s call sites move to `handle.gain()` / `handle.set_gain(…)` /
+  `handle.current_temperature_celsius()` / etc. The generic `get_parameter`
+  stays for `Other`/uncovered controls but is no longer the routine surface.
+
 **Exit:** services/tests consume typed accessors; raw `get_parameter(Control, )`
 no longer part of the routine surface; suites green.
 
-### Phase 3 — Error shape
+### Phase 3 — Error shape (IMPLEMENTED 2026-07-23)
 
-- Collapse the ~45 per-call-site `QHYError` variants into a flat enum that
+- Collapse the ~48 per-call-site `QHYError` variants into a flat enum that
   carries an operation label plus the genuinely-distinct cases
   (`CameraNotOpen`, `Utf8`, control-name context, …). The SDK exposes **no error
   codes** to preserve (Phase-0 forced fact #1), so no information is lost.
@@ -192,9 +255,36 @@ no longer part of the routine surface; suites green.
   matching zwo's `pub use libzwo_sys as sys` + `*_check` (folds Phase 6's
   public-surface item forward since it is cheap and touches the same files).
 
-**Exit:** flatter `QHYError`; `sys` + `check` re-exported; suites green.
+**Concrete design (as implemented 2026-07-23):**
+- **Flat `QHYError`** = 7 variants: `Sdk { op: &'static str }` for every plain
+  SDK success/fail call (the failure sentinel carries no code, so an operation
+  label replaces the ~26 `error_code`-carrying + ~16 bare-op variants);
+  `CameraNotOpen`; the three control-scoped `GetParameter` / `IsControlAvailable`
+  / `GetMinMaxStep` (the `ControlType` is real information, kept); and the two
+  `#[from]` FFI string errors `InvalidUtf8` / `InvalidCameraId`. Two
+  never-constructed filter-wheel variants were dropped. Derives
+  `#[derive(Debug, Clone, PartialEq, Eq, Error)] #[non_exhaustive]` — matching the
+  siblings' error enums, and letting the unit tests assert on the value with
+  `assert_eq!` (rather than Display strings).
+- **`pub fn check(status: u32, op: &'static str) -> Result<()>`** — the QHY
+  analogue of zwo's `asi_check` / svbony's `svb_check`. Because the QHY ABI has
+  no code to map (unlike the siblings' `from_code`), it takes a `'static` `op`
+  label and produces `QHYError::Sdk { op }` on any non-zero status; it also logs
+  on the error path, centralising the per-site `tracing::error!` the ~14 void
+  wrappers did by hand. It is the funnel for the plain void success/fail calls
+  **only** — the value-returning entry points (whose `u32::MAX` / `u32::MAX as f64`
+  sentinel must be told apart from a valid return) keep their explicit `match`
+  and build the error directly.
+- **`pub use libqhyccd_sys as sys;`** at the crate root (unconditional — resolves
+  in all three cfg configs since the `-sys` crate is a non-optional dep), matching
+  zwo/svbony; `check` is re-exported from the root alongside `QHYError`/`Result`.
+- The error shape is Display-only at the service seam
+  (`BackendError::from_err(impl Display)`), so flattening is **not** a breaking
+  change for `qhy-camera` (the sole consumer): no service code changed.
 
-### Phase 4 — Simulation + mock-layer consolidation (largest structural change)
+**Exit:** flatter `QHYError`; `sys` + `check` re-exported; suites green. ✓
+
+### Phase 4 — Simulation + mock-layer consolidation (IMPLEMENTED 2026-07-24)
 
 - Fold the `simulation/` subtree into an inline `SimState` + `#[cfg(feature =
   "simulation")]` per-method fork, matching `zwo camera.rs` / `svbony camera.rs`.
@@ -205,10 +295,54 @@ no longer part of the routine surface; suites green.
 - **Keep** `QHYCCD_SKIP_NATIVE_LINK` and its `unimplemented!()` stubs — that
   capability is orthogonal and worth retaining.
 
-**Exit:** no `simulation/` subtree, no `mocks.rs`; unit + BDD + ConformU suites
-green with no coverage regression.
+**Concrete design (as implemented 2026-07-24):**
+- **Runtime `CameraBackend` enum → compile-time `#[cfg]` fork.** Each camera
+  method's `match &self.backend { Real, #[cfg] Simulated }` becomes two
+  `#[cfg(feature = "simulation")]` / `#[cfg(not(...))]` blocks (Idiom A: each block
+  is the method's tail expression — verified to compile under both configs). The
+  `Camera` struct now holds `#[cfg(not(feature = "simulation"))] handle:
+  Arc<HandleCell>` **xor** `#[cfg(feature = "simulation")] state:
+  Arc<RwLock<SimulatedCameraState>>`. It stays **`Arc`-shared** (not zwo's
+  single-owner `Mutex<SimState>`): a QHY CFW drives the *same* camera handle
+  (Phase 1), so `Camera: Clone` + wheel-sharing is SDK-forced. `backend.rs`
+  (`HandleCell`/`QHYCCDHandle`/`read_lock!`) is now `#[cfg(not(feature =
+  "simulation"))]`; `Camera::new` is real-only, `new_simulated` sim-only,
+  `is_simulated` a per-build constant; `PartialEq` is hand-rolled id-only (dropped
+  the `derive_more` dep).
+- **`mocks.rs` deleted entirely** — both the `#[automock]` `mock_libqhyccd_sys`
+  *and* the `unimplemented!()` stub module — along with the `crate::ffi` alias in
+  `lib.rs`. The real arms call `crate::sys::*` (= `libqhyccd_sys`) directly, like
+  zwo's `sys::ASI*`. **`QHYCCD_SKIP_NATIVE_LINK` is untouched:** the no-SDK-build
+  capability lives entirely in `libqhyccd-sys` (build.rs `qhyccd_skip_link` cfg
+  gating the `#[link]` attr), *independent* of `mocks.rs` — under `simulation` the
+  FFI arms are `#[cfg]`'d out, so the former alias/stubs were simply unneeded.
+  Removed the now-unused `mockall` dev-dep; repinned `MODULE.bazel.lock`.
+- **FFI-mock test suite deleted** (`src/tests/{camera,sdk,filter_wheel}_tests.rs`,
+  99 tests). A coverage audit classified each: **47 DUP** (already covered by the
+  simulation-path tests), **45 FFI-ONLY** (the `u32::MAX`/`QHYCCD_ERROR_F64`
+  sentinel decodes, the ≤100 remaining-exposure threshold, firmware bit-decode,
+  `CStr`/UTF-8 + `CString` interior-NUL handling of C buffers, the real
+  scan/enumeration pipeline, and the `HandleCell::Drop` / teardown-order
+  mock-call-count checks — all in the now-compiled-out FFI arm, so legitimately
+  untested, exactly as in zwo/svbony), and **7 GAP** → re-expressed as **5 new
+  simulation-path tests** (`Sdk::version` sim value; `BayerPattern::try_from` in a
+  `types.rs` `#[cfg(test)]` mod; `get_live_frame` open-but-not-live;
+  `get_single_frame` open-but-no-image; a `FilterWheel` over an open no-CFW camera).
+- **`simulation/` subtree flattened** to a single `src/simulation.rs`, preserving
+  the public `simulation` module + `SimulatedCameraConfig` / `ImageGenerator` /
+  `ImagePattern` and the `pub(crate)` `SimulatedCameraState`. The rich sim model is
+  **kept, not trimmed to zwo's minimal `fill_noise`**: `Sdk::new()`'s configured
+  `SIM-QHY178M` (7-slot CFW + cooler + chip geometry) is what the `qhy-camera` BDD +
+  ConformU suites drive, so a zwo-minimal rewrite was not viable — and the phase's
+  own risk table only anticipated *re-expressing* the FFI-mock tests, not deleting
+  the sim model.
 
-### Phase 5 — Module consolidation + frame buffer
+**Exit:** no `simulation/` subtree, no `mocks.rs`; unit + BDD + ConformU suites
+green with no coverage regression. ✓ (sim unit suite 139 green; FFI arms are
+`#[cfg]`'d out of the sim coverage build, so the hard-to-cover FFI path no longer
+counts as uncovered.)
+
+### Phase 5 — Module consolidation + frame buffer (IMPLEMENTED 2026-07-24)
 
 - Collapse the 6-file `camera/` split + `backend.rs` + `control.rs` into a
   single `camera.rs` with `impl` blocks (device-file-major, as zwo/svbony).
@@ -218,7 +352,35 @@ green with no coverage regression.
   (`zwo camera.rs:754` pattern). The two capture *paths* stay (SDK-forced); only
   the buffer ownership changes.
 
-**Exit:** one `camera.rs`; caller-owned frame buffer; suites green.
+**Concrete design (as implemented 2026-07-24, in two commits):**
+- **5a — module consolidation (mechanical, no API change).** `src/camera.rs`
+  now holds, in order: `ControlType` (formerly `control.rs`), the
+  `#[cfg(not(feature = "simulation"))]` handle machinery (`QHYCCDHandle` /
+  `HandleCell` / `read_lock!`, formerly `backend.rs`, with `read_lock!` now a
+  same-module `macro_rules!`), the `Camera` struct, and the camera's behaviour in
+  `impl Camera` blocks by responsibility (constructors, lifecycle, configuration,
+  device info, imaging, parameters + typed accessors, readout modes). The six
+  behavioural blocks moved **verbatim**; the per-submodule `use` headers collapsed
+  into one deduplicated import block. `lib.rs` dropped `mod backend;` / `mod
+  control;` and re-exports `ControlType` from `camera`. `glob(["src/**/*.rs"])`
+  needed no BUILD.bazel change.
+- **5b — caller-owned frame buffer (API change).** `Camera::get_single_frame` /
+  `get_live_frame` take `buf: &mut [u8]` and return `Result<FrameInfo>` (the frame
+  dimensions), writing pixels into `buf`. Both bounds-check `buf.len()` against the
+  frame size **before** the SDK write and return the new `QHYError::BufferTooSmall
+  { needed, got }`; the single-frame sim path checks before consuming the captured
+  image so a short buffer never loses it. `types::ImageData` (owned `Vec<u8>` +
+  metadata) → `types::FrameInfo` (dimensions only), re-exported in place of
+  `ImageData`. Callers size the buffer with `get_image_size()` exactly as before.
+  The sole consumer (`qhy-camera`) keeps a small **service-local** `ImageData` DTO
+  (pixels + `FrameInfo` fields) as the currency between the `CameraHandle` seam and
+  the ASCOM image conversion — mirroring how `zwo-camera` owns its capture `Vec<u8>`;
+  `RealCameraHandle::get_single_frame` allocates the buffer, calls the new API, and
+  pairs the pixels with the returned dimensions. No public ASCOM behaviour changed.
+
+**Exit:** one `camera.rs`; caller-owned frame buffer; suites green. ✓ (bazel
+build+test 87; real ConformU green; sim unit+integration 104; doctests 54; clippy
+`-D warnings` on both crates in both feature configs.)
 
 ## Non-goals (explicitly out of scope)
 
@@ -227,7 +389,7 @@ green with no coverage regression.
   is a separate decision (and faces the dual-home publishing constraint), tracked
   elsewhere.
 - **Any change to the SDK-forced items** in "What must stay per-crate."
-- **Vendoring/publishing changes** — [vendor-qhyccd-rs.md](vendor-qhyccd-rs.md)
+- **Vendoring/publishing changes** — [vendor-qhyccd-rs.md](../vendor-qhyccd-rs.md)
   owns those; this plan assumes the vendored, first-party state.
 - **Touching `zwo-rs`/`svbony-rs`** beyond noting the `SKIP_NATIVE_LINK`
   back-port idea.
@@ -257,7 +419,13 @@ behaviour.
    §45). Phase 1 must share one handle rather than re-open by id. See the Phase 1
    go/no-go gate for the full citation.
 2. **Does any service depend on `Camera: Clone` / equality-by-id semantics** that
-   the Phase 1 handle rework would change? Audit `services/qhy-camera` +
-   `services/qhy-focuser` usage first.
+   the Phase 1 handle rework would change? **RESOLVED (2026-07-23):**
+   `services/qhy-camera` (the only consumer) depends on `Camera: Clone`
+   (Arc-share) in three load-bearing places — `sdk.cameras().cloned()`,
+   `FilterWheel::new(conn.camera().clone())`, and a conn test — and does **not**
+   depend on `Camera == Camera` eq-by-id or on `FilterWheel: Clone/PartialEq`;
+   all preserved. `services/qhy-focuser` is a serial-port EAF driver with no
+   `qhyccd-rs` dependency (the earlier mention was a name collision, now
+   corrected in the Exit criteria above).
 3. **Phase ordering vs. an in-flight qhy-camera change** — if a service-level qhy
    change is active, land Phase 1 behind it to avoid a lifecycle-semantics clash.

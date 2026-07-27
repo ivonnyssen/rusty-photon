@@ -544,22 +544,10 @@ fn short_time(timestamp: &str) -> &str {
     timestamp.get(11..19).unwrap_or(timestamp)
 }
 
-/// Humanize a millisecond duration: `400ms`, `5s`, `2m 04s`, `1h 02m 03s`.
+/// Humanize a millisecond duration via humantime: `400ms`, `5s`, `2m 4s`,
+/// `1h 2m 3s`.
 fn humanize_ms(ms: u64) -> String {
-    if ms < 1000 {
-        return format!("{ms}ms");
-    }
-    let total_secs = ms / 1000;
-    let hours = total_secs / 3600;
-    let minutes = (total_secs % 3600) / 60;
-    let seconds = total_secs % 60;
-    if hours > 0 {
-        format!("{hours}h {minutes:02}m {seconds:02}s")
-    } else if minutes > 0 {
-        format!("{minutes}m {seconds:02}s")
-    } else {
-        format!("{seconds}s")
-    }
+    humantime::format_duration(std::time::Duration::from_millis(ms)).to_string()
 }
 
 // --- the page shell ---------------------------------------------------------------
@@ -1086,7 +1074,7 @@ mod tests {
         env.elapsed_ms = Some(124_000);
         let html = feed_card(&env).into_string();
         assert!(html.contains("evt-detail"), "{html}");
-        assert!(html.contains("2m 04s"), "{html}");
+        assert!(html.contains("2m 4s"), "{html}");
     }
 
     #[test]
@@ -1103,12 +1091,12 @@ mod tests {
 
     #[test]
     fn humanize_ms_formats_all_magnitudes() {
-        assert_eq!(humanize_ms(0), "0ms");
+        assert_eq!(humanize_ms(0), "0s");
         assert_eq!(humanize_ms(400), "400ms");
         assert_eq!(humanize_ms(5_000), "5s");
-        assert_eq!(humanize_ms(65_000), "1m 05s");
-        assert_eq!(humanize_ms(124_000), "2m 04s");
-        assert_eq!(humanize_ms(3_723_000), "1h 02m 03s");
+        assert_eq!(humanize_ms(65_000), "1m 5s");
+        assert_eq!(humanize_ms(124_000), "2m 4s");
+        assert_eq!(humanize_ms(3_723_000), "1h 2m 3s");
     }
 
     #[test]

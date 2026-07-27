@@ -23,6 +23,7 @@ clap = { workspace = true }
 cloudflare = { workspace = true }
 derive_more = { workspace = true }
 hostname = "0.4"
+humantime = { workspace = true }
 instant-acme = { workspace = true }
 rand = { workspace = true }
 rcgen = { workspace = true }

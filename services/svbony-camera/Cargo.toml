@@ -84,7 +84,7 @@ priority = "optional"
 # NEEDED entry. Direct runtime needs: glibc, libgcc, C++ runtime (what
 # libSVBCameraSDK.so itself links, per readelf -d) + libusb-1.0 (the
 # *binary's own* -lusb-1.0 link — the SDK blob has no NEEDED entry for it
-# at all, see docs/plans/svbony-camera.md Phase F); adduser is used by
+# at all, see docs/plans/archive/svbony-camera.md Phase F); adduser is used by
 # postinst.
 depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, adduser"
 assets = [
@@ -129,6 +129,8 @@ udevadm control --reload-rules || true
 udevadm trigger || true
 echo "rusty-photon-svbony-camera: the SVBony SDK is not bundled."
 echo "Run '/usr/sbin/rusty-photon-svbony-sdk-install' once as root before first use."
+echo "Until then the service cannot load the SDK; systemd keeps retrying, and"
+echo "it starts serving on its own within seconds of the helper finishing."
 """
 # rpm scriptlet arg $1 = package instances remaining after the operation.
 # On upgrade the old %preun runs AFTER the new %post, so an unguarded

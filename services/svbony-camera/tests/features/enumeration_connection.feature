@@ -11,7 +11,7 @@ Feature: Camera enumeration and connection lifecycle
   open failure leaves the device not connected (C2). Disconnecting (C3)
   closes the device, cancelling any in-flight exposure (C3b, implemented in
   Phase E over the generation-counter guard -- see
-  docs/plans/svbony-camera.md). With zero cameras discovered the service
+  docs/plans/archive/svbony-camera.md). With zero cameras discovered the service
   still starts, registering no Camera devices and logging a warning (C0b).
   Against the
   svbony-rs simulation backend exactly one camera is present

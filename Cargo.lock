@@ -1179,6 +1179,7 @@ dependencies = [
  "cucumber",
  "derive_more",
  "hostname",
+ "humantime",
  "instant-acme",
  "mockall",
  "rand 0.10.2",
@@ -3821,9 +3822,7 @@ dependencies = [
 name = "qhyccd-rs"
 version = "0.1.9"
 dependencies = [
- "derive_more",
  "libqhyccd-sys",
- "mockall",
  "parking_lot",
  "rand 0.10.2",
  "rayon",
@@ -6218,6 +6217,7 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
+ "humantime",
  "insta",
  "libc",
  "maud",

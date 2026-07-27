@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use qhyccd_rs::simulation::SimulatedCameraConfig;
-use qhyccd_rs::{BayerMode, Camera, FilterWheel, Sdk};
+use qhyccd_rs::{BayerPattern, Camera, FilterWheel, Sdk};
 
 /// Creates a standard simulated camera for testing
 pub fn create_test_camera() -> Camera {
@@ -28,10 +28,10 @@ pub fn create_camera_with_filter_wheel(slots: u32) -> Camera {
 }
 
 /// Creates a simulated color camera
-pub fn create_color_camera(bayer_mode: BayerMode) -> Camera {
+pub fn create_color_camera(bayer_pattern: BayerPattern) -> Camera {
     let config = SimulatedCameraConfig::default()
         .with_id("TEST-CAM-COLOR")
-        .with_color(bayer_mode);
+        .with_color(bayer_pattern);
     Camera::new_simulated(config)
 }
 

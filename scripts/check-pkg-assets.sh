@@ -22,6 +22,10 @@ toml_section() { # $1=file $2=exact table name
 
 [ -f packaging/postinst.common ] || { echo "check-pkg-assets: run from the repo root" >&2; exit 2; }
 
+# The build script carries the SDK pins and the RUNPATH every package's
+# binaries are linked with; several checks below cross-reference it.
+bp=scripts/build-packages.sh
+
 for pkgdir in services/*/pkg; do
     [ -d "$pkgdir" ] || continue
     svc=$(basename "$(dirname "$pkgdir")")
@@ -229,8 +233,34 @@ for pkgdir in services/*/pkg; do
         svbony-camera)
             [ -f "$pkgdir/90-rusty-photon-svbony.rules" ] \
                 || err "$svc: missing pkg/90-rusty-photon-svbony.rules"
-            [ -f "$pkgdir/rusty-photon-svbony-sdk-install" ] \
-                || err "$svc: missing pkg/rusty-photon-svbony-sdk-install"
+            helper="$pkgdir/rusty-photon-svbony-sdk-install"
+            if [ ! -f "$helper" ]; then
+                err "$svc: missing pkg/rusty-photon-svbony-sdk-install"
+            else
+                # The helper's install directory must be the RUNPATH
+                # build-packages.sh bakes into the binary: the operator
+                # installs the blob at runtime, and nothing else makes the
+                # loader look there (that directory is deliberately off
+                # ldconfig's scan path — ADR-013/ADR-018).
+                rpath=$(sed -n 's/.*-Wl,-rpath,\([^"]*\)".*/\1/p' "$bp" | head -1)
+                grep -q '^DEST="\$DEST_DIR/libSVBCameraSDK\.so"$' "$helper" \
+                    && grep -q "^DEST_DIR=\"\\\$ROOT$rpath\"\$" "$helper" \
+                    || err "$svc: helper must install libSVBCameraSDK.so into build-packages.sh's RUNPATH ($rpath)"
+                # Unpackaged-host device access (issue #710). The rule the
+                # helper writes must carry the same USB VID as the packaged
+                # one, must NOT reuse its filename (an /etc file of the same
+                # name masks the packaged rule, silently keeping dev
+                # ownership after the package lands), and must never fall
+                # back to a world-writable node (ADR-013 §3).
+                vid=$(sed -n 's/.*ATTRS{idVendor}=="\([0-9a-f]*\)".*/\1/p' \
+                    "$pkgdir/90-rusty-photon-svbony.rules" | head -1)
+                grep -q "ATTRS{idVendor}==\"$vid\"" "$helper" \
+                    || err "$svc: helper's udev rule must match the packaged rule's VID ($vid)"
+                grep -q '^DEV_RULE=90-rusty-photon-svbony-dev\.rules$' "$helper" \
+                    || err "$svc: helper's dev udev rule must not reuse 90-rusty-photon-svbony.rules (it would mask the packaged rule)"
+                grep -q 'MODE="0666"' "$helper" \
+                    && err "$svc: helper must not install a world-writable udev rule (ADR-013 §3)"
+            fi
             toml_section "$toml" "package.metadata.deb" \
                 | grep -q '"pkg/rusty-photon-svbony-sdk-install", "usr/sbin/rusty-photon-svbony-sdk-install", "755"' \
                 || err "$svc: deb assets must ship rusty-photon-svbony-sdk-install"
@@ -250,7 +280,6 @@ done
 
 # The QHY SDK pins (version + archive sha256s) live in two shipped places
 # (ADR-013); they must match.
-bp=scripts/build-packages.sh
 fw=services/qhy-camera/pkg/rusty-photon-qhy-firmware-install
 if [ -f "$bp" ] && [ -f "$fw" ]; then
     v1=$(sed -n 's/^QHY_SDK_VERSION="\(.*\)"$/\1/p' "$bp" | head -1)

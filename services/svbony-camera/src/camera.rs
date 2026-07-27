@@ -85,7 +85,10 @@ struct SensorInfo {
     is_color: bool,
     bayer_pattern: BayerPattern,
     supported_bins: Vec<u32>,
-    /// `(2^max_bit_depth) - 1` precomputed for `MaxADU` (ST3).
+    /// The delivered Raw16 full-scale value for `MaxADU` (ST3). Always
+    /// `65535`: this driver always downloads Raw16, and the SDK rescales
+    /// sub-16-bit ADC data to the full 16-bit range (hardware-verified on
+    /// the 14-bit SV605CC — saturated pixels read 65535, not 16383).
     max_adu: u32,
     pixel_size_um: f32,
     is_trigger_cam: bool,
@@ -127,6 +130,11 @@ struct DeviceState {
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
+    /// The in-flight capture's cancel flag ([`CaptureRequest::cancel`]):
+    /// set by `cancel_exposure` so the capture task bails out between
+    /// `SVBGetVideoData` poll slices instead of draining the rest of its
+    /// deadline. Replaced by each `start_exposure`.
+    capture_cancel: Mutex<Option<Arc<AtomicBool>>>,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
     last_image: Mutex<Option<ImageArray>>,
@@ -157,6 +165,7 @@ impl DeviceState {
             image_ready: AtomicBool::new(false),
             aborted: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
+            capture_cancel: Mutex::new(None),
             last_exposure_start_time: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
             last_image: Mutex::new(None),
@@ -172,6 +181,11 @@ impl DeviceState {
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
+        // A capture task somehow still draining from a previous session
+        // should bail promptly rather than run out its deadline.
+        if let Some(cancel) = self.capture_cancel.lock().take() {
+            cancel.store(true, Ordering::Release);
+        }
         self.exposure_in_flight.store(false, Ordering::Release);
         self.image_ready.store(false, Ordering::Release);
         self.aborted.store(false, Ordering::Release);
@@ -247,7 +261,10 @@ impl SvbonyCamera {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
-        self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
+        self.handle.open().map_err(|e| {
+            warn!(camera = %self.unique_id, error = %e, "SDK open failed");
+            ASCOMError::NOT_CONNECTED
+        })?;
         // A failed post-open handshake must leave the device disconnected
         // (C2), not opened-but-unusable, so close before propagating.
         if let Err(e) = self.open_handshake() {
@@ -276,20 +293,20 @@ impl SvbonyCamera {
         let property = self
             .handle
             .property()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            .map_err(handshake_err("property fetch"))?;
         let property_ex = self
             .handle
             .property_ex()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            .map_err(handshake_err("property-ex fetch"))?;
         let pixel_size_um = self
             .handle
             .pixel_size_microns()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            .map_err(handshake_err("pixel-size read"))?;
 
         let caps = self
             .handle
             .control_caps()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            .map_err(handshake_err("control-caps enumeration"))?;
         let find = |ct: ControlType| caps.iter().find(|c| c.control_type == ct);
 
         let exposure = find(ControlType::Exposure).ok_or_else(|| {
@@ -302,8 +319,23 @@ impl SvbonyCamera {
 
         self.state.bin.store(1, Ordering::Release);
         self.state.readout_mode.store(0, Ordering::Release);
-        let max_width = u32::try_from(property.max_width).unwrap_or(0);
-        let max_height = u32::try_from(property.max_height).unwrap_or(0);
+        // Report the sensor extent aligned down so the full frame divided by
+        // every supported bin satisfies the SDK's width%8 / height%2 ROI
+        // rule (SV605CC: 3008x3008 raw -> 2976x3000 reported) — clients
+        // (ConformU among them) take a full frame at every bin via
+        // NumX = CameraXSize / bin, which the raw extent cannot satisfy at
+        // every bin (3008/3 = 1002 is not a multiple of 8).
+        let supported_bins: Vec<u32> = property.supported_bins.clone();
+        let max_width = aligned_sensor_extent(
+            u32::try_from(property.max_width).unwrap_or(0),
+            &supported_bins,
+            8,
+        );
+        let max_height = aligned_sensor_extent(
+            u32::try_from(property.max_height).unwrap_or(0),
+            &supported_bins,
+            2,
+        );
         *self.state.intended_roi.lock() = Some(Roi {
             start_x: 0,
             start_y: 0,
@@ -318,7 +350,7 @@ impl SvbonyCamera {
             is_color: property.is_color,
             bayer_pattern: property.bayer_pattern,
             supported_bins: property.supported_bins.clone(),
-            max_adu: max_adu_from_bit_depth(u32::try_from(property.max_bit_depth).unwrap_or(0)),
+            max_adu: RAW16_MAX_ADU,
             pixel_size_um,
             is_trigger_cam: property.is_trigger_cam,
             supports_control_temp: property_ex.supports_control_temp,
@@ -345,10 +377,10 @@ impl SvbonyCamera {
         if property.is_trigger_cam {
             self.handle
                 .set_camera_mode(svbony_rs::CameraMode::TrigSoft)
-                .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+                .map_err(handshake_err("soft-trigger mode select"))?;
             self.handle
                 .start_video_capture()
-                .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+                .map_err(handshake_err("video-capture arm"))?;
         }
 
         Ok(())
@@ -363,14 +395,15 @@ impl SvbonyCamera {
     }
 
     /// Cancel any in-flight exposure (abort): bump the generation so the
-    /// capture task discards its result, clear `image_ready`/`last_error`,
-    /// and set `aborted` so `CameraState`/`PercentCompleted` promptly report
-    /// idle instead of a still-running exposure (see `DeviceState::aborted`'s
-    /// doc comment). Deliberately does NOT clear `exposure_in_flight` — the
-    /// capture task clears that once its blocking SDK chain drains, so a new
-    /// exposure cannot race the still-running one (the design's "one owner
-    /// per device"). Unlike `zwo-camera`, this never signals the SDK — see
-    /// `backend.rs`'s module docs for why `capture` has no interrupt path.
+    /// capture task discards its result, set the capture's cancel flag so it
+    /// bails out between `SVBGetVideoData` poll slices (draining within
+    /// ~one slice, not the rest of its deadline — see `backend.rs`'s module
+    /// docs, "How `capture` aborts"), clear `image_ready`/`last_error`, and
+    /// set `aborted` so `CameraState`/`PercentCompleted` promptly report
+    /// idle (see `DeviceState::aborted`'s doc comment). Deliberately does
+    /// NOT clear `exposure_in_flight` — the capture task clears that once
+    /// its (now short) drain completes, so a new exposure cannot race the
+    /// still-running one (the design's "one owner per device").
     fn cancel_exposure(&self) {
         if !self.state.exposure_in_flight.load(Ordering::Acquire) {
             return;
@@ -381,6 +414,9 @@ impl SvbonyCamera {
         self.state
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel);
+        if let Some(cancel) = self.state.capture_cancel.lock().as_ref() {
+            cancel.store(true, Ordering::Release);
+        }
         self.state.image_ready.store(false, Ordering::Release);
         self.state.aborted.store(true, Ordering::Release);
         *self.state.last_error.lock() = None;
@@ -419,6 +455,17 @@ impl SvbonyCamera {
     }
 }
 
+/// Map a connect-handshake SDK failure onto `NOT_CONNECTED` (C2), logging
+/// the underlying SDK error — which the mapped ASCOM code cannot carry —
+/// so a real-hardware failure at any handshake step is diagnosable from
+/// the service log.
+fn handshake_err(step: &'static str) -> impl FnOnce(crate::backend::BackendError) -> ASCOMError {
+    move |e| {
+        warn!(error = %e, "connect handshake failed at {step}");
+        ASCOMError::NOT_CONNECTED
+    }
+}
+
 /// Geometry validation (R2/R3). Rejects a zero, misaligned, or out-of-bounds
 /// sub-frame. SVBony's `SVBSetROIFormat` requires `width % 8 == 0` and
 /// `height % 2 == 0` — byte-for-byte the same rule `zwo-camera` enforces for
@@ -449,6 +496,46 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
     Ok(())
 }
 
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+fn lcm(a: u32, b: u32) -> u32 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        a / gcd(a, b) * b
+    }
+}
+
+/// The largest sensor extent (≤ `max`) the driver reports such that the full
+/// frame divided by *every* supported bin is a valid SVBony ROI — i.e. the
+/// binned extent is a multiple of `unit` (8 for width, 2 for height); the
+/// same mechanism as `zwo-camera`'s `aligned_sensor_extent` (R4).
+///
+/// ConformU takes a full frame at every bin via `NumX = CameraXSize / bin`
+/// (and likewise `NumY`), so reporting the raw sensor size makes those
+/// binned full frames unachievable whenever `raw / bin` is not a multiple
+/// of `unit` — real-hardware ConformU flagged exactly this on the SV605CC
+/// (3008 / 3 = 1002, not a multiple of 8).
+fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
+    let step = supported_bins
+        .iter()
+        .copied()
+        .filter(|&b| b > 0)
+        .map(|b| unit.saturating_mul(b))
+        .fold(1, lcm);
+    if step == 0 || step > max {
+        max
+    } else {
+        max - max % step
+    }
+}
+
 /// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
     let factor = f64::from(old) / f64::from(new);
@@ -460,11 +547,13 @@ fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
     }
 }
 
-/// `MaxADU = 2^bit_depth - 1` (16383 for the SV605CC's 14-bit ADC),
-/// saturating (ST3).
-fn max_adu_from_bit_depth(bit_depth: u32) -> u32 {
-    1u32.checked_shl(bit_depth).map_or(u32::MAX, |v| v - 1)
-}
+/// `MaxADU` for the always-Raw16 download format (ST3). NOT
+/// `2^MaxBitDepth - 1`: the SDK rescales sub-16-bit ADC data to the full
+/// 16-bit range in Raw16 output — hardware-verified on the 14-bit SV605CC,
+/// whose saturated Raw16 pixels read 65535 (and whose low two bits are
+/// populated, i.e. a genuine rescale, not a bare left shift) — so the
+/// delivered data's ceiling is the format's, not the ADC's.
+const RAW16_MAX_ADU: u32 = u16::MAX as u32;
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y` (ST1).
 fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
@@ -825,7 +914,7 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::Gain)
                 .map(|g| g as i32)
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
+                .map_err(|e| ASCOMError::invalid_operation(format!("failed to read gain: {e}")))
         })
         .await
     }
@@ -854,7 +943,7 @@ impl Camera for SvbonyCamera {
         }
         self.on_handle(move |h| {
             h.set_control_value(ControlType::Gain, i64::from(gain))
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
+                .map_err(|e| ASCOMError::invalid_operation(format!("failed to set gain: {e}")))
         })
         .await
     }
@@ -867,7 +956,7 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::BlackLevel)
                 .map(|o| o as i32)
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
+                .map_err(|e| ASCOMError::invalid_operation(format!("failed to read offset: {e}")))
         })
         .await
     }
@@ -896,7 +985,7 @@ impl Camera for SvbonyCamera {
         }
         self.on_handle(move |h| {
             h.set_control_value(ControlType::BlackLevel, i64::from(offset))
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
+                .map_err(|e| ASCOMError::invalid_operation(format!("failed to set offset: {e}")))
         })
         .await
     }
@@ -980,8 +1069,11 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::CurrentTemperature)
                 .map(|t| t as f64 / 10.0)
-                .map_err(|_| {
-                    ASCOMError::new(UNSPECIFIED_ERROR, "failed to read sensor temperature")
+                .map_err(|e| {
+                    ASCOMError::new(
+                        UNSPECIFIED_ERROR,
+                        format!("failed to read sensor temperature: {e}"),
+                    )
                 })
         })
         .await
@@ -998,7 +1090,9 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::TargetTemperature)
                 .map(|t| t as f64 / 10.0)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+                .map_err(|e| {
+                    ASCOMError::invalid_value(format!("failed to read target temperature: {e}"))
+                })
         })
         .await
     }
@@ -1017,7 +1111,9 @@ impl Camera for SvbonyCamera {
         let tenths = (set_ccd_temperature * 10.0).round() as i64;
         self.on_handle(move |h| {
             h.set_control_value(ControlType::TargetTemperature, tenths)
-                .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))
+                .map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set target temperature: {e}"))
+                })
         })
         .await?;
         *self.state.target_temperature.lock() = Some(set_ccd_temperature);
@@ -1032,7 +1128,7 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::CoolerEnable)
                 .map(|v| v != 0)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+                .map_err(|e| ASCOMError::invalid_value(format!("failed to read cooler state: {e}")))
         })
         .await
     }
@@ -1048,7 +1144,9 @@ impl Camera for SvbonyCamera {
         }
         self.on_handle(move |h| {
             h.set_control_value(ControlType::CoolerEnable, i64::from(cooler_on))
-                .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))
+                .map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set cooler state: {e}"))
+                })
         })
         .await
     }
@@ -1062,7 +1160,7 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::CoolerPower)
                 .map(|p| p as f64)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+                .map_err(|e| ASCOMError::invalid_value(format!("failed to read cooler power: {e}")))
         })
         .await
     }
@@ -1227,6 +1325,8 @@ impl Camera for SvbonyCamera {
         *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
         *self.state.last_exposure_duration.lock() = Some(duration);
 
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.state.capture_cancel.lock() = Some(Arc::clone(&cancel));
         let request = CaptureRequest {
             start_x: roi.start_x,
             start_y: roi.start_y,
@@ -1236,6 +1336,7 @@ impl Camera for SvbonyCamera {
             exposure_us,
             is_trigger_cam: sensor.is_trigger_cam,
             duration,
+            cancel,
         };
         let handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
@@ -1281,7 +1382,7 @@ impl Camera for SvbonyCamera {
         let result = self
             .on_handle(move |h| {
                 h.pulse_guide(dir, duration_ms)
-                    .map_err(|_| ASCOMError::invalid_operation("pulse guide failed"))
+                    .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))
             })
             .await;
         self.state.pulse_guiding.store(false, Ordering::Release);
@@ -1335,11 +1436,26 @@ mod tests {
     // --- pure helpers -------------------------------------------------------------
 
     #[test]
-    fn max_adu_is_two_pow_bits_minus_one() {
-        assert_eq!(max_adu_from_bit_depth(16), 65_535);
-        assert_eq!(max_adu_from_bit_depth(14), 16_383);
-        assert_eq!(max_adu_from_bit_depth(12), 4_095);
-        assert_eq!(max_adu_from_bit_depth(0), 0);
+    fn max_adu_is_the_raw16_full_scale_not_the_adc_depth() {
+        assert_eq!(RAW16_MAX_ADU, 65_535);
+    }
+
+    #[test]
+    fn aligned_sensor_extent_makes_every_binned_full_frame_valid() {
+        // SV605CC: width step lcm(8,16,24,32) = 96, height step
+        // lcm(2,4,6,8) = 24.
+        assert_eq!(aligned_sensor_extent(3008, &[1, 2, 3, 4], 8), 2976);
+        assert_eq!(aligned_sensor_extent(3008, &[1, 2, 3, 4], 2), 3000);
+        for bin in [1u32, 2, 3, 4] {
+            assert_eq!((2976 / bin) % 8, 0, "width at bin {bin}");
+            assert_eq!((3000 / bin) % 2, 0, "height at bin {bin}");
+        }
+        // Degenerate inputs fall back to the raw extent, and lcm's zero
+        // guard keeps a hypothetical zero step from dividing by zero.
+        assert_eq!(aligned_sensor_extent(3008, &[], 8), 3008);
+        assert_eq!(aligned_sensor_extent(10, &[1, 2, 3, 4], 8), 10);
+        assert_eq!(lcm(0, 5), 0);
+        assert_eq!(lcm(5, 0), 0);
     }
 
     #[test]
@@ -1435,9 +1551,11 @@ mod tests {
     #[tokio::test]
     async fn connect_caches_sensor_properties_from_the_handle() {
         let cam = connected_device(MockCameraHandle::default());
-        assert_eq!(cam.camera_x_size().await.unwrap(), 3008);
-        assert_eq!(cam.camera_y_size().await.unwrap(), 3008);
-        assert_eq!(cam.max_adu().await.unwrap(), 16_383);
+        // Aligned-down from the raw 3008x3008 so every binned full frame
+        // (bins 1-4) satisfies the SDK's width%8 / height%2 rule.
+        assert_eq!(cam.camera_x_size().await.unwrap(), 2976);
+        assert_eq!(cam.camera_y_size().await.unwrap(), 3000);
+        assert_eq!(cam.max_adu().await.unwrap(), 65_535);
     }
 
     #[tokio::test]
@@ -1823,6 +1941,125 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(!cam.image_ready().await.unwrap());
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
+    }
+
+    /// After an abort the capture task drains within ~one poll slice (the
+    /// cancel-flag bail-out), so a new exposure is accepted promptly — not
+    /// only after the aborted exposure's full `exposure*2+500ms` deadline —
+    /// keeping `CameraState = Idle` and "StartExposure accepted" consistent.
+    #[tokio::test]
+    async fn a_new_exposure_is_accepted_promptly_after_an_abort() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_capture_delay(Duration::from_secs(30));
+        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        cam.connect().unwrap();
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        cam.start_exposure(Duration::from_secs(30), true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cam.abort_exposure().await.unwrap();
+        handle.set_capture_delay(Duration::ZERO);
+        let accepted_after = std::time::Instant::now();
+        loop {
+            match cam.start_exposure(Duration::from_millis(10), true).await {
+                Ok(()) => break,
+                Err(_) if accepted_after.elapsed() < Duration::from_secs(5) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(e) => panic!(
+                    "new exposure still rejected after {:?}: {e}",
+                    accepted_after.elapsed()
+                ),
+            }
+        }
+        wait_image_ready(&cam).await;
+    }
+
+    /// Every SDK-error mapping carries the SDK's own error detail in the
+    /// ASCOM error message — a bare error code is undiagnosable from a
+    /// client or the service log (a real-hardware gain-write transient
+    /// motivated this contract).
+    #[tokio::test]
+    async fn sdk_control_failures_surface_the_sdk_detail() {
+        let handle = Arc::new(MockCameraHandle::default().with_pulse_guide());
+        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        cam.connect().unwrap();
+        handle.fail_controls.store(true, AtomicOrdering::SeqCst);
+        let cases: [(ASCOMError, &str); 11] = [
+            (cam.gain().await.unwrap_err(), "failed to read gain"),
+            (cam.set_gain(50).await.unwrap_err(), "failed to set gain"),
+            (cam.offset().await.unwrap_err(), "failed to read offset"),
+            (cam.set_offset(5).await.unwrap_err(), "failed to set offset"),
+            (
+                cam.ccd_temperature().await.unwrap_err(),
+                "failed to read sensor temperature",
+            ),
+            (
+                cam.set_ccd_temperature().await.unwrap_err(),
+                "failed to read target temperature",
+            ),
+            (
+                cam.set_set_ccd_temperature(0.0).await.unwrap_err(),
+                "failed to set target temperature",
+            ),
+            (
+                cam.cooler_on().await.unwrap_err(),
+                "failed to read cooler state",
+            ),
+            (
+                cam.set_cooler_on(true).await.unwrap_err(),
+                "failed to set cooler state",
+            ),
+            (
+                cam.cooler_power().await.unwrap_err(),
+                "failed to read cooler power",
+            ),
+            (
+                cam.pulse_guide(GuideDirection::North, Duration::from_millis(1))
+                    .await
+                    .unwrap_err(),
+                "pulse guide failed",
+            ),
+        ];
+        for (err, needle) in cases {
+            let msg = err.to_string();
+            assert!(msg.contains(needle), "{msg:?} missing {needle:?}");
+            assert!(
+                msg.contains("injected SDK failure"),
+                "{msg:?} lost the SDK detail"
+            );
+        }
+    }
+
+    /// A handshake-step SDK failure leaves the device disconnected (C2's
+    /// handshake half) — the camera must not be left opened-but-unusable.
+    #[tokio::test]
+    async fn a_failed_handshake_step_leaves_the_device_disconnected() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.fail_property.store(true, AtomicOrdering::SeqCst);
+        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        let err = cam.connect().unwrap_err();
+        assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
+        assert!(!handle.is_open(), "failed handshake must close the camera");
+    }
+
+    /// Reconnecting while a previous session's capture-cancel slot is still
+    /// populated cancels that capture (reset_exposure_state's take-branch).
+    #[tokio::test]
+    async fn reconnecting_cancels_a_previous_sessions_capture_slot() {
+        let cam = connected_device(MockCameraHandle::default());
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_image_ready(&cam).await;
+        // The completed exposure leaves its cancel flag in the slot; a
+        // reconnect must drain (take + set) it rather than leak it.
+        cam.connect().unwrap();
+        assert!(!cam.image_ready().await.unwrap(), "reconnect resets state");
     }
 
     #[tokio::test]

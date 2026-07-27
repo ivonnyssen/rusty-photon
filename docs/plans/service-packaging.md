@@ -202,6 +202,22 @@ no restart loop) until the operator writes the config; `systemctl start`
 then works normally. `check-pkg-assets.sh` asserts the gate on exactly
 these three, and asserts `ExecReload` on the reload-capable list above.
 
+**Missing-SDK retry (not a gate):** `svbony-camera`'s binary links
+`libSVBCameraSDK.so`, which
+[ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)
+forbids shipping — the operator installs it with
+`rusty-photon-svbony-sdk-install` — so until then the binary cannot be
+loaded at all and the unit restart-loops on exit 127. That is left as-is
+deliberately: `Restart=on-failure` is the same retry the serial drivers
+rely on for an absent device, and it heals the moment the blob lands, so
+no `ConditionPathExists` gate (and no operator `systemctl start`) is
+needed. What issue #704 fixed is the *verification* gap — nothing in
+`verify-packages.sh` ever installed the SDK, so the service was held to
+the ordinary "active + config + port" contract it could not meet. It now
+walks the bootstrap for that one service: assert the payload withheld the
+blob, run the packaged helper, then the ordinary contract (the
+active-within-30s wait doubling as proof that the retry self-heals).
+
 ### Maintainer scripts
 
 `packaging/postinst.common` (deb; byte-identical in every daemon package):

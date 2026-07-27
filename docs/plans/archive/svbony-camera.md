@@ -2,6 +2,45 @@
 
 ## Status
 
+**Status: COMPLETE (archived 2026-07-26).** Phases A-G delivered as PR
+#658, with follow-up fixes in #683/#684/#686 (issue #679)/#687 (issue
+#678)/#688; real-hardware validation against a physical SV605CC PASSED
+and merged as PR #712 — ASCOM ConformU
+4.3.0 passes both suites with zero errors/issues against the production
+real-SDK binary serving the physical camera. Every "confirm against real
+hardware" caveat this plan carried is resolved, and the validation forced
+four driver changes (production enumeration wired to registration — the
+Phase E boundary removed; `MaxADU` = 65535, the SDK rescales 14-bit ADC
+data to full Raw16 scale; R4 aligned-down `CameraXSize`/`CameraYSize` =
+2976×3000, adopted after real ConformU failed at bin 3 against the raw
+extent; responsive abort via a cancel flag checked between
+`SVBGetVideoData` poll slices, ~0.3 s drain measured vs ~8.3 s before).
+Full itemized results: [`docs/services/svbony-camera.md`](../../services/svbony-camera.md)
+"Real-hardware validation". Deliberately deferred, tracked outside this
+plan: the Bazel-side SDK-fetch rule ("Future work" below) and the
+field-optics items (dark-frame banding revision check, e-/ADU sweep).
+
+**Follow-up landed (issues #704 + #710, 2026-07-26).** Installing the
+package for real exposed the other half of "the SDK is not bundled":
+`nightly-packages` had been failing every run since the #679 fix because
+the installed unit restart-looped on `error while loading shared
+libraries: libSVBCameraSDK.so` (exit 127) — nothing had ever run the
+packaged binary before that leg started building it. The unit is left
+alone — `Restart=on-failure` is the same retry the serial drivers use for
+an absent device, and it heals seconds after the SDK lands, so no gate
+and no operator `systemctl start`. What changed is
+`scripts/verify-packages.sh`, which now walks the operator bootstrap on
+both flavors (blob absent from the payload →
+`rusty-photon-svbony-sdk-install` → active → Alpaca probe → RUNPATH `ldd`
+proof) instead of holding an unbootstrapped install to a contract it
+cannot meet. The helper additionally installs a udev rule on hosts
+without the packaged one, closing the dev-machine USB permission gap
+(#710) at the same bootstrap step. Structurally collapsing this into
+qhy-camera's shape (which links its SDK statically and defers only
+firmware, so its service always starts) would mean `dlopen`ing
+`libSVBCameraSDK` instead of linking it — worth its own issue, not done
+here.
+
 **Follow-up landed (issue #679, 2026-07-22).** `scripts/build-packages.sh`
 gained the `needs_svbony` SDK-staging leg Phase G deliberately deferred (see
 below): `nightly-packages` was failing its `linux / arm64`, `linux / amd64`,
@@ -26,7 +65,7 @@ the RUNPATH decision this plan left open since Phase F — resolved this
 phase: RUNPATH, matching `zwo-camera`'s mechanism, because
 `/usr/lib/rusty-photon/` is outside `ldconfig`'s default scan path
 regardless of the blob's SONAME status) and
-[`docs/services/svbony-camera.md`](../services/svbony-camera.md)'s
+[`docs/services/svbony-camera.md`](../../services/svbony-camera.md)'s
 "Real-hardware validation" section for the itemized list of open questions
 hardware access must resolve. A Bazel-side SDK-fetch repository rule and
 `scripts/build-packages.sh` SDK-staging/RUNPATH support for `svbony-camera`
@@ -57,7 +96,7 @@ proves ASCOM protocol conformance only, never the real SVBony link; that
 proof is Cargo-only.
 
 A new composite action,
-[`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml),
+[`.github/actions/install-svbony-sdk`](../../../.github/actions/install-svbony-sdk/action.yml),
 provisions the real SVBony camera SDK from a **pinned indi-3rdparty commit**
 (`cd50a3b95032d850cca28d8162513276bc1349ba`, resolved as `master`'s HEAD via
 the GitHub API on 2026-07-21) — mirroring `install-zwo-sdk`'s shape
@@ -180,7 +219,7 @@ points) and the generation-counter abort/disconnect race. `cargo fmt` and
 `cargo clippy --all-targets --all-features -- -D warnings` are clean.
 
 Design decisions made in this phase, each recorded in
-[`docs/services/svbony-camera.md`](../services/svbony-camera.md) at its
+[`docs/services/svbony-camera.md`](../../services/svbony-camera.md) at its
 relevant contract rather than only here:
 
 - **`AbortExposure` never touches the SDK.** Unlike `zwo-camera`'s
@@ -252,7 +291,7 @@ root `[workspace.dependencies]` (still only one consumer). Packaging stubs
 landed (`pkg/90-rusty-photon-svbony.rules` — group-scoped, vendor ID
 `f266`; `pkg/doctor.toml`; `pkg/rusty-photon-svbony-camera.service`); the
 SDK-download helper itself (`rusty-photon-svbony-sdk-install`) is explicitly
-deferred to Phase G, per the new [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md),
+deferred to Phase G, per the new [ADR-018](../../decisions/018-svbony-sdk-no-license-payload-policy.md),
 which extends ADR-013's two-bucket framework with a third
 no-license-at-all bucket. Nine BDD feature files exist
 (`tests/features/*.feature`); four are genuinely green today
@@ -267,8 +306,8 @@ required to build `//...` today; revisit at Phase G. Hardware is on order:
 an SV605CC (IMX533 OSC, two-stage TEC), current ("B") revision. This plan
 is the SVBony analogue of [`zwo-driver.md`](zwo-driver.md) and follows the
 same design→BDD→implementation flow
-([`development-workflow.md`](../skills/development-workflow.md)); the
-service design doc is [`docs/services/svbony-camera.md`](../services/svbony-camera.md).
+([`development-workflow.md`](../../skills/development-workflow.md)); the
+service design doc is [`docs/services/svbony-camera.md`](../../services/svbony-camera.md).
 
 **Phase A/B landed (2026-07-21): `libsvbony-sys` + `svbony-rs` vendored at
 `crates/svbony-rs/`.** Hand-written FFI (no bindgen, no vendored header — see
@@ -406,7 +445,7 @@ optional.
 - **SDK quality is the ambient risk.** The complaints in the field (gain
   changes, cooler quirks, early-revision banding) live below any driver we
   write. Budget hardware-validation time à la
-  [`zwo-real-hardware-validation.md`](zwo-real-hardware-validation.md),
+  [`zwo-real-hardware-validation.md`](../zwo-real-hardware-validation.md),
   including a dark-frame banding check to confirm the delivered unit is the
   fixed revision.
 - **Thread safety is undocumented** — assume none: every SDK call funnels
@@ -477,7 +516,7 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
 - **Phase D — design doc + ADR + BDD:** ✅ *landed (2026-07-21).*
   `docs/services/svbony-camera.md` (behavioural contracts incl. the
   exposure state machine and tenet-3 connect-path statement),
-  [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md) (the
+  [ADR-018](../../decisions/018-svbony-sdk-no-license-payload-policy.md) (the
   ADR-013-extension), `docs/workspace.md` rows, and nine BDD feature files
   mapped from the design doc — mirroring `zwo-camera`'s six camera features
   plus `exposure.feature` for the soft-trigger specifics; four files are
@@ -507,7 +546,7 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   nightly Cargo safety-net workflows, both documented above and fixed.
 - **Phase G — packaging + real-hardware validation marked pending:** ✅
   *landed (2026-07-21), this is the final planned phase.* The downloader
-  helper, [`rusty-photon-svbony-sdk-install`](../../services/svbony-camera/pkg/rusty-photon-svbony-sdk-install),
+  helper, [`rusty-photon-svbony-sdk-install`](../../../services/svbony-camera/pkg/rusty-photon-svbony-sdk-install),
   per the ADR — real (curled + `sha256sum`-computed, not fabricated) pinned
   sha256 hashes for both amd64 and armv8, verified end-to-end in a `--root`
   sandbox install (download, sha256 verify, idempotent skip, `--force`
@@ -578,13 +617,13 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
 ## References
 
 - Template plan: [`zwo-driver.md`](zwo-driver.md); hardware-validation
-  template: [`zwo-real-hardware-validation.md`](zwo-real-hardware-validation.md)
-- Precedent services: [`zwo-camera.md`](../services/zwo-camera.md) ·
-  [`qhy-camera.md`](../services/qhy-camera.md)
-- ADRs: [008](../decisions/008-zwo-camera-native-sdk-ffi.md) ·
-  [010](../decisions/010-vendor-zwo-rs.md) ·
-  [013](../decisions/013-native-sdk-payload-policy.md) ·
-  [014](../decisions/014-zwo-per-device-services-and-link-features.md)
+  template: [`zwo-real-hardware-validation.md`](../zwo-real-hardware-validation.md)
+- Precedent services: [`zwo-camera.md`](../../services/zwo-camera.md) ·
+  [`qhy-camera.md`](../../services/qhy-camera.md)
+- ADRs: [008](../../decisions/008-zwo-camera-native-sdk-ffi.md) ·
+  [010](../../decisions/010-vendor-zwo-rs.md) ·
+  [013](../../decisions/013-native-sdk-payload-policy.md) ·
+  [014](../../decisions/014-zwo-per-device-services-and-link-features.md)
 - SDK ground truth: indi-3rdparty `libsvbony` (`SVBCameraSDK.h`, per-arch
   blobs, `CMakeLists.txt` — SDK 1.13.4, `.so` only, no license text);
   SVBony official SDK download (to byte-verify in Phase A)

@@ -87,6 +87,14 @@ rust_binary(
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
+# Unit tests run against the simulation lib (`:qhy-camera_lib_sim` →
+# `//crates/qhyccd-rs:qhyccd-rs_sim`), matching zwo-camera / svbony-camera rather
+# than the real variant the production lib links. Two reasons: (1) the
+# `#[cfg(all(test, feature = "simulation"))]` backend tests then compile + run;
+# (2) `bazel coverage` never instruments the crate's compiled-out real-FFI arms,
+# so qhyccd-rs `camera.rs` is not dragged to a false ~57% by never-executed
+# real-SDK lines (the real arms need physical hardware / ConformU, not the unit
+# suite). See docs/services/qhy-camera.md "Native dependency & build gating".
 rust_test(
     name = "qhy-camera_unit_test",
     size = "small",
@@ -95,13 +103,20 @@ rust_test(
         proc_macro_dev = True,
     ),
     compile_data = ["pkg/doctor.toml"],
-    crate = ":qhy-camera_lib",
+    crate = ":qhy-camera_lib_sim",
+    # Set explicitly — rust_test does NOT inherit `crate_features` from the
+    # wrapped crate; `simulation` (via the `mock` alias) is what the sim code
+    # paths + sim-gated tests need. No `_WINDOWS_DELAYLOAD_FLAGS`: the sim FFI is
+    # cfg'd out, so there are no qhyccd.dll imports to delay (LNK4199 otherwise).
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    rustc_flags = _WINDOWS_DELAYLOAD_FLAGS,
-    deps = [_QHYCCD_REAL] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

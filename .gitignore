@@ -29,3 +29,9 @@ user.bazelrc
 .claude/settings.local.json
 .claude/worktrees/
 /site/
+
+# SVBony camera SDK parameter dumps: libSVBCameraSDK writes per-model
+# auto-save config files into the process working directory whenever a
+# camera is opened (e.g. U3SM900C-AST_Cfg_A.bin for the SV605CC).
+*_Cfg_A.bin
+*_Cfg_SAVE.bin

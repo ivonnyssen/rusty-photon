@@ -448,7 +448,10 @@ impl OperationDeadlineMonitor {
             .message_template
             .replace("{operation}", operation)
             .replace("{operation_id}", operation_id)
-            .replace("{elapsed}", &format!("{:.1}s", elapsed.as_secs_f64()))
+            .replace(
+                "{elapsed}",
+                &humantime::format_duration(elapsed).to_string(),
+            )
             .replace("{reason}", reason)
             .replace("{action}", action);
 
@@ -947,6 +950,35 @@ mod tests {
         assert_eq!(msgs.len(), 1, "exactly one escalation expected: {msgs:?}");
         assert!(msgs[0].contains("slew/op-1"), "{}", msgs[0]);
         assert!(msgs[0].contains("exceeded its deadline"), "{}", msgs[0]);
+        assert!(
+            msgs[0].ends_with("after 6s"),
+            "elapsed must render as humantime: {}",
+            msgs[0]
+        );
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn escalation_renders_elapsed_as_multi_unit_humantime() {
+        let source = MockSource::new(vec![Script::FramesOpen(vec![frame(
+            1,
+            "slew_started",
+            Some("op-1"),
+            Some(65_000), // 65 s + slew buffer 0 s => 65 s deadline
+        )])]);
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 5));
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        let handle = tokio::spawn(async move { monitor.run(cancel2).await });
+
+        settle().await;
+        tokio::time::advance(Duration::from_secs(66)).await;
+        settle().await;
+
+        let msgs = messages.lock().unwrap().clone();
+        assert_eq!(msgs.len(), 1, "exactly one escalation expected: {msgs:?}");
+        assert_eq!(msgs[0], "slew/op-1 exceeded its deadline after 1m 6s");
         cancel.cancel();
         handle.await.unwrap();
     }

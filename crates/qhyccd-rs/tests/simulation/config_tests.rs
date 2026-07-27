@@ -1,7 +1,7 @@
 //! Tests for the SimulatedCameraConfig module
 
 use qhyccd_rs::simulation::SimulatedCameraConfig;
-use qhyccd_rs::{BayerMode, CCDChipInfo, Control};
+use qhyccd_rs::{BayerPattern, CCDChipInfo, ControlType};
 
 #[test]
 fn test_default_config() {
@@ -9,32 +9,38 @@ fn test_default_config() {
     assert_eq!(config.id, "SIM-001");
     assert_eq!(config.filter_wheel_slots, 0);
     assert!(!config.has_cooler);
-    assert!(config.bayer_mode.is_none());
+    assert!(config.bayer_pattern.is_none());
 }
 
 #[test]
 fn test_with_filter_wheel() {
     let config = SimulatedCameraConfig::default().with_filter_wheel(5);
     assert_eq!(config.filter_wheel_slots, 5);
-    assert!(config.supported_controls.contains_key(&Control::CfwPort));
     assert!(config
         .supported_controls
-        .contains_key(&Control::CfwSlotsNum));
+        .contains_key(&ControlType::CfwPort));
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::CfwSlotsNum));
 }
 
 #[test]
 fn test_with_cooler() {
     let config = SimulatedCameraConfig::default().with_cooler();
     assert!(config.has_cooler);
-    assert!(config.supported_controls.contains_key(&Control::Cooler));
-    assert!(config.supported_controls.contains_key(&Control::CurTemp));
+    assert!(config.supported_controls.contains_key(&ControlType::Cooler));
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::CurTemp));
 }
 
 #[test]
 fn test_with_color() {
-    let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
-    assert_eq!(config.bayer_mode, Some(BayerMode::RGGB));
-    assert!(config.supported_controls.contains_key(&Control::CamColor));
+    let config = SimulatedCameraConfig::default().with_color(BayerPattern::RGGB);
+    assert_eq!(config.bayer_pattern, Some(BayerPattern::RGGB));
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::CamColor));
 }
 
 #[test]
@@ -44,13 +50,13 @@ fn test_builder_chaining() {
         .with_model("Test Camera")
         .with_filter_wheel(7)
         .with_cooler()
-        .with_color(BayerMode::GBRG);
+        .with_color(BayerPattern::GBRG);
 
     assert_eq!(config.id, "TEST-001");
     assert_eq!(config.model, "Test Camera");
     assert_eq!(config.filter_wheel_slots, 7);
     assert!(config.has_cooler);
-    assert_eq!(config.bayer_mode, Some(BayerMode::GBRG));
+    assert_eq!(config.bayer_pattern, Some(BayerPattern::GBRG));
 }
 
 #[test]
@@ -78,7 +84,8 @@ fn test_with_chip_info() {
     // Effective area should be updated to match chip info
     assert_eq!(config.effective_area.width, 6224);
     assert_eq!(config.effective_area.height, 4168);
-    assert_eq!(config.overscan_area.width, 6224);
+    // Overscan is a distinct strip, not a copy of the effective area.
+    assert_eq!(config.overscan_area.width, 24);
     assert_eq!(config.overscan_area.height, 4168);
 }
 
@@ -92,10 +99,15 @@ fn test_with_firmware_version() {
 #[test]
 fn test_with_control() {
     let config =
-        SimulatedCameraConfig::default().with_control(Control::Brightness, 0.0, 100.0, 0.1);
+        SimulatedCameraConfig::default().with_control(ControlType::Brightness, 0.0, 100.0, 0.1);
 
-    assert!(config.supported_controls.contains_key(&Control::Brightness));
-    let (min, max, step) = config.supported_controls.get(&Control::Brightness).unwrap();
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::Brightness));
+    let (min, max, step) = config
+        .supported_controls
+        .get(&ControlType::Brightness)
+        .unwrap();
     assert!((min - 0.0).abs() < f64::EPSILON);
     assert!((max - 100.0).abs() < f64::EPSILON);
     assert!((step - 0.1).abs() < f64::EPSILON);
@@ -106,7 +118,9 @@ fn test_with_filter_wheel_zero_slots() {
     // Edge case: filter wheel with 0 slots should not add CFW controls
     let config = SimulatedCameraConfig::default().with_filter_wheel(0);
     assert_eq!(config.filter_wheel_slots, 0);
-    assert!(!config.supported_controls.contains_key(&Control::CfwPort));
+    assert!(!config
+        .supported_controls
+        .contains_key(&ControlType::CfwPort));
 }
 
 #[test]

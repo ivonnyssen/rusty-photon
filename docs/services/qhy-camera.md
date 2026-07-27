@@ -96,7 +96,7 @@ does not break the SDK-less default build.
 | local dev (SDK required) | `qhy-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it (CI installs it before building); `bazel build //...` then builds the package like any other. Documented in this design doc and the service README. |
 | CI | **The Cargo jobs build qhy-camera SDK-free.** `test.yml` (a nightly safety net) and `conformu.yml` both build on the `--all-features` / `--features conformu` (`simulation`) path — which `cfg`s out the real FFI — and set **`QHYCCD_SKIP_NATIVE_LINK=1`** (workflow-level env), so `libqhyccd-sys`'s `build.rs` omits the link directives and **no QHYCCD SDK or libusb is provisioned** (same pattern as `safety.yml`, and as `ZWO_SKIP_NATIVE_LINK` for the zwo crates). This drops the `ivonnyssen/qhyccd-sdk-install@v3` + libusb + macOS dylib-loader steps from every Cargo leg (ubuntu / macOS / windows / coverage in `test.yml`; Linux/macOS/Windows in `conformu.yml`). The **real native link + FFI** is still exercised by: `native.yml` (provisions the SDK via the published [`ivonnyssen/qhyccd-sdk-install@v3`](https://github.com/ivonnyssen/qhyccd-sdk-install) action on Linux/macOS/Windows, nightly + on camera-crate changes), `scheduled.yml` (nightly/beta), the **Bazel** real variant (`bazel.yml`/`bazel-coverage.yml`), and the **Pi nightly** (linux-arm64, provisioned per-run via the action's sudo-free `install: env` mode → `QHYCCD_SDK_DIR`). The SDK is publicly downloadable from qhyccd.com (no secret/auth). |
 | Raspberry Pi nightly runner | `pi-nightly.yml` provisions the SDK (26.06.04) **per run** with `ivonnyssen/qhyccd-sdk-install@v4` in its sudo-free **`install: env`** mode: the action extracts the SDK under the workspace and exports `QHYCCD_SDK_DIR`, which `libqhyccd-sys`'s `build.rs` reads on Linux (preferring it over `/usr/local/lib`) to link `libqhyccd.a` **statically** — no `ldconfig`, no `LD_LIBRARY_PATH`, nothing written to `/usr/local`. This keeps the runner intentionally **sudo-less** (public-repo safety) *and* self-healing — a new native-SDK service or SDK version bump no longer needs a manual `setup-pi-runner.sh` re-run. `setup-pi-runner.sh` therefore no longer installs the QHYCCD SDK (its `§1b` is now a pointer to this per-run flow; ZWO is still pre-provisioned there). **aarch64 confirmed available and linking** — `qhy-camera` builds on the Pi5 arm64 nightly; `libusb`/`stdc++` come from system packages already on the runner. |
-| Bazel | **SDK provisioned into the Bazel actions** (no `crate.annotation` needed). `bazel.yml` (3 OSes) + `bazel-coverage.yml` (Linux) install `ivonnyssen/qhyccd-sdk-install@v3` + per-OS libusb. On **Linux** `build.rs` finds the SDK at its hard-coded `/usr/local/lib` (read-only-mounted into the sandbox); on **macOS/Windows** the SDK extracts into `$GITHUB_WORKSPACE`, which `.bazelrc` forwards to build actions via `build:macos`/`build:windows --action_env=GITHUB_WORKSPACE` (`--incompatible_strict_action_env` strips it otherwise). The library, binary, unit test, **`bdd`, and `conformu_integration` are ALL first-class `//...` targets that build _and run_ under Bazel** (the `bdd` suite runs in ~16 s and the full ConformU suite in ~33 s, matching Cargo — both verified locally with 0 errors / 0 issues). **Real/sim split (ADR-009 — first-party two-variant):** since `qhyccd-rs` is now a workspace member with its own [`BUILD.bazel`](../../crates/qhyccd-rs/BUILD.bazel), the SDK variant is chosen by *which library target a rule depends on* — prod targets dep on `//crates/qhyccd-rs:qhyccd-rs` (real static SDK); the sim library/binary (both `testonly`) + `bdd`/`conformu_integration` dep on `//crates/qhyccd-rs:qhyccd-rs_sim` (the `testonly`, `simulation`-feature variant, so `Sdk::new()` fabricates a pure-Rust QHY178M and no USB is enumerated). `testonly` **build-enforces** the boundary: Bazel rejects any production binary that links the simulated SDK. The qhy-camera sim targets still carry `crate_features = […, "simulation"]` so qhy-camera's own `#[cfg(feature = "simulation")]` paths compile (e.g. `--simulation-empty`). **One retained nuance:** crate_universe resolves _one_ feature set per crate and ignores a target's `crate_features`, so the `simulation` feature's optional deps (`rand`/`rayon`) only enter `@cr` if the Cargo resolution reaches `qhyccd-rs/simulation`. qhy-camera therefore keeps a test-only `qhyccd-rs = { features = ["simulation"] }` dev-dep **solely to keep rand/rayon in `@cr`** (verified by spike: dropping it → `qhyccd-rs_sim` fails with `unresolved import rand`). `resolver = "2"` keeps that dev-dep out of `cargo build`, so the production binary links the real SDK. (Aside: crate_universe still materializes an orphan `@cr` `libqhyccd-sys` because the path dep carries a `version` for publish — nothing depends on it; `qhyccd-rs` resolves the workspace-member edge.) Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after any `Cargo.lock`/feature change (Rule 10). |
+| Bazel | **SDK provisioned into the Bazel actions** (no `crate.annotation` needed). `bazel.yml` (3 OSes) + `bazel-coverage.yml` (Linux) install `ivonnyssen/qhyccd-sdk-install@v3` + per-OS libusb. On **Linux** `build.rs` finds the SDK at its hard-coded `/usr/local/lib` (read-only-mounted into the sandbox); on **macOS/Windows** the SDK extracts into `$GITHUB_WORKSPACE`, which `.bazelrc` forwards to build actions via `build:macos`/`build:windows --action_env=GITHUB_WORKSPACE` (`--incompatible_strict_action_env` strips it otherwise). The library, binary, unit test, **`bdd`, and `conformu_integration` are ALL first-class `//...` targets that build _and run_ under Bazel** (the `bdd` suite runs in ~16 s and the full ConformU suite in ~33 s, matching Cargo — both verified locally with 0 errors / 0 issues). **Real/sim split (ADR-009 — first-party two-variant):** since `qhyccd-rs` is now a workspace member with its own [`BUILD.bazel`](../../crates/qhyccd-rs/BUILD.bazel), the SDK variant is chosen by *which library target a rule depends on* — prod targets (library, binary) dep on `//crates/qhyccd-rs:qhyccd-rs` (real static SDK); the sim library/binary (both `testonly`) + the **unit test** + `bdd`/`conformu_integration` dep on `//crates/qhyccd-rs:qhyccd-rs_sim` (the `testonly`, `simulation`-feature variant, so `Sdk::new()` fabricates a pure-Rust QHY178M and no USB is enumerated). The unit test wraps `:qhy-camera_lib_sim` (matching zwo-camera / svbony-camera): the SDK seam is mock-doubled so the suite gains nothing from the real link, and linking it would make `bazel coverage` instrument qhyccd-rs's compiled-out real-FFI arms as never-executed lines, falsely dragging `crates/qhyccd-rs/src/camera.rs` to ~57%. `testonly` **build-enforces** the boundary: Bazel rejects any production binary that links the simulated SDK. The qhy-camera sim targets still carry `crate_features = […, "simulation"]` so qhy-camera's own `#[cfg(feature = "simulation")]` paths compile (e.g. `--simulation-empty`). **One retained nuance:** crate_universe resolves _one_ feature set per crate and ignores a target's `crate_features`, so the `simulation` feature's optional deps (`rand`/`rayon`) only enter `@cr` if the Cargo resolution reaches `qhyccd-rs/simulation`. qhy-camera therefore keeps a test-only `qhyccd-rs = { features = ["simulation"] }` dev-dep **solely to keep rand/rayon in `@cr`** (verified by spike: dropping it → `qhyccd-rs_sim` fails with `unresolved import rand`). `resolver = "2"` keeps that dev-dep out of `cargo build`, so the production binary links the real SDK. (Aside: crate_universe still materializes an orphan `@cr` `libqhyccd-sys` because the path dep carries a `version` for publish — nothing depends on it; `qhyccd-rs` resolves the workspace-member edge.) Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after any `Cargo.lock`/feature change (Rule 10). |
 
 ### Resolved facts (decided)
 
@@ -451,14 +451,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   supported.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target;
   `SetCCDTemperature` reads it back.
-- **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation by
-  writing `Control::Cooler` to the stored `SetCCDTemperature` target (falling
-  back to the current `CCDTemperature` if no target has been set yet);
-  `set_cooler_on(false)` writes `Control::ManualPWM = 0`. `CoolerOn` reports
-  the last-commanded on/off state (tracked independently of the PWM readback,
-  since neither real hardware nor the simulation backend updates `CurPWM`
-  synchronously when `Control::Cooler` is asserted). `CoolerPower` remains the
-  normalized `CurPWM` percent.
+- **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation via
+  `handle.set_target_temperature_celsius(…)` (the `ControlType::Cooler` typed
+  accessor) at the stored `SetCCDTemperature` target (falling back to the
+  current `CCDTemperature` if no target has been set yet); `set_cooler_on(false)`
+  calls `handle.set_manual_cooler_pwm(0.0)` (the `ControlType::ManualPWM`
+  accessor). `CoolerOn` reports the last-commanded on/off state (tracked
+  independently of the PWM readback, since neither real hardware nor the
+  simulation backend updates `CurPWM` synchronously when the cooler target is
+  asserted). `CoolerPower` remains the normalized `CurPWM` percent (read via
+  `handle.cooler_power_raw()`).
 
 ### Sensor type
 
@@ -793,7 +795,18 @@ the "how" decisions made while building.
   the E9 `Error`-state path and colour/shutter models the mono sim can't show —
   run with no hardware and no *real* SDK calls. (The static `qhyccd` lib is still
   linked into the test binary — that link is unconditional, see above; only the
-  runtime seam is mocked.)
+  runtime seam is mocked.) The device logic reaches the well-known controls
+  through **typed accessors** — `handle.gain()` / `set_gain(…)`,
+  `handle.current_temperature_celsius()`, `set_target_temperature_celsius(…)`,
+  `set_manual_cooler_pwm(…)`, `cooler_power_raw()`, `exposure_range_us()`, … —
+  which the trait provides as defaults over the generic
+  `get_parameter`/`set_parameter(ControlType, )` methods (mirroring
+  `qhyccd_rs::Camera`'s own accessors; Phase 2 of the
+  [convention-alignment plan](../plans/archive/qhyccd-convention-alignment.md)). The
+  generic pair stays for capability *probes* (`is_control_available`) and any
+  control without a dedicated accessor. `qhyccd-rs`'s control enum is the
+  `ControlType` subset (semantic variants + `Other(i32)`), not the SDK's full
+  `CONTROL_ID` list.
 - **MaxADU.** `2^bits − 1` where `bits` is the **transfer-container depth** from
   the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 if unset.
   It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
@@ -864,13 +877,21 @@ the "how" decisions made while building.
   disconnect-camera-then-move-CFW both succeed) plus unit tests over the
   simulation backend (`backend::conn_tests`). *This supersedes the v0 plan, which
   used independent handles "as the reference `qhyccd-alpaca` does" and deferred
-  the refcount as Future Work pending hardware.*
+  the refcount as Future Work pending hardware.* Since the `qhyccd-rs` **Phase-1
+  handle-model alignment** ([qhyccd-convention-alignment.md](../plans/archive/qhyccd-convention-alignment.md)),
+  the crate itself shares one handle cell between a camera and its filter wheel
+  and closes it on last-drop (RAII), and `Sdk::drop` closes every open camera
+  handle **before** `ReleaseQHYCCDResource` (the SDK-documented Close-then-Release
+  order). So a device still Connected at process shutdown or reload is now torn
+  down cleanly instead of leaked; the service's own `SharedCameraConnection`
+  refcount and per-device `Connected` semantics are unchanged.
 - **Cooling model.** v0 had `set_cooler_on(true)` engage a nominal 1% *manual*
   PWM (matching the reference), distinct from the automatic target-temperature
   regulation `SetCCDTemperature` drives — a real ASCOM client sequence of
   `SetCCDTemperature` then `CoolerOn(true)` left the cooler pinned near 1%
   power (confirmed on real hardware). `set_cooler_on(true)` now
-  re-asserts `Control::Cooler` with the stored target instead; see
+  re-asserts the cooler target (`ControlType::Cooler`, via
+  `set_target_temperature_celsius`) with the stored target instead; see
   [Cooling contract K4](#cooling).
 
 ## Future Work
