@@ -649,6 +649,8 @@ mod tests {
 
     fn doc_at(file_path: &str) -> ExposureDocument {
         ExposureDocument {
+            target: None,
+            frame_type: None,
             id: "doc-1".to_string(),
             captured_at: "2026-04-30T00:00:00Z".to_string(),
             file_path: file_path.to_string(),
@@ -780,6 +782,8 @@ mod tests {
             .await
             .unwrap();
         let doc = ExposureDocument {
+            target: None,
+            frame_type: None,
             id: doc_uuid.to_string(),
             captured_at: "2026-04-30T00:00:00Z".to_string(),
             file_path: fits_path.to_string_lossy().into_owned(),

@@ -10,15 +10,22 @@ Feature: Planner convenience tools
   break near-transit ties by least progress then filter batching,
   twilight / end-of-session fallback).
 
+  Planner candidates come from the active rows of the rp-targets store
+  (seeded via the `add_target` MCP tool); the legacy `targets[]` config
+  array was retired. Altitude-gating parity against the store is pinned
+  separately in `target_store_planner.feature`.
+
   The reason discriminant for `get_next_target` is a structured
   string (`best_transiting_candidate`, `no_targets_configured`,
   `all_below_min_altitude`, `wait_for_twilight`, `end_of_session`)
   so a planner plugin can branch without parsing free-form text.
 
-  A recommendation also carries the target's exposure plan: `filter`
-  and `duration_secs` are the first entry of the target's
-  `exposures[]` config whose `count` the `record_exposure` counters
-  have not yet met, or null when the target defines no plan — the
+  A recommendation carries the target as a `target` object whose
+  coordinate nests as `coord: {ra_hours, dec_degrees}`, plus the plan
+  entry to shoot next as a nested `exposure` object:
+  `exposure.filter` and `exposure.duration_secs` are the first goal (in
+  store order) whose `desired_count` the `record_exposure` counters have
+  not yet met; `exposure` is null when the target defines no goals — the
   orchestrator then falls back to its own exposure parameters.
 
   Scenario: Tool catalog includes the convenience tools
@@ -53,27 +60,27 @@ Feature: Planner convenience tools
     And the result reason should be "no_targets_configured"
     And the result target should be null
 
-  Scenario: get_next_target returns the first exposure-plan entry for the recommended target
+  Scenario: get_next_target returns the first goal for the recommended target
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
-      | filter | duration_secs |
-      | Red    | 120           |
-      | Blue   | 60            |
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 120s              | 2             |
+      | Blue   | 1x1     | 60s               | 2             |
     When the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the result reason should be "best_transiting_candidate"
     And the result filter should be "Red"
     And the result duration_secs should be 120
 
-  Scenario: get_next_target leaves the exposure plan null for a target without one
+  Scenario: get_next_target leaves the plan null for a target without goals
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Bare Field" and no exposure plan
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Bare Field"
     When the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the result reason should be "best_transiting_candidate"
@@ -90,9 +97,9 @@ Feature: Planner convenience tools
   Scenario: get_next_target in evening twilight says wait_for_twilight
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the never-visible target "Below Floor"
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the MCP client has added the never-visible target "Below Floor"
     When the MCP client calls "get_next_target" at time "2026-03-20T19:20:00Z"
     Then the tool call should succeed
     And the result reason should be "wait_for_twilight"
@@ -101,9 +108,9 @@ Feature: Planner convenience tools
   Scenario: get_next_target in morning twilight says end_of_session
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the never-visible target "Below Floor"
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the MCP client has added the never-visible target "Below Floor"
     When the MCP client calls "get_next_target" at time "2026-03-20T05:00:00Z"
     Then the tool call should succeed
     And the result reason should be "end_of_session"
@@ -112,30 +119,32 @@ Feature: Planner convenience tools
   # The progress scenarios drive the record_exposure counters through
   # the MCP surface end-to-end: an always-visible target (floor -90)
   # keeps the recommendation deterministic at any wall-clock, and
-  # counted plan entries give the planner finite integration goals.
+  # counted goals give the planner finite integration targets. Targets
+  # are addressed by slug — record_exposure keys the counters by the
+  # target's stable identity ("Test Field" -> test-field).
 
   Scenario: record_exposure reports the per-filter counter and its goal
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
-      | filter | duration_secs | count |
-      | Red    | 120           | 2     |
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "record_exposure" for target "Test Field" filter "Red"
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 120s              | 2             |
+    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
     Then the tool call should succeed
     And the result completed should be 1 with a goal of 2
 
-  Scenario: A met integration goal rotates the recommendation to the next plan entry
+  Scenario: A met integration goal rotates the recommendation to the next goal
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
-      | filter | duration_secs | count |
-      | Red    | 120           | 1     |
-      | Blue   | 60            | 1     |
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "record_exposure" for target "Test Field" filter "Red"
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 120s              | 1             |
+      | Blue   | 1x1     | 60s               | 1             |
+    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
     And the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the result reason should be "best_transiting_candidate"
@@ -145,12 +154,12 @@ Feature: Planner convenience tools
   Scenario: Exhausting every integration goal ends the session
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
-      | filter | duration_secs | count |
-      | Red    | 120           | 1     |
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "record_exposure" for target "Test Field" filter "Red"
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 120s              | 1             |
+    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
     And the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the result reason should be "end_of_session"
@@ -159,38 +168,38 @@ Feature: Planner convenience tools
   Scenario: get_session_progress reports every configured target's counters
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
-      | filter | duration_secs | count |
-      | Red    | 120           | 2     |
-      | Blue   | 60            | 1     |
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "record_exposure" for target "Test Field" filter "Red"
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 120s              | 2             |
+      | Blue   | 1x1     | 60s               | 1             |
+    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
     And the MCP client calls "get_session_progress"
     Then the tool call should succeed
-    And the progress for target "Test Field" filter "Red" should be 1 of 2
-    And the progress for target "Test Field" filter "Blue" should be 0 of 1
+    And the progress for target "test-field" filter "Red" should be 1 of 2
+    And the progress for target "test-field" filter "Blue" should be 0 of 1
 
   Scenario: The planner balances equally transiting targets by progress
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible targets "First Field" and "Second Field", each wanting 2 unfiltered 2-second frames
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the MCP client has added the always-visible targets "First Field" and "Second Field", each wanting 2 unfiltered 2-second frames
     # Identical coordinates mean an exact transit tie; without the
-    # recorded frame, config order would recommend "First Field".
-    When the MCP client calls "record_exposure" for target "First Field" with no filter
+    # recorded frame, store order would recommend "First Field".
+    When the MCP client calls "record_exposure" for target "first-field" with no filter
     And the MCP client calls "get_next_target"
     Then the tool call should succeed
-    And the recommended target should be "Second Field"
+    And the recommended target should be "second-field"
 
   Scenario: record_exposure rejects a target that is not configured
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" and no exposure plan
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
-    When the MCP client calls "record_exposure" for target "Not Configured" filter "Red"
+    And the MCP client has added the always-visible target "Test Field"
+    When the MCP client calls "record_exposure" for target "not-configured" filter "Red"
     Then the tool call should fail
     And the tool error message should mention "unknown target"
 

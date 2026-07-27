@@ -25,9 +25,9 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{
-    CannedGuiding, CannedWcs, ComputedSky, ExposurePlanConfig, GuiderConfig, GuiderStub,
-    GuiderStubBehavior, OmniSimHandle, OpticalTrainConfig, PlannerTargetConfig, PlateSolverConfig,
-    PlateSolverStub, StubBehavior, TrainAutoFocusConfig,
+    CannedGuiding, CannedWcs, ComputedSky, GuiderConfig, GuiderStub, GuiderStubBehavior, IcrsCoord,
+    OmniSimHandle, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub, StubBehavior,
+    TrainAutoFocusConfig,
 };
 
 use crate::steps::infrastructure::{
@@ -42,6 +42,11 @@ const OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
 // Given steps: the computed night sky
 // ---------------------------------------------------------------------------
 
+/// A `desired_count` large enough that the scenario's frame budget is hit
+/// first: the store requires a finite goal, so a legacy count-less "plan
+/// drives the duration, but never exhausts" entry is emulated this way.
+const NO_FINITE_GOAL: u32 = 1000;
+
 #[given("an observing site where it is astronomical night with one planner target")]
 async fn night_sky_with_one_target(world: &mut SessionRunnerWorld) {
     push_one_night_target(world, Vec::new());
@@ -52,14 +57,7 @@ async fn night_sky_with_one_target(world: &mut SessionRunnerWorld) {
             exposure plan is a single unfiltered {int}-second frame"
 )]
 async fn night_sky_with_one_planned_target(world: &mut SessionRunnerWorld, seconds: u64) {
-    push_one_night_target(
-        world,
-        vec![ExposurePlanConfig {
-            filter: None,
-            duration_secs: seconds as f64,
-            count: None,
-        }],
-    );
+    push_one_night_target(world, vec![unfiltered_goal(seconds, NO_FINITE_GOAL)]);
 }
 
 #[given(
@@ -67,30 +65,54 @@ async fn night_sky_with_one_planned_target(world: &mut SessionRunnerWorld, secon
             integration goal is {int} unfiltered {int}-second frames"
 )]
 async fn night_sky_with_one_goal_target(world: &mut SessionRunnerWorld, count: u32, seconds: u64) {
-    push_one_night_target(
-        world,
-        vec![ExposurePlanConfig {
-            filter: None,
-            duration_secs: seconds as f64,
-            count: Some(count),
-        }],
-    );
+    push_one_night_target(world, vec![unfiltered_goal(seconds, count)]);
 }
 
-fn push_one_night_target(world: &mut SessionRunnerWorld, exposures: Vec<ExposurePlanConfig>) {
+/// One unfiltered goal at `desired_count` × `seconds`s, in the JSON shape
+/// `add_target` accepts for its `goals[]` parameter.
+fn unfiltered_goal(seconds: u64, desired_count: u32) -> serde_json::Value {
+    serde_json::json!({
+        "filter": "",
+        "binning": "1x1",
+        "exposure_duration": format!("{seconds}s"),
+        "desired_count": desired_count
+    })
+}
+
+/// Build the `add_target` args for a night target: computed coordinates,
+/// an optional per-target altitude floor, and optional goals. Staged on
+/// `pending_store_targets` and seeded into rp's redb store post-boot by
+/// `start_rp_service`.
+fn night_target_args(
+    name: &str,
+    coord: &IcrsCoord,
+    min_altitude_degrees: Option<f64>,
+    goals: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut args = serde_json::json!({
+        "display_name": name,
+        "ra_hours": coord.ra_hours,
+        "dec_degrees": coord.dec_degrees,
+    });
+    if let Some(floor) = min_altitude_degrees {
+        args["scheduling"] = serde_json::json!({ "min_altitude_degrees": floor });
+    }
+    if !goals.is_empty() {
+        args["goals"] = serde_json::Value::Array(goals);
+    }
+    args
+}
+
+fn push_one_night_target(world: &mut SessionRunnerWorld, goals: Vec<serde_json::Value>) {
     let sky = ComputedSky::night_at(chrono::Utc::now());
     // Half an hour past transit: ≈ 82.5° altitude and sinking, next
     // meridian crossing ≈ 23.5 sidereal hours away — no flip pressure,
     // viable for hours against the planner-wide 20° floor.
     let target = sky.target_at_hour_angle(0.5);
     world.site = Some((sky.latitude_degrees(), sky.longitude_degrees()));
-    world.planner_targets.push(PlannerTargetConfig {
-        name: "primary".to_string(),
-        ra_hours: target.ra_hours,
-        dec_degrees: target.dec_degrees,
-        min_altitude_degrees: None,
-        exposures,
-    });
+    world
+        .pending_store_targets
+        .push(night_target_args("primary", &target, None, goals));
     world.night_targets.push(target);
 }
 
@@ -101,30 +123,26 @@ fn push_one_night_target(world: &mut SessionRunnerWorld, exposures: Vec<Exposure
 async fn night_sky_with_sinking_target(world: &mut SessionRunnerWorld, seconds: i64) {
     let sky = ComputedSky::night_at(chrono::Utc::now());
     // Both targets descend in the west near 45° altitude, 0.05 h of
-    // hour angle (0.75° of sky) apart so the switch slew is quick. The
-    // sinker is closer to transit, so the planner prefers it while it
-    // stays viable; its floor is set to the altitude it will have
-    // `seconds` from now, which is when the planner drops it and the
-    // backup (on the planner-wide 20° floor, ≈ 90 minutes of margin)
-    // takes over.
+    // hour angle (0.75° of sky) apart so the switch slew is quick. They
+    // fall inside the transit tie band, so the planner breaks the tie by
+    // store (slug) order — "primary" sorts before "secondary", so the
+    // sinker is acquired first (and the mount is pre-synced onto it). Its
+    // floor is the altitude it will have `seconds` from now, which is when
+    // the planner drops it and the backup (on the planner-wide 20° floor,
+    // ≈ 90 minutes of margin) takes over.
     let sinker = sky.target_at_hour_angle(3.0);
     let backup = sky.target_at_hour_angle(3.05);
     let floor = sky.altitude_degrees_in(sinker, seconds);
     world.site = Some((sky.latitude_degrees(), sky.longitude_degrees()));
-    world.planner_targets.push(PlannerTargetConfig {
-        name: "sinker".to_string(),
-        ra_hours: sinker.ra_hours,
-        dec_degrees: sinker.dec_degrees,
-        min_altitude_degrees: Some(floor),
-        exposures: Vec::new(),
-    });
-    world.planner_targets.push(PlannerTargetConfig {
-        name: "backup".to_string(),
-        ra_hours: backup.ra_hours,
-        dec_degrees: backup.dec_degrees,
-        min_altitude_degrees: None,
-        exposures: Vec::new(),
-    });
+    world.pending_store_targets.push(night_target_args(
+        "primary",
+        &sinker,
+        Some(floor),
+        Vec::new(),
+    ));
+    world
+        .pending_store_targets
+        .push(night_target_args("secondary", &backup, None, Vec::new()));
     world.night_targets.push(sinker);
     world.night_targets.push(backup);
 }
@@ -141,13 +159,12 @@ async fn morning_sky_with_one_unviable_target(world: &mut SessionRunnerWorld) {
     // rising Sun, i.e. end_of_session.
     let target = sky.target_at_hour_angle(0.5);
     world.site = Some((sky.latitude_degrees(), sky.longitude_degrees()));
-    world.planner_targets.push(PlannerTargetConfig {
-        name: "unreachable".to_string(),
-        ra_hours: target.ra_hours,
-        dec_degrees: target.dec_degrees,
-        min_altitude_degrees: Some(90.0),
-        exposures: Vec::new(),
-    });
+    world.pending_store_targets.push(night_target_args(
+        "unreachable",
+        &target,
+        Some(90.0),
+        Vec::new(),
+    ));
     world.night_targets.push(target);
 }
 

@@ -15,9 +15,9 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig, FocuserConfig,
     GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig, OmniSimHandle,
-    OpticalTrainConfig, OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig,
-    PlateSolverStub, ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient,
-    SwitchConfig, TestOrchestrator, WebhookReceiver,
+    OpticalTrainConfig, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub, ReceivedEvent,
+    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, TestOrchestrator,
+    WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -85,9 +85,6 @@ pub struct RpWorld {
     /// the generated rp config. Used by `target_catalog`,
     /// `ephemeris_primitives`, and `planner` BDD features.
     pub site: Option<(f64, f64)>,
-    /// Planner targets accumulated via Given steps — emitted as the
-    /// top-level `targets` array `get_next_target` recommends from.
-    pub planner_targets: Vec<PlannerTargetConfig>,
     /// Safety monitors accumulated via Given steps (safety.feature).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
     /// Switches accumulated via Given steps (equipment_connectivity.feature).
@@ -178,6 +175,46 @@ pub struct RpWorld {
     pub last_tool_list: Option<Vec<String>>,
     /// Current filter from get_filter
     pub current_filter: Option<String>,
+    /// Slug of the most recently added/fetched target (Target Store
+    /// scenarios — target_store_*.feature, *(planned, P1)*), so a
+    /// later step can act on "the target I just added" without the
+    /// feature file repeating the slug.
+    pub last_target_slug: Option<String>,
+    /// Raw JSON array from the most recent `list_targets` call
+    /// (Target Store scenarios).
+    pub last_target_list: Option<Vec<Value>>,
+    /// Raw `target_store` config block override (Target Store scenarios —
+    /// `db_path`/`default_scheduling`/`default_grading`/`default_goals`,
+    /// see rp.md § Target Store → Configuration), merged over whatever
+    /// [`RpConfigBuilder::build`] emits so these scenarios can still use
+    /// the ordinary OmniSim/mount bootstrap (`tool_steps::start_rp`)
+    /// instead of a bespoke launcher. `None` ⇒ no override.
+    pub target_store_config: Option<Value>,
+    /// `session.file_naming_pattern` override (capture target-linkage
+    /// scenarios — `capture_target_linkage.feature`), merged over
+    /// [`RpConfigBuilder::build`]'s output the same way
+    /// `target_store_config` is. `RpConfigBuilder::build` already bakes
+    /// in the documented default pattern unconditionally, so `None`
+    /// here means "use that baked-in default", not "omit the field" —
+    /// see `clear_file_naming_pattern` for scenarios that need the
+    /// field genuinely absent.
+    pub file_naming_pattern: Option<String>,
+    /// `session.directory_pattern` override, same merge rule as
+    /// `file_naming_pattern`. `None` ⇒ field omitted (rp falls back to
+    /// the documented default, `"{target}/{night_date}/{frame_type}"`,
+    /// whenever `file_naming_pattern` is set).
+    pub directory_pattern: Option<String>,
+    /// When `true`, forces `session.file_naming_pattern` to `null` in
+    /// the emitted config, overriding `RpConfigBuilder::build`'s
+    /// unconditional default — for the scenario exercising `capture`'s
+    /// "frame_type requires session.file_naming_pattern to be
+    /// configured" error path (`capture_target_linkage.feature`).
+    pub clear_file_naming_pattern: bool,
+    /// Error from the most recent `ServiceHandle::try_start` call
+    /// (Target Store naming-template config-load validation scenarios —
+    /// `target_naming_template.feature`, *(planned, P1)*). `None` after
+    /// a successful start.
+    pub rp_start_error: Option<String>,
 
     // --- REST API state ---
     /// Last REST API response status code
@@ -355,9 +392,6 @@ impl RpWorld {
         if let Some((lat, lon)) = self.site {
             builder.with_site(lat, lon);
         }
-        for target in &self.planner_targets {
-            builder.add_target(target.clone());
-        }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());
         }
@@ -391,7 +425,27 @@ impl RpWorld {
         if let Some((mib, images)) = self.pinned_imaging_overrides {
             builder.with_imaging(mib, images);
         }
-        builder.build()
+        let mut config = builder.build();
+        // Target-store settings (`db_path` / `default_scheduling` /
+        // `default_goals`, rp.md § Target Store) as the raw
+        // `target_store` config object. The shared `RpConfigBuilder` has
+        // no typed store-settings builder yet, so a scenario that needs
+        // non-default settings sets `target_store_config` and it is
+        // spliced in here; targets themselves are seeded post-boot via
+        // the `add_target` MCP tool.
+        if let Some(target_store) = &self.target_store_config {
+            config["target_store"] = target_store.clone();
+        }
+        if let Some(pattern) = &self.file_naming_pattern {
+            config["session"]["file_naming_pattern"] = Value::String(pattern.clone());
+        }
+        if self.clear_file_naming_pattern {
+            config["session"]["file_naming_pattern"] = Value::Null;
+        }
+        if let Some(pattern) = &self.directory_pattern {
+            config["session"]["directory_pattern"] = Value::String(pattern.clone());
+        }
+        config
     }
 
     /// Wait for rp to become healthy (retry GET /health).

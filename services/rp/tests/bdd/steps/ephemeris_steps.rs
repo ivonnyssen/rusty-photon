@@ -1,7 +1,5 @@
 //! BDD step definitions for the ephemeris primitive MCP tools.
 
-use bdd_infra::rp_harness::{ExposurePlanConfig, PlannerTargetConfig};
-use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use serde_json::Value;
 
@@ -15,109 +13,11 @@ fn site_configured(world: &mut RpWorld, lat: f64, lon: f64) {
     world.site = Some((lat, lon));
 }
 
-/// A target that survives altitude elimination at any wall-clock
-/// time: `min_altitude_degrees: -90` can never exceed a computed
-/// altitude, so the planner always recommends it — no computed-sky
-/// setup needed to make `get_next_target` deterministic.
-fn always_visible_target(name: String, exposures: Vec<ExposurePlanConfig>) -> PlannerTargetConfig {
-    PlannerTargetConfig {
-        name,
-        ra_hours: 0.0,
-        dec_degrees: 0.0,
-        min_altitude_degrees: Some(-90.0),
-        exposures,
-    }
-}
-
-#[given(expr = "rp is configured with the always-visible target {string} whose exposure plan is:")]
-fn target_with_exposure_plan(world: &mut RpWorld, name: String, step: &Step) {
-    let table = step
-        .table
-        .as_ref()
-        .expect("step requires a `| filter | duration_secs [| count] |` table");
-    let mut rows = table.rows.iter();
-    let header = rows.next().expect("exposure-plan table must have a header");
-    let with_counts = match header.len() {
-        2 => false,
-        3 => true,
-        _ => panic!("exposure-plan table header must be `| filter | duration_secs |` or `| filter | duration_secs | count |`"),
-    };
-    assert_eq!(header[0], "filter");
-    assert_eq!(header[1], "duration_secs");
-    if with_counts {
-        assert_eq!(header[2], "count");
-    }
-    let exposures = rows
-        .map(|row| {
-            assert_eq!(
-                row.len(),
-                header.len(),
-                "exposure-plan row width must match the header: {row:?}"
-            );
-            ExposurePlanConfig {
-                filter: Some(row[0].clone()),
-                duration_secs: row[1].parse().expect("duration_secs must parse as f64"),
-                // An empty count cell = no finite goal for this entry.
-                count: with_counts
-                    .then(|| row[2].trim())
-                    .filter(|c| !c.is_empty())
-                    .map(|c| c.parse().expect("count must parse as u32")),
-            }
-        })
-        .collect();
-    world
-        .planner_targets
-        .push(always_visible_target(name, exposures));
-}
-
-#[given(expr = "rp is configured with the always-visible target {string} and no exposure plan")]
-fn target_without_exposure_plan(world: &mut RpWorld, name: String) {
-    world
-        .planner_targets
-        .push(always_visible_target(name, Vec::new()));
-}
-
-/// Distinct plans that the progress tie-breakers cannot mistake for
-/// each other: same coordinates (identical hour angle, so bullet 2
-/// genuinely ties), one counted entry each.
-#[given(
-    expr = "rp is configured with the always-visible targets {string} and {string}, each wanting \
-            {int} unfiltered {int}-second frames"
-)]
-fn two_identical_targets_with_goals(
-    world: &mut RpWorld,
-    first: String,
-    second: String,
-    count: u32,
-    duration_secs: u32,
-) {
-    for name in [first, second] {
-        world.planner_targets.push(always_visible_target(
-            name,
-            vec![ExposurePlanConfig {
-                filter: None,
-                duration_secs: f64::from(duration_secs),
-                count: Some(count),
-            }],
-        ));
-    }
-}
-
-/// The mirror of [`always_visible_target`]: `min_altitude_degrees: 90`
-/// exceeds any computed altitude (short of an exact zenith crossing,
-/// which dec 0 at this latitude never approaches), so the planner
-/// always eliminates the target — forcing the no-survivors branch
-/// whose reason the dusk/dawn scenarios pin.
-#[given(expr = "rp is configured with the never-visible target {string}")]
-fn never_visible_target(world: &mut RpWorld, name: String) {
-    world.planner_targets.push(PlannerTargetConfig {
-        name,
-        ra_hours: 0.0,
-        dec_degrees: 0.0,
-        min_altitude_degrees: Some(90.0),
-        exposures: Vec::new(),
-    });
-}
+// Planner-target seeding for the `planner` feature now goes through the
+// target store (post-boot `add_target` fixtures) — see
+// `target_store_planner_steps.rs`. The `get_next_target` /
+// `record_exposure` / `get_session_progress` When+Then steps below are
+// tool-agnostic and stay here.
 
 // --- When steps ---
 
@@ -305,21 +205,26 @@ fn progress_slot(world: &mut RpWorld, target: String, filter: String, completed:
     assert_eq!(slot.get("goal").and_then(|v| v.as_u64()), Some(goal));
 }
 
+// `get_next_target` surfaces the recommended plan entry as a nested
+// `exposure: {filter, duration_secs}` object (null when the target has
+// no plan), so these steps navigate into it.
+
 #[then(expr = "the result filter should be {string}")]
 fn result_filter(world: &mut RpWorld, expected: String) {
     let value = success_payload(world);
     let filter = value
-        .get("filter")
+        .pointer("/exposure/filter")
         .and_then(|v| v.as_str())
-        .expect("missing `filter`");
+        .unwrap_or_else(|| panic!("missing `exposure.filter` in: {value}"));
     assert_eq!(filter, expected.as_str());
 }
 
 #[then("the result filter should be null")]
 fn result_filter_null(world: &mut RpWorld) {
     let value = success_payload(world);
+    let exposure = value.get("exposure").expect("missing `exposure`");
     assert!(
-        value.get("filter").is_some_and(|v| v.is_null()),
+        exposure.is_null() || exposure.get("filter").is_some_and(|v| v.is_null()),
         "expected filter=null, got: {value}"
     );
 }
@@ -328,9 +233,9 @@ fn result_filter_null(world: &mut RpWorld) {
 fn result_duration_secs(world: &mut RpWorld, expected: f64) {
     let value = success_payload(world);
     let duration = value
-        .get("duration_secs")
+        .pointer("/exposure/duration_secs")
         .and_then(|v| v.as_f64())
-        .expect("missing `duration_secs`");
+        .unwrap_or_else(|| panic!("missing `exposure.duration_secs` in: {value}"));
     assert!(
         (duration - expected).abs() < f64::EPSILON,
         "expected duration_secs={expected}, got {duration}"
@@ -340,8 +245,9 @@ fn result_duration_secs(world: &mut RpWorld, expected: f64) {
 #[then("the result duration_secs should be null")]
 fn result_duration_secs_null(world: &mut RpWorld) {
     let value = success_payload(world);
+    let exposure = value.get("exposure").expect("missing `exposure`");
     assert!(
-        value.get("duration_secs").is_some_and(|v| v.is_null()),
+        exposure.is_null() || exposure.get("duration_secs").is_some_and(|v| v.is_null()),
         "expected duration_secs=null, got: {value}"
     );
 }

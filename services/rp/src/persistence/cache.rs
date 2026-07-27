@@ -643,6 +643,8 @@ mod tests {
     /// bytes and don't depend on serde formatting choices.
     fn dummy_document(id: &str) -> ExposureDocument {
         ExposureDocument {
+            target: None,
+            frame_type: None,
             id: id.to_string(),
             captured_at: "2026-04-30T00:00:00Z".to_string(),
             file_path: format!("/tmp/{}.fits", id),
@@ -1086,7 +1088,7 @@ mod tests {
         assert!(matches_uuid8_suffix("550e8400.fits", "550e8400"));
         // Template form: <base>_<uuid8>.fits.
         assert!(matches_uuid8_suffix(
-            "M31_L_300s_001_550e8400.fits",
+            "M31_L_5m_001_550e8400.fits",
             "550e8400"
         ));
         // Substring without underscore separator → reject.

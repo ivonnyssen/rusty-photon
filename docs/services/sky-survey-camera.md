@@ -435,7 +435,7 @@ exposure is not interrupted.
 
 These endpoints are added by composing the `ascom-alpaca` server's
 axum router with our own router, the same pattern `rp` uses to mount
-`/mcp` alongside its REST surface (see `docs/workspace.md` →
+`/mcp` alongside its narrow technical HTTP routes (see `docs/workspace.md` →
 "HTTP gateway services"). If composition turns out to be impractical
 with the current `ascom-alpaca` API, the fallback is to expose the
 same operation via ASCOM's standard `Action` mechanism

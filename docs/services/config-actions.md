@@ -63,7 +63,7 @@ The generic functions — `config_get::<D>`, `config_apply::<D>`, `config_schema
 effective-config diff, and schemars JSON-Schema generation. They return plain
 values / `ApplyError`, so **`rusty-photon-config` carries no `ascom-alpaca`
 dependency** — it is the transport-/consumer-agnostic config *model*, shared with
-the plain-REST `rp` / `sentinel` services.
+`rp` (over its config REST route) and the plain-REST `sentinel` service.
 
 The ASCOM **adapter** — wrapping those results into `ASCOMResult`, the generic
 `config.get` / `config.apply` / `config.schema` action dispatch, the

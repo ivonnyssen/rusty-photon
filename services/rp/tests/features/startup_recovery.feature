@@ -27,23 +27,28 @@ Feature: Session recovery across rp restarts
     And the recovery invocation should carry the original workflow and session ids
     And the session status should become "active"
 
+  # The data_directory is pinned so the redb target store (which now
+  # owns the target and its goals) survives the restart alongside the
+  # session_state_file's counters. The target is addressed by slug
+  # ("Test Field" -> test-field).
   Scenario: Planner progress counters survive an rp restart
     Given a test orchestrator that waits for a stop signal
     And rp is configured with site latitude 51.0786 longitude -0.2944
-    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
-      | filter | duration_secs | count |
-      | Red    | 120           | 4     |
+    And rp's data_directory is pinned to a fresh tempdir
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 120s              | 4             |
     When a session is started via the REST API
-    And the MCP client calls "record_exposure" for target "Test Field" filter "Red"
-    And the MCP client calls "record_exposure" for target "Test Field" filter "Red"
+    And the MCP client calls "record_exposure" for target "test-field" filter "Red"
+    And the MCP client calls "record_exposure" for target "test-field" filter "Red"
     And rp is killed
     And rp is restarted after the crash
     And an MCP client connected to rp
     And the MCP client calls "get_session_progress"
     Then the tool call should succeed
-    And the progress for target "Test Field" filter "Red" should be 2 of 4
+    And the progress for target "test-field" filter "Red" should be 2 of 4
 
   Scenario: A completed session is not resumed after a restart
     Given a test orchestrator that completes immediately

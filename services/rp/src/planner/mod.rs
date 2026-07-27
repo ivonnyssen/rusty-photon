@@ -12,5 +12,6 @@
 pub mod catalog;
 pub mod convenience;
 pub mod decision;
+pub mod goal_wire;
 pub mod primitives;
 pub mod progress;

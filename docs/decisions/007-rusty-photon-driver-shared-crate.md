@@ -14,7 +14,7 @@ Phase 3 of the config-actions work (see
 services. The driver-agnostic *protocol* logic (the `ConfigurableDriver` trait and
 the `config_get` / `config_apply` / `config_schema` functions) was correctly
 factored into [`rusty-photon-config`](../../crates/rusty-photon-config) — which
-stays free of `ascom-alpaca` because the plain-REST `rp` and `sentinel` services
+stays free of `ascom-alpaca` because the non-Alpaca `rp` and `sentinel` services
 consume it too. But the **ASCOM-facing glue** ended up copy-pasted into every
 driver:
 
@@ -57,7 +57,7 @@ It provides:
 on a path to a standalone, vendor-neutral crate. The shared `DriverError` is a
 *device/transport* error, not config; and giving the config crate an (even
 optional) `ascom-alpaca` / `tokio` / transport dependency would leak Alpaca into
-the `rp` / `sentinel` REST-config graph. Keeping the adapter in its own crate
+the `rp` / `sentinel` config-consumer graph. Keeping the adapter in its own crate
 preserves a clean one-directional `driver → config` boundary. (`ascom-alpaca`
 implements the open ASCOM-Alpaca standard, so depending on it is not a vendor
 lock-in — the concern is dependency *reach*, not neutrality.)

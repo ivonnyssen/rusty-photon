@@ -22,7 +22,7 @@ file:
 - **Targets** — a named pointing with denormalized coordinates,
   priority, an active flag, and optional per-target overrides.
 - **Acquisition goals** — the desired frame count per
-  `(filter, binning, exposure)` sub-spec, owned by a target.
+  `(filter, binning, exposure_duration)` sub-spec, owned by a target.
 - **Override storage** — per-target grading thresholds and scheduling
   constraints (the global defaults live in `rp` config; this crate
   stores only the deltas).
@@ -99,9 +99,10 @@ pub struct Target {
     /// identity or existing on-disk frames (e.g. "M33 — Triangulum").
     pub display_name: String,
 
-    // --- Pointing (denormalized; plain decimal ICRS, see note below) ---
-    pub ra_hours: f64,
-    pub dec_degrees: f64,
+    // --- Pointing (denormalized; validated IcrsCoord, see note below) ---
+    // Serialized as a nested `coord` object
+    // {ra_hours, dec_degrees}; not `#[serde(flatten)]`.
+    pub coord: IcrsCoord,
 
     // --- Catalog provenance (None for non-catalog targets) ---
     /// Canonical catalog name this was resolved from, e.g. "NGC 224".
@@ -128,18 +129,22 @@ pub struct Target {
 }
 
 /// Desired frame count for one acquisition sub-spec. The
-/// `(filter, binning, exposure)` triple is exactly the quota key from
-/// the filename scheme (frame type is always Light for goals; gain is
+/// `(filter, binning, exposure_duration)` triple is exactly the quota key
+/// from the filename scheme (frame type is always Light for goals; gain is
 /// not a sub-spec dimension — it is a fixed per-setup camera setting).
 pub struct AcquisitionGoal {
     pub filter: String,          // "Ha", "L", "R", ...
-    pub binning: Binning,        // renders as "1x1"
+    pub binning: Binning,        // rp_vocabulary::Binning, serde = "1x1"
     #[serde(with = "humantime_serde")]
-    pub exposure: std::time::Duration,
+    pub exposure_duration: std::time::Duration,
     pub desired_count: u32,
 }
 
-pub struct Binning { pub x: u8, pub y: u8 }
+// Binning and IcrsCoord are the shared plan value types from
+// `rp-vocabulary` (ADR-019), re-exported here as `rp_targets::{Binning,
+// IcrsCoord}`. `Binning { pub x: u8, pub y: u8 }` serializes as its
+// canonical `"AxB"` string; `IcrsCoord` is a validated newtype (private
+// fields, `try_new`).
 
 /// Per-target scheduling constraints. Each `None` field falls back to
 /// the rp-config global default. *Stored here; evaluated by rp's
@@ -185,17 +190,29 @@ name rather than a surrogate id. UUIDs in this codebase identify
 *transient operational artifacts* (exposure documents, operations,
 events); a target is a durable plan entity, so it is name-keyed.
 
-### Coordinates: plain decimal, not typed quantities
+### Coordinates: validated `IcrsCoord`, nested `coord` object
 
-`ra_hours` / `dec_degrees` are bare `f64` in decimal ICRS, matching
-`rp_catalog::ResolvedTarget` and `rp_ephemeris::IcrsCoord`. Per
-[ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md),
-the typed-quantity newtypes (`MechHa`/`Ra`/`Dec`, encoder ticks) are
-**mount-local** — they exist to make frame/unit mix-ups in pointing math
-into compile errors. A target row is plan data, not pointing math; it
-flows straight into `IcrsCoord` when the planner needs a position. Bare
-decimals here keep the store aligned with the catalog it is populated
-from.
+The pointing is `coord: IcrsCoord` — the validated plan value type from
+[`rp-vocabulary`](rp-vocabulary.md) ([ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md)),
+re-exported as `rp_targets::IcrsCoord`. It is a private-field newtype
+constructed through `IcrsCoord::try_new` (`ra_hours ∈ [0,24)`,
+`dec_degrees ∈ [-90,90]`), so a `Target` cannot hold an out-of-range
+pointing — the store-write validation gap the old bare-`f64` fields left
+open (`add_target`/`update_target` accepted any `f64`) is closed by
+construction. The coordinate is **not** `#[serde(flatten)]`ed — it
+serializes as a nested `coord` object,
+`"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`, one canonical
+coordinate shape shared by the on-disk redb store and the MCP wire (the
+`target_to_json` output of `get_target`/`list_targets`/`add_target`); read
+sites use `coord.ra_hours()` / `coord.dec_degrees()`.
+
+This unifies the plan-side coordinate with `rp_catalog::ResolvedTarget`
+(catalog → store → planner is now one `IcrsCoord` type).
+`rp_ephemeris::IcrsCoord` stays a *separate* computed, `NaN`-capable type
+(a false cognate), bridged by `From`/`TryFrom` at the planner boundary —
+see ADR-019. This is distinct from [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md)'s
+**mount-local** `MechHa`/`Ra`/`Dec` typed quantities, which model
+frame/unit mix-ups in pointing math and are not plan data.
 
 ## The `TargetStore` trait (the seam)
 
@@ -227,8 +244,9 @@ single `list_targets` call answers all-target progress with no N+1 fetch.
 `list_targets` is sorted by slug (deterministic; the planner re-sorts by
 its own policy). `delete_target` returns `false` for an absent slug;
 `set_goals` on an absent slug returns `TargetStoreError::NotFound`, and
-rejects a goal set that contains duplicate `(filter, binning, exposure)`
-keys or a zero `desired_count`/`exposure`.
+rejects a goal set that contains duplicate
+`(filter, binning, exposure_duration)` keys or a zero
+`desired_count`/`exposure_duration`.
 
 **Upsert precedence.** `upsert_target` writes the whole value (including
 `goals`) atomically. On upsert of an existing slug the stored
@@ -321,7 +339,7 @@ On open, read `meta["schema_version"]`:
 
 ### File location
 
-Configurable via `targets.db_path`, defaulting to
+Configurable via `target_store.db_path`, defaulting to
 `<session.data_directory>/targets.redb` so the plan travels with the
 frames it describes and a single directory copy backs up both. Backup is
 "copy the one file" — `redb` is a single-file store.
@@ -338,9 +356,11 @@ matching Rule-2 update. The authoritative home for these contracts is
 
 `rp` derives and resolves the slug before calling `upsert_target`:
 
-1. Base = `TargetSlug::new(catalog_ref.unwrap_or(display_name))` (a
-   catalog add bases on `"NGC 7000"` → `ngc7000`; a custom add bases on
-   the operator's name).
+1. Base = `TargetSlug::new(catalog_ref.unwrap_or(kebab(display_name)))`
+   (a catalog add bases on `"NGC 7000"` → `ngc7000`, `TargetSlug::new`'s
+   own whitespace-*stripping* normalization; a custom add bases on the
+   operator's name, kebab-cased first — `"Comet Test"` → `comet-test` —
+   since an operator-typed name reads better hyphenated than stripped).
 2. Probe `get_target(base)`. **Absent** → use `base`.
 3. **Present and the same object** (same `catalog_ref`, or coordinates
    within a small tolerance) → treat as an in-place edit: reuse the slug
@@ -358,27 +378,56 @@ an in-place overwrite, never a duplicate row.
 
 ### File-naming template (render + parse)
 
-`rp` turns the reserved `session.file_naming_pattern` (rp.md:285-287,
-example at rp.md:2990) from a render-only field into a **round-trippable**
-template, plus a new `session.directory_pattern`. This **supersedes** the
-originally-reserved token set (a breaking redefinition, not an
-extension): `{duration}`→`{exposure}` and `{sequence}`→`{frame_number}`,
-and the `:04`-style width specifier in the rp.md:2990 example is dropped
-in favour of fixed-width rendering per token (below). The Rule-2 rp.md
-update must edit rp.md:285-287 and rp.md:2990 to match; for backward
-compatibility the parser accepts `{duration}` and `{sequence}` as
-deprecated aliases of `{exposure}` and `{frame_number}`. Tokens use the
-`{token}` brace syntax. The default reproduces the agreed scheme:
+**Landed: config-load validation of the token contract below, the
+render/parse engine itself** (`rp::config::naming_template::CompiledTemplate`
+— `compile`/`render`/`parse`, regex-backed, unit-tested including a
+`parse(render(x)) == x` round trip against the documented example
+below), **`session.directory_pattern`, and `capture`'s
+`target`/`frame_type` parameters (Decision 11) — the caller that drives
+both patterns.** `capture` renders the full path (replacing
+`<doc_uuid_8>.fits`) whenever `frame_type` is supplied, and calls
+`parse` to derive each new frame's `{frame_number}` by scanning its
+target directory. **Not yet landed:** the on-disk frame scan behind
+full target *progress* derivation (`get_target`/`list_targets`/
+`get_session_progress`) — see rp.md § Persistence.
+
+**Calibration frames (`Dark`/`Flat`/`Bias`) and the `{target}` token.**
+These frames don't image a sky object, so `capture` uses a **reserved
+slug equal to the lowercased frame type** (`"dark"`/`"flat"`/`"bias"`)
+for `{target}` when no explicit `target` is supplied — a single shared
+bucket per calibration type. An explicit `target` is still accepted
+(resolved against the store like a `Light` frame) for a future
+per-target flat-capture flow: today's flats assume one set works for
+every target in a night (adequate rotator repeatability), but a rig
+whose rotator can't reliably return to the same position would need
+flats taken right after each target finishes, tied to that target's
+own slug. See rp.md § Capture Tool Details for the full resolution
+rules, including the `"NA"`/`0` fallback `{filter}`/`{filter_position}`
+render when no filter wheel is present (or, for `Dark`/`Bias`, always).
+
+**Deferred, not yet decided:** organizing `auto_focus`'s and
+`center_on_target`'s internal diagnostic captures through this same
+mechanism. They can run multiple times against one target in a night,
+which `{night_date}`-granularity directories can't disambiguate — a
+`{time}` token doesn't exist in the shape table below. Both tools keep
+calling `capture` with `frame_type` omitted (today's flat-file
+behavior) until this is designed; see rp.md § Capture Tool Details.
+
+`rp` turns `session.file_naming_pattern` (rp.md § Persistence) from
+a render-only field into a **round-trippable** template, plus
+`session.directory_pattern`. Tokens use the `{token}` brace syntax;
+an unrecognized token is rejected at config load (§ Config-load
+validation below). The default reproduces the agreed scheme:
 
 ```
 directory_pattern    = "{target}/{night_date}/{frame_type}"
-file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
 ```
 
-Rendering example (note the lowercase `{target}` slug — the renderer
-emits the slug verbatim and the parser's `[a-z0-9-]+` shape requires it;
-the impl carries a `parse(render(x)) == x` round-trip assertion):
-`m33/2026-06-02/Light/m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4.fits`
+Target rendering example (note the lowercase `{target}` slug — the
+renderer emits the slug verbatim and the parser's `[a-z0-9-]+` shape
+requires it):
+`m33/2026-06-02/Light/m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4.fits`
 
 Each token has a **typed shape** so the template compiles to an anchored
 regex with named captures — never a naive `split('_')`, which the
@@ -390,35 +439,45 @@ regex with named captures — never a naive `split('_')`, which the
 | `{filter}` | `[A-Za-z0-9]+` | filter name |
 | `{binning}` | `\d+x\d+` | `Binning` |
 | `{frame_number}` | `\d+` | per-spec sequence, rendered zero-padded to width 4 (`0002`) |
-| `{exposure}` | `\d+sec` | whole-second `Duration`, rendered `format!("{}sec", d.as_secs())` |
+| `{exposure_duration}` | `(?:\d+(?:ns\|us\|ms\|s\|m\|h\|d))+` | `Duration` as space-free humantime (`2m`, `5m`, `32us`) |
 | `{filter_position}` | `\d+` | wheel slot |
 | `{sensor_temp}` | `-?\d+C` | measured at capture |
 | `{night_date}` | `\d{4}-\d{2}-\d{2}` | observing-night date |
 | `{frame_type}` | `Light\|Dark\|Flat\|Bias` | capture intent |
 | `{uuid8}` | `[0-9a-f]{8}` | exposure-document id (sidecar link) |
 
-Token encodings are filename-specific and **distinct from** the
-config/value encodings: `{exposure}` renders
-`format!("{}sec", exposure.as_secs())` (so goal exposures are constrained
-to whole seconds — sub-second/non-integer exposures are unsupported in
-filenames, independent of the `humantime_serde` *value* encoding, which
-uses `120s`/`500ms`), and `{frame_number}` renders zero-padded to width
-4. `{frame_type}` names all capture intents, but only `FrameType=Light`
-frames bucket against `AcquisitionGoal` quotas (Dark/Flat/Bias live under
-their own dirs).
+`{exposure_duration}` uses the **same** humantime encoding as the goal
+wire and the `humantime_serde` store value — `humantime::format_duration`
+(so 300 s is `5m`, 120 s is `2m`), with humantime's inter-unit spaces
+stripped (`1s 500ms` → `1s500ms`) so it stays a single filename token;
+`humantime::parse_duration` reads the space-free form back unchanged. This
+deliberately supersedes the earlier whole-second-only `\d+sec` form, whose
+`as_secs()` truncation rounded a sub-second calibration exposure (a 32 µs
+bias) to `0s`; humantime carries `32us`/`500ms` faithfully. `{frame_number}`
+renders zero-padded to width 4. `{frame_type}` names all capture intents,
+but only `FrameType=Light` frames bucket against `AcquisitionGoal` quotas
+(Dark/Flat/Bias live under their own dirs).
 
-**Config-load validation (parse-don't-validate).** The pattern is parsed
-and checked at startup; a bad pattern fails the load, not a session.
-Rejection rules: the pattern must contain every token needed to derive
-the quota key (`{target}`, `{filter}`, `{binning}`, `{exposure}`) and a
-per-frame uniqueness token (`{uuid8}` or `{frame_number}`). It must
-compile to an unambiguous anchored regex: between any two variable-width
-tokens there must be a literal separator whose characters are excluded
-from both the left token's trailing charset and the right token's leading
+**Config-load validation (parse-don't-validate) — landed**
+(`rp::config::naming_template`). Both patterns are parsed and checked
+at startup; a bad pattern fails the load, not a session.
+`file_naming_pattern`'s rejection rules: the pattern must contain every
+token needed to derive the quota key (`{target}`, `{filter}`,
+`{binning}`, `{exposure_duration}`) and a per-frame uniqueness token (`{uuid8}`
+or `{frame_number}`). `directory_pattern` skips this quota/uniqueness
+requirement (its documented default, `"{target}/{night_date}/{frame_type}"`,
+has neither) but is checked against everything below. Both must compile to an
+unambiguous anchored regex: two tokens directly adjacent with no literal
+between them are always rejected, and between any two tokens separated
+by a literal, every character of that literal must be excluded from
+both the left token's trailing charset and the right token's leading
 charset — `_` qualifies because it appears in no token charset, which is
 exactly why the default pattern is unambiguous and never falls back to
-`split('_')`. A pattern placing two such tokens adjacent (e.g.
-`{frame_number}{exposure}`, or `{target}` immediately before
+`split('_')`. (The implementation applies this edge-charset check to
+every adjacent token pair, not only nominally "variable-width" ones —
+a conservative superset of the strict rule that never mis-accepts an
+ambiguous pattern.) A pattern placing two such tokens adjacent (e.g.
+`{frame_number}{exposure_duration}`, or `{target}` immediately before
 `{night_date}`, whose hyphens/digits the `[a-z0-9-]+` slug would swallow)
 is rejected. Unknown tokens are rejected with the offending token named.
 
@@ -428,7 +487,7 @@ is rejected. Unknown tokens are rejected with the offending token named.
 
 1. **Total per sub-spec** — scan `<data_directory>/<slug>/<night>/Light/`,
    parse each filename via the template, bucket by
-   `(filter, binning, exposure)`. Cheap: `readdir` + regex, no file
+   `(filter, binning, exposure_duration)`. Cheap: `readdir` + regex, no file
    opens. Filenames that don't match the compiled template are skipped
    (`debug!`-logged with the path) — they count toward neither total nor
    any sub-spec and never fail the scan. An absent or empty slug
@@ -465,20 +524,22 @@ culls. This hand-off mechanism is deferred and out of scope for the MVP.
 ### `record_exposure` and progress tools
 
 Because actuals are filesystem-derived, the design-doc-but-unbuilt
-`record_exposure(target, filter)` tool (rp.md:830) no longer increments a
-stored counter — capture already wrote the frame. It collapses to a no-op
-or a progress-cache-invalidation hook. `get_session_progress`
-(rp.md:831) and `get_target_status.progress` (today `null`, rp.md:828)
-are computed from the store (goals) + the derivation above (actuals).
+`record_exposure(target, filter)` tool (rp.md § Planner Tools) no longer
+increments a stored counter — capture already wrote the frame. It
+collapses to a no-op or a progress-cache-invalidation hook.
+`get_session_progress` and `get_target_status.progress` (today `null`;
+rp.md § Planner Tools) are computed from the store (goals) + the
+derivation above (actuals).
 
-**Progress shape supersedes the filter-only map.** rp.md:2769-2772
+**Progress shape supersedes the filter-only map.** rp.md § Planner Tools
 documents progress keyed by filter alone
 (`{"Luminance": {completed, goal}}`), which would collapse two goals that
-share a filter (e.g. Ha@120s and Ha@300s). Because an `AcquisitionGoal`
-is keyed by the full `(filter, binning, exposure)` triple, the progress
-shape becomes, per target, a list of
-`{filter, binning, exposure, good, total, desired}`. The Rule-2 rp.md
-update must replace the filter-only shape accordingly.
+share a filter (e.g. Ha@2m and Ha@5m). Because an `AcquisitionGoal`
+is keyed by the full `(filter, binning, exposure_duration)` triple, the
+progress shape becomes, per target, a list of
+`{filter, binning, exposure_duration, desired_count, good, total}` (the JSON
+key is `exposure_duration` on the wire). The Rule-2 rp.md update must replace the
+filter-only shape accordingly.
 
 ### Constraint evaluation
 
@@ -501,29 +562,30 @@ are bare decimal degrees):
   "session": {
     "data_directory": "/data/lights",
     "directory_pattern": "{target}/{night_date}/{frame_type}",
-    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
   },
-  "targets": {
+  "target_store": {
     "db_path": "/data/lights/targets.redb",      // default: <data_directory>/targets.redb
+    "default_goals": [                           // applied by add_target when a target supplies no goals[]
+      { "filter": "L", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20 }
+    ],
     "default_scheduling": {
       "min_altitude_degrees": 20.0,
       "min_moon_separation_degrees": 30.0,
       "max_moon_illumination_fraction": 1.0,     // 1.0 ⇒ no moon-brightness limit
       "meridian_window_hours": null              // null ⇒ no meridian window
-    },
-    "default_grading": {
-      "max_hfr_pixels": null,                    // setup-dependent; opt-in
-      "min_star_count": 20,
-      "max_eccentricity": 0.6,
-      "min_snr": null
     }
+    // `default_grading` is not yet an accepted key — the typed `target_store`
+    // config (deny_unknown_fields) rejects it until the on-disk frame scan lands.
   }
 }
 ```
 
-`targets.default_*` are the global defaults a `Target`'s `None` override
-fields fall back to. The grading defaults are owned by the grading
-plugin's contract; they are shown here as the override target.
+`target_store.default_*` are the global defaults a `Target`'s `None`
+override fields fall back to. `default_goals` (the `add_target`
+no-goals fallback) and `default_scheduling` are accepted today;
+`default_grading` — owned by the grading plugin's contract — lands with
+the on-disk frame scan.
 
 ## MVP scope
 
@@ -533,7 +595,7 @@ plugin's contract; they are shown here as the override target.
 migration scaffold, and override storage for scheduling + grading. An
 in-memory test double for consumer tests.
 
-**In MVP (rp-side):** target CRUD MCP/REST tools (resolve via
+**In MVP (rp-side):** target CRUD MCP tools (resolve via
 `rp-catalog` → derive slug → `upsert`), the round-trippable naming
 template with config-load validation, progress derivation (total from
 filenames, good/rejected from sidecar metrics + effective thresholds),
@@ -543,8 +605,17 @@ and `get_session_progress` / `get_target_status.progress`.
 selection (the constraint fields are stored in MVP, gated incrementally —
 note that least-progress *ordering* per rp.md's planner bullet 3 needs
 only the in-MVP progress derivation and is therefore in scope, whereas
-moon/meridian/altitude *gating* needs ephemeris and is deferred);
-seasonal/date scheduling windows; seeding the catalog into the DB for
+moon/meridian *gating* needs ephemeris and is deferred). **Amended by
+[Decision 9](../plans/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review):
+altitude *gating* is explicitly NOT deferred** — it is a fixed P1
+migration requirement (parity with the shipped v1 planner, which
+already evaluates it via `rp-ephemeris`; see
+[rp.md § Target Store](../services/rp.md#target-store)) — **landed**:
+`get_next_target` reads a store-backed target's
+`scheduling.min_altitude_degrees`, falling back to
+`target_store.default_scheduling.min_altitude_degrees`. So only
+moon-separation, moon-illumination, and meridian-window gating remain
+deferred here; seasonal/date scheduling windows; seeding the catalog into the DB for
 indexed type/magnitude/cone-search browse; alternative naming grammars
 beyond the validated `{token}` brace form (the configurable `{token}`
 template itself ships in MVP); the PixInsight good-set hand-off; the
@@ -605,9 +676,11 @@ partial one (the migration runs in a single write transaction).
 
 ```
 crates/rp-targets/src/
-├── lib.rs        # crate root: TargetStore trait + re-exports
-├── model.rs      # Target, AcquisitionGoal, Binning,
-│                 #   SchedulingConstraints, GradingThresholds, TargetSlug
+├── lib.rs        # crate root: TargetStore trait + re-exports (incl.
+│                 #   rp_vocabulary::{Binning, IcrsCoord})
+├── model.rs      # Target, AcquisitionGoal, SchedulingConstraints,
+│                 #   GradingThresholds, TargetSlug (Binning/IcrsCoord
+│                 #   come from rp-vocabulary, ADR-019)
 ├── error.rs      # TargetStoreError (thiserror)
 ├── redb_store.rs # RedbTargetStore: tables, transaction-per-op, spawn_blocking
 ├── migrate.rs    # schema_version constant + ordered migration steps
@@ -642,8 +715,10 @@ Crate-root attributes match the sibling crates:
 | Crate | Purpose |
 |---|---|
 | `redb` | embedded ACID key-value store (the file format) |
+| `rp-vocabulary` | shared plan value types `Binning` / `IcrsCoord` (ADR-019); `schema` feature off, so the store stays schemars-free |
 | `serde` / `serde_json` | value encoding inside `redb` |
-| `humantime-serde` | `Duration` (exposure) config/value encoding |
+| `humantime-serde` | `exposure_duration` (`Duration`) config/value encoding |
+| `derive_more` | `Display` derive for `TargetSlug` |
 | `thiserror` | `TargetStoreError` derive |
 | `tracing` | `debug!` on store operations |
 | `async-trait` | the `TargetStore` async seam |

@@ -12,8 +12,8 @@
     "target_adu_fraction": { "type": "number", "default": 0.5 },
     "tolerance": { "type": "number", "default": 0.1 },
     "initial_duration": { "type": "duration", "default": "1s" },
-    "min_exposure": { "type": "duration", "default": "100ms" },
-    "max_exposure": { "type": "duration", "default": "30s" },
+    "min_exposure_duration": { "type": "duration", "default": "100ms" },
+    "max_exposure_duration": { "type": "duration", "default": "30s" },
     "max_extra_attempts": { "type": "integer", "default": 30 },
     "park_on_finish": { "type": "boolean", "default": true }
   },
@@ -30,8 +30,8 @@
       {
         "set": {
           "session.target_adu": "result.max_adu * params.target_adu_fraction",
-          "session.exp_min": "max(seconds(params.min_exposure), seconds(result.exposure_min))",
-          "session.exp_max": "min(seconds(params.max_exposure), seconds(result.exposure_max))",
+          "session.exp_min": "max(seconds(params.min_exposure_duration), seconds(result.exposure_min))",
+          "session.exp_max": "min(seconds(params.max_exposure_duration), seconds(result.exposure_max))",
           "session.filter_index": "has(session.filter_index) ? session.filter_index : 0",
           "session.window_over": "has(session.window_over) ? session.window_over : false",
           "session.report.total_frames": "has(session.report.total_frames) ? session.report.total_frames : 0"
@@ -53,7 +53,7 @@
         "id": "exposure-window-guard",
         "if": "session.exp_min > session.exp_max",
         "then": [
-          { "fail": { "message": "'the exposure window is empty — min_exposure/max_exposure do not overlap the camera limits'" } }
+          { "fail": { "message": "'the exposure window is empty — min_exposure_duration/max_exposure_duration do not overlap the camera limits'" } }
         ]
       },
       { "tool": "unpark", "args": {} },

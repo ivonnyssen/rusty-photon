@@ -26,8 +26,8 @@ Feature: Sky-flat workflow document
       | site_latitude_degrees | 0     |
       | tolerance             | 1.0   |
       | initial_duration      | 100ms |
-      | min_exposure          | 10ms  |
-      | max_exposure          | 500ms |
+      | min_exposure_duration | 10ms  |
+      | max_exposure_duration | 500ms |
     And an SSE client is watching rp's event stream
     When a session is started via the REST API
     And the workflow document runs to completion

@@ -619,7 +619,7 @@ load instead of being silently ignored.
   // The rp roster is the source of truth; the block is REQUIRED (a config
   // without it fails at load). All fields inside it have defaults.
   "rp": {
-    "base_url": "http://127.0.0.1:11115",    // rp's REST base URL
+    "base_url": "http://127.0.0.1:11115",    // rp's base URL
     "auth": null,                            // optional Basic credentials for rp
     "ca_cert_path": null                     // optional PEM CA for a TLS-enabled rp
   },

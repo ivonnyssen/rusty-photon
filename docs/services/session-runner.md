@@ -1107,9 +1107,10 @@ The full document lives in `workflows/deep_sky.json`; the shape:
         { "tool": "get_next_target" },
         /* end_of_session → done; target == null → 5m
            wait-and-re-ask; otherwise: derive this pass's
-           filter/duration from the plan (result.filter /
-           result.duration_secs, falling back to params.filter /
-           params.exposure when the target has no plan), set_filter
+           filter/duration from the plan's nested exposure object
+           (result.exposure.filter / result.exposure.duration_secs,
+           falling back to params.filter / params.exposure_duration when
+           result.exposure is null), set_filter
            (train-addressed) when that differs from the wheel's
            current filter (the planner rotates the plan as goals
            complete, so this fires mid-target too); on target change
@@ -1130,13 +1131,14 @@ tool surface, and its shape reflects the documented planner v1 gaps
 the document simplifies when it lands:
 
 - **The planner supplies the exposure plan; parameters are the
-  fallback.** `get_next_target` returns `filter` / `duration_secs` from
-  the recommended target's first *incomplete* `exposures[]` entry (rp
-  issues #462 and #463, closed). Every dispatch pass derives its own
-  filter and duration from the result — converting `duration_secs` to
-  a humantime string with the `humantime()` builtin — and falls back
-  to the `exposure` / `filter` parameters only when the target has
-  **no plan** (`duration_secs` null). A plan is authoritative for the
+  fallback.** `get_next_target` returns a nested `exposure` object
+  (`exposure.filter` / `exposure.duration_secs`) from the recommended
+  target's first *incomplete* plan entry (rp issues #462 and #463,
+  closed). Every dispatch pass derives its own filter and duration from
+  that object — converting `exposure.duration_secs` to a humantime
+  string with the `humantime()` builtin — and falls back to the
+  `exposure_duration` / `filter` parameters only when the target has
+  **no plan** (`exposure` null). A plan is authoritative for the
   whole exposure spec: an explicitly unfiltered entry images
   unfiltered rather than merging with the `filter` parameter — and
   "unfiltered" means the wheel is left untouched, so a plan that
@@ -1259,8 +1261,8 @@ document lives in `workflows/sky_flat.json`; the load-bearing decisions:
   `slew` requires tracking, so the order is unpark → tracking on →
   slew → tracking **off** (stars trail through untracked flats and
   median-combine away in the stack).
-- **The exposure window belongs to the operator.** `min_exposure` /
-  `max_exposure` parameters are intersected with the camera's own
+- **The exposure window belongs to the operator.** `min_exposure_duration` /
+  `max_exposure_duration` parameters are intersected with the camera's own
   limits from `get_camera_info` (`max(...)` / `min(...)`, with a
   fail-fast guard when the intersection is empty) — real flats have
   tighter floors (shutter and banding artifacts) and ceilings (star

@@ -4,10 +4,10 @@
 //! streamable-HTTP transport. The handler [`McpHandler`] owns shared
 //! state (equipment registry, event bus, session config, image cache,
 //! observer site, planner targets, plate-solver client, guider
-//! client) and exposes 53 tools across 12 categories: camera,
-//! imaging, filter wheel, cover/calibrator, focuser, mount, rotator,
-//! auto_focus (incl. refocus_train), plate_solve, guider,
-//! center_on_target, planner.
+//! client, target store) and exposes 59 tools across 13 categories:
+//! camera, imaging, filter wheel, cover/calibrator, focuser, mount,
+//! rotator, auto_focus (incl. refocus_train), plate_solve, guider,
+//! center_on_target, planner, targets.
 //!
 //! ## Layout
 //!

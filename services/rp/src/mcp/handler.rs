@@ -26,11 +26,6 @@ pub struct McpHandler {
     /// tools that require a site (`compute_alt_az`, `get_twilight`,
     /// etc.) error cleanly in that case.
     pub site: Option<rp_ephemeris::Site>,
-    /// Targets parsed from `Config.targets` for the planner
-    /// convenience tools. Empty when `targets[]` is absent or none
-    /// of its rows carry the required `name` / `ra_hours` /
-    /// `dec_degrees` fields.
-    pub targets: Vec<crate::planner::decision::PlannerTarget>,
     /// Planner-wide minimum altitude default (degrees). Read from
     /// `Config.planner.min_altitude_degrees`, falling back to 20°
     /// when omitted.
@@ -93,6 +88,22 @@ pub struct McpHandler {
     /// document. `None` in tests that only exercise the tools — frames
     /// then record no `cooler_setpoint_c`.
     pub cooling: Option<Arc<crate::cooling::CoolingController>>,
+    /// The target store (rp.md § Target Store). `None` in tests that
+    /// only exercise other tool categories and configs where opening
+    /// it failed to matter — the target CRUD tools then report "target
+    /// store not configured". Wired by `with_target_store` from
+    /// lib.rs, which always opens one (`targets.db_path`, default
+    /// `<data_directory>/targets.redb`).
+    pub target_store: Option<Arc<dyn rp_targets::TargetStore>>,
+    /// `targets.default_goals` from config — applied by `add_target`
+    /// when the caller supplies no `goals[]` (Decision 10).
+    pub target_store_defaults: crate::config::TargetStoreConfig,
+    /// `session.file_naming_pattern`/`directory_pattern`, compiled once
+    /// at startup (Decision 11). `None` when `file_naming_pattern` is
+    /// unset — `do_capture` then keeps writing a flat `<doc_uuid_8>.fits`
+    /// regardless of `capture`'s `target`/`frame_type` parameters. Wired
+    /// by `with_naming_templates` from lib.rs.
+    pub naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,
     /// Merged tool catalog. Built by summing per-category routers
     /// in [`McpHandler::new`]; consumed by the
     /// `#[tool_handler(router = self.tool_router)]` ServerHandler
@@ -115,7 +126,6 @@ impl McpHandler {
             session_config,
             image_cache,
             site,
-            targets: Vec::new(),
             default_min_altitude_degrees: 20.0,
             progress: Arc::new(std::sync::Mutex::new(
                 crate::planner::progress::SessionProgress::default(),
@@ -129,6 +139,9 @@ impl McpHandler {
             motion_gate,
             centering: crate::config::CenteringConfig::default(),
             cooling: None,
+            target_store: None,
+            target_store_defaults: crate::config::TargetStoreConfig::default(),
+            naming_templates: None,
             // Pattern (c) merge: each `built_in/<category>.rs`
             // declares a `#[tool_router(router = tool_router_<name>,
             // vis = "pub")]` block whose generated associated function
@@ -147,20 +160,18 @@ impl McpHandler {
                 + Self::tool_router_plate_solve()
                 + Self::tool_router_guider()
                 + Self::tool_router_center_on_target()
-                + Self::tool_router_planner(),
+                + Self::tool_router_planner()
+                + Self::tool_router_targets(),
         }
     }
 
-    /// Wire planner inputs after construction. The lib.rs build path
-    /// calls this with the parsed `targets[]` JSON and
-    /// `planner.min_altitude_degrees` (defaulting to 20°). Tests
-    /// can leave the defaults as-is.
-    pub fn with_planner_config(
-        mut self,
-        targets: Vec<crate::planner::decision::PlannerTarget>,
-        default_min_altitude_degrees: f64,
-    ) -> Self {
-        self.targets = targets;
+    /// Wire the planner-wide minimum-altitude default after
+    /// construction. The lib.rs build path calls this with
+    /// `planner.min_altitude_degrees` (defaulting to 20°); it is the
+    /// altitude floor `get_next_target` applies to a store-backed
+    /// target that carries no per-target or `default_scheduling`
+    /// override. Tests can leave the default as-is.
+    pub fn with_planner_default_min_altitude(mut self, default_min_altitude_degrees: f64) -> Self {
         self.default_min_altitude_degrees = default_min_altitude_degrees;
         self
     }
@@ -239,6 +250,30 @@ impl McpHandler {
     /// Cooling). Tests leave `None`.
     pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
         self.cooling = Some(cooling);
+        self
+    }
+
+    /// Wire the target store (rp.md § Target Store) plus its config
+    /// defaults. The lib.rs build path always calls this with `Some`
+    /// (it opens the store unconditionally); tests that don't need
+    /// target tools leave the `None` default.
+    pub fn with_target_store(
+        mut self,
+        store: Option<Arc<dyn rp_targets::TargetStore>>,
+        defaults: crate::config::TargetStoreConfig,
+    ) -> Self {
+        self.target_store = store;
+        self.target_store_defaults = defaults;
+        self
+    }
+
+    /// Wire the compiled `session.file_naming_pattern`/`directory_pattern`
+    /// (Decision 11). `None` when `file_naming_pattern` is unset.
+    pub fn with_naming_templates(
+        mut self,
+        naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,
+    ) -> Self {
+        self.naming_templates = naming_templates;
         self
     }
 }

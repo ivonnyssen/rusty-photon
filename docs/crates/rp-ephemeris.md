@@ -145,6 +145,36 @@ The crate logs at `error` level, not `warn`, because every recovery
 path here represents real misconfiguration or a real upstream bug —
 not normal degraded operation.
 
+## Thread Safety
+
+The `Ephemeris` trait methods are pure functions and hold no mutable
+state, so `ErfarsEphemeris` is `Send + Sync` and safe to share across
+the `rp` service's tokio worker threads — with **one** caveat that
+lives below the `erfars` boundary.
+
+ERFA is otherwise reentrant, but it bolts a *user-updatable*
+leap-second table onto SOFA (`external/erfa/src/erfadatextra.c`). Its
+`eraDatini` lazily fills two file-static globals — the table pointer
+`changes` and its length `NDAT` (sentinel `-1`) — on the **first**
+`eraDat` call, with no lock and no atomics. If several threads make
+their first `eraDat` call simultaneously (the cold-start case: nothing
+has computed an ephemeris yet), one can read `NDAT > 0` without a
+happens-before edge on `changes` and dereference a null/half-written
+pointer, **segfaulting the whole process**. This is an upstream ERFA
+thread-safety bug, not something the panic-safety layer can catch — a
+SIGSEGV is not an unwindable Rust panic.
+
+Every trait method reaches `eraDat` through `time_jds` (the UTC→TAI
+conversion), so `time_jds` forces that first call to happen exactly
+once, single-threaded, behind a `std::sync::Once`
+(`ensure_erfa_leap_seconds_initialized`). `Once::call_once` blocks all
+racing callers until the init completes; afterwards `NDAT` is positive
+for the life of the process and concurrent callers only ever read it,
+so the guard costs a single relaxed atomic load per call. The
+`tests/leap_second_init_race.rs` integration test (its own binary, so
+it owns the process's cold start) drives 64 threads onto their first
+call at once and is the regression guard for this fix.
+
 ## Time-Scale Treatment
 
 JDs are computed once per call as a `TimeJds` struct holding three
@@ -186,6 +216,28 @@ accumulated leapsecond count; bumping `erfars` resyncs it.
 Annual aberration is not applied to the Sun (sub-arcmin effect;
 below the resolution that matters for "is the Sun up?").
 
+### `IcrsCoord` vs the validated plan coordinate (ADR-019)
+
+This crate's `IcrsCoord` (in `types.rs`) is a **computed** value: the
+transforms build it from ERFA output, and the [panic-safety
+contract](#panic-safety-and-degradation) fills it with `NaN` on a bad host
+clock (`sun_position`/`moon_position` degrade rather than crash). It is
+deliberately **not** the validated plan coordinate
+`rp_vocabulary::IcrsCoord`, which is private-field, `try_new`-checked to
+`ra_hours ∈ [0,24)` / `dec_degrees ∈ [-90,90]`, and so cannot hold `NaN`
+or a body that normalises exactly onto the `24.0h`≡`0h` seam — a genuinely
+different concern (validated plan input vs computed astronomy output), a
+false cognate rather than a duplicate.
+
+The two are bridged in `vocabulary.rs`, and the direction asymmetry is the
+whole point: `From<rp_vocabulary::IcrsCoord> for IcrsCoord` (plan →
+computed, **total** — a validated coord is always a valid transform input)
+and `TryFrom<IcrsCoord> for rp_vocabulary::IcrsCoord` (computed → plan,
+**partial** — `NaN`/seam surface as a `CoordError`; a plain `From` here
+would panic on the seam or clamp silently). See
+[ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md) and
+[rp-vocabulary.md](rp-vocabulary.md).
+
 ## Module Layout
 
 ```
@@ -197,6 +249,8 @@ crates/rp-ephemeris/src/
 ├── site.rs         # Site + tzf-rs timezone resolution
 ├── erfars_impl.rs  # ErfarsEphemeris, time_jds, alt_az_at, sun_icrs,
 │                   #   moon_icrs, run_with_guard, NaN-fallback ctors
+├── vocabulary.rs   # From/TryFrom bridge between the computed IcrsCoord
+│                   #   and the validated rp_vocabulary::IcrsCoord (ADR-019)
 └── derived.rs      # bisect_dt, transit, rise_set, meridian_flip,
                     #   twilight (root-finders over ERFA positions)
 ```
@@ -211,6 +265,11 @@ re-exports keeps the crate root self-explanatory.
 - A small reference-value integration test lives in
   `tests/reference_values.rs` and asserts canonical values
   (e.g., GMST at J2000) within tolerance.
+- `tests/leap_second_init_race.rs` is a standalone-binary
+  concurrency regression test for the ERFA leap-second lazy-init race
+  (see [Thread Safety](#thread-safety)): 64 threads make their first
+  ephemeris call under a barrier, which segfaults ~1-in-4 cold starts
+  without the `Once` warm-up and is deterministically clean with it.
 - `Site` tests cover lat/lon range validation and tz resolution
   (Seattle → America/Los_Angeles, Madrid → Europe/Madrid).
 - `ErfarsEphemeris` tests cover normal-case math (Polaris altitude
@@ -237,6 +296,7 @@ code.
 |---|---|
 | `chrono` | calendar/time arithmetic, `DateTime<Utc>` |
 | `erfars` | Rust FFI for ERFA (the math) |
+| `rp-vocabulary` | validated plan `IcrsCoord`, for the `From`/`TryFrom` boundary bridge only (ADR-019) |
 | `tzf-rs` | offline lat/lon → IANA timezone, used by `Site` |
 | `tracing` | error logging on degraded paths |
 | `thiserror` | `EphemerisError` derive |

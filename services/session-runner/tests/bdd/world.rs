@@ -11,9 +11,8 @@ use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
-    GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlannerTargetConfig, PlateSolverConfig,
-    PlateSolverStub, ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient,
-    WebhookReceiver,
+    GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub,
+    ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient, WebhookReceiver,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -63,11 +62,13 @@ pub struct SessionRunnerWorld {
     /// Observer site `(latitude, longitude)` — computed per scenario by
     /// `ComputedSky` so the planner sees the sky the scenario needs at test time.
     pub site: Option<(f64, f64)>,
-    /// Planner targets emitted into rp's `targets[]` (order matters:
-    /// exact |hour-angle| ties break by position).
-    pub planner_targets: Vec<PlannerTargetConfig>,
-    /// The computed target coordinates behind `planner_targets`, kept
-    /// for the mount-sync and plate-solver-echo steps.
+    /// `add_target` argument objects (computed coordinates, optional
+    /// altitude floor, optional goals) seeded into rp's redb store
+    /// post-boot by `start_rp_service` — the legacy `targets[]` config
+    /// array was retired, so planner targets are added via the MCP tool.
+    pub pending_store_targets: Vec<Value>,
+    /// The computed target coordinates behind `pending_store_targets`,
+    /// kept for the mount-sync and plate-solver-echo steps.
     pub night_targets: Vec<IcrsCoord>,
     /// OmniSim's telescope site as it was before a scenario overwrote
     /// it. The site is a profile *setting* the per-scenario device
@@ -208,9 +209,6 @@ impl SessionRunnerWorld {
         }
         if let Some((lat, lon)) = self.site {
             builder.with_site(lat, lon);
-        }
-        for target in &self.planner_targets {
-            builder.add_target(target.clone());
         }
         if let Some(ps) = &self.plate_solver {
             builder.with_plate_solver(ps.clone());
