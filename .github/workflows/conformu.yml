@@ -58,19 +58,11 @@ jobs:
       - name: Discover ConformU services
         id: discover
         run: |
-          # Nightly + on-demand cadence runs every conformu-tagged
-          # service unconditionally; there is no PR base to diff against
-          # and the whole point of the run is to catch drift across the
-          # full surface.
-          # zwo-camera and zwo-focuser are full ConformU citizens. The conformu
-          # jobs provision the native ZWO SDK via ./.github/actions/install-zwo-sdk
-          # (the "provision, don't exclude" principle — ADR-008), so they build
-          # and run here like every other service. svbony-camera is the same
-          # shape (real SDK link required even under `simulation`, provisioned
-          # via ./.github/actions/install-svbony-sdk below) EXCEPT on Windows,
-          # which indi-3rdparty's libsvbony packaging declares unsupported — see
-          # the conformu-windows job below for that one targeted exclusion.
-          # No `select(.name != ...)` filter here.
+          # Every conformu-tagged service runs, on every OS: this cadence has no
+          # PR base to diff against, and catching drift across the full surface
+          # is the point. Services whose native SDK cannot be provisioned on a
+          # given runner build against their `simulation` backend there instead
+          # of dropping out ("provision, don't exclude" — ADR-008).
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
@@ -202,18 +194,20 @@ jobs:
   conformu-windows:
     name: windows / ${{ matrix.service.name }}
     needs: plan
-    # svbony-camera is excluded here (not in the matrix `exclude:` list,
-    # since `service` is a runtime `fromJson` from the `plan` job, not a
-    # static matrix `include`/`exclude` can target): indi-3rdparty's
-    # libsvbony packaging hard-fails CMake with "MS Windows not supported.",
-    # and libsvbony-sys/build.rs panics unconditionally on
-    # CARGO_CFG_TARGET_OS=windows *before* even checking
-    # SVBONY_SKIP_NATIVE_LINK — so there is no link-free escape hatch to
-    # build on Windows at all, unlike every other conformu-tagged service.
-    # Mirrors the (inverse of the) existing zwo-camera/zwo-focuser
-    # name-based conditional on the "Install ZWO SDK" step below.
-    if: needs.plan.outputs.has_services == 'true' && matrix.service.name != 'svbony-camera'
+    # `matrix` is not an available context in a job-level `if` (only `github`,
+    # `needs`, `vars`, `inputs`), and referencing it here fails workflow
+    # validation for the whole file, so per-service conditions belong on the
+    # steps.
+    if: needs.plan.outputs.has_services == 'true'
     runs-on: windows-latest
+    # SVBony publish no scriptable Windows SDK download, so install-svbony-sdk
+    # has nothing to fetch on this runner. `--features conformu` resolves to the
+    # `simulation` backend, which needs no camera — only the SDK *link* — so
+    # skipping that link is enough to run svbony-camera's conformance here. The
+    # Linux and macOS jobs still link the real SDK. Inert for every other
+    # service in the matrix.
+    env:
+      SVBONY_SKIP_NATIVE_LINK: "1"
     strategy:
       fail-fast: false
       matrix:

@@ -107,8 +107,9 @@
 > [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
 > composite action (mirroring `install-zwo-sdk`) provisions the real SVBony
 > SDK from a pinned indi-3rdparty commit, wired into `conformu.yml` (Linux +
-> macOS x86_64; excluded from the Windows per-service matrix — indi-3rdparty
-> declares Windows unsupported) and `native.yml` (the nightly real-link
+> macOS x86_64; the Windows per-service matrix runs svbony-camera against the
+> `simulation` backend with `SVBONY_SKIP_NATIVE_LINK`, since SVBony's Windows
+> SDK download is not scriptable) and `native.yml` (the nightly real-link
 > build + a Linux `svbony-rs` FFI smoke test). See "Native dependency & build
 > gating" below for what did and did not change under Bazel, and "Delivery
 > phasing" for the full rundown incl. two bonus findings (no embedded SONAME
@@ -139,15 +140,6 @@
 > covered by mock-backend unit tests instead, per the design's own call
 > (the simulation cannot force an SDK error). See "Delivery phasing" for
 > what Phase E resolved vs. left open for Phase G hardware validation.
->
-> **Correction (PR #658 review, 2026-07-21): "Windows unsupported" was
-> wrong.** Phase F's "excluded from the Windows per-service matrix —
-> indi-3rdparty declares Windows unsupported" (below) conflated
-> indi-3rdparty's own Linux/macOS-only packaging with SVBony's SDK itself.
-> SVBony does publish a Windows SDK directly, and `libsvbony-sys/build.rs`
-> now has real, byte-verified Windows link directives — see "Native
-> dependency & build gating → Windows" below for what's actually true (real
-> code support; CI automation still blocked by a CAPTCHA-gated download).
 
 ## Overview
 
