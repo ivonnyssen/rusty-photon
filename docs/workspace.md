@@ -466,6 +466,59 @@ hand-rolled formatter or a numeric `format!("{:.1}s", …)` /
 wire fields (`duration_secs`, `elapsed_ms`), `humantime_serde` config
 fields, and internal timing arithmetic are unaffected.
 
+### Enum derives: which crate to reach for
+
+Four crates in this workspace can generate a `Display`. Pick by what the
+string is derived *from*:
+
+| Need | Reach for |
+|---|---|
+| An error type | `thiserror` — `#[error("…")]` |
+| A string interpolating runtime **fields** | `derive_more` — `#[display("{x}x{y}")]` |
+| A constant per **variant**, or variant iteration / count / discriminant | `strum` |
+| A parse error a **human or an ASCOM client reads** | hand-written `FromStr` + a bespoke error |
+
+`strum`'s derives emit only variant-derived constants, so anything
+interpolating a field is out of scope for it by construction. Its
+irreducible value here is the non-string half — `VariantArray`,
+`EnumCount`, `FromRepr` — which retires whole classes of drift: a
+hand-maintained `const ALL` array that silently omits a variant, and a
+hand-synced `COUNT` constant.
+
+**Never derive a string with a casing style.** `#[strum(serialize_all =
+…)]` and `derive_more`'s `#[display(rename_all = …)]` are banned on any
+type whose string crosses a compatibility boundary — a config-file
+value, an Alpaca `Action` name, an on-disk key, a device wire token.
+Pin every such string with an explicit per-variant `#[strum(serialize =
+"…")]`, which keeps the literal greppable in the source and keeps an
+identifier rename a pure refactor. Three converters are in play and they
+disagree: `strum` uses `heck`, `derive_more` uses `convert_case`, and
+`serde`'s `rename_all` agrees with `heck` — but only on some inputs.
+`ApPark0` snake-cases to `ap_park0` under `heck` (not `ap_park_0`), and
+`Uuid8` is `uuid8` under `heck` but `uuid_8` under `convert_case`. A
+type carrying both `#[serde(rename_all)]` and a strum casing attribute
+has two independent sources of truth that neither macro can cross-check.
+
+Where a type's serde casing and its `Display` casing deliberately
+differ — `MonitorState`, `ServiceHealth` — that split is intentional
+and documented on the type. Do not unify them.
+
+**Banned outright:**
+
+- `#[strum(disabled)]` — makes `Display`/`AsRef`/`Into<&'static str>`
+  panic at runtime, and clippy does not flag macro-expanded panics, so
+  it clears the whole quality gate and fires in the field instead
+  (tenet 2).
+- `EnumProperty` — its lookup returns `Option` off a runtime `&str`
+  key, and under the workspace's `unwrap_used` deny the only available
+  fallback is a silent wrong value.
+- Deriving both `VariantNames` and `VariantArray` on one type — makes
+  `T::VARIANTS` ambiguous (E0034). Use `VariantArray`.
+
+`strum` is pinned to the same minor `jsonschema` requires, so it adds
+zero packages to the graph; see the comment on the dependency in the
+workspace `Cargo.toml`.
+
 ## Feature Flags
 
 - **`mock`** — Enables an in-memory mock factory with persistent device state
