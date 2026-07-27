@@ -802,7 +802,7 @@ the "how" decisions made while building.
   which the trait provides as defaults over the generic
   `get_parameter`/`set_parameter(ControlType, )` methods (mirroring
   `qhyccd_rs::Camera`'s own accessors; Phase 2 of the
-  [convention-alignment plan](../plans/qhyccd-convention-alignment.md)). The
+  [convention-alignment plan](../plans/archive/qhyccd-convention-alignment.md)). The
   generic pair stays for capability *probes* (`is_control_available`) and any
   control without a dedicated accessor. `qhyccd-rs`'s control enum is the
   `ControlType` subset (semantic variants + `Other(i32)`), not the SDK's full
@@ -878,7 +878,7 @@ the "how" decisions made while building.
   simulation backend (`backend::conn_tests`). *This supersedes the v0 plan, which
   used independent handles "as the reference `qhyccd-alpaca` does" and deferred
   the refcount as Future Work pending hardware.* Since the `qhyccd-rs` **Phase-1
-  handle-model alignment** ([qhyccd-convention-alignment.md](../plans/qhyccd-convention-alignment.md)),
+  handle-model alignment** ([qhyccd-convention-alignment.md](../plans/archive/qhyccd-convention-alignment.md)),
   the crate itself shares one handle cell between a camera and its filter wheel
   and closes it on last-drop (RAII), and `Sdk::drop` closes every open camera
   handle **before** `ReleaseQHYCCDResource` (the SDK-documented Close-then-Release

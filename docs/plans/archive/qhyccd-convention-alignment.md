@@ -1,8 +1,14 @@
 # Align `qhyccd-rs` to the `zwo-rs` / `svbony-rs` conventions
 
-**Status:** Phases 1–5 IMPLEMENTED (Phases 1–3 2026-07-23, Phases 4–5 2026-07-24),
-consolidated on one branch `feature/qhyccd-convention-alignment`. **The plan is
-complete.** Phase 1: shared handle cell + RAII last-drop close + `Sdk::drop`
+**Status: COMPLETE (archived 2026-07-26).** Delivered by PR #705 (merged
+`2df162e1`, 2026-07-26) — all five phases on one branch, plus real-hardware
+validation on a QHY178 Cool + 7-slot CFW: ConformU camera and filter-wheel
+conformance clean, shared-handle lifecycle (CFW read + move with the camera
+disconnected, reconnect + expose after), mid-exposure abort, and sustained
+cooler regulation all proven on the device. The cross-vendor shared camera
+trait remains follow-on work, out of scope here (see Motivation).
+
+Phase summary: Phase 1: shared handle cell + RAII last-drop close + `Sdk::drop`
 Close-before-Release. Phase 2: `Control` → `ControlType` (31-variant subset +
 `Other(i32)` + `to_raw`), typed accessors on `Camera` + the service seam. Phase 3:
 flat `QHYError` (`Sdk { op }` + the genuinely-distinct cases) + a `check` helper +
@@ -15,9 +21,9 @@ device-file-major `camera.rs` (5a); single-frame/live download switched from a
 `BufferTooSmall` bounds check (5b). Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
-([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
+([vendor-qhyccd-rs.md](../vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
 only tractable now that both crates are first-party and editable in-tree.
-**Related:** [vendor-zwo-rs.md](vendor-zwo-rs.md), ADR-009
+**Related:** [vendor-zwo-rs.md](../vendor-zwo-rs.md), ADR-009
 (`docs/decisions/009-vendor-qhyccd-rs.md`).
 
 ## Motivation
@@ -105,7 +111,7 @@ plan).
 ## Phases
 
 Each phase is independently shippable and revertible, and follows the standard
-[development-workflow.md](../skills/development-workflow.md) design→test→code
+[development-workflow.md](../../skills/development-workflow.md) design→test→code
 order (the crate's own unit/sim suite is the test surface here). Land them in
 order; the correctness fix goes first.
 
@@ -383,7 +389,7 @@ build+test 87; real ConformU green; sim unit+integration 104; doctests 54; clipp
   is a separate decision (and faces the dual-home publishing constraint), tracked
   elsewhere.
 - **Any change to the SDK-forced items** in "What must stay per-crate."
-- **Vendoring/publishing changes** — [vendor-qhyccd-rs.md](vendor-qhyccd-rs.md)
+- **Vendoring/publishing changes** — [vendor-qhyccd-rs.md](../vendor-qhyccd-rs.md)
   owns those; this plan assumes the vendored, first-party state.
 - **Touching `zwo-rs`/`svbony-rs`** beyond noting the `SKIP_NATIVE_LINK`
   back-port idea.

@@ -165,8 +165,7 @@ impl Sdk {
                     if has_filter_wheel {
                         // Share the camera's handle cell (Arc) instead of opening
                         // the same id a second time: a QHY CFW is driven through the
-                        // camera handle, and the SDK keeps one open device per id
-                        // (docs/plans/qhyccd-convention-alignment.md, Phase 1).
+                        // camera handle, and the SDK keeps one open device per id.
                         filter_wheels.push(FilterWheel::new(camera.clone()))
                     };
                     cameras.push(camera);

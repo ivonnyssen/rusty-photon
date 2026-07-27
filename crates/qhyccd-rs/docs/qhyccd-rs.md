@@ -231,7 +231,7 @@ hardware-only concern the suite will not catch.
 
 This replaced an earlier **runtime `CameraBackend` enum** (both arms always
 compiled) plus a `#[automock]` FFI-mock test layer (`src/mocks.rs`), removed in
-Phase 4 of the [convention-alignment plan](../../../docs/plans/qhyccd-convention-alignment.md).
+Phase 4 of the [convention-alignment plan](../../../docs/plans/archive/qhyccd-convention-alignment.md).
 The backend stays **`Arc`-shared** (not a single-owner `Mutex` like zwo's
 `SimState`) because a QHY filter wheel drives the *same* camera handle, so
 `Camera: Clone` + handle-sharing with its `FilterWheel` is SDK-forced (Phase 1).
