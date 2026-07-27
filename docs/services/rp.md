@@ -941,10 +941,10 @@ hours, `dec` is degrees. See
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `get_next_target` | time (optional) | target, reason, exposure | Evaluate candidates and recommend next target. `target` nests its coordinate as `coord: {ra_hours, dec_degrees}`; `exposure` is a nested `{filter, duration_secs}` object from the recommended target's first **incomplete** goal (the `record_exposure` counters rotate the plan), or null when the target defines none — see §"Dynamic Planner" |
-| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches an active target-store row, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches an active target-store row, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, desired_count, good, total}` — see [Target Store § Progress derivation](#progress-derivation))* |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
 | `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name an active target-store row (its slug); omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted. *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
-| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every active target-store row (the unfiltered slot appears under the empty-string key). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every active target-store row (the unfiltered slot appears under the empty-string key). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, desired_count, good, total}` — see [Target Store § Progress derivation](#progress-derivation))* |
 
 **Targets**
 
@@ -3819,7 +3819,7 @@ to bucket frames by `(filter, binning, exposure_duration)`, then classifies each
 good/rejected against its sidecar's grading section and the target's
 effective `GradingThresholds` (its own overrides, field-wise over
 `target_store.default_grading`). `get_target`/`list_targets` report, per
-target, a list of `{filter, binning, exposure_duration, good, total, desired}` —
+target, a list of `{filter, binning, exposure_duration, desired_count, good, total}` —
 one entry per `AcquisitionGoal` — superseding the filter-only
 `{completed, goal}` shape that `get_target_status.progress` and
 `get_session_progress` return today (§ Dynamic Planner), which
@@ -3899,7 +3899,7 @@ decide what to do next — `rp` does not make workflow decisions.
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
 | `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress. Reads store rows only *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
-| `get_session_progress` | — | progress | Full per-target, per-filter progress overview. Reads store rows only *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_session_progress` | — | progress | Full per-target, per-filter progress overview. Reads store rows only *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, desired_count, good, total}` — see [Target Store § Progress derivation](#progress-derivation))* |
 
 ### Decision Logic (inside `get_next_target`)
 

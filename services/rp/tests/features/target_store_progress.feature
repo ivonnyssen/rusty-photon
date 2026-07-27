@@ -2,7 +2,7 @@ Feature: Target progress derivation (P1)
   Progress is computed on demand from goals plus on-disk frames, never
   stored (rp.md § Target Store → Progress derivation): `get_target` and
   `get_session_progress` report, per target, a list of `{filter,
-  binning, exposure_duration, good, total, desired}` — one entry per
+  binning, exposure_duration, good, total, desired_count}` — one entry per
   `AcquisitionGoal` — superseding the filter-only `{completed, goal}`
   shape the config-array planner uses today (see planner.feature),
   which cannot distinguish two goals that share a filter (e.g. Ha at
@@ -25,7 +25,7 @@ Feature: Target progress derivation (P1)
     When the MCP client calls "get_target" for slug "fresh-frame"
     Then the tool call should succeed
     And the reported progress should be exactly:
-      | filter    | binning | exposure_duration | good | total | desired |
+      | filter    | binning | exposure_duration | good | total | desired_count |
       | Luminance | 1x1     | 5m       | 0    | 0     | 40      |
       | Red       | 1x1     | 5m       | 0    | 0     | 20      |
 
@@ -33,7 +33,7 @@ Feature: Target progress derivation (P1)
   # Unlike get_target above, get_session_progress still emits the legacy
   # per-filter {completed, goal} counter shape (from the record_exposure
   # counters), not the per-goal {filter, binning, exposure_duration, good,
-  # total, desired} shape this scenario asserts. It already reads the store
+  # total, desired_count} shape this scenario asserts. It already reads the store
   # (active_planner_targets); what remains is reworking its payload to the
   # per-goal shape, part of the Dynamic Planner cutover.
   Scenario: get_session_progress reports every target's per-goal progress
@@ -50,8 +50,8 @@ Feature: Target progress derivation (P1)
     When the MCP client calls "get_session_progress"
     Then the tool call should succeed
     And the progress for target "first-frame" should be exactly:
-      | filter    | binning | exposure_duration | good | total | desired |
+      | filter    | binning | exposure_duration | good | total | desired_count |
       | Luminance | 1x1     | 5m       | 0    | 0     | 40      |
     And the progress for target "second-frame" should be exactly:
-      | filter | binning | exposure_duration | good | total | desired |
+      | filter | binning | exposure_duration | good | total | desired_count |
       | Red    | 1x1     | 5m       | 0    | 0     | 20      |

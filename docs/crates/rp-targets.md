@@ -537,7 +537,7 @@ documents progress keyed by filter alone
 share a filter (e.g. Ha@2m and Ha@5m). Because an `AcquisitionGoal`
 is keyed by the full `(filter, binning, exposure_duration)` triple, the
 progress shape becomes, per target, a list of
-`{filter, binning, exposure_duration, good, total, desired}` (the JSON
+`{filter, binning, exposure_duration, desired_count, good, total}` (the JSON
 key is `exposure_duration` on the wire). The Rule-2 rp.md update must replace the
 filter-only shape accordingly.
 

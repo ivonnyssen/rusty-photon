@@ -15,7 +15,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
@@ -546,28 +546,30 @@ fn target_to_json(t: &Target) -> Value {
     serde_json::to_value(t).unwrap_or(Value::Null)
 }
 
-/// Per-goal `{filter, binning, exposure_duration, good, total, desired}`
-/// (rp.md § Progress derivation). `good`/`total` are hard-coded 0 —
-/// the on-disk scan this needs is out of scope until the grading
-/// plugin's sidecar shape and capture's target linkage both land.
-fn progress_for(t: &Target) -> Vec<Value> {
+/// One per-goal progress row (rp.md § Progress derivation): the goal's
+/// wire shape plus the scan counters. `#[serde(flatten)]` embeds
+/// [`GoalWire`] verbatim — one declaration, no re-keyed copy — so a
+/// row's goal part is byte-for-byte the `goals[]` shape `set_goals`
+/// accepts (including the `desired_count` key).
+#[derive(Debug, Serialize)]
+struct ProgressRow {
+    #[serde(flatten)]
+    goal: GoalWire,
+    /// Frames graded good — hard-coded 0 until the on-disk scan lands
+    /// (needs the grading plugin's sidecar shape and `capture`'s target
+    /// linkage).
+    good: u32,
+    /// Frames captured — hard-coded 0, same dependency as `good`.
+    total: u32,
+}
+
+fn progress_for(t: &Target) -> Vec<ProgressRow> {
     t.goals
         .iter()
-        .map(|g| {
-            // Progress rows add `good`/`total`/`desired` to the goal key, so
-            // this is a distinct shape — but the goal encodings themselves
-            // (binning, humantime exposure) come from the `GoalWire` `From`
-            // impl, not a
-            // third hand-rolled copy.
-            let wire = GoalWire::from(g);
-            json!({
-                "filter": wire.filter,
-                "binning": wire.binning,
-                "exposure_duration": wire.exposure_duration,
-                "good": 0,
-                "total": 0,
-                "desired": wire.desired_count,
-            })
+        .map(|g| ProgressRow {
+            goal: GoalWire::from(g),
+            good: 0,
+            total: 0,
         })
         .collect()
 }
