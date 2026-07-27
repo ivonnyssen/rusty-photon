@@ -87,6 +87,9 @@ these away, the decision is wrong.
 | [docs/references/qhyccd-sdk-manual.md](references/qhyccd-sdk-manual.md) | QHYCCD SDK manual (unofficial English translation, V2.1) — used by `qhy-camera` |
 | [docs/references/workflow-documents.md](references/workflow-documents.md) | Authoring guide for `session-runner` workflow documents: the format, the expression grammar, the re-entrancy contract, worked examples |
 | [docs/services/config-actions.md](services/config-actions.md) | Cross-driver configuration protocol: the `config.get` / `config.apply` / `config.schema` ASCOM actions shared by every driver and consumed by `ui-htmx` |
+| **Validation records** (real-hardware ConformU proof trail — see [docs/validation/](validation/)) | |
+| [docs/validation/README.md](validation/README.md) | Index of successful real-hardware ConformU runs: per run, the exact commit tested, platform, device identity, and the unmodified ConformU output |
+| [docs/svbony-camera-windows-install.md](svbony-camera-windows-install.md) | Operator guide: installing `svbony-camera` on Windows from source (vendor driver + SDK staging + MSVC build) until the MSI ships it |
 | **Decisions** (Architecture Decision Records — see [docs/decisions/](decisions/)) | |
 | [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
 | [ADR-002](decisions/002-tls-for-inter-service-communication.md) | TLS for inter-service communication |

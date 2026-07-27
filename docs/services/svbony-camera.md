@@ -25,6 +25,16 @@
 > aborted exposure's deadline. Every open punch-list item below is
 > resolved — see "Real-hardware validation" for the itemized results.
 >
+> **Windows validation PASSED (2026-07-26, same physical SV605CC):** the
+> real-SDK Windows build (manually-staged SDK, see "Windows" below) passes
+> ConformU 4.4.0 `alpacaprotocol` + `conformance` cleanly on Windows 11
+> with identical `UniqueID` minting — evidence in
+> [docs/validation/2026-07-26-svbony-camera-sv605cc-windows/](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md),
+> operator steps in
+> [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
+> CI provisioning ([#720](https://github.com/ivonnyssen/rusty-photon/issues/720)
+> Part 2) remains open.
+>
 > **Follow-up landed (issue #679, 2026-07-22): `scripts/build-packages.sh`
 > now has the `needs_svbony` SDK-staging leg this Status section's Phase G
 > entry (below) originally deferred.** `nightly-packages` was failing on
@@ -317,6 +327,16 @@ narrower claim than "Windows is provisioned by CI," so read carefully:
   set `SVBONY_SDK_LIB_DIR` to build the real Windows link — there is no
   path to automating that download without solving a CAPTCHA, which is out
   of scope on principle, not just effort.
+- **Validated against real hardware (2026-07-26).** Exactly that
+  human-provisioned build passes ConformU (`alpacaprotocol` +
+  `conformance`, zero errors/issues) against a physical SV605CC on
+  Windows 11 — see "Real-hardware validation → Windows" below and the
+  [validation record](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md).
+  Two Windows-only provisioning facts: the camera advertises no Microsoft
+  OS descriptors, so SVBony's driver package (also captcha-gated) must be
+  installed before WinUSB enumeration works, and the SDK's runtime DLL
+  must sit next to the binary. Operator steps:
+  [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
 
 ### udev / USB
 
@@ -1207,6 +1227,25 @@ Closed since, by the packaging work the validation itself triggered:
   helper installs a dev udev rule on hosts with no packaged one (see
   "udev / USB"), so the hand-written rule this validation needed is now
   part of the same bootstrap step as the SDK.
+
+### Windows (2026-07-26)
+
+The same physical SV605CC passed the full validation on Windows 11
+(25H2): ConformU 4.4.0 `alpacaprotocol` and `conformance` both clean
+against the real-SDK release binary at commit `ef03a1cd`, `UniqueID`
+minting identical to Linux, and every sharp path above re-confirmed —
+abort→next-accepted-exposure ~0.08 s, the ~18 MB full frame transfers
+byte-exact with **no analogue of the `usbfs_memory_mb` bump needed**,
+and the cooler engages only on `CoolerOn`. Windows-specific ground
+truth: the camera carries no Microsoft OS descriptors, so WinUSB never
+auto-binds — SVBony's driver package (INF v1.0.0.8) is a hard
+prerequisite, and until it is installed the SDK reports zero devices
+(the same silent shape as the Linux `errno=13` case above); and the
+SDK's parameter dumps land in `%APPDATA%\CKConfig\`, not the process
+CWD, so the Linux CWD-writability note has no Windows analogue. Full
+environment details and the unmodified ConformU output:
+[docs/validation/2026-07-26-svbony-camera-sv605cc-windows/](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md).
+Operator setup: [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
 
 ## Packaging
 
