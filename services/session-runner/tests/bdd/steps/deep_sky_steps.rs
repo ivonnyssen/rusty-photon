@@ -35,8 +35,7 @@ use crate::steps::infrastructure::{
 };
 use crate::world::SessionRunnerWorld;
 
-/// How long a poll-until-observed step waits before failing the scenario.
-const OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
+use crate::steps::observation::{await_blackboard_counter, frame_budget, timeout_report};
 
 // ---------------------------------------------------------------------------
 // Given steps: the computed night sky
@@ -373,19 +372,7 @@ async fn rp_with_camera_mount_focuser_and_workflow(
 
 #[when(expr = "the deep-sky session has captured at least {int} frames")]
 async fn deep_sky_captured_frames(world: &mut SessionRunnerWorld, frames: u64) {
-    let deadline = std::time::Instant::now() + OBSERVATION_BUDGET;
-    loop {
-        let last = world.blackboard_counter("total_frames").await;
-        if last.is_some_and(|f| f >= frames) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the blackboard never recorded {frames} total_frames within \
-             {OBSERVATION_BUDGET:?} (last: {last:?})"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    await_blackboard_counter(world, "total_frames", frames).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +427,10 @@ async fn events_follow_second(
     boundary: String,
 ) {
     let boundary_seq = second_seq(world, &boundary).await;
-    let deadline = std::time::Instant::now() + OBSERVATION_BUDGET;
+    // Each awaited event is one more frame's worth of real work, so this
+    // waits on the same pipeline the frame-count steps do.
+    let budget = frame_budget(world, minimum as u64);
+    let started = std::time::Instant::now();
     loop {
         let count = sse_event_seqs(world, &needle)
             .await
@@ -450,11 +440,17 @@ async fn events_follow_second(
         if count >= minimum {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "expected at least {minimum} '{needle}' event(s) after the second '{boundary}' \
-             (seq {boundary_seq}) within {OBSERVATION_BUDGET:?}, saw {count}"
-        );
+        let elapsed = started.elapsed();
+        if elapsed >= budget {
+            let headline = format!(
+                "expected at least {minimum} '{needle}' event(s) after the second \
+                 '{boundary}' (seq {boundary_seq}), saw {count}"
+            );
+            panic!(
+                "{}",
+                timeout_report(world, &headline, budget, elapsed).await
+            );
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
