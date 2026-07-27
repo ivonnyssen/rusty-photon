@@ -1135,7 +1135,11 @@ machine, real SDK staged from the pinned indi-3rdparty blob
 pinned hash). Headline: **ASCOM ConformU 4.3.0 passes both the
 `alpacaprotocol` and full `conformance` suites with zero errors, zero
 issues, and every member inside its response-time budget**, against the
-production (non-simulation) binary serving the physical camera.
+production (non-simulation) binary serving the physical camera. (That
+pass predated the `docs/validation/` record trail, so its ConformU
+output was not preserved; a recorded Linux re-run on the same host and
+camera — clean again, with the full ConformU output committed — lives in
+[docs/validation/2026-07-27-svbony-camera-sv605cc-linux/](../validation/2026-07-27-svbony-camera-sv605cc-linux/README.md).)
 
 What ran, and what each open item resolved to:
 

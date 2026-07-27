@@ -10,6 +10,7 @@ device, and the unmodified ConformU output.
 
 | Date | Service | Device | Platform | Commit | ConformU | Result | Record |
 |------|---------|--------|----------|--------|----------|--------|--------|
+| 2026-07-27 | svbony-camera | SVBONY SV605CC | Fedora Linux 44 x86_64 | [`bdd97201`](https://github.com/ivonnyssen/rusty-photon/commit/bdd97201) | 4.3.0 | `alpacaprotocol` + `conformance` clean | [record](2026-07-27-svbony-camera-sv605cc-linux/README.md) |
 | 2026-07-26 | svbony-camera | SVBONY SV605CC | Windows 11 (25H2) x64 | [`ef03a1cd`](https://github.com/ivonnyssen/rusty-photon/commit/ef03a1cd7b9e0831e731d0ed9d37df7661fe5edd) | 4.4.0 | `alpacaprotocol` + `conformance` clean | [record](2026-07-26-svbony-camera-sv605cc-windows/README.md) |
 
 ## Adding a run
