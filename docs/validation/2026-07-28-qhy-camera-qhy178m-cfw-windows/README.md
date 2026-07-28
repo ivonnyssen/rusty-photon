@@ -59,10 +59,17 @@ Things this run had to establish, none of them obvious from the docs:
   (`C:\Program Files\QHYCCD\AllInOne\sdk\x64`) and whichever SDK the binary was
   built against. This run put the pinned 26.06.04 `x64` directory first on
   `PATH` so the delay-load binds the version the build expects.
-- **A wedged camera survives a service restart.** During an earlier attempt the
-  device stopped enumerating (`cameras=0`) and stayed that way across service
-  restarts, a `doctor` invocation, and re-plugging via the hypervisor; only a
-  physical power cycle cleared it. A ConformU run against a camera in that state
-  produces cascading `Test abandoned … camera is in state: Exposing` issues that
-  look like a driver defect but are not — confirmed by this clean run on the
-  same binary and commit once the camera was power-cycled.
+- **A wedged camera survives a service restart** — and the wedge is *not*
+  specific to Windows or to provisioning. During an earlier attempt the device
+  stopped enumerating (`cameras=0`) and stayed that way across service restarts,
+  a `doctor` invocation, and re-plugging via the hypervisor; only a physical
+  power cycle cleared it, after which the same binary at the same commit
+  produced this clean run. The same failure has since been reproduced on Linux
+  (cascading `Test abandoned … camera is in state: Exposing`, then `Connected`
+  and the FilterWheel's connect exceeding their 5 s timeouts), so it is a
+  recurring hardware/SDK-level state, not an artifact of the driver install —
+  tracked in
+  [issue #755](https://github.com/ivonnyssen/rusty-photon/issues/755). Both
+  records here were taken on a healthy, freshly power-cycled camera; if a run
+  starts producing that pattern, power-cycle before suspecting the exposure
+  path.
