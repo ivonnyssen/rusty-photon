@@ -387,6 +387,15 @@ bazel build //...
 bazel test //...           # filters out tagged `requires-cargo` and `bdd`
 ```
 
+**Warnings are errors.** `.bazelrc` passes `-Dwarnings` to rustc for first-party
+code, so `bazel build` fails on any warning rather than printing it. This is what
+makes a warning that only fires on one target OS a gate: `cargo clippy -D warnings`
+runs on ubuntu only, and Bazel builds all three platforms. Third-party crates are
+exempt — `crate_universe` gives every crates.io target `--cap-lints=allow`, a hard
+ceiling `-Dwarnings` cannot lift — so a noisy dependency can never break your build.
+The flag lives on the base `build` config, not `build:ci`, so a local
+`bazel build //...` denies exactly what CI denies.
+
 If you added a crates.io dependency, refresh the Bazel index:
 
 ```bash
