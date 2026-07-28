@@ -152,8 +152,19 @@ rust_doc_test(
     crate = ":qhyccd-rs",
 )
 
+# The sim target additionally carries `crate_features`, which rustdoc receives as
+# the two argv elements `--cfg` and `feature="simulation"`. Those embedded quotes
+# do not survive the Windows runner: it is one batch line,
+# `powershell.exe -c "… (RF 'feature="simulation"') …"`, and cmd.exe tracks quote
+# state without understanding any escape, so the inner quote ends the -c string
+# early. Unrelated to the MAX_PATH fix above and pre-existing — issue #749. The
+# real target has no crate_features and so runs on Windows.
 rust_doc_test(
     name = "qhyccd-rs_sim_doc_test",
     crate = ":qhyccd-rs_sim",
     crate_features = ["simulation"],
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
 )

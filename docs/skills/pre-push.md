@@ -204,6 +204,15 @@ resolved, `libpanic_unwind-….rlib` at 261 did not.
 path to 193. If you add a doctest target and see `LNK1181` again, the budget has
 run out somewhere else — measure the path before theorising.
 
+**A doctest target with `crate_features` is still skipped on Windows** (issue
+#749, unrelated to the above). rustdoc receives the feature as `--cfg` plus
+`feature="simulation"`, and those embedded quotes cannot survive the runner: it
+is one batch line, `powershell.exe -c "… 'feature="simulation"' …"`, and
+`cmd.exe` tracks quote state without understanding any escape, so the inner
+quote ends the `-c` string early. Watch out for its symptom — it is
+position-dependent, and has appeared both as `invalid --cfg argument` and as a
+silent exit-1 with a completely empty test log.
+
 Two things generalise. The job's "Enable long paths" step does **not** cover
 this: `LongPathsEnabled` is opt-in per binary via a `longPathAware` manifest, and
 `link.exe` carries none (the step's own comment scopes it to `cl.exe`, which
