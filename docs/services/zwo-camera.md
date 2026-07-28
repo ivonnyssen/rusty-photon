@@ -599,8 +599,8 @@ EAF; those belong to the other zwo services.)
   outside **1 ke⁻ … 10 Me⁻**. Real astronomical sensors sit at 10–100 ke⁻; read
   noise alone is 1–3 e⁻, so a sub-1 ke⁻ well is not a sensor anyone builds. The
   band therefore clears every real camera by ~an order of magnitude at both ends
-  while catching a value that is off by 1000× (the observed defect: an implied
-  well of 20 e⁻). The reported ASCOM value is **unchanged** — this contract adds
+  while catching a value that is off by 1000× (the observed defect: implied wells
+  of 20 e⁻ and 42 e⁻ on the two cameras measured). The reported ASCOM value is **unchanged** — this contract adds
   a log line, not a correction. *(Unit-tested: the `simulation` backend reports
   a plausible 0.25 e⁻/ADU at 16-bit — an implied 16.4 ke⁻ — so it cannot force
   the warning branch.)*
@@ -759,7 +759,8 @@ members within their response targets:
   model exposes neither a serial nor a flash ID, so it used the `noserial-0`
   identity fallback (`mint_identity`) — the documented older-model path.
 - **ASI178MM** (uncooled, mono): `MaxADU` 16383 (14-bit), `ElectronsPerADU`
-  0.00258 *(the same Linux 1000× scaling; the true figure is 2.58 e⁻/ADU)*,
+  0.00258 *(the same Linux scaling — an implied 42 e⁻ full well; no Windows
+  figure has been measured for this model)*,
   sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
   offset 0–600. The uncooled cooler-gating contract (K1) is confirmed on
   hardware — `CanSetCCDTemperature`/`CanGetCoolerPower` are `false` and the cooler
@@ -849,8 +850,18 @@ repository consumes `ElectronsPerADU`, so the exposure is third-party clients
 that use it for SNR/exposure math (NINA and similar). The ST4 cross-check makes
 that visible in the service log rather than silent.
 
-The scaling is a code path, not a per-model typo, so **every model is affected on
-Linux** — the 2026-06-20 ASI178MM figure above carries the same 1000×.
+**Second model, different internal route, same bad result.** An ASI178MM probed
+the same way reports `0.0025816387496888638` — an implied full well of **42 e⁻**,
+equally impossible. Its value is *not* a stored constant, though: neither the
+reported number nor its ×1000 counterpart appears anywhere in the blob (unlike
+the ASI1600's `4.96f`), so the SDK computes this model's figure at runtime. Two
+models reaching `ElecPerADU` by **different internal routes** — one from a table
+constant, one computed — and both emerging implausible on Linux points at a
+scaling applied on the way out rather than a per-model table typo.
+
+Both measured cameras are nonetheless 2015–2016 designs. Whether a modern ASI
+body is also affected is **untested** — the honest reading is that the scaling
+looks structural, not that every model is confirmed.
 
 Reproducer (needs the SDK + a camera; read-only, no exposure):
 

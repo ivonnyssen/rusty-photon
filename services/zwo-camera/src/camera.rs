@@ -1303,9 +1303,10 @@ mod tests {
 
     #[test]
     fn implied_full_well_accepts_real_sensor_signal() {
-        // ASI1600 (12-bit, 4.96 e⁻/ADU) ≈ 20 ke⁻ and ASI178 (14-bit, 2.58) ≈ 42 ke⁻
-        // are real cameras. The simulated one (16-bit, 0.25) must land in band too,
-        // or every BDD and ConformU connect would log the ST4 warning.
+        // The two measured cameras with their Linux scaling undone: ASI1600
+        // (12-bit, 4.96 e⁻/ADU) ≈ 20 ke⁻ and ASI178 (14-bit, 2.58) ≈ 42 ke⁻. The
+        // simulated one (16-bit, 0.25) must land in band too, or every BDD and
+        // ConformU connect would log the ST4 warning.
         assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(12, 4.96)));
         assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(14, 2.58)));
         assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(16, 0.25)));
