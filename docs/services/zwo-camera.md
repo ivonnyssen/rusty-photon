@@ -47,8 +47,11 @@
 > physical cameras — a cooled **ASI1600MM-Cool** (12-bit, `MaxADU` 4095,
 > `noserial` identity fallback) and an uncooled **ASI178MM** (14-bit, `MaxADU`
 > 16383, real `ASIGetSerialNumber` identity) — exercising both the cooled/uncooled
-> cooler-gating split and both UniqueID paths. See *Testing* and *Delivery
-> phasing*.
+> cooler-gating split and both UniqueID paths. Since 2026-07-27 the
+> ASI1600MM-Cool pass is also **recorded** in
+> [docs/validation/](../validation/README.md) on both Linux **and Windows 11**
+> — the Windows run being the first real-hardware exercise of the Windows
+> link path. See *Testing* and *Delivery phasing*.
 >
 > **CI provisioning (simulation by default; real link verified nightly).** The
 > `.github/actions/install-zwo-sdk` composite action provisions the SDK on
@@ -754,6 +757,31 @@ members within their response targets:
 > (`camera.rs` `ccd_temperature`), so this is the ASI SDK's `ASI_TEMPERATURE`
 > register not yet populated until its first internal measurement cycle (~1 s) —
 > an SDK warm-up artifact, not a driver caching defect or a conformance failure.
+
+**Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
+the [hardware validation record trail](../validation/README.md), so their
+ConformU output was not preserved. Recorded re-runs against the same physical
+ASI1600MM-Cool exist for both platforms, both fully clean:
+the [Linux record](../validation/2026-07-27-zwo-camera-asi1600mm-cool-linux/README.md)
+(ConformU 4.3.0) and the
+[Windows record](../validation/2026-07-27-zwo-camera-asi1600mm-cool-windows/README.md)
+(ConformU 4.4.0) — the **first Windows real-hardware validation** of this
+service, in a Windows 11 KVM guest with the camera on QEMU USB passthrough.
+The Windows facts: ZWO's native camera driver (v3.28, `asicamusb3.inf`) is
+**required** — the camera carries no MS OS descriptors, so WinUSB never
+auto-binds (same as the SVBONY SV605CC) — but unlike SVBony's it is a
+captcha-free direct CDN download; the SDK is the `ASI_Windows_SDK_V1.41` zip
+from the same rolling developer-CDN URL `install-zwo-sdk` uses
+(`ZWO_SDK_LIB_DIR` for the link, `ASICamera2.dll` beside the exe); and
+bindgen means the build host needs LLVM/libclang (`LIBCLANG_PATH`), which CI
+runners ship but a fresh Windows box does not. UniqueID minting is identical
+on both platforms. One cross-platform SDK discrepancy surfaced
+([#741](https://github.com/ivonnyssen/rusty-photon/issues/741)):
+`ASI_CAMERA_INFO.ElecPerADU` for the same camera reads **4.96** through the
+Windows v1.41 DLL but **0.00496** through the Linux v1.41 blob — an exact
+1000× split, with the Windows value the physically plausible one (the June
+narrative values above, read through the Linux blob, carry the same 1000×
+scaling); the driver reports the SDK value verbatim on both platforms (ST2).
 
 **Concurrent multi-camera validation (2026-06-21).** A single service instance
 enumerates every connected ASI camera on the one port, so concurrency *across*
