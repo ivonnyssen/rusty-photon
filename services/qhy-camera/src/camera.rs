@@ -42,6 +42,26 @@ use crate::config_actions::QhyCameraDriver;
 /// surfaced lazily via `image_array`.
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
+/// How long an abort/disconnect waits for the capture task to leave the SDK.
+/// Sized for a readout, not an exposure: the task's wait for the exposure to
+/// elapse is cancellable, so the only uninterruptible stretch is
+/// `GetQHYCCDSingleFrame` itself (a full-frame USB transfer, well under a second
+/// on the QHY178M). Reaching this deadline means the SDK is genuinely stuck, and
+/// the caller then declines to close the handle rather than close it unsafely.
+const CAPTURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Longest a single wait between `GetQHYCCDExposureRemaining` polls. Bounds how
+/// stale the camera-side confirmation can get without making a long exposure
+/// chatter over USB — a cancel does not wait for it, since `cancel_signal` wakes
+/// the sleep immediately.
+const EXPOSURE_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// How long the capture task keeps asking the camera whether the exposure is
+/// over before entering the readout anyway. A camera that never reports 0 must
+/// not strand the frame forever; entering the readout is what the driver did
+/// unconditionally before, so this is a bounded fallback, not a regression.
+const EXPOSURE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Per-device runtime state: caches populated at connect plus the exposure state
 /// machine. Atomics for the hot/simple flags; `parking_lot::Mutex` for the
 /// `Option<…>` caches and the captured image. Locks are never held across an
@@ -70,6 +90,12 @@ struct DeviceState {
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
+    /// Asks the capture task to stop *before* it enters the uninterruptible
+    /// readout. Checked only between the task's phases — never mid-readout.
+    cancel_requested: AtomicBool,
+    /// Wakes the capture task's exposure wait the instant a cancel is requested,
+    /// so abort latency tracks the readout rather than the exposure length.
+    cancel_signal: tokio::sync::Notify,
     expected_duration_us: AtomicU64,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
@@ -113,6 +139,8 @@ impl DeviceState {
             exposure_in_flight: AtomicBool::new(false),
             image_ready: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
+            cancel_requested: AtomicBool::new(false),
+            cancel_signal: tokio::sync::Notify::new(),
             expected_duration_us: AtomicU64::new(0),
             last_exposure_start_time: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
@@ -130,6 +158,7 @@ impl DeviceState {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
         self.exposure_in_flight.store(false, Ordering::Release);
+        self.cancel_requested.store(false, Ordering::Release);
         self.image_ready.store(false, Ordering::Release);
         self.expected_duration_us.store(0, Ordering::Release);
         *self.last_image.lock() = None;
@@ -150,6 +179,10 @@ pub struct QhyCameraDevice {
     state: Arc<DeviceState>,
     #[debug(skip)]
     config_ctx: Option<ConfigActionCtx<QhyCameraDriver>>,
+    /// How long an abort/disconnect waits for the capture task to leave the SDK
+    /// ([`CAPTURE_DRAIN_TIMEOUT`]). A field so tests can shorten it and exercise
+    /// the refuse-to-close branch without a 30 s wait.
+    drain_timeout: Duration,
 }
 
 impl QhyCameraDevice {
@@ -171,7 +204,16 @@ impl QhyCameraDevice {
             description,
             state: Arc::new(DeviceState::new()),
             config_ctx: None,
+            drain_timeout: CAPTURE_DRAIN_TIMEOUT,
         }
+    }
+
+    /// Shorten the SDK drain deadline so a test can reach the refuse-to-close
+    /// branch without waiting out [`CAPTURE_DRAIN_TIMEOUT`].
+    #[cfg(test)]
+    fn with_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.drain_timeout = timeout;
+        self
     }
 
     /// Attach config-action wiring (enables `config.get`/`apply`/`schema`).
@@ -286,18 +328,18 @@ impl QhyCameraDevice {
     }
 
     async fn disconnect(&self) -> ASCOMResult<()> {
-        // An in-flight exposure is cancelled (C3) before the handle closes.
-        self.cancel_exposure();
-        // CRITICAL: wait for the detached `run_exposure` capture task to finish its
-        // blocking SDK chain before closing the handle. `cancel_exposure` issues
-        // `abort_exposure_and_readout`, so `get_single_frame` returns promptly and
-        // the task clears `exposure_in_flight`. Closing while that task is still
-        // inside an FFI/libusb call would free the handle out from under a live USB
-        // transfer — a use-after-free that trips libusb's `usbi_mutex_lock`
-        // assertion and can corrupt the SDK's shared libusb context. Bounded by a
-        // deadline so a wedged SDK call cannot hang disconnect forever.
-        if !self.wait_until_drained(Duration::from_secs(3)).await {
-            warn!(camera = %self.unique_id, "in-flight exposure did not drain within 3s of disconnect; closing anyway");
+        // An in-flight exposure is cancelled (C3) before the handle closes, and
+        // `cancel_exposure` returns only once the capture task is out of the SDK.
+        if !self.cancel_exposure().await {
+            // CRITICAL: never close a handle a capture task may still be using.
+            // Closing frees it under a live USB transfer — a use-after-free that
+            // trips libusb's `usbi_mutex_lock` assertion and can corrupt the SDK's
+            // shared libusb context. A failed disconnect is the lesser evil; the
+            // device stays logically connected and a later disconnect can retry.
+            warn!(camera = %self.unique_id, "capture task still inside the SDK; refusing to close the handle");
+            return Err(ASCOMError::invalid_operation(
+                "an exposure is still inside the SDK; the handle cannot be closed safely",
+            ));
         }
         // Refcounted close (`backend::SharedCameraConnection`): when a CFW device
         // shares this camera's SDK id, the physical handle is closed only once
@@ -308,15 +350,27 @@ impl QhyCameraDevice {
         Ok(())
     }
 
-    /// Cancel any in-flight exposure: bump the generation (so the capture task
-    /// discards its result), clear `image_ready`/`last_error`, and abort at the
-    /// SDK. Deliberately does NOT clear `exposure_in_flight` — the capture task
-    /// clears that once its blocking SDK chain has fully drained, so a new
-    /// exposure cannot start and race the still-running SDK calls on the single
-    /// device (the design's "one logical owner per device").
-    fn cancel_exposure(&self) {
+    /// Cancel any in-flight exposure and leave the device quiescent. Returns
+    /// `false` if the capture task could not be got out of the SDK, in which case
+    /// no SDK cancel was issued and the handle must not be closed.
+    ///
+    /// **Ordering is the whole point.** `CancelQHYCCDExposingAndReadout` is
+    /// documented (`qhyccd.h`) as *"the camera does not send back the image data.
+    /// Host software must not readout the data"*, so it may only be issued once
+    /// nothing is inside `GetQHYCCDSingleFrame` — otherwise that call is left
+    /// waiting on image data the camera has been told never to send. So this
+    /// raises `cancel_requested`, wakes the capture task, waits for it to leave
+    /// the SDK, and only then touches the device. indi-qhy keeps the same
+    /// discipline: its `AbortExposure` blocks on the imaging thread leaving
+    /// `StateExposure` before calling the SDK cancel.
+    ///
+    /// Deliberately does NOT clear `exposure_in_flight` — the capture task clears
+    /// that once its blocking chain has drained, so a new exposure cannot start
+    /// and race the still-running SDK calls (the design's "one logical owner per
+    /// device").
+    async fn cancel_exposure(&self) -> bool {
         if !self.state.exposure_in_flight.load(Ordering::Acquire) {
-            return;
+            return true;
         }
         {
             // Atomic with the capture task's commit (run_exposure) so an abort can
@@ -328,12 +382,50 @@ impl QhyCameraDevice {
             self.state.image_ready.store(false, Ordering::Release);
             *self.state.last_error.lock() = None;
         }
-        // Outside the result lock (the capture task takes it to drain) and not on
-        // the async runtime thread's critical path — `abort_exposure_and_readout`
-        // is the designed-concurrent SDK cancel for an in-progress readout.
-        if let Err(e) = self.handle.abort_exposure_and_readout() {
-            debug!(error = %e, "abort_exposure_and_readout failed");
+        // Ask the capture task to stop short of its readout, and wake it now so a
+        // long exposure does not have to elapse first.
+        self.state.cancel_requested.store(true, Ordering::Release);
+        self.state.cancel_signal.notify_waiters();
+
+        if !self.wait_until_drained(self.drain_timeout).await {
+            warn!(
+                camera = %self.unique_id,
+                timeout = ?self.drain_timeout,
+                "capture task still inside the SDK; withholding the SDK cancel \
+                 rather than issuing it under a live readout"
+            );
+            return false;
         }
+
+        // Re-claim the in-flight slot before touching the device. The capture task
+        // released it as it drained, so without this a concurrent `start_exposure`
+        // could slip in and have its brand-new exposure killed by the cancel below
+        // (or, on the disconnect path, run against a handle about to close).
+        // Losing the CAS means a newer exposure already owns the device, and this
+        // cancel is no longer ours to issue.
+        if self
+            .state
+            .exposure_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return true;
+        }
+        // Safe now: nothing is inside the SDK for this device. On a cancel taken
+        // during the exposure this stops the integration; on one that arrived
+        // during the readout the frame has already been read out and this is the
+        // harmless pre-close reset the SDK's own SingleFrameSample performs.
+        let handle = Arc::clone(&self.handle);
+        match tokio::task::spawn_blocking(move || handle.abort_exposure_and_readout()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => debug!(error = %e, "abort_exposure_and_readout failed"),
+            Err(e) => warn!(error = %e, "abort task panicked"),
+        }
+        self.state
+            .exposure_in_flight
+            .store(false, Ordering::Release);
+        self.state.exposure_drained.notify_waiters();
+        true
     }
 
     fn valid_binning_modes(&self) -> Vec<u8> {
@@ -453,28 +545,118 @@ fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
     }
 }
 
-/// The detached capture task: runs the blocking single-frame SDK chain on
-/// `spawn_blocking`, then stores the image (or records the failure as the
-/// `Error` state) — unless a newer generation has superseded it.
-async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, generation: u64) {
-    let blocking_handle = Arc::clone(&handle);
-    let result = tokio::task::spawn_blocking(move || -> Result<ImageData, BackendError> {
-        blocking_handle.start_single_frame_exposure()?;
-        let size = blocking_handle.get_image_size()?;
-        blocking_handle.get_single_frame(size)
+/// What a capture attempt produced. `Cancelled` is a first-class outcome, not an
+/// error: an aborted frame leaves the device idle with nothing to report.
+enum Capture {
+    Frame(ImageData),
+    Cancelled,
+    Failed(String),
+}
+
+/// Sleep for `duration`, waking early if a cancel is requested. Returns `false`
+/// if the capture should stop. Uses the canonical tokio `Notify` pattern (pin,
+/// `enable()`, then re-check) so a cancel landing between the check and the
+/// await is never lost.
+async fn sleep_unless_cancelled(state: &DeviceState, duration: Duration) -> bool {
+    let notified = state.cancel_signal.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    if state.cancel_requested.load(Ordering::Acquire) {
+        return false;
+    }
+    tokio::select! {
+        () = tokio::time::sleep(duration) => !state.cancel_requested.load(Ordering::Acquire),
+        () = notified => false,
+    }
+}
+
+/// Wait for the exposure to finish integrating, returning `false` if a cancel
+/// arrived first. This is the *only* window in which an abort takes effect, and
+/// it spans everything except the readout.
+///
+/// Timing is host-side first (so a long exposure costs no USB traffic at all),
+/// after which the camera's own `GetQHYCCDExposureRemaining` has to agree before
+/// we commit to the uninterruptible readout — if our clock ran ahead,
+/// `get_single_frame` would block inside the readout for the remainder,
+/// re-opening the very window this split exists to close.
+async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) -> bool {
+    let expected = Duration::from_micros(state.expected_duration_us.load(Ordering::Acquire));
+    if !sleep_unless_cancelled(state, expected).await {
+        return false;
+    }
+    let deadline = tokio::time::Instant::now() + EXPOSURE_CONFIRM_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        let polled = Arc::clone(handle);
+        let remaining =
+            match tokio::task::spawn_blocking(move || polled.get_remaining_exposure_us()).await {
+                Ok(Ok(us)) => us,
+                // A failed or panicking poll is not worth abandoning the frame
+                // over: fall through to the readout, which blocks until the frame
+                // really is ready.
+                _ => break,
+            };
+        if remaining == 0 {
+            break;
+        }
+        let nap = Duration::from_micros(u64::from(remaining)).min(EXPOSURE_POLL_INTERVAL);
+        if !sleep_unless_cancelled(state, nap).await {
+            return false;
+        }
+    }
+    // Re-check: a cancel may have landed while the last poll was in flight.
+    !state.cancel_requested.load(Ordering::Acquire)
+}
+
+/// Run one capture in three phases — start, a *cancellable* wait, then an
+/// *uninterruptible* readout.
+///
+/// The split exists because `CancelQHYCCDExposingAndReadout` tells the camera not
+/// to send the frame, and `qhyccd.h` requires that the host then not read it out.
+/// So the readout is entered only once we know no cancel is outstanding, and once
+/// entered it runs to completion; `cancel_exposure` waits for that before it
+/// touches the device. Each blocking SDK call gets its own `spawn_blocking`, so
+/// no runtime worker is parked across the exposure.
+async fn capture_once(handle: &Arc<dyn CameraHandle>, state: &DeviceState) -> Capture {
+    let starter = Arc::clone(handle);
+    match tokio::task::spawn_blocking(move || starter.start_single_frame_exposure()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Capture::Failed(e.0),
+        Err(e) => return Capture::Failed(format!("exposure task failed: {e}")),
+    }
+
+    if !wait_for_exposure(handle, state).await {
+        return Capture::Cancelled;
+    }
+
+    let reader = Arc::clone(handle);
+    match tokio::task::spawn_blocking(move || -> Result<ImageData, BackendError> {
+        let size = reader.get_image_size()?;
+        reader.get_single_frame(size)
     })
-    .await;
+    .await
+    {
+        Ok(Ok(image)) => Capture::Frame(image),
+        Ok(Err(e)) => Capture::Failed(e.0),
+        Err(e) => Capture::Failed(format!("exposure task failed: {e}")),
+    }
+}
+
+/// The detached capture task: runs one capture, then stores the image (or
+/// records the failure as the `Error` state) — unless a newer generation has
+/// superseded it.
+async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, generation: u64) {
+    let result = capture_once(&handle, &state).await;
 
     // Commit the outcome under the result lock so this "check generation +
     // record" is atomic against cancel_exposure's "bump generation + clear
     // image_ready" — an abort can never be overwritten by a just-completing
-    // capture. (No await is held across the lock: the blocking await is above.)
+    // capture. (No await is held across the lock: the capture is awaited above.)
     {
         let _guard = state.result_lock.lock();
         // Discard silently if a newer start / abort / disconnect superseded us.
         if state.exposure_generation.load(Ordering::Acquire) == generation {
             match result {
-                Ok(Ok(image)) => match to_image_array(&image) {
+                Capture::Frame(image) => match to_image_array(&image) {
                     Ok(array) => {
                         *state.last_image.lock() = Some(array);
                         *state.last_error.lock() = None;
@@ -486,13 +668,12 @@ async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, ge
                         *state.last_error.lock() = Some(format!("image transform failed: {e}"));
                     }
                 },
-                Ok(Err(e)) => {
-                    warn!(error = %e.0, "mid-exposure SDK error");
-                    *state.last_error.lock() = Some(e.0);
-                }
-                Err(join_err) => {
-                    warn!(error = %join_err, "exposure task panicked");
-                    *state.last_error.lock() = Some(format!("exposure task failed: {join_err}"));
+                // A cancel that beat the generation bump: nothing to record, and
+                // `cancel_exposure` has already cleared `image_ready`.
+                Capture::Cancelled => {}
+                Capture::Failed(e) => {
+                    warn!(error = %e, "mid-exposure SDK error");
+                    *state.last_error.lock() = Some(e);
                 }
             }
         }
@@ -501,8 +682,8 @@ async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, ge
     // so this task owns clearing the flag once its SDK chain has fully drained —
     // even when superseded. Until it does, a new start_exposure is rejected.
     state.exposure_in_flight.store(false, Ordering::Release);
-    // Wake any deadline-bounded waiter (disconnect drain, tests) now that the
-    // blocking SDK chain has fully returned and the handle is safe to close.
+    // Wake any deadline-bounded waiter (abort/disconnect drain, tests) now that
+    // the SDK calls have fully returned and the handle is safe to close.
     state.exposure_drained.notify_waiters();
 }
 
@@ -1285,6 +1466,9 @@ impl Camera for QhyCameraDevice {
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel)
             + 1;
+        // Clear any cancel left over from the previous frame; the in-flight CAS
+        // above means the previous capture task has already drained.
+        self.state.cancel_requested.store(false, Ordering::Release);
 
         if let Err(e) = self.handle.set_roi(roi) {
             self.state
@@ -1317,7 +1501,14 @@ impl Camera for QhyCameraDevice {
 
     async fn abort_exposure(&self) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        self.cancel_exposure();
+        // Returns only once the capture task is out of the SDK and the device has
+        // been told to stop, so a client that aborts and immediately re-exposes
+        // cannot collide with the previous frame's SDK calls.
+        if !self.cancel_exposure().await {
+            return Err(ASCOMError::invalid_operation(
+                "the exposure could not be aborted; the SDK did not return",
+            ));
+        }
         Ok(())
     }
 
@@ -1347,6 +1538,17 @@ mod tests {
         let device = QhyCameraDevice::new(Arc::new(handle), None);
         device.connect().unwrap();
         device
+    }
+
+    /// Like [`connected_device`] but keeps a handle to the mock, so a test can
+    /// inspect which SDK calls the driver made and when.
+    fn connected_device_with_handle(
+        handle: MockCameraHandle,
+    ) -> (QhyCameraDevice, Arc<MockCameraHandle>) {
+        let handle = Arc::new(handle);
+        let device = QhyCameraDevice::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        device.connect().unwrap();
+        (device, handle)
     }
 
     // --- pure helpers -----------------------------------------------------------
@@ -1946,14 +2148,12 @@ mod tests {
 
     #[tokio::test]
     async fn second_exposure_while_in_flight_is_rejected() {
-        let handle = MockCameraHandle::default();
-        handle.set_single_frame_delay(Duration::from_secs(5));
-        let device = connected_device(handle);
+        let device = connected_device(MockCameraHandle::default());
         device
             .start_exposure(Duration::from_secs(5), true)
             .await
             .unwrap();
-        // Give the background task a moment to enter the blocking capture.
+        // Give the background task a moment to enter its exposure wait.
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
         let err = device
@@ -1976,11 +2176,10 @@ mod tests {
 
     #[tokio::test]
     async fn image_array_errors_after_abort_instead_of_returning_stale_frame() {
-        let handle = MockCameraHandle::default();
-        handle.set_single_frame_delay(Duration::from_secs(5));
-        let device = connected_device(handle);
+        let device = connected_device(MockCameraHandle::default());
+        // Long enough that the abort lands during the cancellable wait.
         device
-            .start_exposure(Duration::from_millis(10), true)
+            .start_exposure(Duration::from_secs(5), true)
             .await
             .unwrap();
         device.abort_exposure().await.unwrap();
@@ -1990,6 +2189,119 @@ mod tests {
         assert_eq!(
             device.image_array().await.unwrap_err().code,
             ASCOMErrorCode::INVALID_OPERATION
+        );
+    }
+
+    /// `qhyccd.h`: `CancelQHYCCDExposingAndReadout` means "the camera does not
+    /// send back the image data. Host software must not readout the data." An
+    /// abort taken while the camera is still integrating must therefore skip the
+    /// readout entirely.
+    #[tokio::test]
+    async fn abort_during_the_exposure_skips_the_readout() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        device
+            .start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        device.abort_exposure().await.unwrap();
+
+        assert_eq!(
+            handle.single_frame_calls.load(Ordering::SeqCst),
+            0,
+            "the readout must not run for an exposure aborted mid-integration"
+        );
+        assert!(
+            handle.aborted.load(Ordering::SeqCst),
+            "the SDK cancel must still reach the camera"
+        );
+        assert!(!device.image_ready().await.unwrap());
+    }
+
+    /// The mirror case: an abort arriving *during* the readout must wait for that
+    /// readout to finish before the SDK cancel is issued, never land on top of it.
+    /// This is the discipline indi-qhy keeps by blocking until its imaging thread
+    /// leaves `StateExposure`.
+    #[tokio::test]
+    async fn abort_during_the_readout_waits_for_it_to_finish() {
+        let handle = MockCameraHandle::default();
+        handle.set_single_frame_delay(Duration::from_millis(400));
+        let (device, handle) = connected_device_with_handle(handle);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        // Let the (short) exposure elapse so the task is inside the readout.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let started = std::time::Instant::now();
+        device.abort_exposure().await.unwrap();
+        let waited = started.elapsed();
+
+        assert!(
+            !handle.aborted_during_readout.load(Ordering::SeqCst),
+            "the SDK cancel was issued while a readout was in flight"
+        );
+        assert!(
+            waited >= Duration::from_millis(150),
+            "abort returned in {waited:?}, so it cannot have waited out the readout"
+        );
+        assert!(handle.aborted.load(Ordering::SeqCst));
+    }
+
+    /// If the capture task cannot be got out of the SDK, closing the handle would
+    /// free it under a live USB transfer. Refusing to close is the safe outcome:
+    /// no SDK cancel, no close, and an honest error to the client.
+    #[tokio::test]
+    async fn disconnect_refuses_to_close_while_a_readout_is_stuck() {
+        let handle = MockCameraHandle::default();
+        handle.set_single_frame_delay(Duration::from_millis(600));
+        let handle = Arc::new(handle);
+        let device = QhyCameraDevice::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None)
+            .with_drain_timeout(Duration::from_millis(50));
+        device.connect().unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let err = device.disconnect().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            !handle.aborted.load(Ordering::SeqCst),
+            "no SDK cancel may be issued while the readout is still running"
+        );
+        assert!(
+            handle.is_open().unwrap(),
+            "the handle must stay open rather than close under a live transfer"
+        );
+
+        // Let the readout finish so the task does not outlive the test.
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+    }
+
+    /// A camera that keeps reporting time remaining holds the driver in the
+    /// cancellable wait — the abort still lands promptly and skips the readout.
+    #[tokio::test]
+    async fn a_camera_still_reporting_time_remaining_stays_cancellable() {
+        let handle = MockCameraHandle::default();
+        handle.set_remaining_exposure_us(500_000);
+        let (device, handle) = connected_device_with_handle(handle);
+        // Host-side timing is satisfied almost at once; the camera's own counter
+        // is what keeps the task waiting.
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+
+        device.abort_exposure().await.unwrap();
+        assert_eq!(
+            handle.single_frame_calls.load(Ordering::SeqCst),
+            0,
+            "the readout must not run while the camera says it is still exposing"
         );
     }
 }

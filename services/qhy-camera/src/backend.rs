@@ -507,9 +507,25 @@ pub(crate) mod mock {
         /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
         /// exercise the setters' SDK-failure → `INVALID_OPERATION` mapping.
         pub fail_set_controls: AtomicBool,
-        /// Optional artificial blocking of `get_single_frame` (for in-flight tests).
+        /// Optional artificial blocking of `get_single_frame`, i.e. how long the
+        /// *readout* takes. The exposure itself is timed by the driver, not here.
         single_frame_delay: Mutex<Duration>,
-        aborted: AtomicBool,
+        /// Latches once `abort_exposure_and_readout` has been issued, so a test
+        /// can assert the SDK cancel *did* reach the device (just not too early).
+        pub aborted: AtomicBool,
+        /// Set while `get_single_frame` is executing, so a test can catch an SDK
+        /// cancel issued under a live readout — the exact contract violation
+        /// (`qhyccd.h`: "Host software must not readout the data") this backend
+        /// exists to police.
+        in_readout: AtomicBool,
+        /// Latches if `abort_exposure_and_readout` ever lands while `in_readout`.
+        pub aborted_during_readout: AtomicBool,
+        /// Counts `get_single_frame` calls, so a test can assert that an abort
+        /// during the exposure skips the readout entirely.
+        pub single_frame_calls: AtomicU32,
+        /// Microseconds the camera claims are left. Non-zero keeps the driver in
+        /// its cancellable wait, mimicking a camera still integrating.
+        remaining_exposure_us: AtomicU32,
     }
 
     impl Default for MockCameraHandle {
@@ -574,6 +590,10 @@ pub(crate) mod mock {
                 fail_set_controls: AtomicBool::new(false),
                 single_frame_delay: Mutex::new(Duration::ZERO),
                 aborted: AtomicBool::new(false),
+                in_readout: AtomicBool::new(false),
+                aborted_during_readout: AtomicBool::new(false),
+                single_frame_calls: AtomicU32::new(0),
+                remaining_exposure_us: AtomicU32::new(0),
             }
         }
     }
@@ -605,8 +625,14 @@ pub(crate) mod mock {
         pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
+        /// How long the *readout* (`get_single_frame`) blocks for.
         pub fn set_single_frame_delay(&self, delay: Duration) {
             *self.single_frame_delay.lock() = delay;
+        }
+        /// Report `us` microseconds still to integrate, holding the driver in the
+        /// cancellable wait until [`finish_exposure`](Self::finish_exposure).
+        pub fn set_remaining_exposure_us(&self, us: u32) {
+            self.remaining_exposure_us.store(us, Ordering::SeqCst);
         }
     }
 
@@ -732,21 +758,15 @@ pub(crate) mod mock {
             Ok((roi.width * roi.height * 2) as usize)
         }
         fn get_single_frame(&self, _buffer_size: usize) -> BackendResult<ImageData> {
-            // Sleep in small chunks so a concurrent abort returns promptly (mirrors
-            // the SDK's cancellable readout), rather than blocking the full delay.
-            let delay = *self.single_frame_delay.lock();
-            let mut slept = Duration::ZERO;
-            while slept < delay {
-                if self.aborted.load(Ordering::SeqCst) {
-                    return Err(BackendError("exposure aborted".to_string()));
-                }
-                let step = Duration::from_millis(10).min(delay - slept);
-                std::thread::sleep(step);
-                slept += step;
-            }
-            if self.aborted.load(Ordering::SeqCst) {
-                return Err(BackendError("exposure aborted".to_string()));
-            }
+            // The real `GetQHYCCDSingleFrame` is NOT cancellable: once the readout
+            // starts it runs to completion, which is why the driver must never
+            // issue an SDK cancel while this is in flight. Block for the full
+            // delay — no abort checks — so tests feel the same uninterruptible
+            // window the hardware has.
+            self.single_frame_calls.fetch_add(1, Ordering::SeqCst);
+            self.in_readout.store(true, Ordering::SeqCst);
+            std::thread::sleep(*self.single_frame_delay.lock());
+            self.in_readout.store(false, Ordering::SeqCst);
             if self.fail_single_frame.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated capture failure".to_string()));
             }
@@ -760,9 +780,12 @@ pub(crate) mod mock {
             })
         }
         fn get_remaining_exposure_us(&self) -> BackendResult<u32> {
-            Ok(0)
+            Ok(self.remaining_exposure_us.load(Ordering::SeqCst))
         }
         fn abort_exposure_and_readout(&self) -> BackendResult<()> {
+            if self.in_readout.load(Ordering::SeqCst) {
+                self.aborted_during_readout.store(true, Ordering::SeqCst);
+            }
             self.aborted.store(true, Ordering::SeqCst);
             Ok(())
         }

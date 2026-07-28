@@ -380,7 +380,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C2.** `set_connected(true)` with the device's camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
-  for subsequent operations; an in-flight exposure on it is aborted.
+  for subsequent operations; an in-flight exposure on it is aborted first. If the
+  capture cannot be got out of the SDK, the handle is left open and the call
+  errors rather than close under a live USB transfer.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
@@ -427,7 +429,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **E6.** `CameraState` is `Exposing` during capture; `PercentCompleted` is
   derived from remaining-exposure µs (clamped to ≤ 100), `100` once ready.
 - **E7.** `AbortExposure` during capture cancels via the SDK abort path and leaves
-  `ImageReady = false`; `CanAbortExposure = true`.
+  `ImageReady = false`; `CanAbortExposure = true`. It returns only once the
+  capture is out of the SDK and the camera has been told to stop, so a client may
+  start a fresh exposure immediately; it errors rather than return early if the
+  SDK never comes back.
 - **E8.** `StopExposure` returns `NOT_IMPLEMENTED`; `CanStopExposure = false`.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
@@ -843,27 +848,56 @@ the "how" decisions made while building.
   in-process `with_reload` rebind survives a prior listener's lingering
   `TIME_WAIT`. TLS termination / Basic Auth (the rest of `rusty-photon-tls` / `rp-auth`)
   are still Future Work.
+- **A cancel may never race a readout.** `qhyccd.h` documents
+  `CancelQHYCCDExposingAndReadout` as *"the camera does not send back the image
+  data. Host software must not readout the data"*, so the SDK cancel and
+  `GetQHYCCDSingleFrame` must never overlap. The capture task is therefore split
+  into three phases — start, a **cancellable wait** for the exposure to elapse,
+  and an **uninterruptible readout** — and an abort is honoured only between
+  them. `cancel_exposure` raises `cancel_requested`, wakes the task through
+  `cancel_signal`, waits for it to leave the SDK, and *only then* issues the SDK
+  cancel. An abort taken during the exposure skips the readout entirely; one
+  taken during the readout waits for it to finish, after which the cancel is the
+  same harmless pre-close reset the SDK's own `SingleFrameSample` performs.
+  indi-qhy keeps exactly this discipline (its `AbortExposure` blocks on the
+  imaging thread leaving `StateExposure` before calling the SDK cancel), and the
+  SDK's samples never cancel concurrently with a readout either. Getting this
+  wrong is not merely untidy: it leaves `GetQHYCCDSingleFrame` waiting on image
+  data the camera has been told never to send.
+- **Waiting for the exposure without holding the SDK.** The wait is host-side
+  first (a 30-minute exposure costs no USB traffic), then
+  `GetQHYCCDExposureRemaining` must agree the exposure is over before the readout
+  is entered — if the host clock ran ahead, `get_single_frame` would block inside
+  the readout for the remainder, re-opening the window the split exists to close.
+  Polling is capped at `EXPOSURE_POLL_INTERVAL` and the confirmation phase at
+  `EXPOSURE_CONFIRM_TIMEOUT`, after which the readout is entered anyway so a
+  camera that never reports 0 cannot strand the frame. A cancel never waits for
+  a poll: `cancel_signal` wakes the sleep immediately.
 - **SDK call serialization.** The single in-flight capture is the one logical
   owner of the device's blocking SDK calls: `start_exposure` claims an
   `exposure_in_flight` slot via CAS, and `cancel_exposure` (abort/disconnect)
-  bumps a generation + signals the SDK cancel but does **not** clear the slot —
-  the capture task clears it only after its blocking chain has fully drained, so
-  a new exposure cannot start and race the still-running SDK calls. A short
-  `result_lock` makes the task's "check generation + commit result" atomic
-  against an abort, so a just-completing capture can never resurrect an aborted
-  frame. **`disconnect` additionally waits (bounded, ~3 s) for `exposure_in_flight`
-  to clear after aborting, before closing the handle** — the capture task is
-  detached (`tokio::spawn`), so closing the handle while it is still inside a
-  blocking FFI/libusb call would free the handle under a live USB transfer (a
-  use-after-free that trips libusb's `usbi_mutex_lock` assertion and can corrupt
-  the SDK's shared libusb context). `abort_exposure_and_readout` makes the drain
-  near-instant in practice. The drain is **event-driven on a deadline, not a
+  bumps a generation but does **not** clear the slot — the capture task clears it
+  only after its SDK calls have fully drained, so a new exposure cannot start and
+  race them. A short `result_lock` makes the task's "check generation + commit
+  result" atomic against an abort, so a just-completing capture can never
+  resurrect an aborted frame. The drain is **event-driven on a deadline, not a
   polling sleep**: the capture task fires a `tokio::sync::Notify`
-  (`exposure_drained`) the instant it clears the flag, and `disconnect` awaits it
+  (`exposure_drained`) the instant it clears the flag, and the waiter awaits it
   under a single `tokio::time::timeout` (canonical `Notified` `enable()`-before-
   check pattern, so a drain landing between the check and the await is never
   lost). Earlier this was a `loop { sleep(5 ms) }` busy-wait, replaced because
   repeated short sleeps can stall under scheduler pressure.
+- **A stuck SDK call blocks the close rather than being closed through.**
+  `disconnect` closes the handle only once the capture task is out of the SDK.
+  Closing it under a live USB transfer frees the handle beneath libusb — a
+  use-after-free that trips its `usbi_mutex_lock` assertion and can corrupt the
+  SDK's shared libusb context. If the drain deadline (`CAPTURE_DRAIN_TIMEOUT`,
+  30 s — sized for a readout, since the exposure wait is cancellable) expires,
+  `disconnect` issues **no** SDK cancel, leaves the handle **open**, and returns
+  an error. A failed disconnect is the lesser evil, and it reports the stuck
+  device honestly instead of hiding it behind a close that may corrupt state.
+  indi-qhy takes the same position more bluntly, with an unconditional
+  `pthread_join` before its `CloseQHYCCD`.
 - **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
   (a QHY CFW is driven over the camera's USB, not a separate device). The SDK
