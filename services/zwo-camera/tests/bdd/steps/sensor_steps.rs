@@ -2,7 +2,7 @@
 
 use ascom_alpaca::api::camera::SensorType;
 use cucumber::gherkin::Step;
-use cucumber::then;
+use cucumber::{then, when};
 
 use crate::world::CameraWorld;
 
@@ -59,6 +59,20 @@ async fn reports_max_adu(world: &mut CameraWorld, _device: u32, expected: u32) {
 #[then(regex = r"^camera device (\d+) reports a positive ElectronsPerADU$")]
 async fn positive_electrons_per_adu(world: &mut CameraWorld, _device: u32) {
     assert!(world.camera().electrons_per_adu().await.unwrap() > 0.0);
+}
+
+#[when(regex = r"^I set Gain to (\d+) on camera device (\d+)$")]
+async fn set_gain(world: &mut CameraWorld, gain: i32, _device: u32) {
+    world.camera().set_gain(gain).await.unwrap();
+}
+
+#[then(regex = r"^camera device (\d+) reports ElectronsPerADU as ([0-9.]+)$")]
+async fn electrons_per_adu_is(world: &mut CameraWorld, _device: u32, expected: f64) {
+    let actual = world.camera().electrons_per_adu().await.unwrap();
+    assert!(
+        (actual - expected).abs() < 1e-9,
+        "expected {expected}, got {actual}"
+    );
 }
 
 #[then(regex = r"^camera device (\d+) reports a non-empty SensorName$")]

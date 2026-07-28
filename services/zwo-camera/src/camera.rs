@@ -11,13 +11,13 @@
 //! - **Native asynchronous `PulseGuide`** via ST4 (`CanPulseGuide = true` when
 //!   the model has an ST4 port): the call starts the pulse and returns
 //!   immediately, with `IsPulseGuiding` true until the pulse's deadline (PG1/PG2).
-//! - **`ElectronsPerADU`** is a real native value (`ASI_CAMERA_INFO.ElecPerADU`).
+//! - **`ElectronsPerADU`** is a real native value (`ASI_CAMERA_INFO.ElecPerADU`),
+//!   read live because the SDK scales it by the gain register (ST2).
 //! - **`MaxADU` = 2^BitDepth − 1** (65535 for a 16-bit sensor).
 //!
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
-use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -41,12 +41,6 @@ const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
 /// ASI exposure control is in microseconds, so the smallest step is 1 µs.
 const EXPOSURE_RESOLUTION: Duration = Duration::from_micros(1);
-
-/// Plausible band for a sensor's full-well capacity, in electrons — the bounds
-/// of the `ElectronsPerADU` cross-check (ST4). Astronomical sensors sit at
-/// 10–100 ke⁻, and read noise alone is 1–3 e⁻, so no real well is below 1 ke⁻
-/// or above 10 Me⁻.
-const PLAUSIBLE_FULL_WELL_E: RangeInclusive<f64> = 1_000.0..=10_000_000.0;
 
 /// The driver's named readout-mode list. ASI exposes a single 16-bit RAW snap
 /// path in v0, so the mode is a cached label (RM1: switching validates the index
@@ -209,32 +203,8 @@ impl ZwoCamera {
         // A reconnect must not surface a previous session's Error / ImageReady /
         // stale frame (C3).
         self.state.reset_exposure_state();
-        self.warn_on_implausible_electrons_per_adu();
         debug!(camera = %self.unique_id, "camera connected");
         Ok(())
-    }
-
-    /// Cross-check the SDK's `ElecPerADU` against the ADC's `MaxADU` and warn
-    /// when the pair implies an impossible full well (ST4).
-    ///
-    /// The value itself is still reported verbatim (ST2). A driver-side rescale
-    /// is not implementable safely: an SDK that reports the field correctly and
-    /// one that scales it are indistinguishable from in here, so a "correction"
-    /// would start lying the moment the SDK stopped.
-    fn warn_on_implausible_electrons_per_adu(&self) {
-        let implied = implied_full_well_e(self.info.bit_depth, self.info.e_per_adu);
-        if PLAUSIBLE_FULL_WELL_E.contains(&implied) {
-            return;
-        }
-        warn!(
-            camera = %self.unique_id,
-            electrons_per_adu = f64::from(self.info.e_per_adu),
-            max_adu = max_adu_from_bit_depth(self.info.bit_depth),
-            implied_full_well_e = implied,
-            "SDK reports an ElectronsPerADU that implies an impossible full-well \
-             capacity; it is passed through as-is, so a client using it for SNR or \
-             exposure math will be wrong by the same factor"
-        );
     }
 
     /// Read and cache the camera's control ranges after `open()`. The exposure
@@ -435,13 +405,6 @@ fn max_adu_from_bit_depth(bit_depth: u32) -> u32 {
     1u32.checked_shl(bit_depth).map_or(u32::MAX, |v| v - 1)
 }
 
-/// Implied full-well capacity in electrons, via the ASCOM relation
-/// `FullWellCapacity = MaxADU × ElectronsPerADU`. Used to sanity-check the SDK's
-/// `ElecPerADU` against the ADC it belongs to (ST4).
-fn implied_full_well_e(bit_depth: u32, e_per_adu: f32) -> f64 {
-    f64::from(max_adu_from_bit_depth(bit_depth)) * f64::from(e_per_adu)
-}
-
 /// Bayer pattern → ASCOM `BayerOffsetX/Y`.
 fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
     match pattern {
@@ -627,8 +590,16 @@ impl Camera for ZwoCamera {
 
     async fn electrons_per_adu(&self) -> ASCOMResult<f64> {
         // A ZWO win: a real native value, not the NOT_IMPLEMENTED placeholder.
+        // Read live, never from the cached `CameraInfo`: the SDK scales this
+        // field by the gain register, so a snapshot would freeze the value at
+        // whatever gain the camera held at enumeration (ST2).
         self.ensure_connected()?;
-        Ok(f64::from(self.info.e_per_adu))
+        self.on_handle(|h| {
+            h.electrons_per_adu()
+                .map(f64::from)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     async fn sensor_name(&self) -> ASCOMResult<String> {
@@ -1301,38 +1272,30 @@ mod tests {
         assert_eq!(max_adu_from_bit_depth(0), 0);
     }
 
-    #[test]
-    fn implied_full_well_accepts_real_sensor_signal() {
-        // The two measured cameras with their Linux scaling undone: ASI1600
-        // (12-bit, 4.96 e⁻/ADU) ≈ 20 ke⁻ and ASI178 (14-bit, 2.58) ≈ 42 ke⁻. The
-        // simulated one (16-bit, 0.25) must land in band too, or every BDD and
-        // ConformU connect would log the ST4 warning.
-        assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(12, 4.96)));
-        assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(14, 2.58)));
-        assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(16, 0.25)));
-    }
+    #[tokio::test]
+    async fn electrons_per_adu_tracks_the_current_gain() {
+        // The SDK divides the model's gain-0 figure by 10^(gain/200) — ASI gain
+        // is in 0.1 dB units — so the property must follow a client's gain
+        // writes, not report the value cached at enumeration. Measured on an
+        // ASI1600: 4.96 e⁻/ADU at gain 0, 0.00496 at gain 600.
+        let device = connected_device(MockCameraHandle::default().with_signal(4.96, 12));
 
-    #[test]
-    fn implied_full_well_rejects_a_1000x_scaled_electrons_per_adu() {
-        // What the ASI SDK's Linux v1.41 blob reports for those same two cameras:
-        // full wells of 20 e⁻ and 42 e⁻, which no sensor has.
-        assert!(!PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(12, 0.004_96)));
-        assert!(!PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(14, 0.002_58)));
-        // A non-finite value is implausible too (the comparison must not pass it).
-        assert!(!PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(16, f32::NAN)));
+        device.set_gain(0).await.unwrap();
+        let at_zero = device.electrons_per_adu().await.unwrap();
+        assert!((at_zero - 4.96).abs() < 1e-6, "{at_zero}");
+
+        // 200 gain units = 20 dB = exactly a factor of 10.
+        device.set_gain(200).await.unwrap();
+        let at_20db = device.electrons_per_adu().await.unwrap();
+        assert!((at_20db - 0.496).abs() < 1e-6, "{at_20db}");
+        assert!((at_zero / at_20db - 10.0).abs() < 1e-3);
     }
 
     #[tokio::test]
-    async fn an_implausible_electrons_per_adu_is_still_reported_verbatim() {
-        // ST2 wins over ST4: the cross-check only logs. Connecting a camera whose
-        // SDK reports the 1000×-scaled value must still succeed and hand the
-        // client exactly what the SDK gave, unrescaled.
-        let device = connected_device(MockCameraHandle::default().with_signal(0.004_96, 12));
-        assert_eq!(
-            device.electrons_per_adu().await.unwrap(),
-            f64::from(0.004_96_f32)
-        );
-        assert_eq!(device.max_adu().await.unwrap(), 4_095);
+    async fn electrons_per_adu_requires_a_connection() {
+        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let err = device.electrons_per_adu().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     #[test]

@@ -587,23 +587,15 @@ EAF; those belong to the other zwo services.)
 - **ST1.** `SensorType` is `RGGB` (colour) when `IsColorCam`, else `Monochrome`;
   `BayerOffsetX/Y` follow `ASI_CAMERA_INFO.BayerPattern`.
 - **ST2.** `ElectronsPerADU` returns the native `ASI_CAMERA_INFO.ElecPerADU`
-  (a finite positive value), **not** `NOT_IMPLEMENTED`. The value is passed
-  through **verbatim**, including when ST4 finds it implausible — the driver
-  never rescales what the SDK reports (see *Known upstream SDK defect* below).
+  (a finite positive value), **not** `NOT_IMPLEMENTED` — read **live on every
+  call**, never from the `CameraInfo` cached at enumeration. The SDK scales this
+  field by the gain register: what it reports is the model's gain-0 figure
+  divided by `10^(gain/200)`, ASI gain being in 0.1 dB units (see *`ElecPerADU`
+  is gain-scaled* below). A cached value would freeze the property at whatever
+  gain the camera happened to hold when the service enumerated it and would not
+  move when a client changes `Gain` — which is precisely what a client reading
+  `ElectronsPerADU` for SNR or exposure math needs it to do.
 - **ST3.** `MaxADU` = `(2^BitDepth) - 1` from `ASI_CAMERA_INFO.BitDepth`.
-- **ST4.** At connect the driver **cross-checks** `ElecPerADU` against `MaxADU`
-  and logs a `warn!` when the pair is physically impossible, so a bad SDK value
-  is visible in the log instead of silently corrupting a client's SNR math. The
-  check is the ASCOM full-well relation — `MaxADU × ElectronsPerADU` is the
-  implied full-well capacity in electrons — and it fires when that product falls
-  outside **1 ke⁻ … 10 Me⁻**. Real astronomical sensors sit at 10–100 ke⁻; read
-  noise alone is 1–3 e⁻, so a sub-1 ke⁻ well is not a sensor anyone builds. The
-  band therefore clears every real camera by ~an order of magnitude at both ends
-  while catching a value that is off by 1000× (the observed defect: implied wells
-  of 20 e⁻ and 42 e⁻ on the two cameras measured). The reported ASCOM value is **unchanged** — this contract adds
-  a log line, not a correction. *(Unit-tested: the `simulation` backend reports
-  a plausible 0.25 e⁻/ADU at 16-bit — an implied 16.4 ke⁻ — so it cannot force
-  the warning branch.)*
 
 ### Pulse guiding
 
@@ -641,7 +633,7 @@ scenarios.
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
 | `MaxADU` | `(2^BitDepth) - 1` (65535 for 16-bit, 4095 for 12-bit) |
-| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, verbatim; an implausible value is `warn!`-logged, never rescaled (ST2/ST4) |
+| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
 | `Gain` / `GainMin` / `GainMax` | `ASI_GAIN` control; `NOT_IMPLEMENTED` if absent |
@@ -715,7 +707,7 @@ and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
   state machine (Idle/Exposing/Error, `ImageReady`, percent-completed), gain/
   offset range checks, cooling gating, Bayer-offset mapping, `MaxADU`-from-
-  `BitDepth`, the `ElecPerADU` plausibility cross-check (ST4), and the paths the
+  `BitDepth`, the gain scaling of `ElectronsPerADU` (ST2), and the paths the
   `zwo-rs` simulation can't force (mid-exposure SDK error E9; a model without an
   ST4 port PG2; an uncooled model K1) — against the in-crate `backend.rs` mock
   seam over the SDK.
@@ -750,17 +742,16 @@ cameras were validated, each *"no errors, warnings or issues found"* with all
 members within their response targets:
 
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
-  0.00496 *(the Linux SDK's 1000×-small value — see* Known upstream SDK defect
-  *below; the camera's true figure is 4.96 e⁻/ADU)*, sensor 4656×3520 reported
-  as **4608×3504** (R4 align — largest multiples of `lcm(8·bin)`=96 /
-  `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
+  0.00496 *(the camera was at gain 600; `ElecPerADU` is gain-scaled — see*
+  `ElecPerADU` is gain-scaled *below — so this is 4.96 e⁻/ADU at gain 0)*,
+  sensor 4656×3520 reported as **4608×3504** (R4 align — largest multiples of
+  `lcm(8·bin)`=96 / `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
   offset 0–100, ST4 `CanPulseGuide`, both stop+abort. The cooler path was
   separately exercised live (`CoolerPower` ramped from a −10 °C target). This
   model exposes neither a serial nor a flash ID, so it used the `noserial-0`
   identity fallback (`mint_identity`) — the documented older-model path.
 - **ASI178MM** (uncooled, mono): `MaxADU` 16383 (14-bit), `ElectronsPerADU`
-  0.00258 *(the same Linux scaling — an implied 42 e⁻ full well; no Windows
-  figure has been measured for this model)*,
+  0.00258 *(at gain 510, i.e. 0.916 e⁻/ADU at gain 0)*,
   sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
   offset 0–600. The uncooled cooler-gating contract (K1) is confirmed on
   hardware — `CanSetCCDTemperature`/`CanGetCoolerPower` are `false` and the cooler
@@ -803,76 +794,61 @@ real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
 > (see *Gating plan*). Only `cargo check`/clippy jobs (which don't invoke the
 > linker) can skip the SDK.
 
-### Known upstream SDK defect — `ElecPerADU` is 1000× small on Linux
+### `ElecPerADU` is gain-scaled — reading it live (ST2)
 
-The **same physical camera**, driven by the **same driver build**, reports
-`ElectronsPerADU` 1000× apart depending on which v1.41 SDK blob is loaded:
+`ASI_CAMERA_INFO.ElecPerADU` is **not** a static per-model constant. The SDK
+stores the model's gain-0 figure in a per-model table and divides it by
+`10^(gain/200)` before handing it over — ASI gain is in 0.1 dB units, so the
+field tracks the gain register exactly. Measured on an ASI178MM (gain range
+0–510):
 
-| Platform | `ASI_CAMERA_INFO.ElecPerADU` | as float32 | implied full well (`MaxADU × e⁻/ADU`) |
-|---|---|---|---|
-| Windows (`ASICamera2.dll` v1.41) | `4.960000038146973` | `4.96f` | 20.3 ke⁻ — plausible |
-| Linux (`libASICamera2.so` v1.41) | `0.0049600000493228436` | `4.96f / 1000` | 20 e⁻ — impossible |
+| Gain | `ElecPerADU` | vs gain 0 |
+|---|---|---|
+| 0 | 0.916 | 0 dB |
+| 127 | 0.21227 | 12.70 dB |
+| 255 | 0.048629 | 25.50 dB |
+| 510 | 0.0025816 | 51.00 dB |
 
-**Windows is the correct one.** An ASI1600 at gain 0 is ≈20 ke⁻ full well over a
-12-bit ADC (4096 ADU) → ≈4.96 e⁻/ADU. The Linux blob is effectively reporting
-**ke⁻/ADU**, while ASCOM defines `ElectronsPerADU` in e⁻/ADU.
+The gain-0 values are visible in the blob as float32 constants — `0.916f` for
+the ASI178 and `4.96f` for the ASI1600 — and 0.916 e⁻/ADU reconciles with the
+IMX178's physics (≈15 ke⁻ full well over a 14-bit ADC ≈ 0.92).
 
-Evidence that this is upstream, not ours:
+**This is what the driver got wrong.** `ElectronsPerADU` used to be served from
+the `CameraInfo` snapshot captured at enumeration, so it reported the value for
+whatever gain the camera held at service startup and never moved when a client
+changed `Gain`. A client that sets gain and then reads `ElectronsPerADU` — the
+normal sequence for SNR or exposure math — got a stale number. ST2 now reads it
+live, through `Camera::electrons_per_adu` (`ASIGetCameraPropertyByID`, an
+open-camera call, rather than the enumeration-index `ASIGetCameraProperty`).
 
-- The Linux value is **bit-identical** to `float32(4.96f / 1000)`
-  (`0x3ba2877f`) — an exact scale, not a precision or garbage-read artifact.
-- The `4.96f` constant is present in **both** blobs (9 occurrences in the `.so`,
-  10 in the `.dll`); `0.00496f` is in **neither**. The per-model table agrees
-  across platforms — the Linux build divides on the way out.
-- Both blobs ship in the **same** ZWO release bundle (`ASI_Camera_SDK.zip` →
-  `ASI_linux_mac_SDK_V1.41.tar.bz2` + `ASI_Windows_SDK_V1.41.zip`), and both
-  report `ASIGetSDKVersion` = `1, 41, 0, 0`.
-- The blob we install is **byte-identical** to ZWO's own published x64 release
-  (sha256 `d1de4a5ab85c8cafbddfad9c593bbba515890d3adf20c1ca44dafcf15f2775ce`).
-  INDI vendors it unmodified, and it is the same blob at our pinned
-  indi-3rdparty commit and at that repo's HEAD — so **bumping the pin changes
-  nothing**, and v1.41 is ZWO's current published Linux SDK (there is no newer
-  release to adopt).
-- Reproducible from a plain C program calling `ASIGetCameraProperty` directly —
-  no Rust, no `zwo-rs`, no driver in the path. (A `long`-width or bindgen
-  struct-layout mismatch was ruled out the same way: it would yield garbage, not
-  an exact 1000×.)
-- Nobody in the ecosystem compensates: INDI's `asi_base.cpp` only debug-logs the
-  field (with `%.2f`, so it prints `0.00` on Linux) and never uses it;
-  `python-zwoasi` passes it through unchanged.
+**It also explains a stale piece of validation folklore.** The 2026-06-20 and
+2026-07-27 hardware runs recorded `ElectronsPerADU` figures — 0.00496 for the
+ASI1600MM-Cool, 0.00258 for the ASI178MM — that look absurd next to the
+Windows-side 4.96 for the same ASI1600, and were briefly read as a 1000×
+Linux/Windows SDK split. They are neither absurd nor a platform split: those
+cameras were simply sitting at maximum gain (600 and 510) during the Linux runs
+while the Windows run happened at gain 0. The ratios are exactly 60.000 dB and
+30.000 dB — gain deltas to eight significant figures, not a decimal-scaling bug.
+The figures in the validation records above are annotated accordingly.
 
-**What the driver does about it: nothing to the value (ST2), and a `warn!`
-(ST4).** A ×1000 fixup is not implementable safely — once ZWO corrects the blob
-the driver has no way to tell a fixed value from an unfixed one, so the
-"correction" would start misreporting exactly when the bug goes away. ConformU
-accepts either number (both are finite and positive), and nothing in this
-repository consumes `ElectronsPerADU`, so the exposure is third-party clients
-that use it for SNR/exposure math (NINA and similar). The ST4 cross-check makes
-that visible in the service log rather than silent.
+There is consequently **no plausibility check on this value, and there must not
+be one**: at high gain a genuinely tiny `ElectronsPerADU` is correct, and
+`MaxADU × ElectronsPerADU` is *supposed* to shrink — that is what gain means.
 
-**Second model, different internal route, same bad result.** An ASI178MM probed
-the same way reports `0.0025816387496888638` — an implied full well of **42 e⁻**,
-equally impossible. Its value is *not* a stored constant, though: neither the
-reported number nor its ×1000 counterpart appears anywhere in the blob (unlike
-the ASI1600's `4.96f`), so the SDK computes this model's figure at runtime. Two
-models reaching `ElecPerADU` by **different internal routes** — one from a table
-constant, one computed — and both emerging implausible on Linux points at a
-scaling applied on the way out rather than a per-model table typo.
-
-Both measured cameras are nonetheless 2015–2016 designs. Whether a modern ASI
-body is also affected is **untested** — the honest reading is that the scaling
-looks structural, not that every model is confirmed.
-
-Reproducer (needs the SDK + a camera; read-only, no exposure):
+Reproducer (needs the SDK + a camera; reads properties and writes the gain
+control, no exposure):
 
 ```c
 ASI_CAMERA_INFO info;
 ASIGetCameraProperty(&info, 0);
-printf("%s: SDK %s ElecPerADU=%.17g\n", info.Name, ASIGetSDKVersion(), info.ElecPerADU);
-// Linux v1.41: ZWO ASI1600MM-Cool: SDK 1, 41, 0, 0 ElecPerADU=0.0049600000493228436
+ASIOpenCamera(info.CameraID); ASIInitCamera(info.CameraID);
+for (long g = 0; g <= 510; g += 255) {
+    ASISetControlValue(info.CameraID, ASI_GAIN, g, ASI_FALSE);
+    ASIGetCameraPropertyByID(info.CameraID, &info);
+    printf("gain %3ld -> ElecPerADU=%.17g\n", g, (double)info.ElecPerADU);
+}
 ```
 
-Not yet reported to ZWO — the table and evidence above are the bug report.
 ---
 
 ## Delivery phasing
