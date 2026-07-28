@@ -60,6 +60,10 @@ members = [
   # End-to-end harness (tests only): real rp + real sentinel exercising the
   # operation watchdog + corrective ladder. See docs/services/sentinel.md.
   "tests/operation-watchdog-e2e",
+  # P3a verification spike (throwaway): virtual Alpaca Telescope that logs
+  # everything a planetarium client sends. Deleted once its findings land in
+  # docs/services/planetarium-bridge.md (planetarium-target-import.md, Decision 8).
+  "spikes/planetarium-bridge-p3a",
 ]
 resolver = "2"
 
