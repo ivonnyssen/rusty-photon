@@ -11,7 +11,8 @@
 //! - **Native asynchronous `PulseGuide`** via ST4 (`CanPulseGuide = true` when
 //!   the model has an ST4 port): the call starts the pulse and returns
 //!   immediately, with `IsPulseGuiding` true until the pulse's deadline (PG1/PG2).
-//! - **`ElectronsPerADU`** is a real native value (`ASI_CAMERA_INFO.ElecPerADU`).
+//! - **`ElectronsPerADU`** is a real native value (`ASI_CAMERA_INFO.ElecPerADU`),
+//!   read live because the SDK scales it by the gain register (ST2).
 //! - **`MaxADU` = 2^BitDepth − 1** (65535 for a 16-bit sensor).
 //!
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
@@ -589,8 +590,16 @@ impl Camera for ZwoCamera {
 
     async fn electrons_per_adu(&self) -> ASCOMResult<f64> {
         // A ZWO win: a real native value, not the NOT_IMPLEMENTED placeholder.
+        // Read live, never from the cached `CameraInfo`: the SDK scales this
+        // field by the gain register, so a snapshot would freeze the value at
+        // whatever gain the camera held at enumeration (ST2).
         self.ensure_connected()?;
-        Ok(f64::from(self.info.e_per_adu))
+        self.on_handle(|h| {
+            h.electrons_per_adu()
+                .map(f64::from)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     async fn sensor_name(&self) -> ASCOMResult<String> {
@@ -1261,6 +1270,34 @@ mod tests {
         assert_eq!(max_adu_from_bit_depth(14), 16_383);
         assert_eq!(max_adu_from_bit_depth(12), 4_095);
         assert_eq!(max_adu_from_bit_depth(0), 0);
+    }
+
+    #[tokio::test]
+    async fn electrons_per_adu_tracks_the_current_gain() {
+        // The SDK scales the model's gain-0 figure by the gain register, so the
+        // property must follow a client's gain writes rather than report the
+        // value cached at enumeration. Measured on an ASI1600: 4.96 e⁻/ADU at
+        // gain 0, 0.00496 at gain 600. (The mock uses the 0.1 dB law those
+        // modern bodies follow; the driver itself assumes no law, since the
+        // legacy ASI120MC-S scales differently.)
+        let device = connected_device(MockCameraHandle::default().with_signal(4.96, 12));
+
+        device.set_gain(0).await.unwrap();
+        let at_zero = device.electrons_per_adu().await.unwrap();
+        assert!((at_zero - 4.96).abs() < 1e-6, "{at_zero}");
+
+        // 200 gain units = 20 dB = exactly a factor of 10.
+        device.set_gain(200).await.unwrap();
+        let at_20db = device.electrons_per_adu().await.unwrap();
+        assert!((at_20db - 0.496).abs() < 1e-6, "{at_20db}");
+        assert!((at_zero / at_20db - 10.0).abs() < 1e-3);
+    }
+
+    #[tokio::test]
+    async fn electrons_per_adu_requires_a_connection() {
+        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let err = device.electrons_per_adu().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     #[test]

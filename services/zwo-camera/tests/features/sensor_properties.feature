@@ -6,7 +6,11 @@ Feature: Sensor geometry, type, and signal
   exposes a single pixel size. SensorType is RGGB when the camera is a colour
   model and Monochrome otherwise, with BayerOffsetX / BayerOffsetY following
   the reported Bayer pattern (ST1). ElectronsPerADU is a native value from
-  ASI_CAMERA_INFO.ElecPerADU, not NOT_IMPLEMENTED (ST2). MaxADU is
+  ASI_CAMERA_INFO.ElecPerADU, not NOT_IMPLEMENTED, and is read live because the
+  SDK scales it by the gain register, by a law that differs per model: modern
+  bodies use ASI's 0.1 dB units and divide the gain-0 figure by 10^(gain/200),
+  while the legacy ASI120MC-S scales differently over its 0-100 gain scale, so
+  the driver reads the value instead of computing it (ST2). MaxADU is
   (2^BitDepth) - 1, i.e. 65535 for a 16-bit sensor (ST3). The simulated
   ASI2600MM-Pro-Simulated camera is a 6248x4176 monochrome 16-bit sensor, but
   the reported CameraXSize is reduced to 6240 so the full frame divided by any
@@ -33,6 +37,15 @@ Feature: Sensor geometry, type, and signal
 
   Scenario: ElectronsPerADU is a native positive value
     Then camera device 0 reports a positive ElectronsPerADU
+
+  Scenario: ElectronsPerADU follows a change of gain
+    The simulated camera is 0.25 e-/ADU at gain 0; 200 gain units is 20 dB,
+    exactly a factor of ten, so the same camera reads 0.025 e-/ADU there.
+
+    When I set Gain to 0 on camera device 0
+    Then camera device 0 reports ElectronsPerADU as 0.25
+    When I set Gain to 200 on camera device 0
+    Then camera device 0 reports ElectronsPerADU as 0.025
 
   Scenario: SensorName is reported and non-empty
     Then camera device 0 reports a non-empty SensorName

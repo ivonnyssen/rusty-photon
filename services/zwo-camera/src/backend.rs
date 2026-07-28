@@ -93,6 +93,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Read a control's current value (`ASIGetControlValue`); temperature is in
     /// 0.1 °C units (use [`temperature_celsius`](Self::temperature_celsius)).
     fn control_value(&self, control: ControlType) -> BackendResult<i64>;
+
+    /// Electrons per ADU at the camera's **current gain** — a live read, since
+    /// the SDK scales this field by the gain register (ST2).
+    fn electrons_per_adu(&self) -> BackendResult<f32>;
     /// Set a control's value (`ASISetControlValue`).
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()>;
     /// Sensor temperature in °C (decodes the 0.1 °C `ASI_TEMPERATURE` units).
@@ -192,6 +196,12 @@ impl CameraHandle for ZwoCameraHandle {
         let guard = self.camera.lock();
         let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
         Ok(camera.control_value(control)?.value)
+    }
+
+    fn electrons_per_adu(&self) -> BackendResult<f32> {
+        let guard = self.camera.lock();
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.electrons_per_adu()?)
     }
 
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
@@ -516,6 +526,15 @@ pub(crate) mod mock {
             self
         }
 
+        /// Present a model with the given gain-0 electrons-per-ADU and ADC bit
+        /// depth (ST2: the reported value is this figure scaled by the current
+        /// gain).
+        pub fn with_signal(mut self, e_per_adu_at_gain_0: f32, bit_depth: u32) -> Self {
+            self.info.e_per_adu = e_per_adu_at_gain_0;
+            self.info.bit_depth = bit_depth;
+            self
+        }
+
         /// Present a colour model with the given Bayer pattern (ST1: `SensorType`
         /// RGGB and the `BayerOffsetX/Y` mapping, vs the mono `NOT_IMPLEMENTED`).
         pub fn with_color(mut self, pattern: zwo_rs::BayerPattern) -> Self {
@@ -554,6 +573,15 @@ pub(crate) mod mock {
 
         fn control_caps(&self) -> BackendResult<Vec<ControlCaps>> {
             Ok(self.caps.clone())
+        }
+
+        fn electrons_per_adu(&self) -> BackendResult<f32> {
+            // Mirrors a modern body's SDK response: the gain-0 figure scaled by
+            // the gain register in 0.1 dB units. Real models differ (the legacy
+            // ASI120MC-S uses another law), hence the live read in the driver.
+            let gain = *self.gain.lock();
+            let scale = 10f64.powf(gain as f64 / 200.0);
+            Ok((f64::from(self.info.e_per_adu) / scale) as f32)
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {

@@ -685,6 +685,34 @@ impl Camera {
         Ok(())
     }
 
+    /// Electrons per ADU **at the camera's current gain**.
+    ///
+    /// The SDK scales this field by the gain register, and the law is
+    /// **model-specific**: the ASI1600 (4.96 at gain 0, 0.00496 at gain 600) and
+    /// the ASI178 (0.916 → 0.0025816 at gain 510) follow ASI's 0.1 dB
+    /// convention, `10^(gain/200)`, while the legacy ASI120MC-S (3.52 → 0.055
+    /// over a 0–100 gain scale) follows neither — all three measured against the
+    /// hardware. So the value is read **live** rather than derived from a
+    /// formula or from [`Camera::info`], which is a snapshot of the gain the
+    /// camera happened to hold when it was opened.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the SDK cannot read the camera's properties.
+    pub fn electrons_per_adu(&self) -> Result<f32> {
+        #[cfg(feature = "simulation")]
+        let value = self.sim_electrons_per_adu();
+        #[cfg(not(feature = "simulation"))]
+        let value = {
+            // SAFETY: `ASI_CAMERA_INFO` is POD and `self.info.id` is an open
+            // camera, which is what the *ByID* variant takes (the plain
+            // `ASIGetCameraProperty` wants an enumeration index instead).
+            let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
+            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &mut raw) } as i32)?;
+            raw.ElecPerADU
+        };
+        Ok(value)
+    }
+
     /// Sensor temperature in °C (decodes the 0.1 °C `ASI_TEMPERATURE` units).
     ///
     /// # Errors
@@ -1049,6 +1077,21 @@ impl Camera {
     fn sim_start_pos(&self) -> Result<(u32, u32)> {
         let st = self.state.lock().unwrap();
         Ok((st.start_x, st.start_y))
+    }
+
+    /// Mirrors the SDK's gain scaling for a modern body: the model's gain-0
+    /// figure ([`CameraInfo::e_per_adu`], which the simulated camera carries at
+    /// its gain-0 value) divided by `10^(gain/200)`. Real cameras vary — the
+    /// legacy ASI120MC-S uses a different law — which is why the driver reads
+    /// the value rather than computing it; the simulator only needs *a*
+    /// plausible gain response.
+    fn sim_electrons_per_adu(&self) -> f32 {
+        let gain = self.state.lock().unwrap().gain;
+        let scale = 10f64.powf(f64::from(i32::try_from(gain).unwrap_or(i32::MAX)) / 200.0);
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            (f64::from(self.info.e_per_adu) / scale) as f32
+        }
     }
 
     fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
