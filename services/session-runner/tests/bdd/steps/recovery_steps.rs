@@ -26,24 +26,9 @@ use crate::steps::infrastructure::{
 use crate::steps::trigger_steps::settled_event_count;
 use crate::world::SessionRunnerWorld;
 
-/// How long a poll-until-observed step waits before failing the scenario.
-const OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
-
 #[when(expr = "the blackboard records at least {int} frames")]
 async fn blackboard_records_frames(world: &mut SessionRunnerWorld, frames: u64) {
-    let deadline = std::time::Instant::now() + OBSERVATION_BUDGET;
-    loop {
-        let last = world.blackboard_frames().await;
-        if last.is_some_and(|f| f >= frames) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the blackboard never recorded {frames} frames within {OBSERVATION_BUDGET:?} \
-             (last: {last:?})"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    crate::steps::observation::await_blackboard_counter(world, "frames", frames).await;
 }
 
 #[given("a safety monitor guards the session")]

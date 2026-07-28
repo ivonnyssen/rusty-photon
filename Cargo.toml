@@ -106,9 +106,12 @@ libc = "0.2"
 regex = "1.12.4"
 directories = "6"
 async-trait = "0.1.89"
-# Floor is 2.1, not 2.0: qhyccd-rs uses the `eq` derive feature, added in 2.1.0
-# (absent in 2.0.0/2.0.1). A looser "2.0" breaks the dual-homed crate's
-# direct-minimal-versions build (caught by the publish-readiness check).
+# 2.1 is the current minor, not a hard floor: the workspace uses only the
+# `Debug` and `Display` derives, both of which exist in 2.0, and none of the
+# dual-homed FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims)
+# depends on derive_more at all — so publish-readiness's direct-minimal-versions
+# build never exercises this requirement.
+#
 # `display` is enabled here rather than per-member. A whole-workspace build
 # unifies features and enables it anyway, so a member that uses
 # `derive_more::Display` without declaring `features = ["display"]` still
