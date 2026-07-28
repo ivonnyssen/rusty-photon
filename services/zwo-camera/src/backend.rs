@@ -516,6 +516,15 @@ pub(crate) mod mock {
             self
         }
 
+        /// Present a model whose SDK reports the given electrons-per-ADU and ADC
+        /// bit depth (ST4's plausibility cross-check, which the plausible
+        /// simulated camera cannot force).
+        pub fn with_signal(mut self, e_per_adu: f32, bit_depth: u32) -> Self {
+            self.info.e_per_adu = e_per_adu;
+            self.info.bit_depth = bit_depth;
+            self
+        }
+
         /// Present a colour model with the given Bayer pattern (ST1: `SensorType`
         /// RGGB and the `BayerOffsetX/Y` mapping, vs the mono `NOT_IMPLEMENTED`).
         pub fn with_color(mut self, pattern: zwo_rs::BayerPattern) -> Self {

@@ -17,6 +17,7 @@
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
+use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -40,6 +41,12 @@ const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
 /// ASI exposure control is in microseconds, so the smallest step is 1 µs.
 const EXPOSURE_RESOLUTION: Duration = Duration::from_micros(1);
+
+/// Plausible band for a sensor's full-well capacity, in electrons — the bounds
+/// of the `ElectronsPerADU` cross-check (ST4). Astronomical sensors sit at
+/// 10–100 ke⁻, and read noise alone is 1–3 e⁻, so no real well is below 1 ke⁻
+/// or above 10 Me⁻.
+const PLAUSIBLE_FULL_WELL_E: RangeInclusive<f64> = 1_000.0..=10_000_000.0;
 
 /// The driver's named readout-mode list. ASI exposes a single 16-bit RAW snap
 /// path in v0, so the mode is a cached label (RM1: switching validates the index
@@ -202,8 +209,32 @@ impl ZwoCamera {
         // A reconnect must not surface a previous session's Error / ImageReady /
         // stale frame (C3).
         self.state.reset_exposure_state();
+        self.warn_on_implausible_electrons_per_adu();
         debug!(camera = %self.unique_id, "camera connected");
         Ok(())
+    }
+
+    /// Cross-check the SDK's `ElecPerADU` against the ADC's `MaxADU` and warn
+    /// when the pair implies an impossible full well (ST4).
+    ///
+    /// The value itself is still reported verbatim (ST2). A driver-side rescale
+    /// is not implementable safely: an SDK that reports the field correctly and
+    /// one that scales it are indistinguishable from in here, so a "correction"
+    /// would start lying the moment the SDK stopped.
+    fn warn_on_implausible_electrons_per_adu(&self) {
+        let implied = implied_full_well_e(self.info.bit_depth, self.info.e_per_adu);
+        if PLAUSIBLE_FULL_WELL_E.contains(&implied) {
+            return;
+        }
+        warn!(
+            camera = %self.unique_id,
+            electrons_per_adu = f64::from(self.info.e_per_adu),
+            max_adu = max_adu_from_bit_depth(self.info.bit_depth),
+            implied_full_well_e = implied,
+            "SDK reports an ElectronsPerADU that implies an impossible full-well \
+             capacity; it is passed through as-is, so a client using it for SNR or \
+             exposure math will be wrong by the same factor"
+        );
     }
 
     /// Read and cache the camera's control ranges after `open()`. The exposure
@@ -402,6 +433,13 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// `MaxADU = 2^bit_depth - 1` (e.g. 65535 for a 16-bit sensor), saturating.
 fn max_adu_from_bit_depth(bit_depth: u32) -> u32 {
     1u32.checked_shl(bit_depth).map_or(u32::MAX, |v| v - 1)
+}
+
+/// Implied full-well capacity in electrons, via the ASCOM relation
+/// `FullWellCapacity = MaxADU × ElectronsPerADU`. Used to sanity-check the SDK's
+/// `ElecPerADU` against the ADC it belongs to (ST4).
+fn implied_full_well_e(bit_depth: u32, e_per_adu: f32) -> f64 {
+    f64::from(max_adu_from_bit_depth(bit_depth)) * f64::from(e_per_adu)
 }
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y`.
@@ -1261,6 +1299,39 @@ mod tests {
         assert_eq!(max_adu_from_bit_depth(14), 16_383);
         assert_eq!(max_adu_from_bit_depth(12), 4_095);
         assert_eq!(max_adu_from_bit_depth(0), 0);
+    }
+
+    #[test]
+    fn implied_full_well_accepts_real_sensor_signal() {
+        // ASI1600 (12-bit, 4.96 e⁻/ADU) ≈ 20 ke⁻ and ASI178 (14-bit, 2.58) ≈ 42 ke⁻
+        // are real cameras. The simulated one (16-bit, 0.25) must land in band too,
+        // or every BDD and ConformU connect would log the ST4 warning.
+        assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(12, 4.96)));
+        assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(14, 2.58)));
+        assert!(PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(16, 0.25)));
+    }
+
+    #[test]
+    fn implied_full_well_rejects_a_1000x_scaled_electrons_per_adu() {
+        // What the ASI SDK's Linux v1.41 blob reports for those same two cameras:
+        // full wells of 20 e⁻ and 42 e⁻, which no sensor has.
+        assert!(!PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(12, 0.004_96)));
+        assert!(!PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(14, 0.002_58)));
+        // A non-finite value is implausible too (the comparison must not pass it).
+        assert!(!PLAUSIBLE_FULL_WELL_E.contains(&implied_full_well_e(16, f32::NAN)));
+    }
+
+    #[tokio::test]
+    async fn an_implausible_electrons_per_adu_is_still_reported_verbatim() {
+        // ST2 wins over ST4: the cross-check only logs. Connecting a camera whose
+        // SDK reports the 1000×-scaled value must still succeed and hand the
+        // client exactly what the SDK gave, unrescaled.
+        let device = connected_device(MockCameraHandle::default().with_signal(0.004_96, 12));
+        assert_eq!(
+            device.electrons_per_adu().await.unwrap(),
+            f64::from(0.004_96_f32)
+        );
+        assert_eq!(device.max_adu().await.unwrap(), 4_095);
     }
 
     #[test]

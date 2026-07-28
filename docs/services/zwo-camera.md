@@ -587,8 +587,23 @@ EAF; those belong to the other zwo services.)
 - **ST1.** `SensorType` is `RGGB` (colour) when `IsColorCam`, else `Monochrome`;
   `BayerOffsetX/Y` follow `ASI_CAMERA_INFO.BayerPattern`.
 - **ST2.** `ElectronsPerADU` returns the native `ASI_CAMERA_INFO.ElecPerADU`
-  (a finite positive value), **not** `NOT_IMPLEMENTED`.
+  (a finite positive value), **not** `NOT_IMPLEMENTED`. The value is passed
+  through **verbatim**, including when ST4 finds it implausible — the driver
+  never rescales what the SDK reports (see *Known upstream SDK defect* below).
 - **ST3.** `MaxADU` = `(2^BitDepth) - 1` from `ASI_CAMERA_INFO.BitDepth`.
+- **ST4.** At connect the driver **cross-checks** `ElecPerADU` against `MaxADU`
+  and logs a `warn!` when the pair is physically impossible, so a bad SDK value
+  is visible in the log instead of silently corrupting a client's SNR math. The
+  check is the ASCOM full-well relation — `MaxADU × ElectronsPerADU` is the
+  implied full-well capacity in electrons — and it fires when that product falls
+  outside **1 ke⁻ … 10 Me⁻**. Real astronomical sensors sit at 10–100 ke⁻; read
+  noise alone is 1–3 e⁻, so a sub-1 ke⁻ well is not a sensor anyone builds. The
+  band therefore clears every real camera by ~an order of magnitude at both ends
+  while catching a value that is off by 1000× (the observed defect: an implied
+  well of 20 e⁻). The reported ASCOM value is **unchanged** — this contract adds
+  a log line, not a correction. *(Unit-tested: the `simulation` backend reports
+  a plausible 0.25 e⁻/ADU at 16-bit — an implied 16.4 ke⁻ — so it cannot force
+  the warning branch.)*
 
 ### Pulse guiding
 
@@ -626,7 +641,7 @@ scenarios.
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
 | `MaxADU` | `(2^BitDepth) - 1` (65535 for 16-bit, 4095 for 12-bit) |
-| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU` |
+| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, verbatim; an implausible value is `warn!`-logged, never rescaled (ST2/ST4) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
 | `Gain` / `GainMin` / `GainMax` | `ASI_GAIN` control; `NOT_IMPLEMENTED` if absent |
@@ -700,9 +715,10 @@ and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
   state machine (Idle/Exposing/Error, `ImageReady`, percent-completed), gain/
   offset range checks, cooling gating, Bayer-offset mapping, `MaxADU`-from-
-  `BitDepth`, and the paths the `zwo-rs` simulation can't force (mid-exposure SDK
-  error E9; a model without an ST4 port PG2; an uncooled model K1) — against the
-  in-crate `backend.rs` mock seam over the SDK.
+  `BitDepth`, the `ElecPerADU` plausibility cross-check (ST4), and the paths the
+  `zwo-rs` simulation can't force (mid-exposure SDK error E9; a model without an
+  ST4 port PG2; an uncooled model K1) — against the in-crate `backend.rs` mock
+  seam over the SDK.
 - **BDD** (`bdd-infra::ServiceHandle`, the six live camera feature files) —
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
@@ -734,14 +750,17 @@ cameras were validated, each *"no errors, warnings or issues found"* with all
 members within their response targets:
 
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
-  0.00496, sensor 4656×3520 reported as **4608×3504** (R4 align — largest
-  multiples of `lcm(8·bin)`=96 / `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
+  0.00496 *(the Linux SDK's 1000×-small value — see* Known upstream SDK defect
+  *below; the camera's true figure is 4.96 e⁻/ADU)*, sensor 4656×3520 reported
+  as **4608×3504** (R4 align — largest multiples of `lcm(8·bin)`=96 /
+  `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
   offset 0–100, ST4 `CanPulseGuide`, both stop+abort. The cooler path was
   separately exercised live (`CoolerPower` ramped from a −10 °C target). This
   model exposes neither a serial nor a flash ID, so it used the `noserial-0`
   identity fallback (`mint_identity`) — the documented older-model path.
 - **ASI178MM** (uncooled, mono): `MaxADU` 16383 (14-bit), `ElectronsPerADU`
-  0.00258, sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
+  0.00258 *(the same Linux 1000× scaling; the true figure is 2.58 e⁻/ADU)*,
+  sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
   offset 0–600. The uncooled cooler-gating contract (K1) is confirmed on
   hardware — `CanSetCCDTemperature`/`CanGetCoolerPower` are `false` and the cooler
   getters return `NotImplemented` — while `CCDTemperature` still reads the live
@@ -783,6 +802,66 @@ real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
 > (see *Gating plan*). Only `cargo check`/clippy jobs (which don't invoke the
 > linker) can skip the SDK.
 
+### Known upstream SDK defect — `ElecPerADU` is 1000× small on Linux
+
+The **same physical camera**, driven by the **same driver build**, reports
+`ElectronsPerADU` 1000× apart depending on which v1.41 SDK blob is loaded:
+
+| Platform | `ASI_CAMERA_INFO.ElecPerADU` | as float32 | implied full well (`MaxADU × e⁻/ADU`) |
+|---|---|---|---|
+| Windows (`ASICamera2.dll` v1.41) | `4.960000038146973` | `4.96f` | 20.3 ke⁻ — plausible |
+| Linux (`libASICamera2.so` v1.41) | `0.0049600000493228436` | `4.96f / 1000` | 20 e⁻ — impossible |
+
+**Windows is the correct one.** An ASI1600 at gain 0 is ≈20 ke⁻ full well over a
+12-bit ADC (4096 ADU) → ≈4.96 e⁻/ADU. The Linux blob is effectively reporting
+**ke⁻/ADU**, while ASCOM defines `ElectronsPerADU` in e⁻/ADU.
+
+Evidence that this is upstream, not ours:
+
+- The Linux value is **bit-identical** to `float32(4.96f / 1000)`
+  (`0x3ba2877f`) — an exact scale, not a precision or garbage-read artifact.
+- The `4.96f` constant is present in **both** blobs (9 occurrences in the `.so`,
+  10 in the `.dll`); `0.00496f` is in **neither**. The per-model table agrees
+  across platforms — the Linux build divides on the way out.
+- Both blobs ship in the **same** ZWO release bundle (`ASI_Camera_SDK.zip` →
+  `ASI_linux_mac_SDK_V1.41.tar.bz2` + `ASI_Windows_SDK_V1.41.zip`), and both
+  report `ASIGetSDKVersion` = `1, 41, 0, 0`.
+- The blob we install is **byte-identical** to ZWO's own published x64 release
+  (sha256 `d1de4a5ab85c8cafbddfad9c593bbba515890d3adf20c1ca44dafcf15f2775ce`).
+  INDI vendors it unmodified, and it is the same blob at our pinned
+  indi-3rdparty commit and at that repo's HEAD — so **bumping the pin changes
+  nothing**, and v1.41 is ZWO's current published Linux SDK (there is no newer
+  release to adopt).
+- Reproducible from a plain C program calling `ASIGetCameraProperty` directly —
+  no Rust, no `zwo-rs`, no driver in the path. (A `long`-width or bindgen
+  struct-layout mismatch was ruled out the same way: it would yield garbage, not
+  an exact 1000×.)
+- Nobody in the ecosystem compensates: INDI's `asi_base.cpp` only debug-logs the
+  field (with `%.2f`, so it prints `0.00` on Linux) and never uses it;
+  `python-zwoasi` passes it through unchanged.
+
+**What the driver does about it: nothing to the value (ST2), and a `warn!`
+(ST4).** A ×1000 fixup is not implementable safely — once ZWO corrects the blob
+the driver has no way to tell a fixed value from an unfixed one, so the
+"correction" would start misreporting exactly when the bug goes away. ConformU
+accepts either number (both are finite and positive), and nothing in this
+repository consumes `ElectronsPerADU`, so the exposure is third-party clients
+that use it for SNR/exposure math (NINA and similar). The ST4 cross-check makes
+that visible in the service log rather than silent.
+
+The scaling is a code path, not a per-model typo, so **every model is affected on
+Linux** — the 2026-06-20 ASI178MM figure above carries the same 1000×.
+
+Reproducer (needs the SDK + a camera; read-only, no exposure):
+
+```c
+ASI_CAMERA_INFO info;
+ASIGetCameraProperty(&info, 0);
+printf("%s: SDK %s ElecPerADU=%.17g\n", info.Name, ASIGetSDKVersion(), info.ElecPerADU);
+// Linux v1.41: ZWO ASI1600MM-Cool: SDK 1, 41, 0, 0 ElecPerADU=0.0049600000493228436
+```
+
+Not yet reported to ZWO — the table and evidence above are the bug report.
 ---
 
 ## Delivery phasing
