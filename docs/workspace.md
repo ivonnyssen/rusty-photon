@@ -540,13 +540,15 @@ and documented on the type. Do not unify them.
 zero packages to the graph; see the comment on the dependency in the
 workspace `Cargo.toml`.
 
-The workspace `derive_more` enables only `features = ["debug"]`, so a
-member wanting `Display` must add `features = ["display"]` to its own
-entry. Feature unification hides an omission: a whole-workspace `cargo`
-or `bazel` build resolves the feature via some *other* member and
-passes, while `cargo build -p <member>` fails `E0432`. Only the nightly
-per-package Cargo safety net builds members in isolation, so check a new
-`Display` with an explicit `-p` build before pushing.
+`derive_more` enables `debug` and `display` at the workspace level, so a
+member takes `derive_more = { workspace = true }` and needs no per-member
+`features`. That is deliberate rather than lax: feature unification means
+a whole-workspace `cargo` or `bazel` build resolves `display` through
+*some* member regardless, so a missing per-member declaration used to
+compile everywhere except `cargo build -p <member>` — which nothing but
+the nightly `cargo hack --feature-powerset` job runs. Declaring it once
+closes that green-PR/red-nightly gap at no cost: `display` adds only
+`convert_case` and `unicode-segmentation`, both proc-macro-only.
 
 ## Feature Flags
 

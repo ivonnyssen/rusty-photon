@@ -109,7 +109,14 @@ async-trait = "0.1.89"
 # Floor is 2.1, not 2.0: qhyccd-rs uses the `eq` derive feature, added in 2.1.0
 # (absent in 2.0.0/2.0.1). A looser "2.0" breaks the dual-homed crate's
 # direct-minimal-versions build (caught by the publish-readiness check).
-derive_more = { version = "2.1", features = ["debug"] }
+# `display` is enabled here rather than per-member. A whole-workspace build
+# unifies features and enables it anyway, so a member that uses
+# `derive_more::Display` without declaring `features = ["display"]` still
+# compiles everywhere except `cargo build -p <member>` — which only the nightly
+# `cargo hack --feature-powerset` job runs. Enabling it workspace-wide costs no
+# packages (`convert_case` + `unicode-segmentation` are proc-macro-only and
+# already in the lock) and removes that green-PR/red-nightly gap.
+derive_more = { version = "2.1", features = ["debug", "display"] }
 # Variant iteration / count / discriminant-conversion derives (`VariantArray`,
 # `EnumCount`, `FromRepr`), allocation-free `&'static str` variant constants,
 # and the one `Display` case `derive_more` cannot cover: a string that must
