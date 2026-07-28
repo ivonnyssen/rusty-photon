@@ -136,13 +136,39 @@ rust_test(
 # Both variants link the SDK (simulation removes the camera, not the link), so
 # these run wherever the unit test does — the SDK-provisioned bazel.yml /
 # bazel-coverage.yml jobs.
+#
+# NOT on Windows (see _WINDOWS_SKIP). Windows doctests stay covered off-PR by
+# test.yml's `cargo test --locked --workspace --all-features --doc`.
+_WINDOWS_SKIP = select({
+    # `no_run` doctests are emitted as metadata and never linked (rustdoc reports
+    # them as `- compile ... ok`), which is why the all-`no_run`
+    # //crates/rusty-photon-service-lifecycle:..._doc_test has always been green
+    # here. qhyccd-rs has one RUNNABLE example (the simulated-SDK walkthrough in
+    # lib.rs), making it the first doctest under Bazel to invoke link.exe — and it
+    # cannot resolve the Rust toolchain's own sysroot rlibs:
+    #
+    #   LINK : fatal error LNK1181: cannot open input file
+    #   'external\rules_rust++rust+rw-…_tools\rust_toolchain\…\libpanic_unwind-….rlib'
+    #
+    # Same class as //third_party/patches:rustdoc_test_windows_external_repo_path
+    # (an exec-configuration tool's runfiles-tree entry missing on a
+    # remote-cache-hit Windows build) but a layer deeper: that patch resolves the
+    # test runner's own argv, whereas the sysroot reaches link.exe through
+    # rustdoc's `--sysroot`, so rust_doc_test never puts it in runfiles. Fixing it
+    # is rules_rust-level work, tracked separately.
+    "@platforms//os:windows": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
 rust_doc_test(
     name = "qhyccd-rs_doc_test",
     crate = ":qhyccd-rs",
+    target_compatible_with = _WINDOWS_SKIP,
 )
 
 rust_doc_test(
     name = "qhyccd-rs_sim_doc_test",
     crate = ":qhyccd-rs_sim",
     crate_features = ["simulation"],
+    target_compatible_with = _WINDOWS_SKIP,
 )

@@ -188,6 +188,16 @@ a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
 each variant its own target and repeat `crate_features` on it, because
 `rust_doc_test` does not inherit them from the crate it wraps.
 
+**A RUNNABLE doctest cannot be a Bazel target on Windows yet.** `no_run` examples
+are emitted as metadata and never linked (rustdoc reports them
+`- compile ... ok`), but one that actually runs invokes `link.exe`, and
+`rust_doc_test` does not carry the Rust toolchain's sysroot in its runfiles —
+the link dies on `LNK1181: cannot open input file …libpanic_unwind-….rlib`. The
+qhyccd-rs targets are therefore `target_compatible_with`-skipped on Windows
+(Linux + macOS still gate them, and the Windows `cargo test --doc` job here still
+covers them off-PR). Keep new doctest targets `no_run`-only, or expect the same
+skip.
+
 ### safety.yml
 
 Nightly + push-to-main + `workflow_dispatch` (never on PRs). Both sanitizers run at
