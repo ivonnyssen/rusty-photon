@@ -74,6 +74,22 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    `--strategy=TestRunner=sandboxed` did — and that would also break BDD's
 #    port binding). No upstream issue filed for this one yet.
 #
+#    The same resolver also rewrites `--sysroot=<dir>`, which fixes a MAX_PATH
+#    failure (issue #739) that only a RUNNABLE doctest can hit: `no_run` examples
+#    are emitted as metadata and never linked, so until qhyccd-rs got doctest
+#    targets nothing under Bazel had invoked `link.exe`. rustc expands `--sysroot`
+#    into the std rlib paths it hands the linker, and spelled relative to the
+#    runfiles tree — whose prefix alone costs ~123 chars — they cross 260:
+#    measured on CI, `libpanic_unwind-<hash>.rlib` landed at 261 and failed
+#    `LNK1181: cannot open input file` while `libstd-<hash>.rlib` at 252 in the
+#    SAME directory resolved. The file was present, non-symlink and readable, so
+#    this is length, not availability, and bazel.yml's `LongPathsEnabled` step
+#    cannot reach it — that opt-in is per binary via a `longPathAware` manifest
+#    and `link.exe` carries none. Resolving the directory through the manifest
+#    (RFD: the manifest maps files, so match any entry beneath the directory and
+#    trim the shared suffix off its target) yields the ~155-char execroot path,
+#    putting every std rlib comfortably under the limit.
+#
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that
 #    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that
