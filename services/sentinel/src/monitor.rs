@@ -2,26 +2,20 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::time::{Duration, Instant};
 
-/// The state of a monitored device
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The state of a monitored device.
+///
+/// The two casings below are deliberately different and must not be unified:
+/// `Display` yields the PascalCase variant name, which is the operator-facing
+/// text (`GET /api/status`, the dashboard, the Pushover `{new_state}`
+/// placeholder), while serde yields snake_case, which is the JSON wire form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorState {
     Safe,
     Unsafe,
     Unknown,
-}
-
-impl fmt::Display for MonitorState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MonitorState::Safe => write!(f, "Safe"),
-            MonitorState::Unsafe => write!(f, "Unsafe"),
-            MonitorState::Unknown => write!(f, "Unknown"),
-        }
-    }
 }
 
 /// A change in monitor state
@@ -50,4 +44,34 @@ pub trait Monitor: Send + Sync + std::fmt::Debug {
 
     /// The polling interval for this monitor
     fn polling_interval(&self) -> Duration;
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_is_pascal_case() {
+        assert_eq!(MonitorState::Safe.to_string(), "Safe");
+        assert_eq!(MonitorState::Unsafe.to_string(), "Unsafe");
+        assert_eq!(MonitorState::Unknown.to_string(), "Unknown");
+    }
+
+    #[test]
+    fn serde_form_is_snake_case_and_differs_from_display() {
+        assert_eq!(
+            serde_json::to_string(&MonitorState::Safe).unwrap(),
+            "\"safe\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MonitorState::Unsafe).unwrap(),
+            "\"unsafe\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MonitorState::Unknown).unwrap(),
+            "\"unknown\""
+        );
+    }
 }

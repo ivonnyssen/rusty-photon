@@ -393,8 +393,26 @@ If you added a crates.io dependency, refresh the Bazel index:
 # 2nd (un-forced) `bazel mod tidy` resets the lock's recorded CARGO_BAZEL_REPIN
 # fingerprint to null, so the committed lock doesn't churn on later plain `bazel` runs.
 CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy
+# Required third step: `bazel mod tidy` only fixes up extensions it reaches via an
+# explicit `use_repo()` in MODULE.bazel, so an extension pulled in transitively with
+# no `use_repo()` of its own can be left out of the lock on some hosts. A full
+# `--lockfile_mode=update` build does real target-graph analysis and fills the gap;
+# skipping it produces a lock that `--lockfile_mode=error` rejects on x86_64 CI while
+# `bazel mod tidy` alone looks fine locally.
+bazel build --nobuild --lockfile_mode=update //...
 git add MODULE.bazel.lock
 ```
+
+`repin-bazel.yml` is gated on `github.actor == 'dependabot[bot]'`, so a
+human PR that adds a crates.io dependency gets **no** automatic repin. A
+forgotten repin turns all three `bazel / <os>` checks red with a
+stale-lock error rather than a compile error.
+
+Reviewing the result: `git diff --stat` badly under-reports a
+`MODULE.bazel.lock` repin. The `cr` hub repo's `BUILD.bazel` and
+`defs.bzl` are stored as single JSON string lines, so a 2-line diff can
+carry a several-hundred-kilobyte changed-line payload. Use
+`git diff --word-diff` or a JSON-aware differ.
 
 BDD cucumber tests build and run under Bazel and are **part of the
 default test filter** (since PR #452): a plain `bazel test //...` runs

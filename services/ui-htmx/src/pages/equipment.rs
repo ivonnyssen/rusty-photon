@@ -15,6 +15,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use maud::{html, Markup};
 use serde_json::Value;
+use strum::VariantArray;
 
 use crate::driver_client::{ApplyStatus, ConfigClientError, FieldError};
 use crate::pages::{self, layout_with_nav, FieldModel, NavTab, Page};
@@ -228,7 +229,7 @@ fn roster_markup(rows: &[RosterRow], banner: Option<EquipBanner>) -> Markup {
                 "rp's equipment roster — live state, per-device capability, and "
                 "the roster entries themselves (stored in rp's config)."
             }
-            @for kind in EquipKind::ALL {
+            @for kind in EquipKind::VARIANTS.iter().copied() {
                 @let kind_rows: Vec<&RosterRow> =
                     rows.iter().filter(|r| r.entry.kind == kind).collect();
                 section.equip-kind id=(format!("kind-{}", kind.config_key())) {
@@ -903,6 +904,34 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// Every kind gets a section, in `EquipKind` declaration order, whether or
+    /// not it has entries.
+    #[test]
+    fn roster_renders_one_section_per_kind_in_order() {
+        let html = roster_markup(&[], None).into_string();
+        let ids: Vec<&str> = html
+            .split(r#"id="kind-"#)
+            .skip(1)
+            .map(|rest| rest.split('"').next().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "cameras",
+                "filter_wheels",
+                "cover_calibrators",
+                "focusers",
+                "safety_monitors",
+                "switches",
+                "rotators",
+                "observing_conditions",
+                "domes",
+                "mount",
+            ],
+            "{html}"
+        );
     }
 
     #[tokio::test]

@@ -29,34 +29,41 @@ use super::MountDevice;
 /// The driver-specific ASCOM vendor Actions. Owns its `SupportedActions`
 /// names and the name→variant parsing the `Action` dispatch in
 /// [`super::device`] uses, so the name set lives in exactly one place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Declaration order is the order `SupportedActions` advertises. The
+/// per-variant strings are the ASCOM Alpaca vendor Action names on the
+/// wire, so each is pinned explicitly rather than taken from its variant
+/// name; matching is exact — case-sensitive and untrimmed.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::VariantArray,
+)]
 pub(super) enum ApParkAction {
+    #[strum(serialize = "SetUnparkFromApPosition")]
     SetUnparkFromApPosition,
+    #[strum(serialize = "SetPreferredApPark")]
     SetPreferredApPark,
+    #[strum(serialize = "UnparkFromApPosition")]
     UnparkFromApPosition,
 }
 
 impl ApParkAction {
-    /// Every variant, in `SupportedActions` order.
-    pub(super) const ALL: [Self; 3] = [
-        Self::SetUnparkFromApPosition,
-        Self::SetPreferredApPark,
-        Self::UnparkFromApPosition,
-    ];
-
     /// The ASCOM action name.
     pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::SetUnparkFromApPosition => "SetUnparkFromApPosition",
-            Self::SetPreferredApPark => "SetPreferredApPark",
-            Self::UnparkFromApPosition => "UnparkFromApPosition",
-        }
+        self.into()
     }
 
     /// Resolve an ASCOM action name; `None` for an unrecognised name
     /// (the caller maps that to `ACTION_NOT_IMPLEMENTED`).
     pub(super) fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|action| action.name() == name)
+        name.parse().ok()
     }
 }
 
@@ -205,5 +212,81 @@ impl MountDevice {
         }
         self.state.write().await.at_park = false;
         Ok(park.as_str().to_string())
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use strum::VariantArray;
+
+    use super::ApParkAction;
+
+    #[test]
+    fn all_is_the_supported_actions_order() {
+        assert_eq!(
+            ApParkAction::VARIANTS,
+            [
+                ApParkAction::SetUnparkFromApPosition,
+                ApParkAction::SetPreferredApPark,
+                ApParkAction::UnparkFromApPosition,
+            ]
+        );
+        // Variant order is the order `SupportedActions` advertises.
+        let names: Vec<&'static str> = ApParkAction::VARIANTS.iter().map(|a| a.name()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "SetUnparkFromApPosition",
+                "SetPreferredApPark",
+                "UnparkFromApPosition",
+            ]
+        );
+    }
+
+    #[test]
+    fn name_is_the_exact_ascom_action_string() {
+        assert_eq!(
+            ApParkAction::SetUnparkFromApPosition.name(),
+            "SetUnparkFromApPosition"
+        );
+        assert_eq!(
+            ApParkAction::SetPreferredApPark.name(),
+            "SetPreferredApPark"
+        );
+        assert_eq!(
+            ApParkAction::UnparkFromApPosition.name(),
+            "UnparkFromApPosition"
+        );
+    }
+
+    #[test]
+    fn from_name_round_trips_every_variant() {
+        for &action in ApParkAction::VARIANTS {
+            assert_eq!(ApParkAction::from_name(action.name()).unwrap(), action);
+        }
+    }
+
+    #[test]
+    fn from_name_is_case_sensitive_and_rejects_near_misses() {
+        // Names match exactly — no case folding, no trimming. Anything
+        // else falls through to `ACTION_NOT_IMPLEMENTED` in dispatch.
+        for name in [
+            "setunparkfromapposition",
+            "SETUNPARKFROMAPPOSITION",
+            "SetUnParkFromApPosition",
+            "set_unpark_from_ap_position",
+            "SetPreferredAPPark",
+            "setPreferredApPark",
+            "unparkFromApPosition",
+            "UnparkFromApPosition ",
+            " UnparkFromApPosition",
+            "UnparkFromApPositions",
+            "",
+            "NoSuchAction",
+        ] {
+            assert_eq!(ApParkAction::from_name(name), None, "name {name:?}");
+        }
     }
 }

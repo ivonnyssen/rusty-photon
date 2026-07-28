@@ -4,10 +4,14 @@
 //! Switches are numbered from 0 to MAX_SWITCH - 1.
 
 /// Total number of switches exposed by the PPBA device
-pub const MAX_SWITCH: usize = 16;
+pub const MAX_SWITCH: usize = <SwitchId as strum::EnumCount>::COUNT;
 
 /// Switch identifiers for the PPBA device
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The discriminants are the ASCOM switch ids and must stay contiguous from
+/// zero: `MAX_SWITCH` is derived from the variant count, and `from_id` maps by
+/// discriminant, so a gap would make ids in `0..MAX_SWITCH` unresolvable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumCount, strum::FromRepr)]
 pub enum SwitchId {
     // Controllable switches (CanWrite = true)
     /// Quad 12V output (boolean: 0=off, 1=on)
@@ -49,27 +53,11 @@ pub enum SwitchId {
 }
 
 impl SwitchId {
-    /// Try to convert a usize to a SwitchId
+    /// Try to convert a usize to a SwitchId, returning `None` when the id is
+    /// outside `0..MAX_SWITCH`
+    #[must_use]
     pub fn from_id(id: usize) -> Option<Self> {
-        match id {
-            0 => Some(Self::Quad12V),
-            1 => Some(Self::AdjustableOutput),
-            2 => Some(Self::DewHeaterA),
-            3 => Some(Self::DewHeaterB),
-            4 => Some(Self::UsbHub),
-            5 => Some(Self::AutoDew),
-            6 => Some(Self::AverageCurrent),
-            7 => Some(Self::AmpHours),
-            8 => Some(Self::WattHours),
-            9 => Some(Self::Uptime),
-            10 => Some(Self::InputVoltage),
-            11 => Some(Self::TotalCurrent),
-            12 => Some(Self::Temperature),
-            13 => Some(Self::Humidity),
-            14 => Some(Self::Dewpoint),
-            15 => Some(Self::PowerWarning),
-            _ => None,
-        }
+        Self::from_repr(id)
     }
 
     /// Get the numeric ID for this switch
@@ -267,9 +255,32 @@ mod tests {
 
     #[test]
     fn switch_id_beyond_max_is_invalid() {
-        assert!(SwitchId::from_id(16).is_none());
-        assert!(SwitchId::from_id(100).is_none());
-        assert!(SwitchId::from_id(usize::MAX).is_none());
+        for id in MAX_SWITCH..=20 {
+            assert_eq!(SwitchId::from_id(id), None, "id {} must not map", id);
+        }
+        for id in [100, 65535, usize::MAX] {
+            assert_eq!(SwitchId::from_id(id), None, "id {} must not map", id);
+        }
+    }
+
+    #[test]
+    fn from_id_maps_each_id_to_its_variant() {
+        assert_eq!(SwitchId::from_id(0), Some(SwitchId::Quad12V));
+        assert_eq!(SwitchId::from_id(1), Some(SwitchId::AdjustableOutput));
+        assert_eq!(SwitchId::from_id(2), Some(SwitchId::DewHeaterA));
+        assert_eq!(SwitchId::from_id(3), Some(SwitchId::DewHeaterB));
+        assert_eq!(SwitchId::from_id(4), Some(SwitchId::UsbHub));
+        assert_eq!(SwitchId::from_id(5), Some(SwitchId::AutoDew));
+        assert_eq!(SwitchId::from_id(6), Some(SwitchId::AverageCurrent));
+        assert_eq!(SwitchId::from_id(7), Some(SwitchId::AmpHours));
+        assert_eq!(SwitchId::from_id(8), Some(SwitchId::WattHours));
+        assert_eq!(SwitchId::from_id(9), Some(SwitchId::Uptime));
+        assert_eq!(SwitchId::from_id(10), Some(SwitchId::InputVoltage));
+        assert_eq!(SwitchId::from_id(11), Some(SwitchId::TotalCurrent));
+        assert_eq!(SwitchId::from_id(12), Some(SwitchId::Temperature));
+        assert_eq!(SwitchId::from_id(13), Some(SwitchId::Humidity));
+        assert_eq!(SwitchId::from_id(14), Some(SwitchId::Dewpoint));
+        assert_eq!(SwitchId::from_id(15), Some(SwitchId::PowerWarning));
     }
 
     #[test]

@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
-derive_more = { workspace = true, features = ["display"] }
+derive_more = { workspace = true }
 # Optional: JsonSchema derives for the wire projection (the plan-data
 # schema/validate protocol, ADR-019). Off by default so pure-value
 # consumers — e.g. rp-targets, the store leaf — stay schemars-free; rp

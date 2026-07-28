@@ -1356,6 +1356,36 @@ mod tests {
     }
 
     #[test]
+    fn ap_park_tokens_keep_their_trailing_underscore() {
+        // The six tokens are a deployed-config wire contract: every rig's
+        // config JSON, the `Action` parameters and the `Action` return
+        // values all use these exact strings, and the value feeds the
+        // connect-time encoder seed and the `Park()` slew target. A
+        // rename — e.g. dropping the underscore to `ap_park0` — silently
+        // breaks every deployed config, so the literals are pinned here
+        // in both directions.
+        for (park, token) in [
+            (ApPark::ApPark0, "ap_park_0"),
+            (ApPark::ApPark1, "ap_park_1"),
+            (ApPark::ApPark2, "ap_park_2"),
+            (ApPark::ApPark3, "ap_park_3"),
+            (ApPark::ApPark4, "ap_park_4"),
+            (ApPark::ApPark5, "ap_park_5"),
+        ] {
+            assert_eq!(park.as_str(), token);
+            assert_eq!(park.to_string(), token);
+            assert_eq!(token.parse::<ApPark>().unwrap(), park);
+        }
+        // The underscore-less spellings are not accepted.
+        for token in [
+            "ap_park0", "ap_park1", "ap_park2", "ap_park3", "ap_park4", "ap_park5",
+        ] {
+            let err = token.parse::<ApPark>().unwrap_err();
+            assert_eq!(err, ApParkParseError(token.to_string()), "token {token}");
+        }
+    }
+
+    #[test]
     fn ap_park_0_has_no_codebase_encoder_mapping() {
         // "Current position" has no fixed encoder mapping; both
         // accessors return `None` so callers must handle the no-seed

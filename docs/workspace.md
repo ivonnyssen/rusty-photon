@@ -469,6 +469,90 @@ hand-rolled formatter or a numeric `format!("{:.1}s", …)` /
 wire fields (`duration_secs`, `elapsed_ms`), `humantime_serde` config
 fields, and internal timing arithmetic are unaffected.
 
+### Enum derives: which crate to reach for
+
+Four crates in this workspace can generate a `Display`. Pick by what the
+string is derived *from*:
+
+| Need | Reach for |
+|---|---|
+| An error type | `thiserror` — `#[error("…")]` |
+| **Any** `Display` — a variant name, a per-variant literal, or a string interpolating runtime fields | `derive_more` — `#[display("…")]` |
+| Variant iteration, count, or discriminant conversion | `strum` — `VariantArray`, `EnumCount`, `FromRepr` |
+| An allocation-free `&'static str`, or a `Display` that must round-trip back through `FromStr` | `strum` — `IntoStaticStr`, `Display` + `EnumString` |
+| A parse error a **human or an ASCOM client reads** | hand-written `FromStr` + a bespoke error |
+
+`Display` alone is `derive_more`'s. A bare `#[derive(derive_more::Display)]`
+on a fieldless enum already renders the variant name, so it covers the
+plain case with no attributes at all, and it is the only one of the two
+that can interpolate a field. Reach past it to `strum` only for something
+`derive_more` cannot express:
+
+- **`VariantArray` / `EnumCount` / `FromRepr`** have no `derive_more`
+  counterpart, and they retire whole classes of drift: a hand-maintained
+  `const ALL` array that silently omits a variant, and a hand-synced
+  `COUNT` constant.
+- **`IntoStaticStr`** yields `&'static str`; `derive_more`'s only string
+  derive allocates. `ConfigAction::name()` is `self.into()` because of it.
+- **`Display` + `EnumString`** read the *same* `#[strum(serialize = "…")]`
+  attribute, so a wire string is written once and provably round-trips.
+  `derive_more`'s `Display` and `FromStr` are independent: `FromStr`
+  matches variant *names*, case-insensitively, and ignores `#[display]`
+  literals entirely. A type carrying `#[display("config.get")]` renders
+  `config.get` but parses only `Get`, `get`, or `GET` — the literal and
+  the accepted input drift apart with nothing to flag it. Any type whose
+  string must survive a round trip belongs to `strum`.
+
+A type that keeps `strum` for one of the above should take its `Display`
+from `strum` too. Splitting one type's wire string across
+`#[strum(serialize = …)]` and `#[display(…)]` creates two
+independently-editable copies of the same protocol name.
+
+**Never derive a string with a casing style.** `#[strum(serialize_all =
+…)]` and `derive_more`'s `#[display(rename_all = …)]` are banned on any
+type whose string crosses a compatibility boundary — a config-file
+value, an Alpaca `Action` name, an on-disk key, a device wire token.
+Pin every such string with an explicit per-variant literal —
+`#[strum(serialize = "…")]` or `#[display("…")]` — which keeps it
+greppable in the source and keeps an identifier rename a pure refactor.
+Three converters are in play and they disagree: `strum` uses `heck`,
+`derive_more` uses `convert_case`, and `serde`'s `rename_all` agrees
+with `heck` — but only on some inputs. `ApPark0` snake-cases to
+`ap_park0` under `heck` (not `ap_park_0`), and `Uuid8` is `uuid8` under
+`heck` but `uuid_8` under `convert_case`. A type carrying both
+`#[serde(rename_all)]` and a derive's own casing attribute has two
+independent sources of truth that neither macro can cross-check.
+
+Where a type's serde casing and its `Display` casing deliberately
+differ — `MonitorState`, `ServiceHealth` — that split is intentional
+and documented on the type. Do not unify them.
+
+**Banned outright:**
+
+- `#[strum(disabled)]` — makes `Display`/`AsRef`/`Into<&'static str>`
+  panic at runtime, and clippy does not flag macro-expanded panics, so
+  it clears the whole quality gate and fires in the field instead
+  (tenet 2).
+- `EnumProperty` — its lookup returns `Option` off a runtime `&str`
+  key, and under the workspace's `unwrap_used` deny the only available
+  fallback is a silent wrong value.
+- Deriving both `VariantNames` and `VariantArray` on one type — makes
+  `T::VARIANTS` ambiguous (E0034). Use `VariantArray`.
+
+`strum` is pinned to the same minor `jsonschema` requires, so it adds
+zero packages to the graph; see the comment on the dependency in the
+workspace `Cargo.toml`.
+
+`derive_more` enables `debug` and `display` at the workspace level, so a
+member takes `derive_more = { workspace = true }` and needs no per-member
+`features`. That is deliberate rather than lax: feature unification means
+a whole-workspace `cargo` or `bazel` build resolves `display` through
+*some* member regardless, so a missing per-member declaration used to
+compile everywhere except `cargo build -p <member>` — which nothing but
+the nightly `cargo hack --feature-powerset` job runs. Declaring it once
+closes that green-PR/red-nightly gap at no cost: `display` adds only
+`convert_case` and `unicode-segmentation`, both proc-macro-only.
+
 ## Feature Flags
 
 - **`mock`** — Enables an in-memory mock factory with persistent device state

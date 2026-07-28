@@ -439,15 +439,7 @@ impl ServiceHealthSupervisor {
 /// rendered for notification messages.
 fn restart_outcome_text(report: &RestartReport) -> String {
     match (&report.recovery, &report.detail) {
-        (Some(recovery), _) => format!(
-            "status {}, recovery {}",
-            report.status,
-            match recovery {
-                crate::restart::Recovery::Healthy => "healthy",
-                crate::restart::Recovery::Timeout => "timeout",
-                crate::restart::Recovery::Skipped => "skipped",
-            }
-        ),
+        (Some(recovery), _) => format!("status {}, recovery {recovery}", report.status),
         (None, Some(detail)) => format!("status {} ({detail})", report.status),
         (None, None) => format!("status {}", report.status),
     }
@@ -1459,6 +1451,28 @@ mod tests {
         // stop() awaits the loop's join handle, which awaits the reaped
         // supervisor tasks — a leak hangs the test.
         f.stop().await;
+    }
+
+    #[test]
+    fn restart_outcome_text_labels_every_recovery_lowercase() {
+        let report = |recovery| RestartReport {
+            service: "svc".to_string(),
+            status: "ok",
+            recovery: Some(recovery),
+            detail: None,
+        };
+        assert_eq!(
+            restart_outcome_text(&report(crate::restart::Recovery::Healthy)),
+            "status ok, recovery healthy"
+        );
+        assert_eq!(
+            restart_outcome_text(&report(crate::restart::Recovery::Timeout)),
+            "status ok, recovery timeout"
+        );
+        assert_eq!(
+            restart_outcome_text(&report(crate::restart::Recovery::Skipped)),
+            "status ok, recovery skipped"
+        );
     }
 
     #[test]

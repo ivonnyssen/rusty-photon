@@ -31,10 +31,6 @@ use crate::error::FalconRotatorError;
 use crate::manager::FalconManager;
 use rusty_photon_driver::ConfigActionCtx;
 
-/// Number of switches advertised by this device. The design doc pins this at 2
-/// (id 0 = voltage, id 1 = limit-hit); any other id is out of range.
-const SWITCH_COUNT: usize = 2;
-
 /// Id 0: input voltage (raw ADC count from the Falcon's `VS` command).
 const SWITCH_ID_VOLTAGE: usize = 0;
 /// Id 1: limit-hit flag (mirrors `FA.limit_detect`).
@@ -78,13 +74,19 @@ macro_rules! ensure_connected {
 /// the boundary, then matches on this enum exhaustively. Replaces the
 /// previous untyped `validate_id` + `match id { _ => unreachable!(...) }`
 /// pattern so the compiler proves all id cases are handled.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, strum::EnumCount)]
 enum SwitchId {
     /// Id 0: input voltage (raw ADC count from `VS`).
     Voltage,
     /// Id 1: limit-hit flag (mirrors `FA.limit_detect`).
     Limit,
 }
+
+/// Number of switches advertised by this device. The design doc pins this at 2
+/// (id 0 = voltage, id 1 = limit-hit); any other id is out of range. Derived
+/// from [`SwitchId`]'s variant list, so the advertised `MaxSwitch` and the
+/// ids [`SwitchId::try_from`] accepts cannot disagree.
+const SWITCH_COUNT: usize = <SwitchId as strum::EnumCount>::COUNT;
 
 impl TryFrom<usize> for SwitchId {
     type Error = ASCOMError;
@@ -426,17 +428,30 @@ mod tests {
     fn switch_id_try_from_rejects_two() {
         let err = SwitchId::try_from(2).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-        assert!(
-            err.message.contains("Switch id 2 out of range"),
-            "got: {}",
-            err.message
-        );
+        // Operator-facing wording, pinned byte-for-byte: the upper bound is
+        // the advertised MaxSwitch, so a drift in the switch count shows up
+        // here rather than only in a client's log.
+        assert_eq!(err.message, "Switch id 2 out of range (valid: 0..2)");
     }
 
     #[test]
     fn switch_id_try_from_rejects_large_id() {
         let err = SwitchId::try_from(usize::MAX).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        // usize::MAX is width-dependent, so build the expected message rather
+        // than hard-coding a 64-bit literal; the "0..2" bound is the invariant.
+        assert_eq!(
+            err.message,
+            format!("Switch id {} out of range (valid: 0..2)", usize::MAX)
+        );
+    }
+
+    #[tokio::test]
+    async fn max_switch_reports_two_and_needs_no_connection() {
+        // `MaxSwitch = 2` is the design doc's Switch layout contract, and
+        // unlike every other Switch method this one has no connection guard.
+        let device = disconnected_device();
+        assert_eq!(device.max_switch().await.unwrap(), 2);
     }
 
     #[tokio::test]

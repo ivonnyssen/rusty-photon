@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use ascom_alpaca::api::Device;
 use ascom_alpaca::ASCOMResult;
 use async_trait::async_trait;
+use strum::VariantArray;
 use tracing::debug;
 
 use super::actions::ApParkAction;
@@ -128,7 +129,7 @@ impl Device for MountDevice {
     /// the design doc's
     /// [§Custom Actions for runtime control](../../../../docs/services/star-adventurer-gti.md#custom-actions-for-runtime-control).
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        let mut names: Vec<String> = ApParkAction::ALL
+        let mut names: Vec<String> = ApParkAction::VARIANTS
             .iter()
             .map(|action| action.name().to_string())
             .collect();

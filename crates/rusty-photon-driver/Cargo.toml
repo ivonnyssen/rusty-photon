@@ -24,6 +24,7 @@ workspace = true
 ascom-alpaca = { workspace = true, features = ["__anydevice", "server"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+strum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 rusty-photon-config = { workspace = true }

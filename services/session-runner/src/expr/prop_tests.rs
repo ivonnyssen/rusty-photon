@@ -20,21 +20,20 @@ fn fixed_now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 7, 3, 4, 0, 0).unwrap()
 }
 
-const BINOPS: &[BinOp] = &[
-    BinOp::Add,
-    BinOp::Sub,
-    BinOp::Mul,
-    BinOp::Div,
-    BinOp::Rem,
-    BinOp::Eq,
-    BinOp::Ne,
-    BinOp::Lt,
-    BinOp::Le,
-    BinOp::Gt,
-    BinOp::Ge,
-    BinOp::And,
-    BinOp::Or,
-];
+const BINOPS: &[BinOp] = <BinOp as strum::VariantArray>::VARIANTS;
+
+/// The operator pool every property draws from. An operator absent here is
+/// silently never generated, so no property covers it and nothing fails —
+/// which is why the pool is pinned against the operator surface itself,
+/// in declaration order.
+#[test]
+fn test_binops_pool_covers_every_operator_in_order() {
+    let syms: Vec<&str> = BINOPS.iter().map(|op| op.sym()).collect();
+    assert_eq!(
+        syms,
+        ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]
+    );
+}
 
 const UNOPS: &[UnOp] = &[UnOp::Not, UnOp::Neg];
 

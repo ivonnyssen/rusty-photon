@@ -14,6 +14,7 @@ use std::time::Duration;
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use rusty_photon_config::actions::{self, ApplyStatus, ConfigAction, ConfigurableDriver};
 use rusty_photon_service_lifecycle::ReloadSignal;
+use strum::VariantArray;
 use tracing::debug;
 
 /// Delay before firing the in-process reload, so the `config.apply` HTTP response
@@ -57,7 +58,7 @@ where
 /// context (ctx-less focused-test devices advertise none).
 pub fn supported_actions<D: ConfigurableDriver>(ctx: &Option<ConfigActionCtx<D>>) -> Vec<String> {
     if ctx.is_some() {
-        ConfigAction::ALL
+        ConfigAction::VARIANTS
             .iter()
             .map(|action| action.name().to_string())
             .collect()
@@ -193,6 +194,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn action_name_matching_is_case_sensitive() {
+        let ctx = ctx_with(FakeConfig::default(), PathBuf::from("/tmp/unused"));
+        for wrong_case in ["Config.Get", "CONFIG.GET", "config.Get"] {
+            let err = dispatch::<FakeDriver>(&ctx, wrong_case.into(), String::new())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
+                "{wrong_case:?} must not dispatch"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn missing_ctx_is_not_implemented() {
         let none: Option<ConfigActionCtx<FakeDriver>> = None;
         let err = dispatch::<FakeDriver>(&none, "config.get".into(), String::new())
@@ -204,7 +220,15 @@ mod tests {
     #[test]
     fn supported_actions_some_lists_all_none_empty() {
         let ctx = ctx_with(FakeConfig::default(), PathBuf::from("/tmp/unused"));
-        assert_eq!(supported_actions::<FakeDriver>(&ctx).len(), 3);
+        // These strings go out on the wire in SupportedActions.
+        assert_eq!(
+            supported_actions::<FakeDriver>(&ctx),
+            vec![
+                "config.get".to_string(),
+                "config.apply".to_string(),
+                "config.schema".to_string(),
+            ]
+        );
         let none: Option<ConfigActionCtx<FakeDriver>> = None;
         assert!(supported_actions::<FakeDriver>(&none).is_empty());
     }
