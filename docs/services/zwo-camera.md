@@ -588,13 +588,13 @@ EAF; those belong to the other zwo services.)
   `BayerOffsetX/Y` follow `ASI_CAMERA_INFO.BayerPattern`.
 - **ST2.** `ElectronsPerADU` returns the native `ASI_CAMERA_INFO.ElecPerADU`
   (a finite positive value), **not** `NOT_IMPLEMENTED` — read **live on every
-  call**, never from the `CameraInfo` cached at enumeration. The SDK scales this
-  field by the gain register: what it reports is the model's gain-0 figure
-  divided by `10^(gain/200)`, ASI gain being in 0.1 dB units (see *`ElecPerADU`
-  is gain-scaled* below). A cached value would freeze the property at whatever
-  gain the camera happened to hold when the service enumerated it and would not
-  move when a client changes `Gain` — which is precisely what a client reading
-  `ElectronsPerADU` for SNR or exposure math needs it to do.
+  call**, never from the `CameraInfo` cached at enumeration and never computed.
+  The SDK scales this field by the gain register, by a law that **differs per
+  model** (see *`ElecPerADU` is gain-scaled* below). A cached value would freeze
+  the property at whatever gain the camera happened to hold when the service
+  enumerated it and would not move when a client changes `Gain` — which is
+  precisely what a client reading `ElectronsPerADU` for SNR or exposure math
+  needs it to do.
 - **ST3.** `MaxADU` = `(2^BitDepth) - 1` from `ASI_CAMERA_INFO.BitDepth`.
 
 ### Pulse guiding
@@ -797,21 +797,29 @@ real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
 ### `ElecPerADU` is gain-scaled — reading it live (ST2)
 
 `ASI_CAMERA_INFO.ElecPerADU` is **not** a static per-model constant. The SDK
-stores the model's gain-0 figure in a per-model table and divides it by
-`10^(gain/200)` before handing it over — ASI gain is in 0.1 dB units, so the
-field tracks the gain register exactly. Measured on an ASI178MM (gain range
-0–510):
+stores the model's gain-0 figure in a per-model table and divides it by the
+camera's current gain before handing it over, so the field tracks the gain
+register. Measured across three bodies:
 
-| Gain | `ElecPerADU` | vs gain 0 |
-|---|---|---|
-| 0 | 0.916 | 0 dB |
-| 127 | 0.21227 | 12.70 dB |
-| 255 | 0.048629 | 25.50 dB |
-| 510 | 0.0025816 | 51.00 dB |
+| Camera | Gain range | `ElecPerADU` at gain 0 → max | Scaling law |
+|---|---|---|---|
+| ASI1600MM-Cool | 0–600 | 4.96 → 0.00496 | `10^(gain/200)` (0.1 dB units) — 60.000000 dB |
+| ASI178MM | 0–510 | 0.916 → 0.0025816 | `10^(gain/200)` — 51.000000 dB |
+| ASI120MC-S | 0–100 | 3.52 → 0.055 | **neither** — ÷3.125, ÷9, ÷64 at gain 25/50/100 |
 
-The gain-0 values are visible in the blob as float32 constants — `0.916f` for
-the ASI178 and `4.96f` for the ASI1600 — and 0.916 e⁻/ADU reconciles with the
-IMX178's physics (≈15 ke⁻ full well over a 14-bit ADC ≈ 0.92).
+The modern bodies follow ASI's 0.1 dB gain convention exactly. The legacy
+ASI120MC-S does not: its gain scale is 0–100 and the mapping is something else
+entirely (the 0.1 dB law would predict ÷1.33, ÷1.78, ÷3.16 at those gains).
+
+**That is the case for reading the value rather than computing it.** Any
+driver-side formula would have to be right for every model ZWO has ever shipped,
+and the ASI120MC-S alone proves there is no single formula. Reading live is
+law-agnostic — the driver never needs to know the mapping.
+
+The gain-0 values are visible in the blob as float32 constants (`4.96f` for the
+ASI1600, `0.916f` for the ASI178), and each reconciles with its sensor's physics
+— 0.916 e⁻/ADU against the IMX178's ≈15 ke⁻ over a 14-bit ADC ≈ 0.92, and
+3.52 e⁻/ADU against the ASI120's ≈14 ke⁻ over 12 bits.
 
 **This is what the driver got wrong.** `ElectronsPerADU` used to be served from
 the `CameraInfo` snapshot captured at enumeration, so it reported the value for
@@ -826,10 +834,13 @@ open-camera call, rather than the enumeration-index `ASIGetCameraProperty`).
 ASI1600MM-Cool, 0.00258 for the ASI178MM — that look absurd next to the
 Windows-side 4.96 for the same ASI1600, and were briefly read as a 1000×
 Linux/Windows SDK split. They are neither absurd nor a platform split: those
-cameras were simply sitting at maximum gain (600 and 510) during the Linux runs
-while the Windows run happened at gain 0. The ratios are exactly 60.000 dB and
-30.000 dB — gain deltas to eight significant figures, not a decimal-scaling bug.
-The figures in the validation records above are annotated accordingly.
+cameras were simply sitting at **maximum gain** (600 and 510) during the Linux
+runs, while the Windows readings were taken at gain 0 (ASI1600) and gain 210
+(ASI178). Driven back to gain 0 on Linux, the ASI1600 reports
+`4.960000038146973` — **bit-identical** to the Windows figure. The apparent
+1000× and √1000× ratios are exactly 60.000000 dB and 30.000000 dB, gain deltas
+to eight significant figures rather than decimal scaling. The figures in the
+validation records above are annotated with the gain they were taken at.
 
 There is consequently **no plausibility check on this value, and there must not
 be one**: at high gain a genuinely tiny `ElectronsPerADU` is correct, and

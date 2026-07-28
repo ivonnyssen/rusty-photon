@@ -7,8 +7,10 @@ Feature: Sensor geometry, type, and signal
   model and Monochrome otherwise, with BayerOffsetX / BayerOffsetY following
   the reported Bayer pattern (ST1). ElectronsPerADU is a native value from
   ASI_CAMERA_INFO.ElecPerADU, not NOT_IMPLEMENTED, and is read live because the
-  SDK scales it by the gain register: the reported figure is the model's gain-0
-  value divided by 10^(gain/200), ASI gain being in 0.1 dB units (ST2). MaxADU is
+  SDK scales it by the gain register, by a law that differs per model: modern
+  bodies use ASI's 0.1 dB units and divide the gain-0 figure by 10^(gain/200),
+  while the legacy ASI120MC-S scales differently over its 0-100 gain scale, so
+  the driver reads the value instead of computing it (ST2). MaxADU is
   (2^BitDepth) - 1, i.e. 65535 for a 16-bit sensor (ST3). The simulated
   ASI2600MM-Pro-Simulated camera is a 6248x4176 monochrome 16-bit sensor, but
   the reported CameraXSize is reduced to 6240 so the full frame divided by any

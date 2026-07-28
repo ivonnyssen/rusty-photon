@@ -1274,10 +1274,12 @@ mod tests {
 
     #[tokio::test]
     async fn electrons_per_adu_tracks_the_current_gain() {
-        // The SDK divides the model's gain-0 figure by 10^(gain/200) — ASI gain
-        // is in 0.1 dB units — so the property must follow a client's gain
-        // writes, not report the value cached at enumeration. Measured on an
-        // ASI1600: 4.96 e⁻/ADU at gain 0, 0.00496 at gain 600.
+        // The SDK scales the model's gain-0 figure by the gain register, so the
+        // property must follow a client's gain writes rather than report the
+        // value cached at enumeration. Measured on an ASI1600: 4.96 e⁻/ADU at
+        // gain 0, 0.00496 at gain 600. (The mock uses the 0.1 dB law those
+        // modern bodies follow; the driver itself assumes no law, since the
+        // legacy ASI120MC-S scales differently.)
         let device = connected_device(MockCameraHandle::default().with_signal(4.96, 12));
 
         device.set_gain(0).await.unwrap();

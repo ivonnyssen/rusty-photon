@@ -576,8 +576,9 @@ pub(crate) mod mock {
         }
 
         fn electrons_per_adu(&self) -> BackendResult<f32> {
-            // Mirrors the SDK: the model's gain-0 figure scaled by the gain
-            // register (0.1 dB units).
+            // Mirrors a modern body's SDK response: the gain-0 figure scaled by
+            // the gain register in 0.1 dB units. Real models differ (the legacy
+            // ASI120MC-S uses another law), hence the live read in the driver.
             let gain = *self.gain.lock();
             let scale = 10f64.powf(gain as f64 / 200.0);
             Ok((f64::from(self.info.e_per_adu) / scale) as f32)
