@@ -403,6 +403,25 @@ bazel build //...
 bazel test //...           # filters out tagged `requires-cargo` and `bdd`
 ```
 
+**Warnings are errors in CI, not locally.** `--config=ci` passes `-Dwarnings` to
+rustc for first-party code, so the CI Bazel jobs fail on any warning rather than
+printing it. That is what makes a warning firing on only one target OS a gate:
+`cargo clippy -D warnings` runs on ubuntu only, and CI builds all three platforms.
+A plain local `bazel build //...` does *not* deny — the pre-commit hook already
+runs `cargo clippy -- -D warnings` (a superset of rustc's lints) for your host
+platform, and a Linux host cannot build the macOS/Windows targets where the
+CI-only gap actually lives. Third-party crates are exempt either way:
+`crate_universe` gives every crates.io target `--cap-lints=allow`, a hard ceiling
+`-Dwarnings` cannot lift.
+
+To reproduce a CI warning failure locally, add the flags to a plain build rather
+than `--config=ci` (which also disables your disk cache):
+
+```bash
+bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
+            --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings //...
+```
+
 If you added a crates.io dependency, refresh the Bazel index:
 
 ```bash
