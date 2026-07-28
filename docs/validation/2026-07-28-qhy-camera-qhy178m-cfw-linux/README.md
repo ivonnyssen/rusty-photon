@@ -63,8 +63,6 @@ throughout a commanded move, and 0.00 s again once it lands.
 
 ## Windows
 
-Not recorded. The Windows leg of this validation is blocked by an exposure that
-never leaves the `Exposing` state within ConformU's 10 s window, after which the
-camera stops enumerating until it is re-plugged. The camera's `alpacaprotocol`
-suite passes there (identical 0/0/16 verdict), but `conformance` does not
-complete, so there is no successful run to record.
+The same camera, wheel and commit pass equally cleanly on Windows 11 —
+[2026-07-28 Windows record](../2026-07-28-qhy-camera-qhy178m-cfw-windows/README.md),
+with identical `UniqueID`s and the identical set of 16 informational items.
