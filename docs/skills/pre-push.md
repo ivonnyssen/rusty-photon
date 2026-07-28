@@ -188,28 +188,27 @@ a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
 each variant its own target and repeat `crate_features` on it, because
 `rust_doc_test` does not inherit them from the crate it wraps.
 
-**A RUNNABLE doctest cannot be a Bazel target on Windows yet — it hits
-`MAX_PATH`.** `no_run` examples are emitted as metadata and never linked (rustdoc
-reports them `- compile ... ok`), but one that actually runs invokes `link.exe`,
-which dies on `LNK1181: cannot open input file …libpanic_unwind-….rlib`. The file
-is present and readable; the path is 261 characters — one over the limit —
-because `rust_doc_test` spells sysroot inputs relative to the runfiles tree,
-whose prefix alone (`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123. The
-tell is a pass/fail split between files in the *same directory*:
-`libstd-….rlib` at 252 resolves, `libpanic_unwind-….rlib` at 261 does not.
+**A RUNNABLE doctest on Windows hits `MAX_PATH` without the vendored rustdoc
+patch.** `no_run` examples are emitted as metadata and never linked (rustdoc
+reports them `- compile ... ok`), but one that actually runs invokes `link.exe`.
+Before the fix that died on `LNK1181: cannot open input file
+…libpanic_unwind-….rlib`: the file was present and readable, but its path was
+261 characters — one over the limit — because `rust_doc_test` spells sysroot
+inputs relative to the runfiles tree, whose prefix alone
+(`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123. The tell was a
+pass/fail split between files in the *same directory*: `libstd-….rlib` at 252
+resolved, `libpanic_unwind-….rlib` at 261 did not.
 
-The job's "Enable long paths" step does not help: `LongPathsEnabled` is opt-in
-per binary via a `longPathAware` manifest, and `link.exe` does not carry one
-(the step's comment scopes it to `cl.exe`, which does). So on Windows, treat a
-"cannot open" whose path is near 260 characters as a length problem and
-**measure it** — the file existing proves nothing.
+`third_party/patches/rustdoc_test_windows_external_repo_path.patch` now resolves
+`--sysroot=` through the runfiles manifest to its execroot target, dropping that
+path to 193. If you add a doctest target and see `LNK1181` again, the budget has
+run out somewhere else — measure the path before theorising.
 
-The qhyccd-rs targets are therefore `target_compatible_with`-skipped on Windows
-(Linux + macOS still gate them, and the Windows `cargo test --doc` job here still
-covers them off-PR). Keep new doctest targets `no_run`-only, or expect the same
-skip. Tracked in issue #739, which records the measurements and the fix
-directions — the workable one being to resolve such paths through the runfiles
-manifest to their execroot target (`C:\b\external\…`, 127 characters).
+Two things generalise. The job's "Enable long paths" step does **not** cover
+this: `LongPathsEnabled` is opt-in per binary via a `longPathAware` manifest, and
+`link.exe` carries none (the step's own comment scopes it to `cl.exe`, which
+does). And on Windows a "cannot open" whose path is near 260 characters is a
+length problem — **measure it**; the file existing proves nothing.
 
 ### safety.yml
 

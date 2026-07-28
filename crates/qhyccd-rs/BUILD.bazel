@@ -137,43 +137,23 @@ rust_test(
 # these run wherever the unit test does — the SDK-provisioned bazel.yml /
 # bazel-coverage.yml jobs.
 #
-# NOT on Windows (see _WINDOWS_SKIP). Windows doctests stay covered off-PR by
-# test.yml's `cargo test --locked --workspace --all-features --doc`.
-_WINDOWS_SKIP = select({
-    # `no_run` doctests are emitted as metadata and never linked (rustdoc reports
-    # them as `- compile ... ok`), which is why the all-`no_run`
-    # //crates/rusty-photon-service-lifecycle:..._doc_test has always been green
-    # here. qhyccd-rs has one RUNNABLE example (the simulated-SDK walkthrough in
-    # lib.rs), making it the first doctest under Bazel to invoke link.exe:
-    #
-    #   LINK : fatal error LNK1181: cannot open input file
-    #   'external\rules_rust++rust+rw-…_tools\rust_toolchain\…\libpanic_unwind-….rlib'
-    #
-    # It is MAX_PATH, measured on CI (issue #739). The file is present, non-symlink
-    # and readable; its path is 261 characters, one over the limit, because
-    # rust_doc_test spells sysroot inputs relative to the runfiles tree and that
-    # prefix alone (…_doc_test.rustdoc_test.bat.runfiles\_main) costs 123. Hence
-    # the pass/fail split inside ONE directory: libstd-….rlib at 252 resolves,
-    # libpanic_unwind-….rlib at 261 does not. bazel.yml's LongPathsEnabled step
-    # cannot help — that opt-in is per binary via a `longPathAware` manifest, which
-    # link.exe lacks (the step's own comment scopes it to cl.exe).
-    #
-    # #739 tracks the fix: resolve such inputs through the runfiles manifest to
-    # their execroot target (C:\b\external\… = 127 chars), extending the resolver
-    # in //third_party/patches:rustdoc_test_windows_external_repo_path.
-    "@platforms//os:windows": ["@platforms//:incompatible"],
-    "//conditions:default": [],
-})
-
+# Windows needed a MAX_PATH fix before these could run there: rust_doc_test
+# spells sysroot inputs relative to the runfiles tree, whose prefix alone costs
+# ~123 chars, so the crate's one RUNNABLE example (the simulated-SDK walkthrough
+# in lib.rs) — the first doctest under Bazel to invoke link.exe — died on
+# `LNK1181: cannot open input file …libpanic_unwind-….rlib` at 261 characters,
+# one over the limit, while libstd-….rlib at 252 in the same directory resolved.
+# //third_party/patches:rustdoc_test_windows_external_repo_path now resolves
+# `--sysroot=` through the runfiles manifest to its execroot target, which puts
+# every std rlib back under the limit. `no_run` examples never link, which is why
+# the all-`no_run` service-lifecycle doc test was always green there.
 rust_doc_test(
     name = "qhyccd-rs_doc_test",
     crate = ":qhyccd-rs",
-    target_compatible_with = _WINDOWS_SKIP,
 )
 
 rust_doc_test(
     name = "qhyccd-rs_sim_doc_test",
     crate = ":qhyccd-rs_sim",
     crate_features = ["simulation"],
-    target_compatible_with = _WINDOWS_SKIP,
 )

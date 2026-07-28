@@ -1,6 +1,6 @@
 --- a/rust/private/rustdoc/rustdoc_test_writer.rs
 +++ b/rust/private/rustdoc/rustdoc_test_writer.rs
-@@ -226,10 +226,46 @@
+@@ -226,10 +226,80 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -18,15 +18,26 @@
 +        // execroot target instead, sidestepping the tree; the `external/`
 +        // rewrite remains as the fallback when no manifest exists, and every
 +        // miss prints a Write-Warning so a failure names the exact gap.
++        //
++        // RF also rewrites `--sysroot=<dir>` (via RFD). rustc expands that
++        // directory into the std rlib paths it hands the linker, and spelled
++        // relative to the runfiles tree those exceed MAX_PATH: the tree prefix
++        // alone costs ~123 chars, putting `libpanic_unwind-<hash>.rlib` at 261
++        // and failing `LNK1181: cannot open input file` while `libstd-<hash>`
++        // at 252 in the same directory resolves. link.exe carries no
++        // `longPathAware` manifest, so the runner image's LongPathsEnabled does
++        // not reach it. Resolving the directory through the manifest yields the
++        // execroot target (~155 chars), which puts every std rlib comfortably
++        // under the limit.
 +        .map(|arg| format!("(RF '{arg}')"))
          .collect::<Vec<String>>()
          .join(" ");
  
 +    let rf_fn = concat!(
-+        "function RF($p) { ",
-+        "if ($p -notmatch '^\\.\\.[\\\\/]') { return $p } ; ",
-+        "$rel = $p.Substring(3) -replace '\\\\','/' ; ",
-+        "if ($null -eq $script:RFM) { ",
++        // RFI: parse the runfiles MANIFEST into $script:RFM once (key -> absolute
++        // target). Shared by RF and RFD.
++        "function RFI { ",
++        "if ($null -ne $script:RFM) { return } ; ",
 +        "$script:RFM = @{} ; ",
 +        "$mf = $env:RUNFILES_MANIFEST_FILE ; ",
 +        "if ((-not $mf -or -not (Test-Path $mf)) -and $env:TEST_SRCDIR) { $mf = Join-Path $env:TEST_SRCDIR 'MANIFEST' } ; ",
@@ -35,6 +46,29 @@
 +        "$i = $l.IndexOf(' ') ; ",
 +        "if ($i -gt 0) { $script:RFM[$l.Substring(0, $i)] = $l.Substring($i + 1) } ",
 +        "} } } ; ",
++        // RFD: resolve a runfiles-relative DIRECTORY to its absolute target. The
++        // manifest maps files only, so match any entry beneath the directory and
++        // trim the shared suffix off its target.
++        "function RFD($d) { ",
++        "$rel = $d -replace '\\\\','/' ; ",
++        "if ($rel.StartsWith('../')) { $rel = $rel.Substring(3) } ",
++        "elseif ($rel.StartsWith('external/')) { $rel = $rel.Substring(9) } ",
++        "else { return $d } ; ",
++        "RFI ; ",
++        "$pfx = $rel + '/' ; ",
++        "foreach ($k in $script:RFM.Keys) { ",
++        "if ($k.StartsWith($pfx)) { ",
++        "$v = $script:RFM[$k] -replace '\\\\','/' ; ",
++        "$sfx = $k.Substring($rel.Length) ; ",
++        "if ($v.EndsWith($sfx)) { return $v.Substring(0, $v.Length - $sfx.Length) } ",
++        "} } ; ",
++        "Write-Warning ('no runfiles manifest entry under directory ' + $rel) ; ",
++        "return $d } ; ",
++        "function RF($p) { ",
++        "if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) } ; ",
++        "if ($p -notmatch '^\\.\\.[\\\\/]') { return $p } ; ",
++        "$rel = $p.Substring(3) -replace '\\\\','/' ; ",
++        "RFI ; ",
 +        "$t = $script:RFM[$rel] ; ",
 +        "if ($t) { ",
 +        "if (Test-Path $t) { return $t } ; ",
@@ -48,7 +82,7 @@
      let content = [
          "@ECHO OFF".to_owned(),
          "".to_owned(),
-@@ -239,7 +275,7 @@
+@@ -239,7 +309,7 @@
          "powershell.exe -c \"if (!(Test-Path .\\external)) { New-Item -Path .\\external -ItemType SymbolicLink -Value ..\\ }\""
              .to_owned(),
          "".to_owned(),
