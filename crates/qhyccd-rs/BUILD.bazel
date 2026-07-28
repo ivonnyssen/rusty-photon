@@ -157,7 +157,10 @@ rust_doc_test(
 # cannot ride a batch line — cmd.exe tracks quote state without understanding any
 # escape — so the same patch puts the Windows runner's command in a companion
 # .ps1 invoked via `powershell -File`, where a single-quoted argument carries `"`
-# literally. That is what lets this target run on Windows at all.
+# literally, and re-encodes the quotes as `\"` for PowerShell's native-command
+# marshalling (which would otherwise paste them into the child's command line
+# unescaped for the CRT parser to strip). That is what lets this target run on
+# Windows at all.
 rust_doc_test(
     name = "qhyccd-rs_sim_doc_test",
     crate = ":qhyccd-rs_sim",

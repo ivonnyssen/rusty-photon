@@ -212,8 +212,11 @@ understanding any escape (`\"` still toggles it), so an inner quote ends a
 both as `invalid --cfg argument` and as a silent exit-1 with a completely empty
 test log. The vendored patch therefore writes the Windows runner's command into
 a companion `.ps1` invoked via `powershell -File`, where single-quoted arguments
-carry `"` literally and cmd.exe never parses them; that is what lets the
-qhyccd-rs sim doctest target run on Windows.
+carry `"` literally and cmd.exe never parses them. One layer survives even
+that: PowerShell 5.1 marshals arguments to a native child with embedded `"`
+unescaped, so the child's CRT parser strips them — the runner's `CRT()`
+function re-encodes them as `\"` per MSVCRT rules just before that hop. Both
+together are what let the qhyccd-rs sim doctest target run on Windows.
 
 **The runner also resolves its `--arg-file` paths through the runfiles
 manifest.** windows-latest intermittently leaves a build-script

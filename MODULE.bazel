@@ -107,9 +107,14 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    --cfg argument` error, or a silent exit-1 with an empty log once the
 #    preamble shifted where the quote landed); and a batch line caps at 8191
 #    chars. In a .ps1, PowerShell parses the file itself: single-quoted
-#    arguments carry `"` literally and no line limit applies. This is what lets
-#    qhyccd-rs's sim doctest target (the only one with crate_features) run on
-#    Windows.
+#    arguments carry `"` literally and no line limit applies. One quoting
+#    layer remains even then — PowerShell 5.1 marshals args to a native child
+#    by pasting the string into its command line with embedded `"` unescaped,
+#    so the child's CRT parser strips them (CI-proven: process_wrapper
+#    received `feature=simulation`) — which the runner's CRT() function
+#    handles by encoding `"` as `\"` per MSVCRT rules just before that hop.
+#    This is what lets qhyccd-rs's sim doctest target (the only one with
+#    crate_features) run on Windows.
 #
 #    Finally, RF() resolves `external/`-spelled argv elements — the `--arg-file`
 #    values naming build-script `_bs.linksearchpaths` outputs — through the

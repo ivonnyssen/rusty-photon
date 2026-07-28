@@ -33,7 +33,7 @@
          optional_output_params_file,
          action_argv,
      }
-@@ -204,17 +216,30 @@
+@@ -204,17 +216,40 @@
  }
  
  /// Write a windows compatible test runner
@@ -50,6 +50,16 @@
 +/// exists — PowerShell parses the file itself, where a single-quoted string
 +/// carries `"` literally and the only escape needed is doubling embedded
 +/// single quotes.
++///
++/// A third quoting layer remains even then: Windows PowerShell 5.1 marshals
++/// arguments to a NATIVE child by pasting the string into the child's command
++/// line raw — embedded `"` are not escaped — so the child's CRT parser
++/// consumes them and process_wrapper would still see `feature=simulation`.
++/// The CRT() function in the script template encodes such values per MSVCRT
++/// reverse-parsing rules (`"` becomes `\"`, backslash runs before a quote
++/// double) right before the native hop; process_wrapper then parses back the
++/// exact value, and Rust's std::process::Command re-escapes correctly when it
++/// spawns rustdoc, so no further hop can corrupt it.
  fn write_test_runner_windows(
      path: &Path,
 +    ps1_path: &Path,
@@ -69,7 +79,7 @@
  
      let argv_str = argv
          .iter()
-@@ -226,20 +251,143 @@
+@@ -226,20 +261,160 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -99,7 +109,11 @@
 +        // not reach it. Resolving the directory through the manifest yields
 +        // the execroot target (~155 chars), which puts every std rlib
 +        // comfortably under the limit.
-+        .map(|arg| format!("(RF {})", ps_quote(&arg)))
++        //
++        // CRT() wraps every resolved value because PowerShell 5.1's native
++        // marshalling passes embedded `"` into the child's command line
++        // unescaped (see the function-level docs above).
++        .map(|arg| format!("(CRT (RF {}))", ps_quote(&arg)))
          .collect::<Vec<String>>()
          .join(" ");
  
@@ -153,6 +167,19 @@
 +    return $d
 +}
 +
++# Windows PowerShell 5.1 marshals arguments to native commands by pasting the
++# string into the child's command line without escaping embedded quotes, so
++# the child's CRT parser would strip them. Encode per MSVCRT reverse-parsing
++# rules: each `"` becomes `\"` with any backslash run before it doubled; when
++# the value contains whitespace PowerShell adds surrounding quotes, so a
++# trailing backslash run must double too or it would swallow the closing one.
++function CRT($s) {
++    if ($s -notmatch '"') { return $s }
++    $s = $s -replace '(\\*)"','$1$1\"'
++    if ($s -match '\s') { $s = $s -replace '(\\+)$','$1$1' }
++    return $s
++}
++
 +# Resolve one argv element: --sysroot= via RFD, runfiles-relative paths via
 +# the manifest, anything else untouched.
 +function RF($p) {
@@ -201,8 +228,7 @@
 +        // both must fail the test rather than pass it.
 +        "if ($null -eq $LASTEXITCODE) { exit 1 }".to_owned(),
 +        "exit $LASTEXITCODE".to_owned(),
-         "".to_owned(),
--        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
++        "".to_owned(),
 +    ]);
 +
 +    fs::write(ps1_path, ps1_lines.join("\n")).expect("Failed to write test runner script");
@@ -214,13 +240,14 @@
 +
 +    let content = [
 +        "@ECHO OFF".to_owned(),
-+        "".to_owned(),
+         "".to_owned(),
+-        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
 +        format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{ps1_name}\""),
 +        "exit /b %ERRORLEVEL%".to_owned(),
          "".to_owned(),
      ];
  
-@@ -266,14 +414,29 @@
+@@ -266,14 +441,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -251,7 +278,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +450,11 @@
+@@ -287,5 +477,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  
