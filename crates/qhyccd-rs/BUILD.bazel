@@ -1,5 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
@@ -113,4 +113,67 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# Doctests, ONE TARGET PER VARIANT. rules_rust runs no doctests unless a
+# rust_doc_test target declares them, so without these the crate's ~55 examples
+# were only ever compiled by the nightly Cargo safety net.
+#
+# Both variants are covered because the public API forks on the `simulation`
+# feature (`Camera::new` only without it, `Camera::new_simulated` only with it)
+# while most examples hang off items that are NOT themselves feature-gated —
+# rustdoc collects those in both builds, so an example is only proven correct
+# where it is actually compiled. Covering one variant would let an example that
+# names the other's API stay green here and break the nightly instead.
+#
+# `crate_features` must be repeated on the sim target for the same reason as on
+# the rust_test above, and it bites harder here: rust_doc_test builds its own
+# CrateInfo from this attribute and does NOT inherit the wrapped crate's
+# features, so a bare `crate = ":qhyccd-rs_sim"` has rustdoc COLLECT the
+# non-simulation example set and then compile it against the simulated rlib —
+# every feature-gated example fails on an API that isn't there.
+#
+# Both variants link the SDK (simulation removes the camera, not the link), so
+# these run wherever the unit test does — the SDK-provisioned bazel.yml /
+# bazel-coverage.yml jobs.
+#
+# NOT on Windows (see _WINDOWS_SKIP). Windows doctests stay covered off-PR by
+# test.yml's `cargo test --locked --workspace --all-features --doc`.
+_WINDOWS_SKIP = select({
+    # `no_run` doctests are emitted as metadata and never linked (rustdoc reports
+    # them as `- compile ... ok`), which is why the all-`no_run`
+    # //crates/rusty-photon-service-lifecycle:..._doc_test has always been green
+    # here. qhyccd-rs has one RUNNABLE example (the simulated-SDK walkthrough in
+    # lib.rs), making it the first doctest under Bazel to invoke link.exe — and it
+    # cannot open the sysroot's std rlibs:
+    #
+    #   LINK : fatal error LNK1181: cannot open input file
+    #   'external\rules_rust++rust+rw-…_tools\rust_toolchain\…\libpanic_unwind-….rlib'
+    #
+    # The files ARE in runfiles (rust_doc_test puts the compile action's inputs in
+    # `transitive_files`; the manifest for this target lists all 54 std rlibs).
+    # What breaks is how the path is SPELLED: the generated runner passes
+    # `--sysroot=external/<repo>/rust_toolchain`, execroot-relative, resolvable
+    # only through the `external -> ../` symlink the runner drops in its runfiles
+    # dir — and the generated sysroot is itself a bazel-out symlink farm, so the
+    # entry is a symlink to a symlink. Same failure mode as
+    # //third_party/patches:rustdoc_test_windows_external_repo_path, which is why
+    # that patch resolves runner argv through the runfiles manifest instead; the
+    # sysroot escapes it by reaching link.exe through rustdoc, not the argv.
+    # Issue #739 tracks extending that resolver to absolutize `--sysroot=`.
+    "@platforms//os:windows": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
+rust_doc_test(
+    name = "qhyccd-rs_doc_test",
+    crate = ":qhyccd-rs",
+    target_compatible_with = _WINDOWS_SKIP,
+)
+
+rust_doc_test(
+    name = "qhyccd-rs_sim_doc_test",
+    crate = ":qhyccd-rs_sim",
+    crate_features = ["simulation"],
+    target_compatible_with = _WINDOWS_SKIP,
 )

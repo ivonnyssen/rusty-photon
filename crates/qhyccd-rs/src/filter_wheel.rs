@@ -14,10 +14,15 @@ pub struct FilterWheel {
 impl FilterWheel {
     /// Creates a new instance of the filter wheel. The Sdk automatically finds all filter wheels and provides them in its `filter_wheels()` iterator. Creating
     /// a filter wheel manually should only be needed for rare cases.
+    ///
+    /// The wheel must be built from a camera the SDK handed out: it shares that
+    /// camera's backend, so both act on the same device.
     /// # Example
     /// ```no_run
-    /// use qhyccd_rs::{Sdk, Camera, FilterWheel};
-    /// let fw = FilterWheel::new(Camera::new("filter wheel id from sdk".to_string()));
+    /// use qhyccd_rs::{FilterWheel, Sdk};
+    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let camera = sdk.cameras().last().expect("no camera found");
+    /// let fw = FilterWheel::new(camera.clone());
     /// println!("FilterWheel: {:?}", fw);
     /// ```
     pub fn new(camera: Camera) -> Self {

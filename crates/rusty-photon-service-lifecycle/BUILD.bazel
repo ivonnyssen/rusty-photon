@@ -90,11 +90,12 @@ rust_test(
     }),
 )
 
-# Doctests. rusty-photon-service-lifecycle is the only workspace crate with
-# runnable (`no_run`) doctests today — the ServiceRunner usage examples in
-# lib.rs and runner.rs. `cargo test --all-features --doc` compiles+links them
-# (a required CI gate); rust_doc_test is the Bazel equivalent, since rules_rust
-# runs no doctests unless a rust_doc_test target declares them.
+# Doctests — the ServiceRunner usage examples in lib.rs and runner.rs.
+# `cargo test --all-features --doc` compiles+links them in the nightly Cargo
+# safety net; rust_doc_test is the Bazel equivalent, since rules_rust runs no
+# doctests unless a rust_doc_test target declares them. See
+# //crates/qhyccd-rs for the other doctest targets (and the feature gotcha that
+# applies whenever the documented crate has a `crate_features` variant).
 rust_doc_test(
     name = "rusty-photon-service-lifecycle_doc_test",
     crate = ":rusty-photon-service-lifecycle",

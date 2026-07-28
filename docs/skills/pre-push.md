@@ -179,6 +179,30 @@ runs `--workspace` (no narrowing job).
 This workflow does not collect coverage — `bazel coverage` (bazel-coverage.yml)
 is the sole coverage source.
 
+**Doctests are the one test kind Bazel does not pick up on its own.** rules_rust
+runs none unless a `rust_doc_test` target declares them, so only the crates that
+have one — `rusty-photon-service-lifecycle` and `qhyccd-rs` (real + sim) — are in
+the per-PR gate. Every other crate's examples are proven here, off-PR: a broken
+example lands on main and surfaces in the next nightly. When you add examples to
+a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
+each variant its own target and repeat `crate_features` on it, because
+`rust_doc_test` does not inherit them from the crate it wraps.
+
+**A RUNNABLE doctest cannot be a Bazel target on Windows yet.** `no_run` examples
+are emitted as metadata and never linked (rustdoc reports them
+`- compile ... ok`), but one that actually runs invokes `link.exe`, which dies on
+`LNK1181: cannot open input file …libpanic_unwind-….rlib`. The sysroot *is* in
+the test's runfiles; what breaks is that `rust_doc_test` spells it
+execroot-relative (`--sysroot=external/<repo>/rust_toolchain`), resolvable only
+through the `external -> ../` symlink the generated runner creates — the same
+resolution the vendored rustdoc Windows patch already works around for the
+runner's argv, which the sysroot escapes by reaching `link.exe` through
+rustdoc. The
+qhyccd-rs targets are therefore `target_compatible_with`-skipped on Windows
+(Linux + macOS still gate them, and the Windows `cargo test --doc` job here still
+covers them off-PR). Keep new doctest targets `no_run`-only, or expect the same
+skip.
+
 ### safety.yml
 
 Nightly + push-to-main + `workflow_dispatch` (never on PRs). Both sanitizers run at
