@@ -186,6 +186,63 @@ jobs:
             }
           }
 
+      # DIAGNOSTIC (issue #739) — DO NOT MERGE. Answers one question: is the
+      # sysroot rlib that link.exe cannot open (a) absent from the runfiles
+      # manifest, (b) in the manifest but missing/dangling on disk, or (c)
+      # present and readable? Each answer implies a different fix. Never fails
+      # the job; the real test step below reproduces the failure right after.
+      - name: DIAG 739 — windows doctest sysroot
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        run: |
+          set +e
+          REMOTE_FLAGS=(--config=remote-cache --remote_upload_local_results=false)
+
+          echo "::group::effective --remote_download_outputs"
+          bazel build --config=ci "${REMOTE_FLAGS[@]}" --announce_rc --nobuild \
+            //crates/qhyccd-rs:qhyccd-rs_doc_test 2>&1 |
+            grep -iE "remote_download_outputs|Inherited .*'(build|test)' options" | tail -20
+          echo "::endgroup::"
+
+          bazel build --config=ci "${REMOTE_FLAGS[@]}" //crates/qhyccd-rs:qhyccd-rs_doc_test
+          BIN=$(bazel info --config=ci "${REMOTE_FLAGS[@]}" bazel-bin 2>/dev/null)
+          BASE="$BIN/crates/qhyccd-rs/qhyccd-rs_doc_test.rustdoc_test.bat"
+          echo "bazel-bin=$BIN"
+
+          echo "::group::(a) manifest entries"
+          MAN="$BASE.runfiles_manifest"
+          echo "manifest: $MAN"; ls -la "$MAN"
+          echo "-- total sysroot rustlib entries: $(grep -c 'rust_toolchain/lib/rustlib' "$MAN")"
+          echo "-- panic_unwind:"; grep -i "libpanic_unwind" "$MAN" || echo "   (ABSENT FROM MANIFEST)"
+          echo "-- std (control):"; grep -i "rust_toolchain/lib/rustlib/.*/libstd-" "$MAN" || echo "   (ABSENT FROM MANIFEST)"
+          echo "::endgroup::"
+
+          echo "::group::(b)/(c) on-disk state in the runfiles tree"
+          SYS=$(ls -d "$BASE.runfiles"/rules_rust*rust*_tools/rust_toolchain/lib/rustlib/*/lib 2>/dev/null | head -1)
+          echo "sysroot lib dir: ${SYS:-(NOT FOUND)}"
+          if [[ -n "$SYS" ]]; then
+            echo "-- rlib count: $(ls -1 "$SYS"/*.rlib 2>/dev/null | wc -l)"
+            for pat in libpanic_unwind libstd- libcore-; do
+              for f in "$SYS"/$pat*.rlib; do
+                if [[ -e "$f" ]]; then
+                  printf '   %-22s exists=yes symlink=%s bytes=%s readable=%s\n' \
+                    "$pat" "$([[ -L $f ]] && echo yes || echo no)" \
+                    "$(wc -c < "$f" 2>/dev/null || echo ERR)" \
+                    "$(head -c 8 "$f" >/dev/null 2>&1 && echo yes || echo NO)"
+                else
+                  printf '   %-22s exists=NO (glob unmatched: %s)\n' "$pat" "$f"
+                fi
+              done
+            done
+          fi
+          echo "::endgroup::"
+
+          echo "::group::the failure itself"
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_output=all \
+            //crates/qhyccd-rs:qhyccd-rs_doc_test 2>&1 | tail -40
+          echo "::endgroup::"
+          exit 0
+
       - name: bazel test (fast)
         # The .bazelrc default filter includes bdd (for the local loop);
         # exclude it here explicitly to keep the fast unit + integration
