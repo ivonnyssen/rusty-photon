@@ -1,5 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
@@ -113,4 +113,36 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# Doctests, ONE TARGET PER VARIANT. rules_rust runs no doctests unless a
+# rust_doc_test target declares them, so without these the crate's ~55 examples
+# were only ever compiled by the nightly Cargo safety net.
+#
+# Both variants are covered because the public API forks on the `simulation`
+# feature (`Camera::new` only without it, `Camera::new_simulated` only with it)
+# while most examples hang off items that are NOT themselves feature-gated —
+# rustdoc collects those in both builds, so an example is only proven correct
+# where it is actually compiled. Covering one variant would let an example that
+# names the other's API stay green here and break the nightly instead.
+#
+# `crate_features` must be repeated on the sim target for the same reason as on
+# the rust_test above, and it bites harder here: rust_doc_test builds its own
+# CrateInfo from this attribute and does NOT inherit the wrapped crate's
+# features, so a bare `crate = ":qhyccd-rs_sim"` has rustdoc COLLECT the
+# non-simulation example set and then compile it against the simulated rlib —
+# every feature-gated example fails on an API that isn't there.
+#
+# Both variants link the SDK (simulation removes the camera, not the link), so
+# these run wherever the unit test does — the SDK-provisioned bazel.yml /
+# bazel-coverage.yml jobs.
+rust_doc_test(
+    name = "qhyccd-rs_doc_test",
+    crate = ":qhyccd-rs",
+)
+
+rust_doc_test(
+    name = "qhyccd-rs_sim_doc_test",
+    crate = ":qhyccd-rs_sim",
+    crate_features = ["simulation"],
 )

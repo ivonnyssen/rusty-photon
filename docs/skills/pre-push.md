@@ -179,6 +179,15 @@ runs `--workspace` (no narrowing job).
 This workflow does not collect coverage — `bazel coverage` (bazel-coverage.yml)
 is the sole coverage source.
 
+**Doctests are the one test kind Bazel does not pick up on its own.** rules_rust
+runs none unless a `rust_doc_test` target declares them, so only the crates that
+have one — `rusty-photon-service-lifecycle` and `qhyccd-rs` (real + sim) — are in
+the per-PR gate. Every other crate's examples are proven here, off-PR: a broken
+example lands on main and surfaces in the next nightly. When you add examples to
+a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
+each variant its own target and repeat `crate_features` on it, because
+`rust_doc_test` does not inherit them from the crate it wraps.
+
 ### safety.yml
 
 Nightly + push-to-main + `workflow_dispatch` (never on PRs). Both sanitizers run at
