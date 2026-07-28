@@ -74,13 +74,15 @@ test --test_env=PEBBLE_CHALLTESTSRV_PATH
 # the fork's OMNISIM_SETTINGS_DIR (release v0.5.0-467.2), which works on
 # every platform — XDG_CONFIG_HOME did not: .NET ignores it on macOS, and
 # the resulting shared store leaked session-runner's persisted telescope
-# site into rp's shards on macOS CI. The pool MUST be defined or the tagged tests
-# fail loudly with "Resource omnisim is not being tracked by the resource
-# manager"; defining it on `test` (inherited by `coverage`) keeps it present
-# for every test invocation, local and CI. --local_resources is a
-# scheduling-only flag, so it does not enter action keys and never perturbs
-# the remote cache.
-test --local_resources=omnisim=24
+# site into rp's shards on macOS CI. The pool MUST be defined or every
+# action carrying the tag fails loudly with "Resource omnisim is not being
+# tracked by the resource manager" — and since Bazel 9.2.0 that includes the
+# suites' COMPILE actions, which execute under plain `bazel build`, not just
+# the test-run actions. So the pool lives on `build` (inherited by `test`
+# and `coverage`), keeping it present for every invocation that can execute
+# a tagged action. --local_resources is a scheduling-only flag, so it does
+# not enter action keys and never perturbs the remote cache.
+build --local_resources=omnisim=24
 
 # --- Rust toolchain --------------------------------------------------------
 
