@@ -10,6 +10,7 @@ device, and the unmodified ConformU output.
 
 | Date | Service | Device | Platform | Commit | ConformU | Result | Record |
 |------|---------|--------|----------|--------|----------|--------|--------|
+| 2026-07-28 | qhy-camera | QHY178M + CFW | Fedora Linux 44 x86_64 | [`7d9d93c9`](https://github.com/ivonnyssen/rusty-photon/commit/7d9d93c9) | 4.3.0 | `alpacaprotocol` + `conformance` clean, **both** Camera and FilterWheel | [record](2026-07-28-qhy-camera-qhy178m-cfw-linux/README.md) |
 | 2026-07-27 | zwo-camera | ZWO ASI1600MM-Cool | Windows 11 (25H2) x64 | [`1f2b9d16`](https://github.com/ivonnyssen/rusty-photon/commit/1f2b9d16) | 4.4.0 | `alpacaprotocol` + `conformance` clean | [record](2026-07-27-zwo-camera-asi1600mm-cool-windows/README.md) |
 | 2026-07-27 | zwo-camera | ZWO ASI1600MM-Cool | Fedora Linux 44 x86_64 | [`e0281daf`](https://github.com/ivonnyssen/rusty-photon/commit/e0281daf) | 4.3.0 | `alpacaprotocol` + `conformance` clean | [record](2026-07-27-zwo-camera-asi1600mm-cool-linux/README.md) |
 | 2026-07-27 | svbony-camera | SVBONY SV605CC | Fedora Linux 44 x86_64 | [`bdd97201`](https://github.com/ivonnyssen/rusty-photon/commit/bdd97201) | 4.3.0 | `alpacaprotocol` + `conformance` clean | [record](2026-07-27-svbony-camera-sv605cc-linux/README.md) |
