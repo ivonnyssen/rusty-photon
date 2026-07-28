@@ -154,8 +154,8 @@ _WINDOWS_SKIP = select({
     # (an exec-configuration tool's runfiles-tree entry missing on a
     # remote-cache-hit Windows build) but a layer deeper: that patch resolves the
     # test runner's own argv, whereas the sysroot reaches link.exe through
-    # rustdoc's `--sysroot`, so rust_doc_test never puts it in runfiles. Fixing it
-    # is rules_rust-level work, tracked separately.
+    # rustdoc's `--sysroot`, so rust_doc_test never puts it in runfiles. Fixing
+    # it is rules_rust-level work — issue #739.
     "@platforms//os:windows": ["@platforms//:incompatible"],
     "//conditions:default": [],
 })
