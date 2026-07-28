@@ -482,7 +482,7 @@ pub(crate) mod mock {
     use super::*;
     use parking_lot::Mutex;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Duration;
 
     #[derive(Debug)]
@@ -777,6 +777,14 @@ pub(crate) mod mock {
         /// Make the post-open handshake (`get_number_of_filters`) fail, so the
         /// `connect` cleanup path (close-on-failed-handshake) can be tested.
         pub fail_handshake: AtomicBool,
+        /// Counts `get_position` calls, so a test can assert that a settled
+        /// wheel answers `Position` without the SDK round-trip.
+        pub get_position_calls: AtomicU32,
+        /// When set, `set_position` parks the target instead of applying it, so a
+        /// move can be observed in flight; [`complete_move`](Self::complete_move)
+        /// then lands it.
+        pub defer_move: AtomicBool,
+        pending: Mutex<Option<u32>>,
     }
 
     impl MockFilterWheelHandle {
@@ -787,6 +795,16 @@ pub(crate) mod mock {
                 filters,
                 position: Mutex::new(0),
                 fail_handshake: AtomicBool::new(false),
+                get_position_calls: AtomicU32::new(0),
+                defer_move: AtomicBool::new(false),
+                pending: Mutex::new(None),
+            }
+        }
+
+        /// Land a move parked by [`defer_move`](Self::defer_move).
+        pub fn complete_move(&self) {
+            if let Some(position) = self.pending.lock().take() {
+                *self.position.lock() = position;
             }
         }
     }
@@ -813,10 +831,15 @@ pub(crate) mod mock {
             Ok(self.filters)
         }
         fn get_position(&self) -> BackendResult<u32> {
+            self.get_position_calls.fetch_add(1, Ordering::SeqCst);
             Ok(*self.position.lock())
         }
         fn set_position(&self, position: u32) -> BackendResult<()> {
-            *self.position.lock() = position;
+            if self.defer_move.load(Ordering::SeqCst) {
+                *self.pending.lock() = Some(position);
+            } else {
+                *self.position.lock() = position;
+            }
             Ok(())
         }
     }
