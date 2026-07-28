@@ -190,9 +190,14 @@ each variant its own target and repeat `crate_features` on it, because
 
 **A RUNNABLE doctest cannot be a Bazel target on Windows yet.** `no_run` examples
 are emitted as metadata and never linked (rustdoc reports them
-`- compile ... ok`), but one that actually runs invokes `link.exe`, and
-`rust_doc_test` does not carry the Rust toolchain's sysroot in its runfiles —
-the link dies on `LNK1181: cannot open input file …libpanic_unwind-….rlib`. The
+`- compile ... ok`), but one that actually runs invokes `link.exe`, which dies on
+`LNK1181: cannot open input file …libpanic_unwind-….rlib`. The sysroot *is* in
+the test's runfiles; what breaks is that `rust_doc_test` spells it
+execroot-relative (`--sysroot=external/<repo>/rust_toolchain`), resolvable only
+through the `external -> ../` symlink the generated runner creates — the same
+resolution the vendored rustdoc Windows patch already works around for the
+runner's argv, which the sysroot escapes by reaching `link.exe` through
+rustdoc. The
 qhyccd-rs targets are therefore `target_compatible_with`-skipped on Windows
 (Linux + macOS still gate them, and the Windows `cargo test --doc` job here still
 covers them off-PR). Keep new doctest targets `no_run`-only, or expect the same
