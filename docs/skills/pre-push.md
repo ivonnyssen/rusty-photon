@@ -188,20 +188,28 @@ a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
 each variant its own target and repeat `crate_features` on it, because
 `rust_doc_test` does not inherit them from the crate it wraps.
 
-**A RUNNABLE doctest cannot be a Bazel target on Windows yet.** `no_run` examples
-are emitted as metadata and never linked (rustdoc reports them
-`- compile ... ok`), but one that actually runs invokes `link.exe`, which dies on
-`LNK1181: cannot open input file …libpanic_unwind-….rlib`. The sysroot *is* in
-the test's runfiles; what breaks is that `rust_doc_test` spells it
-execroot-relative (`--sysroot=external/<repo>/rust_toolchain`), resolvable only
-through the `external -> ../` symlink the generated runner creates — the same
-resolution the vendored rustdoc Windows patch already works around for the
-runner's argv, which the sysroot escapes by reaching `link.exe` through
-rustdoc. The
-qhyccd-rs targets are therefore `target_compatible_with`-skipped on Windows
+**A RUNNABLE doctest cannot be a Bazel target on Windows yet — it hits
+`MAX_PATH`.** `no_run` examples are emitted as metadata and never linked (rustdoc
+reports them `- compile ... ok`), but one that actually runs invokes `link.exe`,
+which dies on `LNK1181: cannot open input file …libpanic_unwind-….rlib`. The file
+is present and readable; the path is 261 characters — one over the limit —
+because `rust_doc_test` spells sysroot inputs relative to the runfiles tree,
+whose prefix alone (`…_doc_test.rustdoc_test.bat.runfiles\_main`) eats 123. The
+tell is a pass/fail split between files in the *same directory*:
+`libstd-….rlib` at 252 resolves, `libpanic_unwind-….rlib` at 261 does not.
+
+The job's "Enable long paths" step does not help: `LongPathsEnabled` is opt-in
+per binary via a `longPathAware` manifest, and `link.exe` does not carry one
+(the step's comment scopes it to `cl.exe`, which does). So on Windows, treat a
+"cannot open" whose path is near 260 characters as a length problem and
+**measure it** — the file existing proves nothing.
+
+The qhyccd-rs targets are therefore `target_compatible_with`-skipped on Windows
 (Linux + macOS still gate them, and the Windows `cargo test --doc` job here still
 covers them off-PR). Keep new doctest targets `no_run`-only, or expect the same
-skip.
+skip. Tracked in issue #739, which records the measurements and the fix
+directions — the workable one being to resolve such paths through the runfiles
+manifest to their execroot target (`C:\b\external\…`, 127 characters).
 
 ### safety.yml
 
