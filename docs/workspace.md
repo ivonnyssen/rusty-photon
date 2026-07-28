@@ -474,30 +474,51 @@ string is derived *from*:
 | Need | Reach for |
 |---|---|
 | An error type | `thiserror` — `#[error("…")]` |
-| A string interpolating runtime **fields** | `derive_more` — `#[display("{x}x{y}")]` |
-| A constant per **variant**, or variant iteration / count / discriminant | `strum` |
+| **Any** `Display` — a variant name, a per-variant literal, or a string interpolating runtime fields | `derive_more` — `#[display("…")]` |
+| Variant iteration, count, or discriminant conversion | `strum` — `VariantArray`, `EnumCount`, `FromRepr` |
+| An allocation-free `&'static str`, or a `Display` that must round-trip back through `FromStr` | `strum` — `IntoStaticStr`, `Display` + `EnumString` |
 | A parse error a **human or an ASCOM client reads** | hand-written `FromStr` + a bespoke error |
 
-`strum`'s derives emit only variant-derived constants, so anything
-interpolating a field is out of scope for it by construction. Its
-irreducible value here is the non-string half — `VariantArray`,
-`EnumCount`, `FromRepr` — which retires whole classes of drift: a
-hand-maintained `const ALL` array that silently omits a variant, and a
-hand-synced `COUNT` constant.
+`Display` alone is `derive_more`'s. A bare `#[derive(derive_more::Display)]`
+on a fieldless enum already renders the variant name, so it covers the
+plain case with no attributes at all, and it is the only one of the two
+that can interpolate a field. Reach past it to `strum` only for something
+`derive_more` cannot express:
+
+- **`VariantArray` / `EnumCount` / `FromRepr`** have no `derive_more`
+  counterpart, and they retire whole classes of drift: a hand-maintained
+  `const ALL` array that silently omits a variant, and a hand-synced
+  `COUNT` constant.
+- **`IntoStaticStr`** yields `&'static str`; `derive_more`'s only string
+  derive allocates. `ConfigAction::name()` is `self.into()` because of it.
+- **`Display` + `EnumString`** read the *same* `#[strum(serialize = "…")]`
+  attribute, so a wire string is written once and provably round-trips.
+  `derive_more`'s `Display` and `FromStr` are independent: `FromStr`
+  matches variant *names*, case-insensitively, and ignores `#[display]`
+  literals entirely. A type carrying `#[display("config.get")]` renders
+  `config.get` but parses only `Get`, `get`, or `GET` — the literal and
+  the accepted input drift apart with nothing to flag it. Any type whose
+  string must survive a round trip belongs to `strum`.
+
+A type that keeps `strum` for one of the above should take its `Display`
+from `strum` too. Splitting one type's wire string across
+`#[strum(serialize = …)]` and `#[display(…)]` creates two
+independently-editable copies of the same protocol name.
 
 **Never derive a string with a casing style.** `#[strum(serialize_all =
 …)]` and `derive_more`'s `#[display(rename_all = …)]` are banned on any
 type whose string crosses a compatibility boundary — a config-file
 value, an Alpaca `Action` name, an on-disk key, a device wire token.
-Pin every such string with an explicit per-variant `#[strum(serialize =
-"…")]`, which keeps the literal greppable in the source and keeps an
-identifier rename a pure refactor. Three converters are in play and they
-disagree: `strum` uses `heck`, `derive_more` uses `convert_case`, and
-`serde`'s `rename_all` agrees with `heck` — but only on some inputs.
-`ApPark0` snake-cases to `ap_park0` under `heck` (not `ap_park_0`), and
-`Uuid8` is `uuid8` under `heck` but `uuid_8` under `convert_case`. A
-type carrying both `#[serde(rename_all)]` and a strum casing attribute
-has two independent sources of truth that neither macro can cross-check.
+Pin every such string with an explicit per-variant literal —
+`#[strum(serialize = "…")]` or `#[display("…")]` — which keeps it
+greppable in the source and keeps an identifier rename a pure refactor.
+Three converters are in play and they disagree: `strum` uses `heck`,
+`derive_more` uses `convert_case`, and `serde`'s `rename_all` agrees
+with `heck` — but only on some inputs. `ApPark0` snake-cases to
+`ap_park0` under `heck` (not `ap_park_0`), and `Uuid8` is `uuid8` under
+`heck` but `uuid_8` under `convert_case`. A type carrying both
+`#[serde(rename_all)]` and a derive's own casing attribute has two
+independent sources of truth that neither macro can cross-check.
 
 Where a type's serde casing and its `Display` casing deliberately
 differ — `MonitorState`, `ServiceHealth` — that split is intentional
@@ -518,6 +539,14 @@ and documented on the type. Do not unify them.
 `strum` is pinned to the same minor `jsonschema` requires, so it adds
 zero packages to the graph; see the comment on the dependency in the
 workspace `Cargo.toml`.
+
+The workspace `derive_more` enables only `features = ["debug"]`, so a
+member wanting `Display` must add `features = ["display"]` to its own
+entry. Feature unification hides an omission: a whole-workspace `cargo`
+or `bazel` build resolves the feature via some *other* member and
+passes, while `cargo build -p <member>` fails `E0432`. Only the nightly
+per-package Cargo safety net builds members in isolation, so check a new
+`Display` with an explicit `-p` build before pushing.
 
 ## Feature Flags
 

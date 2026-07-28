@@ -64,7 +64,7 @@ pub struct Equipment {
 /// `Display` renders the variant name verbatim (`Mount`, `AO`, `Both`); the
 /// lowercase and get-specific PHD2 JSON-RPC spellings live in the inherent
 /// `to_*_api_string` methods.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
 pub enum CalibrationTarget {
     /// Primary mount
     Mount,
@@ -98,10 +98,10 @@ impl CalibrationTarget {
 ///
 /// `Display` renders the human-facing axis label (`RA`, `Dec`); the lowercase
 /// PHD2 JSON-RPC spelling lives in [`GuideAxis::to_api_string`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
 pub enum GuideAxis {
     /// Right Ascension axis
-    #[strum(to_string = "RA")]
+    #[display("RA")]
     Ra,
     /// Declination axis
     Dec,

@@ -39,17 +39,17 @@ pub enum RestartError {
 /// `Display` yields the lowercase label used in operator-facing notification
 /// text; serde yields the same lowercase strings as the `recovery` field of
 /// [`RestartReport`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, derive_more::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum Recovery {
     /// The platform's recovery check passed within the remaining budget.
-    #[strum(serialize = "healthy")]
+    #[display("healthy")]
     Healthy,
     /// The recovery check never passed before the budget elapsed.
-    #[strum(serialize = "timeout")]
+    #[display("timeout")]
     Timeout,
     /// The platform has no recovery check (Homebrew) — confirmation skipped.
-    #[strum(serialize = "skipped")]
+    #[display("skipped")]
     Skipped,
 }
 

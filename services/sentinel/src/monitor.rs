@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// `Display` yields the PascalCase variant name, which is the operator-facing
 /// text (`GET /api/status`, the dashboard, the Pushover `{new_state}`
 /// placeholder), while serde yields snake_case, which is the JSON wire form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorState {
     Safe,

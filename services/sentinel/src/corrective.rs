@@ -108,16 +108,16 @@ impl CorrectiveTarget {
 /// `Display` yields the lowercase label that appears in the ladder's
 /// `health=<label>` rung, which reaches operators verbatim in escalation
 /// notifications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
 pub enum Healthiness {
     /// A clean `200` — the service is alive (the *operation* is stuck).
-    #[strum(serialize = "responsive")]
+    #[display("responsive")]
     Responsive,
     /// Non-200, timeout, or transport error — the service itself is down.
-    #[strum(serialize = "unresponsive")]
+    #[display("unresponsive")]
     Unresponsive,
     /// No probe was possible (the family has no Alpaca device).
-    #[strum(serialize = "unknown")]
+    #[display("unknown")]
     Unknown,
 }
 

@@ -111,9 +111,11 @@ async-trait = "0.1.89"
 # direct-minimal-versions build (caught by the publish-readiness check).
 derive_more = { version = "2.1", features = ["debug"] }
 # Variant iteration / count / discriminant-conversion derives (`VariantArray`,
-# `EnumCount`, `FromRepr`) plus `&'static str` variant constants. `derive_more`
-# stays the tool for Display with interpolated fields; see docs/workspace.md
-# § Enum derive conventions for which crate to reach for.
+# `EnumCount`, `FromRepr`), allocation-free `&'static str` variant constants,
+# and the one `Display` case `derive_more` cannot cover: a string that must
+# round-trip back through `FromStr`, which `Display` + `EnumString` pin to a
+# single attribute. Plain `Display` is `derive_more`'s; see docs/workspace.md
+# § Enum derives: which crate to reach for.
 #
 # Keep this pinned to the same minor `jsonschema` requires (it depends on strum
 # with `features = ["derive"]`, so strum + strum_macros are already in the graph

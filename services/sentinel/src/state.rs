@@ -29,7 +29,7 @@ pub struct MonitorStatus {
 /// `Display` yields the PascalCase variant name, which is the operator-facing
 /// text (the dashboard badge), while serde yields lowercase, which is the
 /// JSON wire form served by `GET /api/services`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceHealth {
     /// Never probed, no derivable probe URL, or not in a probed run state.
