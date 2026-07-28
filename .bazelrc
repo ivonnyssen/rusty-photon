@@ -97,29 +97,6 @@ build --@rules_rust//rust/toolchain/channel=stable
 # `extra_rustc_flag` linker setting below rather than overriding it.
 build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
 
-# Warnings are errors, on every platform. `cargo clippy -- -D warnings` gates
-# PRs but runs on ubuntu only, so a warning that fires on exactly one target OS
-# — a `const` whose only users sit behind `#[cfg(target_os = ...)]`, say — is
-# invisible to it. Bazel builds all three platforms, so denying warnings here is
-# what makes them a gate rather than log noise.
-#
-# Third-party crates are unaffected: crate_universe generates
-# `rustc_flags = ["--cap-lints=allow"]` for every crates.io target, and
-# `--cap-lints` is a hard ceiling on the lint level, so `-Dwarnings` cannot
-# promote a dependency's warning into an error. This binds first-party code —
-# `services/*`, `crates/*` — only.
-#
-# Deliberately on the base `build` config, not `build:ci`: local
-# `bazel build //...` is documented as the per-PR gate run locally (AGENTS.md
-# rule 4), and that parity is only real if local and CI deny the same things.
-build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings
-
-# The same, for the exec configuration. `extra_rustc_flags` covers only
-# target-config compiles, so this second line is what reaches a first-party
-# proc-macro built as somebody's dependency — rusty-photon-i18n-derive compiles
-# exec-config for its consumers, and without this it would merely warn.
-build --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings
-
 # --- Platform-specific config -----------------------------------------------
 
 # Override rules_rust's default gold linker on Linux. rustc 1.94+ warns
@@ -218,6 +195,36 @@ build:ci --color=yes
 build:ci --show_timestamps
 build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
+
+# Warnings are errors in CI. `cargo clippy -- -D warnings` gates PRs but runs on
+# ubuntu only, so a warning that fires on exactly one target OS — a `const`
+# whose only users sit behind `#[cfg(target_os = ...)]`, say — is invisible to
+# it. CI builds all three platforms, so denying here is what makes such a
+# warning a gate rather than log noise.
+#
+# CI-only, deliberately. The pre-commit hook already runs
+# `cargo clippy -- -D warnings`, whose lint set is a superset of rustc's, so
+# host-platform warnings are caught locally at commit time; local `bazel build`
+# stays quiet and does not break an edit-build-test loop mid-refactor. The gap
+# that only CI can close is the one-target-OS warning, and no local config can
+# close it — a Linux host cannot build the macOS or Windows targets.
+#
+# Two settings, not one: `extra_rustc_flags` reaches target-config compiles,
+# `extra_exec_rustc_flags` reaches the exec configuration. Without the second, a
+# first-party proc-macro built as somebody's dependency (rusty-photon-i18n-derive
+# always compiles exec-config for its consumers) would merely warn.
+#
+# Third-party crates are unaffected either way: crate_universe generates
+# `rustc_flags = ["--cap-lints=allow"]` for every crates.io target, and
+# `--cap-lints` is a hard ceiling on the lint level that `-Dwarnings` cannot
+# lift. This binds first-party code — `services/*`, `crates/*` — only.
+#
+# To reproduce a CI warning failure locally, add these two flags to a plain
+# `bazel build` rather than `--config=ci` (which also disables the disk cache):
+#   bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
+#               --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings //...
+build:ci --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings
+build:ci --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings
 
 # No disk cache on CI. Runners are ephemeral — nothing persists
 # ~/.cache/bazel-disk-cache across jobs — and within a job one Bazel server
