@@ -64,6 +64,9 @@ pub const SERVICE_MANAGER_DIR_ENV: &str = "SENTINEL_SERVICE_MANAGER_DIR";
 
 /// Recovery checks are quick platform queries (`systemctl is-active`); bound
 /// each one like the HTTP probes so a wedged query cannot stall recovery.
+/// Only the systemd and SCM backends run one — Homebrew has no `is-active`
+/// equivalent, so macOS skips recovery confirmation and the bound with it.
+#[cfg(any(target_os = "linux", windows))]
 const RECOVERY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How a discovered unit is classified, deciding what supervision does with
