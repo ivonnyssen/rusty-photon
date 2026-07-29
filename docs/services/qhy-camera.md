@@ -471,7 +471,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
-  while target ≠ actual.
+  while target ≠ actual. A **settled** wheel answers from the slot cached at
+  connect or at the end of the last move — the SDK is read only while a move is
+  outstanding. `GetQHYCCDCFWStatus` is a serial round-trip through the camera and
+  measures **~260 ms** on a QHY178M + CFW3, which alone would put `Position` (and
+  `DeviceState`, which aggregates it) outside ASCOM's 100 ms target for a state
+  getter; nothing moves the wheel except `set_position`, so there is nothing to
+  re-read until one is in flight. INDI's `indi-qhy` is built the same way — its
+  `QueryFilter()` returns a cached member and `GetQHYCCDCFWStatus` runs only
+  while the move is `IPS_BUSY`.
 - **FW2.** `set_position` validates `index < filter_count` and commands the SDK;
   out-of-range returns `INVALID_VALUE`.
 - **FW3.** `FocusOffsets` returns zeros per filter in v0.

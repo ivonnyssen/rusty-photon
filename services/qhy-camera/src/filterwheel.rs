@@ -20,6 +20,10 @@ use crate::backend::FilterWheelHandle;
 struct FilterWheelState {
     number_of_filters: Mutex<Option<u32>>,
     target_position: Mutex<Option<u32>>,
+    /// Last slot read back from the SDK. Seeded at connect and refreshed only
+    /// while a move is in flight, so a settled `Position` costs no SDK call —
+    /// see [`QhyFilterWheelDevice::position`].
+    settled_position: Mutex<Option<u32>>,
 }
 
 /// One ASCOM FilterWheel device per discovered CFW.
@@ -55,6 +59,7 @@ impl QhyFilterWheelDevice {
             state: Arc::new(FilterWheelState {
                 number_of_filters: Mutex::new(None),
                 target_position: Mutex::new(None),
+                settled_position: Mutex::new(None),
             }),
         }
     }
@@ -95,12 +100,16 @@ impl QhyFilterWheelDevice {
             .get_number_of_filters()
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
         *self.state.number_of_filters.lock() = Some(count);
-        // Initial target = the current physical slot.
+        // Initial target = the current physical slot. This is also the one place
+        // an idle wheel reads the SDK: from here on the slot only changes when
+        // this driver commands it, so `position` serves the settled value from
+        // cache (FW1).
         let position = self
             .handle
             .get_position()
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
         *self.state.target_position.lock() = Some(position);
+        *self.state.settled_position.lock() = Some(position);
         debug!(filter_wheel = %self.unique_id, slots = count, "filter wheel connected");
         Ok(())
     }
@@ -196,12 +205,25 @@ impl FilterWheel for QhyFilterWheelDevice {
     async fn position(&self) -> ASCOMResult<Option<usize>> {
         self.ensure_connected()?;
         let target = (*self.state.target_position.lock()).ok_or(ASCOMError::NOT_CONNECTED)?;
+
+        // A settled wheel answers from cache. The SDK's CFW status query is a
+        // serial round-trip through the camera (~260 ms on a QHY178M + CFW3),
+        // which alone puts `Position` outside ASCOM's 100 ms target for a state
+        // getter — and nothing moves the wheel except `set_position` below, so
+        // there is nothing to re-read until a move is outstanding. INDI's
+        // `indi-qhy` takes the same approach: `QueryFilter()` returns a cached
+        // member and `GetQHYCCDCFWStatus` runs only while a move is in flight.
+        if *self.state.settled_position.lock() == Some(target) {
+            return Ok(Some(target as usize));
+        }
+
         let actual = self
             .handle
             .get_position()
             .map_err(|_| ASCOMError::INVALID_OPERATION)?;
         // `None` is the ASCOM "moving" sentinel: target not yet reached.
         if actual == target {
+            *self.state.settled_position.lock() = Some(actual);
             Ok(Some(actual as usize))
         } else {
             Ok(None)
@@ -242,6 +264,48 @@ mod tests {
         let device = QhyFilterWheelDevice::new(handle, filter_names, None);
         device.connect().unwrap();
         device
+    }
+
+    #[tokio::test]
+    async fn a_settled_position_is_served_without_an_sdk_read() {
+        // The SDK's CFW status query is a serial round-trip through the camera
+        // (~260 ms on a QHY178M + CFW3), which alone puts `Position` outside
+        // ASCOM's 100 ms target for a state getter. Nothing moves the wheel but
+        // this driver, so a settled read must not reach the SDK at all.
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().unwrap();
+
+        let after_connect = handle.get_position_calls.load(Ordering::SeqCst);
+        for _ in 0..5 {
+            assert_eq!(device.position().await.unwrap(), Some(0));
+        }
+        assert_eq!(
+            handle.get_position_calls.load(Ordering::SeqCst),
+            after_connect
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outstanding_move_polls_the_sdk_until_it_settles() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().unwrap();
+
+        device.set_position(3).await.unwrap();
+        // In flight: the ASCOM moving sentinel, and the driver is reading the SDK.
+        let before = handle.get_position_calls.load(Ordering::SeqCst);
+        assert_eq!(device.position().await.unwrap(), None);
+        assert!(handle.get_position_calls.load(Ordering::SeqCst) > before);
+
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+
+        // Settled again, so reads stop touching the SDK.
+        let settled = handle.get_position_calls.load(Ordering::SeqCst);
+        assert_eq!(device.position().await.unwrap(), Some(3));
+        assert_eq!(handle.get_position_calls.load(Ordering::SeqCst), settled);
     }
 
     #[tokio::test]
