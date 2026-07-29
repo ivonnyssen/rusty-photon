@@ -146,7 +146,7 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    tolerance affects **display only** and never drives target identity
    (Decision 3). Because multiple framings of one object are first-class,
    the generated `display_name` disambiguates by **offset from the
-   catalog centroid**, not raw coordinates: `"NGC 7000 +21′E −8′N"` reads
+   catalog centroid**, not raw coordinates: `"NGC 7000 +8′E −4′N"` reads
    as *how this framing differs*, which is what the operator composed
    (the cone-search already computes the separation vector). The plain
    name is kept when this is the only target for that object and the
@@ -369,7 +369,7 @@ reported-position altitude floor — the design doc wins.)*
   stub rp MCP server; scenarios for goto→add, sync-ignored,
   dedup-upsert of pending-unedited targets, active/edited targets never
   mutated, mosaic-spaced GoTos staying distinct, unresolved-name slugs,
-  offset display names (plain when unique/centered, `+21′E −8′N` when
+  offset display names (plain when unique/centered, `+8′E −4′N` when
   offset or multiple, `J2059+4432` when unresolved),
   rp-outage spooling and replay-after-restart, epoch handling.
 

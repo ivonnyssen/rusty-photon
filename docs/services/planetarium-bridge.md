@@ -367,9 +367,9 @@ wording)*:
    - Hit, **and** this is the only stored target with that
      `catalog_ref`, **and** the offset from the catalog centroid is
      within `dedup_arcsec`: the plain name — `"NGC 7000"`.
-   - Hit otherwise: the offset form — `"NGC 7000 +21′E −8′N"`, where
+   - Hit otherwise: the offset form — `"NGC 7000 +8′E −4′N"`, where
      East = Δα·cos δ and North = Δδ, each component rendered to 0.1′
-     with a trailing `.0` stripped (`+21′E`, `+0.3′E`) and a
+     with a trailing `.0` stripped (`+8′E`, `+0.3′E`) and a
      component under 0.05′ omitted. The offset reads as *how this
      framing differs* — what the operator composed.
    - No hit: the coordinate form `"J2059+4432"` (IAU-style truncation:
@@ -382,6 +382,19 @@ wording)*:
    no hit uses the coordinate slug (`j2059p4432`, `p`/`m` for the
    sign). The coordinate display name matches its slug shape by
    construction.
+
+Catalog coverage bounds *naming quality only*, never import
+correctness: identity, dedup, and slug allocation are pure
+coordinate proximity, so a target the catalog has never heard of
+(a Sharpless nebula, a dark-nebula framing, empty sky) imports
+exactly as well as M31 — it just arrives with the coordinate name
+and slug, ready for an operator rename during the `active: false`
+review. `rp-catalog` currently embeds Messier + NGC + IC (from
+OpenNGC); widening coverage (Sh2, Barnard, LDN/LBN, vdB, RCW,
+Abell PNe, …) is a pure data-layer change — another CSV in
+`crates/rp-catalog/src/data/` — that improves initial names with
+no bridge or rp code change. Existing rows are never retroactively
+renamed when coverage grows.
 
 ### `rp-catalog`: nearest-neighbor query
 
