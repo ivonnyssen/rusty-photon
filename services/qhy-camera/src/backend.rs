@@ -502,6 +502,18 @@ pub(crate) mod mock {
         bin: Mutex<(u32, u32)>,
         /// E9 injection: make the next single-frame exposure fail.
         pub fail_single_frame: AtomicBool,
+        /// Make `start_single_frame_exposure` fail, so the driver's handling of a
+        /// capture that never even starts can be exercised.
+        pub fail_start: AtomicBool,
+        /// Make `get_remaining_exposure_us` fail, so the driver's fall-through to
+        /// the readout when the camera will not report its progress is exercised.
+        pub fail_remaining: AtomicBool,
+        /// Make `abort_exposure_and_readout` fail, mimicking an SDK that refuses
+        /// the cancel.
+        pub fail_abort: AtomicBool,
+        /// Panic inside `get_single_frame`, standing in for an SDK call that dies
+        /// on its blocking thread. The device must still come back to rest.
+        pub panic_in_readout: AtomicBool,
         /// C2 injection: make the post-open handshake (`get_ccd_info`) fail.
         pub fail_handshake: AtomicBool,
         /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
@@ -526,6 +538,10 @@ pub(crate) mod mock {
         /// Microseconds the camera claims are left. Non-zero keeps the driver in
         /// its cancellable wait, mimicking a camera still integrating.
         remaining_exposure_us: AtomicU32,
+        /// Counts `get_remaining_exposure_us` calls, so a test can prove the
+        /// driver really entered its poll loop rather than passing straight
+        /// through on host-side timing alone.
+        pub remaining_calls: AtomicU32,
     }
 
     impl Default for MockCameraHandle {
@@ -586,6 +602,10 @@ pub(crate) mod mock {
                 roi: Mutex::new(area),
                 bin: Mutex::new((1, 1)),
                 fail_single_frame: AtomicBool::new(false),
+                fail_start: AtomicBool::new(false),
+                fail_remaining: AtomicBool::new(false),
+                fail_abort: AtomicBool::new(false),
+                panic_in_readout: AtomicBool::new(false),
                 fail_handshake: AtomicBool::new(false),
                 fail_set_controls: AtomicBool::new(false),
                 single_frame_delay: Mutex::new(Duration::ZERO),
@@ -594,6 +614,7 @@ pub(crate) mod mock {
                 aborted_during_readout: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
+                remaining_calls: AtomicU32::new(0),
             }
         }
     }
@@ -750,6 +771,9 @@ pub(crate) mod mock {
             Ok(())
         }
         fn start_single_frame_exposure(&self) -> BackendResult<()> {
+            if self.fail_start.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated exposure start failure".to_string()));
+            }
             self.aborted.store(false, Ordering::SeqCst);
             Ok(())
         }
@@ -766,6 +790,10 @@ pub(crate) mod mock {
             self.single_frame_calls.fetch_add(1, Ordering::SeqCst);
             self.in_readout.store(true, Ordering::SeqCst);
             std::thread::sleep(*self.single_frame_delay.lock());
+            if self.panic_in_readout.load(Ordering::SeqCst) {
+                self.in_readout.store(false, Ordering::SeqCst);
+                panic!("simulated SDK panic during readout");
+            }
             self.in_readout.store(false, Ordering::SeqCst);
             if self.fail_single_frame.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated capture failure".to_string()));
@@ -780,6 +808,12 @@ pub(crate) mod mock {
             })
         }
         fn get_remaining_exposure_us(&self) -> BackendResult<u32> {
+            self.remaining_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_remaining.load(Ordering::SeqCst) {
+                return Err(BackendError(
+                    "simulated exposure-remaining failure".to_string(),
+                ));
+            }
             Ok(self.remaining_exposure_us.load(Ordering::SeqCst))
         }
         fn abort_exposure_and_readout(&self) -> BackendResult<()> {
@@ -787,6 +821,9 @@ pub(crate) mod mock {
                 self.aborted_during_readout.store(true, Ordering::SeqCst);
             }
             self.aborted.store(true, Ordering::SeqCst);
+            if self.fail_abort.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated abort failure".to_string()));
+            }
             Ok(())
         }
     }

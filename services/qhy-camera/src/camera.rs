@@ -2281,6 +2281,114 @@ mod tests {
         assert!(device.wait_until_drained(Duration::from_secs(30)).await);
     }
 
+    /// An exposure the SDK refuses to start is reported as the `Error` state,
+    /// not left looking like a capture in progress.
+    #[tokio::test]
+    async fn a_failed_exposure_start_becomes_the_error_state() {
+        let handle = MockCameraHandle::default();
+        handle.fail_start.store(true, Ordering::SeqCst);
+        let (device, handle) = connected_device_with_handle(handle);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
+        assert!(!device.image_ready().await.unwrap());
+        assert_eq!(
+            handle.single_frame_calls.load(Ordering::SeqCst),
+            0,
+            "no readout may follow an exposure that never started"
+        );
+    }
+
+    /// A camera that will not report its progress must not strand the frame: the
+    /// driver falls through to the readout, which blocks until the data is ready.
+    #[tokio::test]
+    async fn a_failed_remaining_poll_falls_through_to_the_readout() {
+        let handle = MockCameraHandle::default();
+        handle.fail_remaining.store(true, Ordering::SeqCst);
+        let device = connected_device(handle);
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+
+        assert!(device.image_ready().await.unwrap());
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+    }
+
+    /// An SDK that refuses the cancel is logged, not propagated: the capture is
+    /// already out of the SDK by then, so the device is still safe to close.
+    #[tokio::test]
+    async fn a_refused_sdk_cancel_still_completes_the_abort() {
+        let handle = MockCameraHandle::default();
+        handle.fail_abort.store(true, Ordering::SeqCst);
+        let device = connected_device(handle);
+        device
+            .start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        device.abort_exposure().await.unwrap();
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+        // Still closable: nothing is inside the SDK.
+        device.disconnect().await.unwrap();
+    }
+
+    /// An SDK call that dies on its blocking thread must not strand the device:
+    /// the slot has to clear and the drain has to fire, or a later disconnect
+    /// would wait out its whole deadline for a task that is already gone.
+    #[tokio::test]
+    async fn a_panicking_readout_does_not_strand_the_exposure() {
+        let handle = MockCameraHandle::default();
+        handle.panic_in_readout.store(true, Ordering::SeqCst);
+        let device = connected_device(handle);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "a panicking SDK call must still release the in-flight slot"
+        );
+
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
+        assert!(!device.image_ready().await.unwrap());
+        device.disconnect().await.unwrap();
+    }
+
+    /// The abort mirror of the disconnect case: if the capture cannot be got out
+    /// of the SDK, `AbortExposure` reports that rather than claiming success.
+    #[tokio::test]
+    async fn abort_reports_failure_when_the_sdk_will_not_return() {
+        let handle = MockCameraHandle::default();
+        handle.set_single_frame_delay(Duration::from_millis(600));
+        let handle = Arc::new(handle);
+        let device = QhyCameraDevice::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None)
+            .with_drain_timeout(Duration::from_millis(50));
+        device.connect().unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let err = device.abort_exposure().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            !handle.aborted.load(Ordering::SeqCst),
+            "no SDK cancel may be issued while the readout is still running"
+        );
+
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+    }
+
     /// A camera that keeps reporting time remaining holds the driver in the
     /// cancellable wait — the abort still lands promptly and skips the readout.
     #[tokio::test]
@@ -2296,6 +2404,12 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+
+        assert!(
+            handle.remaining_calls.load(Ordering::SeqCst) > 0,
+            "the driver must have entered its poll loop, not passed straight \
+             through on host-side timing"
+        );
 
         device.abort_exposure().await.unwrap();
         assert_eq!(
