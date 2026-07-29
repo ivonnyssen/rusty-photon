@@ -1,0 +1,19 @@
+name = "rusty-photon-private-mirror"
+main = "src/mirror.js"
+compatibility_date = "2026-07-15"
+
+# Blob store for the mirrored files. Create once:
+# `wrangler r2 bucket create rusty-photon-private-mirror`
+# No lifecycle rule — objects persist until deleted by hand (unlike the bazel
+# cache bucket, whose entries are disposable and age out).
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "rusty-photon-private-mirror"
+
+# Serve at the private-mirror hostname. Make sure no other Cloudflare DNS
+# record/route already claims it, then `wrangler deploy` provisions this
+# custom domain + DNS on the zone. The read token is NOT here — it's a
+# secret: `wrangler secret put READ_TOKEN`.
+[[routes]]
+pattern = "private.rustyphoton.space"
+custom_domain = true
