@@ -140,8 +140,14 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    [planetarium-bridge.md](../services/planetarium-bridge.md) § Naming.)*
    No name crosses the Alpaca wire. The bridge resolves the nearest catalog
    object within a tolerance (configurable, default ~10 arcmin; nearest by
-   angular separation wins on ties) for `display_name`/`catalog_ref`;
-   otherwise a coordinate-derived slug (e.g. `j0042p4116` — the exact slug
+   angular separation wins on ties) for `display_name`/`catalog_ref`.
+   *(Amended 2026-07-29: the search is **one query with class tiers** —
+   a deep-sky hit (10′ cone) outranks any star hit (2′ cone — the P3a
+   tap-anchor gesture) regardless of separation, so field stars never
+   take names from nebula framings; star-layer data (HD depth) plus the
+   astrophoto DSO catalogs are tracked as issue #767, decoupled because
+   naming is display-only.)* No hit at all yields
+   a coordinate-derived slug (e.g. `j0042p4116` — the exact slug
    scheme is settled in P1, which owns slug allocation). The naming
    tolerance affects **display only** and never drives target identity
    (Decision 3). Because multiple framings of one object are first-class,

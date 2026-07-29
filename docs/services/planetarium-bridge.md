@@ -358,11 +358,23 @@ finalizes naming atomically against the store; the bridge sends bare
 coordinates — this refines Decision 4's "the bridge resolves"
 wording)*:
 
-1. **Cone-search**: nearest catalog object within
-   `target_store.import.naming_tolerance_arcmin` (default `10`);
-   nearest angular separation wins ties. A hit sets `catalog_ref` and
-   denormalizes `object_type`/`magnitude`/`size_arcmin` exactly as a
-   catalog add does.
+1. **Cone-search**: one query over the one logical catalog — never
+   per-catalog searches *(settled 2026-07-29)*. Entries carry a
+   class (deep-sky object or star), each class has its own
+   acceptance radius — `naming_tolerance_arcmin` (default `10`) for
+   DSOs, `star_naming_tolerance_arcmin` (default `2`) for stars —
+   and a **DSO hit outranks any star hit regardless of separation**;
+   separation breaks ties within a class. The tight star radius
+   matches the gesture: a star deserves the name when it *was* the
+   tap anchor (dead-center by construction — the faint-star-adjacent
+   framing from P3a), not when it is a field star 8′ off; flat
+   nearest-wins was rejected because field-star density in the
+   galactic plane would systematically take names from nebula
+   framings exactly where the nebulae live. A hit sets `catalog_ref`
+   and denormalizes `object_type`/`magnitude`/`size_arcmin` exactly
+   as a catalog add does; the display, offset, and slug rules below
+   apply identically to both classes (`"HD 227018"`, slug
+   `hd227018`).
 2. **Display name**:
    - Hit, **and** this is the only stored target with that
      `catalog_ref`, **and** the offset from the catalog centroid is
@@ -390,17 +402,25 @@ coordinate proximity, so a target the catalog has never heard of
 exactly as well as M31 — it just arrives with the coordinate name
 and slug, ready for an operator rename during the `active: false`
 review. `rp-catalog` currently embeds Messier + NGC + IC (from
-OpenNGC); widening coverage (Sh2, Barnard, LDN/LBN, vdB, RCW,
-Abell PNe, …) is a pure data-layer change — another CSV in
-`crates/rp-catalog/src/data/` — that improves initial names with
-no bridge or rp code change. Existing rows are never retroactively
-renamed when coverage grows.
+OpenNGC); widening coverage is a pure data-layer change that
+improves initial names with no bridge or rp code change, tracked
+as issue #767: the astrophoto DSO catalogs (Sh2, Barnard, LDN/LBN,
+vdB, RCW, Abell PNe, …) plus an HD-depth star layer (Tycho-2-derived
+J2000 positions) so the P3a faint-star-adjacent framing gesture
+arrives named after its anchor. Until that lands the star tier of
+the cone-search is simply vacuous. Existing rows are never
+retroactively renamed when coverage grows.
 
 ### `rp-catalog`: nearest-neighbor query
 
 New API (explicit P3 scope per Decision 4):
 
 ```rust
+pub struct NearestTolerances {
+    pub dso_arcmin: f64,   // target_store.import.naming_tolerance_arcmin
+    pub star_arcmin: f64,  // target_store.import.star_naming_tolerance_arcmin
+}
+
 pub struct NearestMatch<'a> {
     pub target: &'a ResolvedTarget,
     pub separation_arcmin: f64,
@@ -409,13 +429,15 @@ pub struct NearestMatch<'a> {
 }
 
 impl Catalog {
-    pub fn nearest(&self, coord: &IcrsCoord, tolerance_arcmin: f64)
+    pub fn nearest(&self, coord: &IcrsCoord, tolerances: &NearestTolerances)
         -> Option<NearestMatch<'_>>;
 }
 ```
 
-A linear scan over the embedded ~13k rows (microseconds at this size)
-— deliberately *not* the DB-seeded indexed cone-search browse that
+One linear scan over the embedded rows (microseconds at embedded
+sizes): the best DSO within its radius wins outright; otherwise the
+best star within its radius; separation breaks ties within a class.
+Deliberately *not* the DB-seeded indexed cone-search browse that
 `rp-targets.md` defers; the two must not be conflated.
 
 ### rp config additions
@@ -423,8 +445,9 @@ A linear scan over the embedded ~13k rows (microseconds at this size)
 ```jsonc
 "target_store": {
   "import": {
-    "dedup_arcsec": 30.0,            // proximity-upsert window; below any mosaic panel spacing
-    "naming_tolerance_arcmin": 10.0  // cone-search radius; display only, never identity
+    "dedup_arcsec": 30.0,                 // proximity-upsert window; below any mosaic panel spacing
+    "naming_tolerance_arcmin": 10.0,      // DSO-class cone radius; display only, never identity
+    "star_naming_tolerance_arcmin": 2.0   // star-class cone; a star names a target only when no DSO is in its cone
   }
 }
 ```
@@ -547,7 +570,9 @@ operator-edited / operator-created rows never mutated (suffixed slug
 instead); mosaic-spaced GoTos stay distinct; plain vs offset vs
 coordinate display names; goals defaulted; `source` +
 `catalog_ref`/`display_name` rejected. `rp-catalog::nearest` gets
-unit tests (hit/miss/tie, offset vector signs, tolerance edge).
+unit tests (hit/miss/tie, class rank — a DSO outranks a nearer
+star, a star wins only a DSO-less cone — offset vector signs,
+per-class tolerance edges).
 
 ConformU runs under `bazel test --config=conformu` per the existing
 mock-backend pattern.
