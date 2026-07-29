@@ -209,6 +209,9 @@ pub struct SvbonyCamera {
     state: Arc<DeviceState>,
     #[debug(skip)]
     config_ctx: Option<ConfigActionCtx<SvbonyCameraDriver>>,
+    /// Serializes connect/disconnect transitions — see `set_connected`.
+    #[debug(skip)]
+    connect_transition: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SvbonyCamera {
@@ -232,6 +235,7 @@ impl SvbonyCamera {
             description,
             state: Arc::new(DeviceState::new()),
             config_ctx: None,
+            connect_transition: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -665,6 +669,14 @@ impl Device for SvbonyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // The transition lock spans the whole check-and-transition so two
+        // concurrent `Connected=true` requests can't both observe a closed
+        // handle and both run the connect handshake — the trigger-camera
+        // video-capture arm is not idempotent, so the second handshake
+        // would fail with the SDK's "video mode active". Same
+        // lock-spans-check-and-modify shape as the session-slot serial
+        // drivers; a duplicate request waits, re-checks, and no-ops.
+        let _transition = self.connect_transition.lock().await;
         if self.handle.is_open() == connected {
             return Ok(());
         }
@@ -1764,6 +1776,30 @@ mod tests {
         let handle = Arc::new(MockCameraHandle::default());
         let cam = SvbonyCamera::new(handle.clone(), None);
         cam.connect().unwrap();
+        assert_eq!(handle.start_video_capture_call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_connect_requests_arm_video_capture_exactly_once() {
+        // Two `Connected=true` requests racing (ConformU's protocol fuzz
+        // produces exactly this): the transition lock makes the second wait
+        // for the first's handshake and then no-op on the open handle,
+        // instead of running a second handshake whose video-capture arm
+        // fails with the SDK's "video mode active". The open delay holds
+        // the first transition in-flight so the two genuinely overlap.
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_open_delay(Duration::from_millis(200));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        let racer = cam.clone();
+        let (first, second) = tokio::join!(cam.set_connected(true), async move {
+            // Let the first transition park inside `open()` before the
+            // duplicate arrives, so the duplicate cannot win by ordering.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            racer.set_connected(true).await
+        });
+        first.unwrap();
+        second.unwrap();
+        assert!(cam.connected().await.unwrap());
         assert_eq!(handle.start_video_capture_call_count(), 1);
     }
 

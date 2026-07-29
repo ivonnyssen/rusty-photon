@@ -85,6 +85,11 @@ impl ZwoFocuser {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
+        // Two concurrent connects can both get past `set_connected`'s
+        // is_open check, but the whole transition is just this open() —
+        // check-then-open under the handle's own lock, so a redundant call
+        // is a no-op and no transition lock is needed (there is no
+        // post-open handshake that could run twice).
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         tracing::debug!(focuser = %self.unique_id, "focuser connected");
         Ok(())

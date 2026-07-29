@@ -692,7 +692,12 @@ call that the simulation cannot force an SDK error).
   under the `simulation` feature (see *Device registration boundary*).
 - **C1.** `set_connected(true)` opens the camera via the SDK. On success
   `Connected = true`. A second `set_connected(true)` on an already-open
-  device is a no-op.
+  device is a no-op — including a *concurrent* duplicate: transitions
+  serialize on a per-device lock spanning the check and the transition, so
+  a racing duplicate waits for the in-flight handshake and then no-ops
+  (the trigger-camera video-capture arm is not idempotent, so a second
+  handshake would fail with the SDK's "video mode active"). Pinned by the
+  `concurrent_connect_requests_arm_video_capture_exactly_once` unit test.
 - **C2.** `set_connected(true)` with the camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes the device.

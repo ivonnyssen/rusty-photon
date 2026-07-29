@@ -687,6 +687,10 @@ pub(crate) mod mock {
         target_temp_tenths: Mutex<i64>,
         current_temp_tenths: Mutex<i64>,
 
+        /// Optional artificial delay inside `open()` (before the handle
+        /// reports open), so a test can hold one connect transition
+        /// in-flight while a second `set_connected` races it.
+        open_delay: Mutex<Duration>,
         /// Optional artificial delay before `capture` returns (for in-flight /
         /// abort-race tests).
         capture_delay: Mutex<Duration>,
@@ -725,6 +729,7 @@ pub(crate) mod mock {
                 cooler_enable: AtomicBool::new(false),
                 target_temp_tenths: Mutex::new(0),
                 current_temp_tenths: Mutex::new(200),
+                open_delay: Mutex::new(Duration::ZERO),
                 capture_delay: Mutex::new(Duration::ZERO),
                 fail_capture: AtomicBool::new(false),
                 exceed_deadline: AtomicBool::new(false),
@@ -776,6 +781,13 @@ pub(crate) mod mock {
             *self.capture_delay.lock() = delay;
         }
 
+        /// Make the next `open()` calls linger before reporting open (runs
+        /// on the `spawn_blocking` thread, so the sleep never stalls the
+        /// async executor).
+        pub fn set_open_delay(&self, delay: Duration) {
+            *self.open_delay.lock() = delay;
+        }
+
         /// The most recent request `capture` received, if any.
         pub fn last_capture_request(&self) -> Option<CaptureRequest> {
             self.last_capture_request.lock().clone()
@@ -808,6 +820,10 @@ pub(crate) mod mock {
         fn open(&self) -> BackendResult<()> {
             if self.fail_open.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated open failure".to_string()));
+            }
+            let delay = *self.open_delay.lock();
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
             }
             self.open.store(true, Ordering::SeqCst);
             Ok(())
