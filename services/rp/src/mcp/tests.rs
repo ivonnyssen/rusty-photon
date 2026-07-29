@@ -6411,15 +6411,15 @@ async fn do_slew_blocking_with_none_emitter_is_a_noop() {
 /// any client (or BDD harness) that doesn't opt in.
 #[test]
 fn progress_sink_returns_none_without_progress_token() {
-    // Build an empty Meta — no progressToken set. We can't easily
-    // construct a real `Peer<RoleServer>` from outside rmcp (its
+    // Build an empty RequestMetaObject — no progressToken set. We can't
+    // easily construct a real `Peer<RoleServer>` from outside rmcp (its
     // constructor is `pub(crate)`), but the meta-only path through
-    // `Meta::get_progress_token()` is enough to pin the contract:
-    // any None on the meta side must turn into a None sink.
-    let meta = rmcp::model::Meta::default();
+    // `RequestMetaObject::get_progress_token()` is enough to pin the
+    // contract: any None on the meta side must turn into a None sink.
+    let meta = rmcp::model::RequestMetaObject::default();
     assert!(
         meta.get_progress_token().is_none(),
-        "default Meta should not carry a progressToken"
+        "default RequestMetaObject should not carry a progressToken"
     );
 }
 
@@ -6564,7 +6564,7 @@ async fn do_slew_blocking_skips_settle_tick_below_interval() {
 #[tokio::test]
 async fn progress_sink_emit_sends_via_real_peer() {
     use super::progress::{ProgressEmitter, ProgressSink};
-    use rmcp::model::{Meta, NumberOrString, ProgressToken};
+    use rmcp::model::{NumberOrString, ProgressToken, RequestMetaObject};
 
     let (server_io, _client_io) = tokio::io::duplex(4096);
     let (rx, tx) = tokio::io::split(server_io);
@@ -6572,7 +6572,7 @@ async fn progress_sink_emit_sends_via_real_peer() {
     let running = rmcp::service::serve_directly(service, (rx, tx), None);
     let peer = running.peer().clone();
 
-    let meta = Meta::with_progress_token(ProgressToken(NumberOrString::Number(1)));
+    let meta = RequestMetaObject::with_progress_token(ProgressToken(NumberOrString::Number(1)));
     let sink = ProgressSink::from_peer_and_meta(peer, &meta)
         .expect("meta carries a progressToken => Some(sink)");
 

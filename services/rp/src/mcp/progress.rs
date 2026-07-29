@@ -3,12 +3,12 @@
 //!
 //! ## Why this exists
 //!
-//! rmcp 1.7's `LocalSessionManager` constructs its sessions with
+//! rmcp's `LocalSessionManager` constructs its sessions with
 //! `SessionConfig::default()`, whose `keep_alive` is
 //! `Some(Duration::from_secs(300))`. The session worker selects on the
 //! client-event receiver, the handler-event receiver, and a 300 s
-//! `tokio::time::sleep` (`transport/streamable_http_server/session/local.rs`
-//! around line 1011). The keep-alive timer is reset only when one of
+//! `tokio::time::sleep` (`transport/streamable_http_server/session/local.rs`).
+//! The keep-alive timer is reset only when one of
 //! the *other* arms fires, i.e. when the session sees activity. A
 //! tool body that runs close to its own 300 s deadline without
 //! emitting anything races the keep-alive: when both fire near the
@@ -46,7 +46,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rmcp::model::{Meta, ProgressNotificationParam, ProgressToken};
+use rmcp::model::{ProgressNotificationParam, ProgressToken, RequestMetaObject};
 use rmcp::service::{Peer, RequestContext};
 use rmcp::RoleServer;
 use tracing::debug;
@@ -87,7 +87,10 @@ impl ProgressSink {
     /// helpers treat the missing sink as "skip emission" rather than
     /// failing the tool (most BDD clients and many real consumers do
     /// not send a token).
-    pub(crate) fn from_peer_and_meta(peer: Peer<RoleServer>, meta: &Meta) -> Option<Self> {
+    pub(crate) fn from_peer_and_meta(
+        peer: Peer<RoleServer>,
+        meta: &RequestMetaObject,
+    ) -> Option<Self> {
         meta.get_progress_token().map(|token| Self { peer, token })
     }
 
@@ -102,8 +105,8 @@ impl ProgressSink {
 #[async_trait]
 impl ProgressEmitter for ProgressSink {
     async fn emit(&self, progress: f64, total: Option<f64>, message: Option<String>) {
-        // `ProgressNotificationParam` is `#[non_exhaustive]` as of rmcp 2.0,
-        // so it must be built via its constructor.
+        // `ProgressNotificationParam` is `#[non_exhaustive]`, so it must
+        // be built via its constructor.
         let mut param = ProgressNotificationParam::new(self.token.clone(), progress);
         param.total = total;
         param.message = message;
