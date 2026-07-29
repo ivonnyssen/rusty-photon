@@ -40,7 +40,7 @@ P5/P6 frontends.
 | P0 | This plan | In progress | feature/planetarium-target-import |
 | P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11), plus a **shared plan-data vocabulary crate** `rp-vocabulary` with validation-by-construction (Decision 12, settled 2026-07-23 — value types + the `Target`/`PlannerTarget` `coord: IcrsCoord` newtype migration and the `rp-ephemeris` bridge landed; the `schema`/`validate` MCP tools follow) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `target_store.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. The Dynamic Planner cutover has now **landed**: `record_exposure`/`get_session_progress`/`get_target_status` read only the active rows of the target store, identifying targets by slug — the legacy `targets[]` config array is **removed** (`Config.targets` renamed to the typed `target_store`; a stray `targets` key or an array-shaped `target_store` now fails config load loudly). The `record_exposure` progress counters keep their `{completed, goal}` shape; only their source moved from the config array to the store, and plan rotation / target balancing / all-goals-met end_of_session still run off those counters. **Still not landed**: the full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
-| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | **P3a COMPLETE 2026-07-29** — real-SkySafari session run against the spike (`spikes/planetarium-bridge-p3a`); all five questions answered in [planetarium-bridge.md](../services/planetarium-bridge.md). Headlines: **go/no-go = GO** (coordinate-entry GoTos arbitrary points; the entry box is implicitly JNow, converted to J2000 on the wire; tap-empty-sky is not a thing, but faint-star-adjacent framing works), J2000 honored, GoTo = `SlewToCoordinatesAsync` / Align = `SyncToCoordinates`, 1 Hz poll cadence, discovery is subnet-local, GoTo is client-side horizon-gated (below-horizon targets can't be imported until risen; reported position lingering below horizon wedges the client). P3 proper (design doc → BDD → service) not started; the spike is deleted when it begins | feature/planetarium-bridge-p3a |
+| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | **P3a COMPLETE 2026-07-29** — real-SkySafari session run against the spike (`spikes/planetarium-bridge-p3a`); all five questions answered in [planetarium-bridge.md](../services/planetarium-bridge.md). Headlines: **go/no-go = GO** (coordinate-entry GoTos arbitrary points; the entry box is implicitly JNow, converted to J2000 on the wire; tap-empty-sky is not a thing, but faint-star-adjacent framing works), J2000 honored, GoTo = `SlewToCoordinatesAsync` / Align = `SyncToCoordinates`, 1 Hz poll cadence, discovery is subnet-local, GoTo is client-side horizon-gated (below-horizon targets can't be imported until risen; reported position lingering below horizon wedges the client). **P3 design doc drafted 2026-07-29** (settled interactively — sync rejected not ignored, typed writer-identity provenance, rp-side naming; amendments recorded under Decisions 2/3/4 below); BDD + implementation not started. The spike is deleted in the *implementation* PR, not before — it is still needed for the P3b horizon experiment ([planetarium-bridge.md](../services/planetarium-bridge.md) § Open item) | feature/planetarium-bridge-design |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
 | P5 | Stellarium enrichment frontend (telescope-protocol doorbell + RemoteControl name/Oculars-angle query) | Deferred | |
 | P6 | Cartes du Ciel frontend (TCP 3292 client: named selections, `GETFRAMES` mosaic import with per-panel PA) | Deferred | |
@@ -91,6 +91,11 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    device never touches hardware (tenet 3 is satisfied trivially: it is
    virtual; real rotator motion happens only inside operator-started
    sessions, in the P2 workflow step).
+   *Amended 2026-07-29 (P3 design, settled interactively): sync is now
+   **rejected**, not accepted-and-ignored — `CanSync = false`, sync verbs
+   return `NOT_IMPLEMENTED`. A virtual device has no pointing model to
+   correct; rejection also eliminates the sync-induced below-horizon
+   wedge P3a discovered. Sync-carries-no-intent stands unchanged.*
 3. **Captured targets land paused (`active: false`) with default goals, and
    the bridge never mutates operator-owned state.** Planetariums say
    *where*, never filters/exposures; the operator reviews in the P4 inbox.
@@ -109,6 +114,15 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    - The bridge stamps provenance (source app/client address, receipt time)
      into the target's `notes`. Single-operator use is the MVP assumption;
      provenance makes multi-client confusion diagnosable, not prevented.
+     *Amended 2026-07-29 (P3 design, settled interactively): provenance is
+     additionally **typed** — `Target` gains `created_by`/`updated_by`
+     writer-identity fields beside the existing timestamps, stamped
+     `"operator"` by the operator-surface tools and `source.kind` by
+     imports. "Bridge-originated, pending, unedited" becomes the
+     first-class predicate `!active && updated_by == "planetarium-bridge"`;
+     the `notes` line stays as human-readable display data, never parsed.
+     Full contract: [planetarium-bridge.md](../services/planetarium-bridge.md)
+     § rp-side contract.*
    - The protection cuts both ways: rp-targets.md's slug-allocation rule 3
      treats *same `catalog_ref`* as "same object → in-place edit", so a
      later **manual catalog add** of "NGC 7000" would clobber a framed
@@ -118,6 +132,12 @@ Explicitly rejected / out of scope (see Decisions 6–8):
      tolerance ⇒ suffix-allocate a new slug, never in-place edit),
      protecting framed targets from *all* writers, not just the bridge.
 4. **Naming by reverse cone-search — a new `rp-catalog` capability.**
+   *(Amended 2026-07-29, P3 design, settled interactively: the
+   cone-search and all naming run **rp-side at add-time** — atomic
+   against the store — not in the bridge, which sends bare ICRS
+   coordinates plus `source`. The rules below are unchanged; only where
+   they execute moved. See
+   [planetarium-bridge.md](../services/planetarium-bridge.md) § Naming.)*
    No name crosses the Alpaca wire. The bridge resolves the nearest catalog
    object within a tolerance (configurable, default ~10 arcmin; nearest by
    angular separation wins on ties) for `display_name`/`catalog_ref`;
@@ -308,6 +328,12 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     (a third pointing device).
 
 ## P3 sketch: `planetarium-bridge`
+
+*(Superseded 2026-07-29: the authoritative design is now
+[docs/services/planetarium-bridge.md](../services/planetarium-bridge.md).
+The sketch below is kept as the pre-design record; where they differ —
+sync rejected vs accepted-and-ignored, rp-side naming, the
+reported-position altitude floor — the design doc wins.)*
 
 - New service `services/planetarium-bridge`, port **11126** (next free in
   the driver band), standard scaffolding per
