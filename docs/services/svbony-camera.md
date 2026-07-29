@@ -692,7 +692,16 @@ call that the simulation cannot force an SDK error).
   under the `simulation` feature (see *Device registration boundary*).
 - **C1.** `set_connected(true)` opens the camera via the SDK. On success
   `Connected = true`. A second `set_connected(true)` on an already-open
-  device is a no-op.
+  device is a no-op — including a *concurrent* duplicate: the handle's
+  `open()` is an atomic check-and-open (one critical section, the same
+  shape as qhy-camera's `SharedCameraConnection`), so exactly one racing
+  connect runs the post-open handshake — the trigger-camera video-capture
+  arm is not idempotent, and a second handshake would fail with the SDK's
+  "video mode active". The losing duplicate returns success immediately
+  without waiting for the winner's handshake; until that handshake
+  completes, cached-property reads report `NOT_CONNECTED` (their existing
+  unpopulated-cache fallback). Pinned by the
+  `concurrent_connect_requests_arm_video_capture_exactly_once` unit test.
 - **C2.** `set_connected(true)` with the camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes the device.

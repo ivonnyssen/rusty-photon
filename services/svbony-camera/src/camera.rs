@@ -261,10 +261,22 @@ impl SvbonyCamera {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
-        self.handle.open().map_err(|e| {
+        // `open()` is an atomic check-and-open under the handle's own lock
+        // (qhy-camera's `SharedCameraConnection` shape): of several racing
+        // connects, exactly one observes `true` and owns the post-open
+        // handshake below — the trigger-camera video-capture arm is not
+        // idempotent, so a second handshake must never run. The losers
+        // return Ok immediately, without waiting for the winner's
+        // handshake; until it completes, cached properties may still be
+        // unpopulated, which every cache read already treats as
+        // NOT_CONNECTED (see `sensor()`'s fallback).
+        let opened = self.handle.open().map_err(|e| {
             warn!(camera = %self.unique_id, error = %e, "SDK open failed");
             ASCOMError::NOT_CONNECTED
         })?;
+        if !opened {
+            return Ok(());
+        }
         // A failed post-open handshake must leave the device disconnected
         // (C2), not opened-but-unusable, so close before propagating.
         if let Err(e) = self.open_handshake() {
@@ -665,6 +677,12 @@ impl Device for SvbonyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // This check is a best-effort fast path, not the connect guard: two
+        // concurrent `Connected=true` requests can both pass it. The
+        // authoritative check-and-transition is `connect`'s atomic
+        // `handle.open()` (one critical section in the handle), which lets
+        // exactly one racing connect run the non-idempotent handshake —
+        // the loser no-ops without waiting for it.
         if self.handle.is_open() == connected {
             return Ok(());
         }
@@ -1768,6 +1786,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_connect_requests_arm_video_capture_exactly_once() {
+        // Two `Connected=true` requests racing (ConformU's protocol fuzz
+        // produces exactly this): `handle.open()`'s atomic check-and-open
+        // lets exactly one of them own the handshake — the other no-ops
+        // instead of running a second handshake whose video-capture arm
+        // fails with the SDK's "video mode active". The open delay holds
+        // the winner inside the open critical section so the two
+        // genuinely overlap.
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_open_delay(Duration::from_millis(200));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        let racer = cam.clone();
+        let (first, second) = tokio::join!(cam.set_connected(true), async move {
+            // Let the first transition park inside `open()` before the
+            // duplicate arrives, so the duplicate cannot win by ordering.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            racer.set_connected(true).await
+        });
+        first.unwrap();
+        second.unwrap();
+        assert!(cam.connected().await.unwrap());
+        assert_eq!(handle.start_video_capture_call_count(), 1);
+    }
+
+    #[tokio::test]
     async fn connecting_a_non_trigger_camera_never_starts_video_capture() {
         // Tenet 3: a non-trigger camera's only mode is free-running, so
         // starting video capture at connect would begin the sensor
@@ -2056,8 +2099,10 @@ mod tests {
             .await
             .unwrap();
         wait_image_ready(&cam).await;
-        // The completed exposure leaves its cancel flag in the slot; a
+        // The completed exposure leaves its cancel flag in the slot (the
+        // disconnect's cancel is a no-op with nothing in flight); the
         // reconnect must drain (take + set) it rather than leak it.
+        cam.disconnect().unwrap();
         cam.connect().unwrap();
         assert!(!cam.image_ready().await.unwrap(), "reconnect resets state");
     }
