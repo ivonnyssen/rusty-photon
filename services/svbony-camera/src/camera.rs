@@ -209,9 +209,6 @@ pub struct SvbonyCamera {
     state: Arc<DeviceState>,
     #[debug(skip)]
     config_ctx: Option<ConfigActionCtx<SvbonyCameraDriver>>,
-    /// Serializes connect/disconnect transitions — see `set_connected`.
-    #[debug(skip)]
-    connect_transition: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SvbonyCamera {
@@ -235,7 +232,6 @@ impl SvbonyCamera {
             description,
             state: Arc::new(DeviceState::new()),
             config_ctx: None,
-            connect_transition: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -265,10 +261,22 @@ impl SvbonyCamera {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
-        self.handle.open().map_err(|e| {
+        // `open()` is an atomic check-and-open under the handle's own lock
+        // (qhy-camera's `SharedCameraConnection` shape): of several racing
+        // connects, exactly one observes `true` and owns the post-open
+        // handshake below — the trigger-camera video-capture arm is not
+        // idempotent, so a second handshake must never run. The losers
+        // return Ok immediately, without waiting for the winner's
+        // handshake; until it completes, cached properties may still be
+        // unpopulated, which every cache read already treats as
+        // NOT_CONNECTED (see `sensor()`'s fallback).
+        let opened = self.handle.open().map_err(|e| {
             warn!(camera = %self.unique_id, error = %e, "SDK open failed");
             ASCOMError::NOT_CONNECTED
         })?;
+        if !opened {
+            return Ok(());
+        }
         // A failed post-open handshake must leave the device disconnected
         // (C2), not opened-but-unusable, so close before propagating.
         if let Err(e) = self.open_handshake() {
@@ -669,14 +677,12 @@ impl Device for SvbonyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // The transition lock spans the whole check-and-transition so two
-        // concurrent `Connected=true` requests can't both observe a closed
-        // handle and both run the connect handshake — the trigger-camera
-        // video-capture arm is not idempotent, so the second handshake
-        // would fail with the SDK's "video mode active". Same
-        // lock-spans-check-and-modify shape as the session-slot serial
-        // drivers; a duplicate request waits, re-checks, and no-ops.
-        let _transition = self.connect_transition.lock().await;
+        // This check is a best-effort fast path, not the connect guard: two
+        // concurrent `Connected=true` requests can both pass it. The
+        // authoritative check-and-transition is `connect`'s atomic
+        // `handle.open()` (one critical section in the handle), which lets
+        // exactly one racing connect run the non-idempotent handshake —
+        // the loser no-ops without waiting for it.
         if self.handle.is_open() == connected {
             return Ok(());
         }
@@ -1782,11 +1788,12 @@ mod tests {
     #[tokio::test]
     async fn concurrent_connect_requests_arm_video_capture_exactly_once() {
         // Two `Connected=true` requests racing (ConformU's protocol fuzz
-        // produces exactly this): the transition lock makes the second wait
-        // for the first's handshake and then no-op on the open handle,
+        // produces exactly this): `handle.open()`'s atomic check-and-open
+        // lets exactly one of them own the handshake — the other no-ops
         // instead of running a second handshake whose video-capture arm
         // fails with the SDK's "video mode active". The open delay holds
-        // the first transition in-flight so the two genuinely overlap.
+        // the winner inside the open critical section so the two
+        // genuinely overlap.
         let handle = Arc::new(MockCameraHandle::default());
         handle.set_open_delay(Duration::from_millis(200));
         let cam = SvbonyCamera::new(handle.clone(), None);
@@ -2092,8 +2099,10 @@ mod tests {
             .await
             .unwrap();
         wait_image_ready(&cam).await;
-        // The completed exposure leaves its cancel flag in the slot; a
+        // The completed exposure leaves its cancel flag in the slot (the
+        // disconnect's cancel is a no-op with nothing in flight); the
         // reconnect must drain (take + set) it rather than leak it.
+        cam.disconnect().unwrap();
         cam.connect().unwrap();
         assert!(!cam.image_ready().await.unwrap(), "reconnect resets state");
     }

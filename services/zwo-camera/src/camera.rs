@@ -193,11 +193,12 @@ impl ZwoCamera {
     fn connect(&self) -> ASCOMResult<()> {
         // `set_connected`'s is_open check and this transition are not one
         // atomic step, so two concurrent connects can both get here. That is
-        // safe without a transition lock: `handle.open()` is check-then-open
+        // safe without further guarding: `handle.open()` is check-then-open
         // under the handle's own lock (a redundant open is a no-op), and
         // `open_handshake` only reads SDK state and (re)writes the same
         // locally-cached values — nothing on this path is non-idempotent,
-        // unlike svbony-camera's trigger-arm handshake, which needed one.
+        // unlike svbony-camera's trigger-arm handshake, which must instead
+        // gate its handshake on winning the atomic open.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // A failed post-open handshake must leave the device disconnected (C2),
         // not opened-but-unusable, so close before propagating.

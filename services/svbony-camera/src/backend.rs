@@ -158,7 +158,15 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn info(&self) -> CameraInfo;
 
     fn is_open(&self) -> bool;
-    fn open(&self) -> BackendResult<()>;
+    /// Open the camera if it is closed. Returns `true` when THIS call
+    /// performed the open — that caller owns the post-open handshake —
+    /// and `false` when the handle was already open (a prior connect, or
+    /// a concurrently racing one that won). The check and the open are
+    /// one critical section under the handle's own lock, so exactly one
+    /// racing caller ever observes `true` (the same shape as qhy-camera's
+    /// `SharedCameraConnection`): the connect handshake's video-capture
+    /// arm is not idempotent, so it must never run twice.
+    fn open(&self) -> BackendResult<bool>;
     fn close(&self) -> BackendResult<()>;
 
     /// The camera's [`CameraProperty`] (cached on the open `svbony_rs::Camera`
@@ -281,13 +289,14 @@ impl CameraHandle for SvbonyCameraHandle {
         self.open.load(Ordering::Acquire)
     }
 
-    fn open(&self) -> BackendResult<()> {
+    fn open(&self) -> BackendResult<bool> {
         let mut guard = self.camera.lock();
-        if guard.is_none() {
-            *guard = Some(self.sdk.open_camera(self.index)?);
+        if guard.is_some() {
+            return Ok(false);
         }
+        *guard = Some(self.sdk.open_camera(self.index)?);
         self.open.store(true, Ordering::Release);
-        Ok(())
+        Ok(true)
     }
 
     fn close(&self) -> BackendResult<()> {
@@ -687,9 +696,13 @@ pub(crate) mod mock {
         target_temp_tenths: Mutex<i64>,
         current_temp_tenths: Mutex<i64>,
 
-        /// Optional artificial delay inside `open()` (before the handle
-        /// reports open), so a test can hold one connect transition
-        /// in-flight while a second `set_connected` races it.
+        /// Serializes `open()`'s check-and-open (mirroring the real
+        /// handle's critical section) so exactly one racing caller
+        /// observes `true`.
+        open_section: Mutex<()>,
+        /// Optional artificial delay inside `open()`'s critical section
+        /// (modeling the SDK open's latency), so a test can hold one
+        /// connect transition in-flight while a second races it.
         open_delay: Mutex<Duration>,
         /// Optional artificial delay before `capture` returns (for in-flight /
         /// abort-race tests).
@@ -729,6 +742,7 @@ pub(crate) mod mock {
                 cooler_enable: AtomicBool::new(false),
                 target_temp_tenths: Mutex::new(0),
                 current_temp_tenths: Mutex::new(200),
+                open_section: Mutex::new(()),
                 open_delay: Mutex::new(Duration::ZERO),
                 capture_delay: Mutex::new(Duration::ZERO),
                 fail_capture: AtomicBool::new(false),
@@ -817,16 +831,20 @@ pub(crate) mod mock {
             self.open.load(Ordering::SeqCst)
         }
 
-        fn open(&self) -> BackendResult<()> {
+        fn open(&self) -> BackendResult<bool> {
+            let _section = self.open_section.lock();
             if self.fail_open.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated open failure".to_string()));
+            }
+            if self.open.load(Ordering::SeqCst) {
+                return Ok(false);
             }
             let delay = *self.open_delay.lock();
             if !delay.is_zero() {
                 std::thread::sleep(delay);
             }
             self.open.store(true, Ordering::SeqCst);
-            Ok(())
+            Ok(true)
         }
 
         fn close(&self) -> BackendResult<()> {
