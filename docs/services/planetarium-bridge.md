@@ -11,10 +11,12 @@ sections here when P3 proper begins. The spike crate
 `spikes/planetarium-bridge-p3a` is deleted at that point; its findings
 survive here.
 
-Session: 2026-07-29 (UTC), SkySafari on iPad driving the spike over
-Wi-Fi, operator-driven per the session script, ~20 minutes of traffic.
-The full JSONL wire log is the raw evidence (kept off-repo with the
-operator).
+Session: 2026-07-29 (UTC), **SkySafari Pro 8.0.3 (build 1205)** on iPad
+driving the spike over Wi-Fi, operator-driven per the session script,
+~20 minutes of traffic. The full JSONL wire log is the raw evidence
+(kept off-repo with the operator). Findings are from this one
+client/version; the plan's SkySafari floor is v7 (Decision 1), which
+was not separately tested.
 
 ## The P3a questions — answered
 
