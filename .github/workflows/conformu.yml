@@ -200,14 +200,12 @@ jobs:
     # steps.
     if: needs.plan.outputs.has_services == 'true'
     runs-on: windows-latest
-    # SVBony publish no scriptable Windows SDK download, so install-svbony-sdk
-    # has nothing to fetch on this runner. `--features conformu` resolves to the
-    # `simulation` backend, which needs no camera — only the SDK *link* — so
-    # skipping that link is enough to run svbony-camera's conformance here. The
-    # Linux and macOS jobs still link the real SDK. Inert for every other
-    # service in the matrix.
+    # In env (not a secret reference in step `if:`s, where the secrets
+    # context is unavailable) so the SVBony steps below can gate on its
+    # presence: this workflow only runs on schedule/dispatch, so the repo's
+    # own runs always have it — the empty case is a fork without the secret.
     env:
-      SVBONY_SKIP_NATIVE_LINK: "1"
+      PRIVATE_MIRROR_TOKEN: ${{ secrets.PRIVATE_MIRROR_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -247,11 +245,28 @@ jobs:
 
       # qhy-camera's ConformU build uses `--features conformu` (-> simulation) with
       # QHYCCD_SKIP_NATIVE_LINK (workflow env), so no QHYCCD SDK is provisioned.
-      # Per-service matrix, so only the zwo-* services need the native ZWO SDK
-      # on Windows.
+      # Per-service matrix: each leg installs only the SDK its own service
+      # links (ZWO here, SVBony below).
       - name: Install ZWO SDK
         if: matrix.service.name == 'zwo-camera' || matrix.service.name == 'zwo-focuser'
         uses: ./.github/actions/install-zwo-sdk
+
+      # svbony-camera's `--features conformu` build resolves to the simulation
+      # backend (no camera needed) but still links the real SDK, matching the
+      # Linux/macOS job above. Windows provisioning comes from the private CI
+      # mirror (ADR-018 §7); a fork without the PRIVATE_MIRROR_TOKEN secret
+      # falls back to SVBONY_SKIP_NATIVE_LINK=1, which drops only the real
+      # link — the conformance run itself needs no SDK.
+      - name: Install SVBony SDK (real link)
+        if: matrix.service.name == 'svbony-camera' && env.PRIVATE_MIRROR_TOKEN != ''
+        uses: ./.github/actions/install-svbony-sdk
+        with:
+          windows-mirror-token: ${{ secrets.PRIVATE_MIRROR_TOKEN }}
+
+      - name: Skip SVBony native link (no mirror token)
+        if: matrix.service.name == 'svbony-camera' && env.PRIVATE_MIRROR_TOKEN == ''
+        shell: bash
+        run: echo "SVBONY_SKIP_NATIVE_LINK=1" >> "$GITHUB_ENV"
 
       - name: Pre-build
         run: cargo build --locked --package ${{ matrix.service.name }} --all-features --all-targets

@@ -154,15 +154,47 @@ mechanical delivery differs in one respect worth flagging (see
    byte-identical in name and calling convention to what this crate already
    binds — plain `cdecl`, no `libusb` dependency, WinUSB-backed
    internally), so a human who manually downloads the SDK once and sets
-   `SVBONY_SDK_LIB_DIR` can build the real Windows link today — but
-   `install-svbony-sdk` gained no Windows step, and `bazel/windows-latest`
-   still only exercises `SVBONY_SKIP_NATIVE_LINK=1` (see
-   `docs/plans/archive/svbony-camera.md`'s Status section for the tracked gap).
+   `SVBONY_SDK_LIB_DIR` can build the real Windows link today — and §7
+   below is how CI provisions that same payload without a scriptable
+   vendor URL. `bazel/windows-latest` still only exercises
+   `SVBONY_SKIP_NATIVE_LINK=1` (the Bazel-side SDK-fetch rule remains
+   deferred — see `docs/plans/archive/svbony-camera.md`'s Status section).
+7. **A private, token-gated CI mirror carries the Windows payload
+   (added 2026-07-29, issue #720 Part 2).** The captcha gate blocks
+   *fetching*; points 1–6 govern *redistribution* — publishing the SDK in
+   artifacts third parties can obtain. A mirror that is (a)
+   access-controlled — every request, reads included, requires a bearer
+   token held only by this repo's CI and its operators; (b) read-only from
+   the network — the serving Worker has no upload path, objects are put
+   out-of-band from an operator's authenticated Cloudflare session; and
+   (c) absent from every published artifact, distributes nothing to any
+   third party, so it sits *outside* the "never redistribute" scope rather
+   than weakening it. Risk context: SVBony visibly tolerates fully
+   *public* redistribution of these same payloads (indi-3rdparty vendors
+   the Linux/macOS blobs at GitHub-raw URLs this project already fetches
+   in CI; NINA's `nina.external` repo and PHD2's GitHub tree vendor the
+   Windows DLL), so a private, access-controlled copy is strictly
+   lower-exposure than the public mirrors already relied on. Mechanics:
+   Cloudflare R2 + Worker at `https://private.rustyphoton.space` (code +
+   runbook: `tools/private-mirror-worker/`), holding the
+   operator-downloaded vendor originals (`windows-SVBCameraSDK-v1.13.4.zip`
+   and the driver installer). The mirror is trusted for *availability
+   only*: `install-svbony-sdk`'s Windows step verifies a pinned sha256
+   computed from the vendor original before use. If SVBony ever objects,
+   deleting the bucket ends the arrangement with no published artifact
+   ever having carried the bytes.
 
 ## Consequences
 
 - No unlicensed bytes in our published artifacts, matching the QHY
   precedent's risk posture.
+- Windows CI now links + loads the real SDK (`native.yml`'s build + FFI
+  smoke, `conformu.yml`'s real-link leg) via §7's private mirror. Hosted
+  runners have no camera (and no vendor driver), so runtime coverage is
+  DLL load + zero-camera enumeration — real-hardware ConformU on Windows
+  remains a manual/operator concern (see the validation records under
+  `docs/validation/`). Fork PRs and dependabot runs receive no
+  `PRIVATE_MIRROR_TOKEN` secret and degrade to `SVBONY_SKIP_NATIVE_LINK=1`.
 - SVBony operators run one extra documented command
   (`rusty-photon-svbony-sdk-install`) before first camera use, exactly like
   QHY operators today; ZWO operators still need nothing extra. Unlike QHY's

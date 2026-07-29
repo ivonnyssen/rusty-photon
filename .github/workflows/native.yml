@@ -19,13 +19,15 @@
 #   (test/conformu/safety) builds the `simulation` path with
 #   ZWO_SKIP_NATIVE_LINK=1 / SVBONY_SKIP_NATIVE_LINK=1 and never links the SDK
 #   at all. So this is the ONLY job that links + loads the real ZWO/SVBony
-#   SDKs, and it adds a Linux runtime smoke for each. svbony-camera additionally
-#   has NO Windows leg at all (indi-3rdparty's libsvbony packaging hard-fails
-#   CMake on Windows, and libsvbony-sys/build.rs panics unconditionally on
-#   CARGO_CFG_TARGET_OS=windows before even checking the skip-link env — see
-#   install-svbony-sdk/action.yml's header comment) and its macOS coverage is
-#   x86_64-only (indi-3rdparty ships no `mac_arm64` blob; `macos-latest` is
-#   Apple Silicon today) — both steps below are conditioned accordingly.
+#   SDKs, and it adds runtime smokes for each (zwo: Linux; svbony: Linux +
+#   Windows). svbony-camera's Windows SDK comes from the private CI mirror
+#   (install-svbony-sdk's Windows step, ADR-018 §7 — the vendor download is
+#   captcha-gated), which hard-requires the PRIVATE_MIRROR_TOKEN secret:
+#   this workflow never runs on PR events, so the secret is always present
+#   here, and a fork without it fails loudly rather than silently skipping
+#   the real link. svbony's macOS coverage is x86_64-only (indi-3rdparty
+#   ships no `mac_arm64` blob; `macos-latest` is Apple Silicon today) — the
+#   steps below are conditioned accordingly.
 #
 # (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
 # nightly covers linux-arm64 for qhy/zwo. svbony-camera's Bazel real binary
@@ -103,16 +105,19 @@ jobs:
         uses: ./.github/actions/install-zwo-sdk
 
       # --- SVBony camera SDK (svbony-camera) ---------------------------------
-      # No Windows leg at all (see the file-header comment) and macOS is
-      # x86_64-only (indi-3rdparty ships no `mac_arm64` blob) — `macos-latest`
-      # is Apple Silicon today, so this step (and the build step below) is a
-      # no-op there until a verified Apple Silicon blob exists (see
+      # Linux/macOS from indi-3rdparty's mirror; Windows from the private CI
+      # mirror (see the file-header comment). macOS is x86_64-only
+      # (indi-3rdparty ships no `mac_arm64` blob) — `macos-latest` is Apple
+      # Silicon today, so this step (and the build step below) is a no-op
+      # there until a verified Apple Silicon blob exists (see
       # docs/plans/archive/svbony-camera.md "Packaging"). No libclang: libsvbony-sys's
       # FFI is hand-written, not bindgen'd (SVBony's header carries no license
       # to vendor under).
       - name: Install SVBony SDK
-        if: runner.os != 'Windows' && (runner.os == 'Linux' || runner.arch == 'X64')
+        if: runner.os == 'Linux' || runner.arch == 'X64'
         uses: ./.github/actions/install-svbony-sdk
+        with:
+          windows-mirror-token: ${{ secrets.PRIVATE_MIRROR_TOKEN }}
 
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
@@ -137,10 +142,9 @@ jobs:
 
       # svbony: same shape as zwo — no simulation, no SVBONY_SKIP_NATIVE_LINK,
       # service without --all-targets, binding crates with it. Skipped on
-      # Windows (no SDK at all) and on non-x86_64 macOS (no blob) — see the
-      # Install SVBony SDK step above.
+      # non-x86_64 macOS (no blob) — see the Install SVBony SDK step above.
       - name: cargo build (svbony, real, no simulation)
-        if: runner.os != 'Windows' && (runner.os == 'Linux' || runner.arch == 'X64')
+        if: runner.os == 'Linux' || runner.arch == 'X64'
         run: |
           cargo build --locked -p svbony-camera
           cargo build --locked -p svbony-rs -p libsvbony-sys --all-targets
@@ -157,13 +161,16 @@ jobs:
         env:
           LD_LIBRARY_PATH: /usr/local/lib
 
-      # Linux runtime smoke (svbony only): svbony-rs's non-`simulation` tests
-      # (`sdk_new_succeeds`, `camera_enumeration_returns_a_count`,
+      # Runtime smoke (svbony, Linux + Windows): svbony-rs's non-`simulation`
+      # tests (`sdk_new_succeeds`, `camera_enumeration_returns_a_count`,
       # `sdk_version_is_non_empty` in lib.rs, plus camera.rs's own
       # `cameras_enumerates`) call the real SDK the same way zwo-rs's smoke
       # test above does — confirming it *loads*, not just that it links.
+      # Linux resolves the .so via /usr/local/lib; Windows finds
+      # SVBCameraSDK.dll via the PATH entry install-svbony-sdk exports
+      # (macOS stays link-only, like zwo).
       - name: cargo test (real svbony-rs FFI smoke)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' || runner.os == 'Windows'
         run: cargo test --locked -p svbony-rs --all-targets
         env:
           LD_LIBRARY_PATH: /usr/local/lib

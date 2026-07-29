@@ -18,19 +18,25 @@ description: >-
   the usual libc/libstdc++/libgcc_s/libm — matching libsvbony-sys/build.rs's
   actual link-lib list, not the udev+libusb pair ZWO's EFW/EAF blobs need.
 
-  No Windows branch — not because Windows is unsupported (it isn't:
-  libsvbony-sys/build.rs has real, byte-verified Windows link directives as
-  of the PR #658 review, and SVBony does publish a Windows SDK directly,
-  svbony.com/downloads/software-driver — indi-3rdparty's own Linux/macOS-
-  only libsvbony/CMakeLists.txt refusal is not evidence otherwise), but
-  because that download is gated behind a CAPTCHA/consent flow
-  (`data-fileRestricted="true"`, `recaptcha-v3.js`/`unified-captcha.js`),
-  unlike indi-3rdparty's plain GitHub-raw mirror or install-zwo-sdk's plain
-  Windows CDN URL — there is no automatable fetch to script here. Callers
-  must not invoke this action on `windows-latest`; build with
-  SVBONY_SKIP_NATIVE_LINK=1 there instead (bazel/windows-latest and
-  native.yml both do). See docs/plans/archive/svbony-camera.md's Future Work for
-  the tracked gap.
+  Windows: provisioned from the project's private CI mirror
+  (https://private.rustyphoton.space — tools/private-mirror-worker/), not
+  from the vendor: SVBony's own Windows SDK download
+  (svbony.com/downloads/software-driver, windows-SVBCameraSDK-v<ver>.zip)
+  sits behind a CAPTCHA/consent flow (`data-fileRestricted="true"`,
+  `recaptcha-v3.js`/`unified-captcha.js`) — no automatable fetch — and
+  indi-3rdparty's libsvbony packaging covers Linux/macOS only. The mirror
+  holds an operator-downloaded copy of the vendor zip, token-gated on
+  every request and never republished (ADR-018 §7); the Windows step
+  verifies a pinned sha256 computed from the vendor original before use,
+  so the mirror is trusted for availability, not integrity. Callers pass
+  the PRIVATE_MIRROR_TOKEN repo secret via the `windows-mirror-token`
+  input; the step FAILS if it is empty (fork PRs and dependabot runs
+  receive no repo secrets), so callers that can degrade should gate the
+  step on the secret's presence and fall back to SVBONY_SKIP_NATIVE_LINK=1
+  instead (see conformu.yml's Windows job). The zip carries both the MSVC
+  import library and the runtime DLL (SVBONY/lib/x64/); the step exports
+  SVBONY_SDK_LIB_DIR for the link and prepends the same dir to PATH so
+  later steps' test/runtime processes can load SVBCameraSDK.dll.
 
   macOS: x86_64 (`mac64`) only. indi-3rdparty's libsvbony packaging ships no
   `mac_arm64` blob (SVBony's own direct SDK download has not been
@@ -84,6 +90,26 @@ inputs:
       already be provisioned by scripts/setup-pi-runner.sh. Mirrors the
       ZWO/QHYCCD per-run sudo-free model (docs/skills/raspberry-pi-runner.md).
     default: "true"
+  windows-mirror-token:
+    description: >-
+      Bearer token for the private CI mirror (the PRIVATE_MIRROR_TOKEN
+      GitHub Actions secret). Required on Windows — the step fails loudly
+      without it; unused on Linux/macOS. See the action header comment and
+      ADR-018 §7.
+    default: ""
+  windows-sdk-version:
+    description: >-
+      SVBony Windows SDK version (Windows only). Selects the mirror key
+      `svbony/windows-SVBCameraSDK-v<version>.zip`; bump it together with
+      `windows-sdk-sha256` after uploading the new vendor zip to the mirror
+      (tools/private-mirror-worker/README.md).
+    default: "1.13.4"
+  windows-sdk-sha256:
+    description: >-
+      Pinned sha256 of the vendor zip (Windows only), computed from the
+      operator-downloaded original — the mirror is trusted for
+      availability, not integrity.
+    default: c0ad5b02c475a39a93d3dbcf8d64a17c079d0d4bcab7d66184a598a15f4d4a5e
 
 runs:
   using: composite
@@ -287,3 +313,55 @@ runs:
           echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         } >> "$GITHUB_ENV"
         echo "install-svbony-sdk (sudo-free): exported SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH=$LIBDIR"
+
+    - name: Provision SVBony SDK (Windows, private mirror)
+      # See the action header comment: the vendor download is captcha-gated,
+      # so this fetches the operator-uploaded vendor zip from the private
+      # token-gated mirror (ADR-018 §7) and verifies its pinned sha256. The
+      # zip's SVBONY/lib/x64/ carries both SVBCameraSDK.lib (MSVC link) and
+      # SVBCameraSDK.dll (runtime): SVBONY_SDK_LIB_DIR covers the link, the
+      # PATH prepend lets later steps' processes load the DLL. No caching —
+      # the mirror serves from Cloudflare's edge with no rate limit, unlike
+      # the throttled indi-3rdparty fetch the Linux/macOS cache works around.
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        MIRROR_TOKEN: ${{ inputs.windows-mirror-token }}
+        SDK_VERSION: ${{ inputs.windows-sdk-version }}
+        SDK_SHA256: ${{ inputs.windows-sdk-sha256 }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        if ($env:RUNNER_ARCH -ne "X64") {
+          Write-Host "::error::install-svbony-sdk: unsupported Windows arch $env:RUNNER_ARCH (the vendor zip ships x64/x86 only, and this crate targets x64)"
+          exit 1
+        }
+        if (-not $env:MIRROR_TOKEN) {
+          Write-Host "::error::install-svbony-sdk: windows-mirror-token is empty. Pass the PRIVATE_MIRROR_TOKEN repo secret, or (callers that can run without the real link, e.g. forks) skip this action and set SVBONY_SKIP_NATIVE_LINK=1 instead. See the action header comment and ADR-018 section 7."
+          exit 1
+        }
+        $work = Join-Path $env:RUNNER_TEMP "svbony-sdk"
+        New-Item -ItemType Directory -Force -Path $work | Out-Null
+        $zip = Join-Path $work "windows-SVBCameraSDK.zip"
+        $url = "https://private.rustyphoton.space/svbony/windows-SVBCameraSDK-v$($env:SDK_VERSION).zip"
+        Write-Host "install-svbony-sdk (Windows): fetching SDK v$($env:SDK_VERSION) from the private mirror"
+        curl.exe -fsSL --retry 3 --retry-delay 2 -H "Authorization: Bearer $env:MIRROR_TOKEN" $url -o $zip
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "::error::install-svbony-sdk: mirror download failed (curl exit $LASTEXITCODE). Check the mirror worker (tools/private-mirror-worker/) and that the token matches its READ_TOKEN secret."
+          exit 1
+        }
+        $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLowerInvariant()
+        if ($hash -ne $env:SDK_SHA256.ToLowerInvariant()) {
+          Write-Host "::error::install-svbony-sdk: sha256 mismatch for windows-SVBCameraSDK-v$($env:SDK_VERSION).zip - got $hash, pinned $env:SDK_SHA256. The mirror object no longer matches the vendor original this action pins; re-verify the upload before trusting it."
+          exit 1
+        }
+        Expand-Archive -Path $zip -DestinationPath $work -Force
+        $libdir = Join-Path $work "SVBONY\lib\x64"
+        foreach ($f in "SVBCameraSDK.lib", "SVBCameraSDK.dll") {
+          if (-not (Test-Path (Join-Path $libdir $f))) {
+            Write-Host "::error::install-svbony-sdk: $f missing under SVBONY\lib\x64 after extract - the vendor zip layout changed; update this step."
+            exit 1
+          }
+        }
+        "SVBONY_SDK_LIB_DIR=$libdir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        $libdir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        Write-Host "install-svbony-sdk (Windows): staged SDK v$($env:SDK_VERSION) at $libdir (sha256 verified; exported SVBONY_SDK_LIB_DIR + PATH entry for the DLL)"
