@@ -67,6 +67,22 @@ Feature: Exposure lifecycle
     And an exposure is in flight on camera device 0
     When I abort the exposure on camera device 0
     Then camera device 0 reports ImageReady as false
+    And camera device 0 reports CameraState as Idle
+
+  Scenario: A fresh exposure completes immediately after an abort
+    Given camera device 0 is connected
+    And an exposure is in flight on camera device 0
+    When I abort the exposure on camera device 0
+    And I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 64 StartX 0 StartY 0 Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    Then camera device 0 reports ImageReady as true
+    And camera device 0 reports CameraState as Idle
+
+  Scenario: Disconnecting during an exposure closes the device cleanly
+    Given camera device 0 is connected
+    And an exposure is in flight on camera device 0
+    When I disconnect camera device 0
+    Then camera device 0 reports Connected as false
 
   Scenario: StopExposure is not implemented
     Given camera device 0 is connected

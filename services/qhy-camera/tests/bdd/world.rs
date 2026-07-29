@@ -191,14 +191,14 @@ impl CameraWorld {
             .is_ok()
     }
 
-    /// Start a long-running exposure and leave it in flight (the simulation's
-    /// `get_single_frame` blocks for the full duration).
+    /// Start a long-running exposure and leave it in flight — i.e. parked in the
+    /// driver's cancellable wait, well short of the readout.
     pub async fn start_in_flight(&mut self) {
         self.camera()
             .start_exposure(Duration::from_secs(30), true)
             .await
             .expect("start in-flight exposure");
-        // Let the detached task enter the blocking capture.
+        // Let the detached capture task reach its wait.
         tokio::time::sleep(Duration::from_millis(80)).await;
     }
 
