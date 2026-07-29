@@ -204,14 +204,28 @@ resolved, `libpanic_unwind-….rlib` at 261 did not.
 path to 193. If you add a doctest target and see `LNK1181` again, the budget has
 run out somewhere else — measure the path before theorising.
 
-**A doctest target with `crate_features` is still skipped on Windows** (issue
-#749, unrelated to the above). rustdoc receives the feature as `--cfg` plus
-`feature="simulation"`, and those embedded quotes cannot survive the runner: it
-is one batch line, `powershell.exe -c "… 'feature="simulation"' …"`, and
-`cmd.exe` tracks quote state without understanding any escape, so the inner
-quote ends the `-c` string early. Watch out for its symptom — it is
-position-dependent, and has appeared both as `invalid --cfg argument` and as a
-silent exit-1 with a completely empty test log.
+**A doctest target with `crate_features` needs the same patch on Windows.**
+rustdoc receives the feature as `--cfg` plus `feature="simulation"`, and those
+embedded quotes cannot ride a batch line: `cmd.exe` tracks quote state without
+understanding any escape (`\"` still toggles it), so an inner quote ends a
+`powershell.exe -c "…"` string early — with position-dependent symptoms, seen
+both as `invalid --cfg argument` and as a silent exit-1 with a completely empty
+test log. The vendored patch therefore writes the Windows runner's command into
+a companion `.ps1` invoked via `powershell -File`, where single-quoted arguments
+carry `"` literally and cmd.exe never parses them. One layer survives even
+that: PowerShell 5.1 marshals arguments to a native child with embedded `"`
+unescaped, so the child's CRT parser strips them — the runner's `CRT()`
+function re-encodes them as `\"` per MSVCRT rules just before that hop. Both
+together are what let the qhyccd-rs sim doctest target run on Windows.
+
+**The runner also resolves its `--arg-file` paths through the runfiles
+manifest.** windows-latest intermittently leaves a build-script
+`_bs.linksearchpaths` runfiles-tree entry as a *dangling symlink* (the #587
+family-2 flake: `file=false symlink=true len=0` with a real parent directory),
+which no open-retry can outlast. The manifest's execroot target is a real file
+— `build:windows --remote_download_outputs=all` outranks `build:ci`'s
+`toplevel` because platform config appends last — so RF() substitutes it and
+sidesteps the tree.
 
 Two things generalise. The job's "Enable long paths" step does **not** cover
 this: `LongPathsEnabled` is opt-in per binary via a `longPathAware` manifest, and

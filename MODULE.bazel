@@ -27,7 +27,11 @@ bazel_dep(name = "platforms", version = "1.0.0")
 # is always the root module — this never needs to resolve for a downstream consumer.
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = True)
 
-# Four pinned patches to rules_rust. See docs/plans/archive/bazel-migration.md.
+# Four pinned patches to rules_rust (patch 3 spans two FILES — Bazel's patch
+# applier failed a two-file unified diff with CONTENT_DOES_NOT_MATCH_TARGET on
+# whichever file section came second, while each single-file diff applies
+# cleanly, so its .bzl half lives in its own file).
+# See docs/plans/archive/bazel-migration.md.
 #
 # 1. collect_coverage_extra_objects.patch — BDD rust_tests spawn the service
 #    binary as a child process; the collector merges the child's profraw but
@@ -90,6 +94,39 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    trim the shared suffix off its target) yields the ~155-char execroot path,
 #    putting every std rlib comfortably under the limit.
 #
+#    The patch also restructures the runner itself: the generated .bat is now a
+#    trampoline that invokes a companion .ps1 (declared by rustdoc_test.bzl as
+#    an extra output of the writer action — that rule change is the
+#    rustdoc_test_windows_companion_script.patch half) via `powershell -File`,
+#    instead of
+#    carrying the whole command as ONE `powershell.exe -c "…"` batch line. Two
+#    cmd.exe limits forced this (issue #749): cmd tracks quote state without
+#    honouring any escape — `\"` still toggles it — so an argv element with a
+#    literal `"` (`crate_features` reaches rustdoc as `feature="simulation"`)
+#    ends the -c string early, with position-dependent symptoms (an `invalid
+#    --cfg argument` error, or a silent exit-1 with an empty log once the
+#    preamble shifted where the quote landed); and a batch line caps at 8191
+#    chars. In a .ps1, PowerShell parses the file itself: single-quoted
+#    arguments carry `"` literally and no line limit applies. One quoting
+#    layer remains even then — PowerShell 5.1 marshals args to a native child
+#    by pasting the string into its command line with embedded `"` unescaped,
+#    so the child's CRT parser strips them (CI-proven: process_wrapper
+#    received `feature=simulation`) — which the runner's CRT() function
+#    handles by encoding `"` as `\"` per MSVCRT rules just before that hop.
+#    This is what lets qhyccd-rs's sim doctest target (the only one with
+#    crate_features) run on Windows.
+#
+#    Finally, RF() resolves `external/`-spelled argv elements — the `--arg-file`
+#    values naming build-script `_bs.linksearchpaths` outputs — through the
+#    manifest as well (issue #752, the #587 family-2 flake): windows-latest
+#    intermittently leaves that runfiles-tree entry as a DANGLING symlink
+#    (file=false symlink=true len=0, parent dir real) which no amount of
+#    retrying in process_wrapper (patch 4) can outlast, while the manifest's
+#    execroot target is a real file — `build:windows
+#    --remote_download_outputs=all` wins over build:ci's `toplevel` because
+#    --enable_platform_specific_config appends platform lines last (see
+#    .bazelrc), so every output is materialized even on remote-cache hits.
+#
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that
 #    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that
@@ -106,6 +143,12 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    diagnosable from the error alone. Inert on the happy path and on
 #    non-Windows. No upstream issue filed yet.
 #
+#    The diagnostic later proved the recurrence (issue #752) is a DANGLING
+#    runfiles-tree symlink, which retrying cannot outlast — patch 3's RF()
+#    now routes those `--arg-file` paths through the runfiles manifest to
+#    their execroot targets, so this retry remains only as the backstop for
+#    paths the manifest cannot resolve.
+#
 # Upstream has no equivalent hooks for 1-2 (collect_coverage PRs #3490/#3808
 # unmerged; HEAD identical), so these are carried until upstreamed. The
 # `bazel/cargo target parity` CI job guards that the patches still apply and
@@ -117,6 +160,7 @@ single_version_override(
         "//third_party/patches:collect_coverage_extra_objects.patch",
         "//third_party/patches:instrumented_files_include_data.patch",
         "//third_party/patches:rustdoc_test_windows_external_repo_path.patch",
+        "//third_party/patches:rustdoc_test_windows_companion_script.patch",
         "//third_party/patches:process_wrapper_read_retry.patch",
     ],
 )

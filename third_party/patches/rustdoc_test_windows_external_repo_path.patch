@@ -1,23 +1,103 @@
 --- a/rust/private/rustdoc/rustdoc_test_writer.rs
 +++ b/rust/private/rustdoc/rustdoc_test_writer.rs
-@@ -226,10 +226,80 @@
+@@ -20,6 +20,11 @@
+     /// The path where the script should be written.
+     output: PathBuf,
+ 
++    /// rusty-photon patch (rustdoc_test_windows_external_repo_path): where the
++    /// Windows runner's companion PowerShell script should be written. Present
++    /// exactly when the rule declared one (Windows target platforms).
++    output_ps1: Option<PathBuf>,
++
+     /// If Bazel generated a params file, we may need to strip roots from it.
+     /// This is the path where we will output our stripped params file.
+     optional_output_params_file: PathBuf,
+@@ -55,6 +60,12 @@
+         .map(PathBuf::from)
+         .expect("Missing `--output` argument");
+ 
++    let output_ps1 = writer_args
++        .iter()
++        .find(|arg| arg.starts_with("--output_ps1="))
++        .and_then(|arg| arg.splitn(2, '=').last())
++        .map(PathBuf::from);
++
+     let optional_output_params_file = writer_args
+         .iter()
+         .find(|arg| arg.starts_with("--optional_test_params="))
+@@ -97,6 +108,7 @@
+         env_keys,
+         strip_substrings,
+         output,
++        output_ps1,
+         optional_output_params_file,
+         action_argv,
+     }
+@@ -204,17 +216,40 @@
+ }
+ 
+ /// Write a windows compatible test runner
++///
++/// rusty-photon patch (rustdoc_test_windows_external_repo_path): the runner is
++/// split into a `.bat` trampoline and a companion `.ps1` holding the real
++/// command, invoked with `powershell -File`. Upstream emitted everything as
++/// ONE batch line, `powershell.exe -c "..."`, which imposes two cmd.exe limits
++/// the arguments cannot always satisfy: cmd tracks quote state without
++/// honouring any escape character, so an argument containing a literal `"`
++/// (e.g. `feature="simulation"`, how `crate_features` reaches rustdoc)
++/// terminates the `-c` string early and corrupts the rest of the line; and a
++/// batch line is capped at 8191 characters. Inside a `.ps1` neither layer
++/// exists — PowerShell parses the file itself, where a single-quoted string
++/// carries `"` literally and the only escape needed is doubling embedded
++/// single quotes.
++///
++/// A third quoting layer remains even then: Windows PowerShell 5.1 marshals
++/// arguments to a NATIVE child by pasting the string into the child's command
++/// line raw — embedded `"` are not escaped — so the child's CRT parser
++/// consumes them and process_wrapper would still see `feature=simulation`.
++/// The CRT() function in the script template encodes such values per MSVCRT
++/// reverse-parsing rules (`"` becomes `\"`, backslash runs before a quote
++/// double) right before the native hop; process_wrapper then parses back the
++/// exact value, and Rust's std::process::Command re-escapes correctly when it
++/// spawns rustdoc, so no further hop can corrupt it.
+ fn write_test_runner_windows(
+     path: &Path,
++    ps1_path: &Path,
+     env: &BTreeMap<String, String>,
+     argv: &[String],
+     strip_substrings: &[String],
+ ) {
+-    let env_str = env
+-        .iter()
+-        .map(|(key, val)| format!("$env:{key}='{val}'"))
+-        .collect::<Vec<String>>()
+-        .join(" ; ");
++    /// Quote a string as a PowerShell single-quoted literal.
++    fn ps_quote(s: &str) -> String {
++        format!("'{}'", s.replace('\'', "''"))
++    }
+ 
+     let argv_str = argv
+         .iter()
+@@ -226,20 +261,160 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
 -        .map(|arg| format!("'{arg}'"))
-+        // rusty-photon patch (rustdoc_test_windows_external_repo_path): every
-+        // argument is routed through the RF() resolver defined below. Bazel
-+        // hands cross-repo runfiles to this argv as bare `..`-relative
-+        // short_paths (e.g.
-+        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`), which
-+        // resolve neither from this script's cwd (the `_main` runfiles
-+        // subdirectory) nor reliably through the sibling `external -> ..\\`
-+        // symlink: on remote-cache-hit builds the runfiles-tree entry for an
-+        // exec-configuration tool can be absent or dangling on Windows. RF
-+        // looks the path up in the runfiles MANIFEST and invokes the absolute
-+        // execroot target instead, sidestepping the tree; the `external/`
-+        // rewrite remains as the fallback when no manifest exists, and every
-+        // miss prints a Write-Warning so a failure names the exact gap.
++        // Every argument is routed through the RF() resolver defined in the
++        // script template below. Bazel hands cross-repo runfiles to this argv
++        // as `..`-relative short_paths (e.g.
++        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`) and
++        // generated cross-repo files as `external/`-relative paths after
++        // root-stripping (e.g. the `--arg-file` values naming build-script
++        // `_bs.linksearchpaths` outputs). Neither resolves reliably through
++        // the runfiles tree: entries have been observed absent or dangling on
++        // remote-cache-hit builds (a bazelbuild/bazel#18580-class
++        // build-without-the-bytes / runfiles interplay). RF looks each path up
++        // in the runfiles MANIFEST and substitutes the absolute execroot
++        // target, sidestepping the tree entirely; the tree path remains as
++        // the no-manifest fallback, and every miss prints a Write-Warning
++        // naming the exact gap.
 +        //
 +        // RF also rewrites `--sysroot=<dir>` (via RFD). rustc expands that
 +        // directory into the std rlib paths it hands the linker, and spelled
@@ -25,69 +105,189 @@
 +        // alone costs ~123 chars, putting `libpanic_unwind-<hash>.rlib` at 261
 +        // and failing `LNK1181: cannot open input file` while `libstd-<hash>`
 +        // at 252 in the same directory resolves. link.exe carries no
-+        // `longPathAware` manifest, so the runner image's LongPathsEnabled does
-+        // not reach it. Resolving the directory through the manifest yields the
-+        // execroot target (~155 chars), which puts every std rlib comfortably
-+        // under the limit.
-+        .map(|arg| format!("(RF '{arg}')"))
++        // `longPathAware` manifest, so a host's LongPathsEnabled opt-in does
++        // not reach it. Resolving the directory through the manifest yields
++        // the execroot target (~155 chars), which puts every std rlib
++        // comfortably under the limit.
++        //
++        // CRT() wraps every resolved value because PowerShell 5.1's native
++        // marshalling passes embedded `"` into the child's command line
++        // unescaped (see the function-level docs above).
++        .map(|arg| format!("(CRT (RF {}))", ps_quote(&arg)))
          .collect::<Vec<String>>()
          .join(" ");
  
-+    let rf_fn = concat!(
-+        // RFI: parse the runfiles MANIFEST into $script:RFM once (key -> absolute
-+        // target). Shared by RF and RFD.
-+        "function RFI { ",
-+        "if ($null -ne $script:RFM) { return } ; ",
-+        "$script:RFM = @{} ; ",
-+        "$mf = $env:RUNFILES_MANIFEST_FILE ; ",
-+        "if ((-not $mf -or -not (Test-Path $mf)) -and $env:TEST_SRCDIR) { $mf = Join-Path $env:TEST_SRCDIR 'MANIFEST' } ; ",
-+        "if ($mf -and (Test-Path $mf)) { ",
-+        "foreach ($l in (Get-Content $mf)) { ",
-+        "$i = $l.IndexOf(' ') ; ",
-+        "if ($i -gt 0) { $script:RFM[$l.Substring(0, $i)] = $l.Substring($i + 1) } ",
-+        "} } } ; ",
-+        // RFD: resolve a runfiles-relative DIRECTORY to its absolute target. The
-+        // manifest maps files only, so match any entry beneath the directory and
-+        // trim the shared suffix off its target.
-+        "function RFD($d) { ",
-+        "$rel = $d -replace '\\\\','/' ; ",
-+        "if ($rel.StartsWith('../')) { $rel = $rel.Substring(3) } ",
-+        "elseif ($rel.StartsWith('external/')) { $rel = $rel.Substring(9) } ",
-+        "else { return $d } ; ",
-+        "RFI ; ",
-+        "$pfx = $rel + '/' ; ",
-+        "foreach ($k in $script:RFM.Keys) { ",
-+        "if ($k.StartsWith($pfx)) { ",
-+        "$v = $script:RFM[$k] -replace '\\\\','/' ; ",
-+        "$sfx = $k.Substring($rel.Length) ; ",
-+        "if ($v.EndsWith($sfx)) { return $v.Substring(0, $v.Length - $sfx.Length) } ",
-+        "} } ; ",
-+        "Write-Warning ('no runfiles manifest entry under directory ' + $rel) ; ",
-+        "return $d } ; ",
-+        "function RF($p) { ",
-+        "if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) } ; ",
-+        "if ($p -notmatch '^\\.\\.[\\\\/]') { return $p } ; ",
-+        "$rel = $p.Substring(3) -replace '\\\\','/' ; ",
-+        "RFI ; ",
-+        "$t = $script:RFM[$rel] ; ",
-+        "if ($t) { ",
-+        "if (Test-Path $t) { return $t } ; ",
-+        "Write-Warning ('runfiles manifest maps ' + $rel + ' to missing ' + $t) ",
-+        "} ; ",
-+        "$fb = 'external/' + $rel ; ",
-+        "if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $rel) } ; ",
-+        "return $fb }",
+-    let content = [
+-        "@ECHO OFF".to_owned(),
+-        "".to_owned(),
++    let resolver = r#"# Parse the runfiles MANIFEST into $script:RFM once (key -> absolute target).
++function RFI {
++    if ($null -ne $script:RFM) { return }
++    $script:RFM = @{}
++    $mf = $env:RUNFILES_MANIFEST_FILE
++    if ((-not $mf -or -not (Test-Path $mf)) -and $env:TEST_SRCDIR) { $mf = Join-Path $env:TEST_SRCDIR 'MANIFEST' }
++    if ($mf -and (Test-Path $mf)) {
++        foreach ($l in (Get-Content $mf)) {
++            $i = $l.IndexOf(' ')
++            if ($i -gt 0) { $script:RFM[$l.Substring(0, $i)] = $l.Substring($i + 1) }
++        }
++    }
++}
++
++# Resolve a runfiles-relative FILE key to its absolute manifest target, or
++# $null when the manifest has no live entry for it.
++function RFF($rel) {
++    RFI
++    $t = $script:RFM[$rel]
++    if ($t) {
++        if (Test-Path $t) { return $t }
++        Write-Warning ('runfiles manifest maps ' + $rel + ' to missing ' + $t)
++    }
++    return $null
++}
++
++# Resolve a runfiles-relative DIRECTORY to its absolute target. The manifest
++# maps files only, so match any entry beneath the directory and trim the
++# shared suffix off its target.
++function RFD($d) {
++    $rel = $d -replace '\\','/'
++    if ($rel.StartsWith('../')) { $rel = $rel.Substring(3) }
++    elseif ($rel.StartsWith('external/')) { $rel = $rel.Substring(9) }
++    else { return $d }
++    RFI
++    $pfx = $rel + '/'
++    foreach ($k in $script:RFM.Keys) {
++        if ($k.StartsWith($pfx)) {
++            $v = $script:RFM[$k] -replace '\\','/'
++            $sfx = $k.Substring($rel.Length)
++            if ($v.EndsWith($sfx)) { return $v.Substring(0, $v.Length - $sfx.Length) }
++        }
++    }
++    Write-Warning ('no runfiles manifest entry under directory ' + $rel)
++    return $d
++}
++
++# Windows PowerShell 5.1 marshals arguments to native commands by pasting the
++# string into the child's command line without escaping embedded quotes, so
++# the child's CRT parser would strip them. Encode per MSVCRT reverse-parsing
++# rules: each `"` becomes `\"` with any backslash run before it doubled; when
++# the value contains whitespace PowerShell adds surrounding quotes, so a
++# trailing backslash run must double too or it would swallow the closing one.
++function CRT($s) {
++    if ($s -notmatch '"') { return $s }
++    $s = $s -replace '(\\*)"','$1$1\"'
++    if ($s -match '\s') { $s = $s -replace '(\\+)$','$1$1' }
++    return $s
++}
++
++# Resolve one argv element: --sysroot= via RFD, runfiles-relative paths via
++# the manifest, anything else untouched.
++function RF($p) {
++    if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) }
++    if ($p -match '^\.\.[\\/]') {
++        $rel = $p.Substring(3) -replace '\\','/'
++        $t = RFF $rel
++        if ($t) { return $t }
++        $fb = 'external/' + $rel
++        if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $rel) }
++        return $fb
++    }
++    if ($p -match '^external[\\/]') {
++        $rel = $p.Substring(9) -replace '\\','/'
++        $t = RFF $rel
++        if ($t) { return $t }
++        if (-not (Test-Path $p)) { Write-Warning ('runfile not found via manifest or tree: ' + $rel) }
++        return $p
++    }
++    return $p
++}"#;
++
++    let mut ps1_lines: Vec<String> = vec![
++        "# Generated rustdoc test runner. Invoked from the companion .bat via".to_owned(),
++        "# `powershell -File`: with the command in a script file, no argument".to_owned(),
++        "# has to survive cmd.exe's quote tracking and no batch line-length".to_owned(),
++        "# limit applies.".to_owned(),
++    ];
++
++    ps1_lines.extend(
++        env.iter()
++            .map(|(key, val)| format!("$env:{key} = {}", ps_quote(val))),
 +    );
 +
-     let content = [
-         "@ECHO OFF".to_owned(),
-         "".to_owned(),
-@@ -239,7 +309,7 @@
-         "powershell.exe -c \"if (!(Test-Path .\\external)) { New-Item -Path .\\external -ItemType SymbolicLink -Value ..\\ }\""
-             .to_owned(),
++    ps1_lines.extend([
+         // TODO: Instead of creating a symlink to mimic the behavior of
+         // --legacy_external_runfiles, this rule should be able to correctly
+         // sanitize the action args to run in a runfiles without this link.
+-        "powershell.exe -c \"if (!(Test-Path .\\external)) { New-Item -Path .\\external -ItemType SymbolicLink -Value ..\\ }\""
+-            .to_owned(),
++        "if (!(Test-Path .\\external)) { New-Item -Path .\\external -ItemType SymbolicLink -Value ..\\ | Out-Null }".to_owned(),
++        resolver.to_owned(),
++        format!("& {argv_str}"),
++        // `powershell -File` exits 0 unless the script exits explicitly, and
++        // $LASTEXITCODE stays $null when the resolved command never launched —
++        // both must fail the test rather than pass it.
++        "if ($null -eq $LASTEXITCODE) { exit 1 }".to_owned(),
++        "exit $LASTEXITCODE".to_owned(),
++        "".to_owned(),
++    ]);
++
++    fs::write(ps1_path, ps1_lines.join("\n")).expect("Failed to write test runner script");
++
++    let ps1_name = ps1_path
++        .file_name()
++        .and_then(|name| name.to_str())
++        .expect("invalid companion script file name");
++
++    let content = [
++        "@ECHO OFF".to_owned(),
          "".to_owned(),
 -        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
-+        format!("powershell.exe -c \"{env_str} ; {rf_fn} ; & {argv_str}\""),
++        format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{ps1_name}\""),
++        "exit /b %ERRORLEVEL%".to_owned(),
          "".to_owned(),
      ];
  
+@@ -266,14 +441,29 @@
+ 
+ fn write_test_runner(
+     path: &Path,
++    output_ps1: Option<&Path>,
+     env: &BTreeMap<String, String>,
+     argv: &[String],
+     strip_substrings: &[String],
+ ) {
+     if cfg!(target_family = "unix") {
+         write_test_runner_unix(path, env, argv, strip_substrings);
++
++        // The companion script is only used by the Windows runner, but it is a
++        // declared action output whenever the rule passed the flag — write a
++        // placeholder so the action always produces it (mirroring the
++        // `optional_output_params_file` convention).
++        if let Some(ps1_path) = output_ps1 {
++            fs::write(ps1_path, b"unused").expect("Failed to write test runner script");
++        }
+     } else if cfg!(target_family = "windows") {
+-        write_test_runner_windows(path, env, argv, strip_substrings);
++        write_test_runner_windows(
++            path,
++            output_ps1.expect("Missing `--output_ps1` argument for the Windows test runner"),
++            env,
++            argv,
++            strip_substrings,
++        );
+     }
+ 
+     set_executable(path);
+@@ -287,5 +477,11 @@
+         .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
+         .collect();
+ 
+-    write_test_runner(&opt.output, &env, &opt.action_argv, &opt.strip_substrings);
++    write_test_runner(
++        &opt.output,
++        opt.output_ps1.as_deref(),
++        &env,
++        &opt.action_argv,
++        &opt.strip_substrings,
++    );
+ }
