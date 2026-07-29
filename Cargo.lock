@@ -3458,6 +3458,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
+name = "planetarium-bridge-p3a"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "erfars",
+ "rp-catalog",
+ "rp-ephemeris",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "plate-solver"
 version = "0.1.0"
 dependencies = [

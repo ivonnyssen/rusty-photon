@@ -40,7 +40,7 @@ P5/P6 frontends.
 | P0 | This plan | In progress | feature/planetarium-target-import |
 | P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11), plus a **shared plan-data vocabulary crate** `rp-vocabulary` with validation-by-construction (Decision 12, settled 2026-07-23 — value types + the `Target`/`PlannerTarget` `coord: IcrsCoord` newtype migration and the `rp-ephemeris` bridge landed; the `schema`/`validate` MCP tools follow) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `target_store.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. The Dynamic Planner cutover has now **landed**: `record_exposure`/`get_session_progress`/`get_target_status` read only the active rows of the target store, identifying targets by slug — the legacy `targets[]` config array is **removed** (`Config.targets` renamed to the typed `target_store`; a stray `targets` key or an array-shaped `target_store` now fails config load loudly). The `record_exposure` progress counters keep their `{completed, goal}` shape; only their source moved from the config array to the store, and plan rotation / target balancing / all-goals-met end_of_session still run off those counters. **Still not landed**: the full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
-| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
+| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | **P3a COMPLETE 2026-07-29** — real-SkySafari session run against the spike (`spikes/planetarium-bridge-p3a`); all five questions answered in [planetarium-bridge.md](../services/planetarium-bridge.md). Headlines: **go/no-go = GO** (coordinate-entry GoTos arbitrary points; the entry box is implicitly JNow, converted to J2000 on the wire; tap-empty-sky is not a thing, but faint-star-adjacent framing works), J2000 honored, GoTo = `SlewToCoordinatesAsync` / Align = `SyncToCoordinates`, 1 Hz poll cadence, discovery is subnet-local, GoTo is client-side horizon-gated (below-horizon targets can't be imported until risen; reported position lingering below horizon wedges the client). P3 proper (design doc → BDD → service) not started; the spike is deleted when it begins | feature/planetarium-bridge-p3a |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
 | P5 | Stellarium enrichment frontend (telescope-protocol doorbell + RemoteControl name/Oculars-angle query) | Deferred | |
 | P6 | Cartes du Ciel frontend (TCP 3292 client: named selections, `GETFRAMES` mosaic import with per-panel PA) | Deferred | |
@@ -377,12 +377,24 @@ store.simulationcurriculum.com) for Alpaca device-type coverage, ASCOM
 ITelescopeV3 docs (ascom-standards.org/newdocs/telescope.html) for
 sync-vs-slew and AtPark semantics.
 
-## Open questions (carried into P3a)
+## Open questions (carried into P3a) — ANSWERED 2026-07-29
 
-- Does SkySafari honor a device-declared J2000 `EquatorialSystem`, or send
-  JNow — and is the answer a version constant or per-install configuration?
-- Can the SkySafari UI GoTo an arbitrary tapped point / entered coordinates,
-  or only cataloged objects? **Go/no-go for SkySafari-composed framing**
-  (see Goal); determines how much framing-nudge UI the P4 inbox needs.
-- Minimum position-report cadence/shape SkySafari needs to consider a slew
-  complete and stay connected.
+All three were answered by the P3a session; full findings in
+[planetarium-bridge.md](../services/planetarium-bridge.md).
+
+- ~~Does SkySafari honor a device-declared J2000 `EquatorialSystem`?~~
+  **Yes — J2000 honored** (five GoTos matched J2000 to arcseconds; read
+  once at connect; no per-install epoch setting exists, so this is
+  client behavior, with `assume_epoch` kept as insurance).
+- ~~Can the SkySafari UI GoTo an arbitrary point?~~ **GO, with
+  caveats**: not by tapping empty sky, but Search → coordinate entry
+  GoTos arbitrary points (the entry box is implicitly JNow, converted
+  to J2000 on the wire), and the selectable catalog is deep enough that
+  a faint star sits within arcminutes of any intended frame center.
+  New constraint discovered: GoTo is client-side **horizon-gated** —
+  below-horizon targets cannot be imported until they rise, and a
+  reported position lingering below the horizon wedges all GoTos
+  (bridge reported-position policy must prevent this).
+- ~~Minimum position-report cadence?~~ **1 Hz** poll cycle
+  (`Slewing`/`Tracking`/`RightAscension`/`Declination`); a 3 s
+  simulated convergence was accepted cleanly.
