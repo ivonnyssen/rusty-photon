@@ -117,10 +117,10 @@
 > [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
 > composite action (mirroring `install-zwo-sdk`) provisions the real SVBony
 > SDK from a pinned indi-3rdparty commit, wired into `conformu.yml` (Linux +
-> macOS x86_64; the Windows per-service matrix runs svbony-camera against the
-> `simulation` backend with `SVBONY_SKIP_NATIVE_LINK`, since SVBony's Windows
-> SDK download is not scriptable) and `native.yml` (the nightly real-link
-> build + a Linux `svbony-rs` FFI smoke test). See "Native dependency & build
+> macOS x86_64; the Windows per-service matrix ran svbony-camera against the
+> `simulation` backend with `SVBONY_SKIP_NATIVE_LINK` until 2026-07-29, when
+> the private CI mirror gave it the real link too — see "Windows" below) and
+> `native.yml` (the nightly real-link build + `svbony-rs` FFI smoke tests). See "Native dependency & build
 > gating" below for what did and did not change under Bazel, and "Delivery
 > phasing" for the full rundown incl. two bonus findings (no embedded SONAME
 > in the vendored blob despite the CMakeLists' `SOVERSION` property; a
@@ -306,19 +306,29 @@ narrower claim than "Windows is provisioned by CI," so read carefully:
   license grant at all" finding to Windows too. `cargo check -p svbony-rs
   --target x86_64-pc-windows-msvc` (with `SVBONY_SDK_LIB_DIR` pointed at a
   manually-provisioned copy) passes.
-- **What's still missing: CI automation.** Unlike the Linux/macOS blobs
-  (indi-3rdparty's plain GitHub-raw mirror) or ZWO's Windows SDK
-  (`install-zwo-sdk`'s plain CDN URL), SVBony's Windows download is gated
-  behind `data-fileRestricted="true"` + a `recaptcha-v3.js`/
-  `unified-captcha.js` consent flow — not a fetchable URL, so
-  `install-svbony-sdk` has **no Windows step**, and `bazel/windows-latest`
-  (a required check) still only exercises `SVBONY_SKIP_NATIVE_LINK=1` (the
-  library targets build; the real binary link is untested on Windows in
-  CI, same posture as before — see "Gating plan" above, mirrored for
-  Windows specifically). A human must manually download the SDK once and
-  set `SVBONY_SDK_LIB_DIR` to build the real Windows link — there is no
-  path to automating that download without solving a CAPTCHA, which is out
-  of scope on principle, not just effort.
+- **CI automation (2026-07-29): a private mirror, because the vendor URL
+  can't be scripted.** Unlike the Linux/macOS blobs (indi-3rdparty's plain
+  GitHub-raw mirror) or ZWO's Windows SDK (`install-zwo-sdk`'s plain CDN
+  URL), SVBony's Windows download is gated behind
+  `data-fileRestricted="true"` + a `recaptcha-v3.js`/`unified-captcha.js`
+  consent flow — not a fetchable URL, and solving the CAPTCHA is out of
+  scope on principle, not just effort. CI instead provisions the payload
+  from the project's private, token-gated mirror
+  (`https://private.rustyphoton.space`, code + runbook:
+  `tools/private-mirror-worker/`; decision + risk analysis in
+  [ADR-018 §7](../decisions/018-svbony-sdk-no-license-payload-policy.md)):
+  `install-svbony-sdk`'s Windows step downloads the operator-uploaded
+  vendor zip, verifies its pinned sha256, exports `SVBONY_SDK_LIB_DIR` for
+  the link, and puts the DLL dir on `PATH` for runtime. `native.yml`
+  builds the real link and runs the `svbony-rs` FFI smoke (DLL load +
+  zero-camera enumeration) on Windows; `conformu.yml`'s Windows leg links
+  the real SDK like its Linux/macOS legs. Workflows without the
+  `PRIVATE_MIRROR_TOKEN` secret (fork PRs, dependabot) fall back to
+  `SVBONY_SKIP_NATIVE_LINK=1`. `bazel/windows-latest` (a required check)
+  still only exercises `SVBONY_SKIP_NATIVE_LINK=1` — the Bazel-side
+  SDK-fetch rule remains deferred (see "Gating plan" above). Operators
+  still download from SVBony directly:
+  [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
 - **Validated against real hardware (2026-07-26).** Exactly that
   human-provisioned build passes ConformU (`alpacaprotocol` +
   `conformance`, zero errors/issues) against a physical SV605CC on
@@ -1048,10 +1058,10 @@ phases A–G:
   composite action (pinned to indi-3rdparty commit `cd50a3b95032d850cca28d8162513276bc1349ba`,
   resolved as `master`'s HEAD on 2026-07-21), wired into `conformu.yml`
   (Linux + macOS x86_64 real-link; macOS arm64 — `macos-latest` today — falls
-  back to `SVBONY_SKIP_NATIVE_LINK=1`, no confirmed arm64 blob; excluded
-  entirely from the Windows per-service matrix, no Windows SDK support at
-  all) and `native.yml` (nightly real-link build + a Linux `svbony-rs` FFI
-  smoke test, matching zwo-rs's). The Bazel `manual` tag on
+  back to `SVBONY_SKIP_NATIVE_LINK=1`, no confirmed arm64 blob; Windows was
+  sim-only until the 2026-07-29 private-mirror provisioning — see "Windows"
+  above) and `native.yml` (nightly real-link build + `svbony-rs` FFI
+  smoke tests, matching zwo-rs's). The Bazel `manual` tag on
   `:svbony-camera` and `libsvbony-sys/BUILD.bazel`'s unconditional
   `SVBONY_SKIP_NATIVE_LINK=1` were deliberately **left unchanged** — see
   "Native dependency & build gating" above for why (the new action is a

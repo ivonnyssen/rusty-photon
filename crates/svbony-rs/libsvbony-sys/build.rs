@@ -21,8 +21,10 @@
 //! undecorated `cdecl` names matching this crate's `extern "C"` bindings, and
 //! reference no `libusb` — the DLL drives the camera through Windows' in-box
 //! WinUSB. Like the Linux/macOS blob it ships no license text (ADR-018). The
-//! download is not scriptable, so CI provisions no Windows SDK and builds
-//! there set `SVBONY_SKIP_NATIVE_LINK`.
+//! vendor download is captcha-gated (not scriptable), so CI provisions it
+//! from the project's private token-gated mirror instead
+//! (`install-svbony-sdk`'s Windows step, ADR-018 §7); builds without mirror
+//! access set `SVBONY_SKIP_NATIVE_LINK`.
 
 use std::env;
 
@@ -99,18 +101,22 @@ fn main() {
         "windows" => {
             // No default search path exists on Windows (no ldconfig, no
             // Homebrew prefix), so linking the real SDK relies entirely on
-            // SVBONY_SDK_LIB_DIR (set above) or the consumer's own `-L`. CI
-            // provisions no Windows SDK and sets SVBONY_SKIP_NATIVE_LINK
-            // instead, which returns before this branch. No libusb link
-            // (unlike Linux/macOS): the DLL uses Windows' in-box WinUSB.
+            // SVBONY_SDK_LIB_DIR (set above) or the consumer's own `-L` —
+            // in CI, install-svbony-sdk's Windows step exports it (and puts
+            // the DLL dir on PATH for runtime). No libusb link (unlike
+            // Linux/macOS): the DLL uses Windows' in-box WinUSB.
             println!("cargo:rustc-link-lib=dylib=SVBCameraSDK");
         }
         _ => {
             // Linux (amd64/x86/armv6/armv7/armv8-aarch64, per indi-3rdparty's
-            // libsvbony blobs). The library installs with a proper SONAME
-            // (`libSVBCameraSDK.so.1`, unlike ZWO's SONAME-less blobs), so a
-            // plain `-lSVBCameraSDK` resolves via normal `ldconfig` — no
-            // RUNPATH trick needed (verify at packaging time, Phase G).
+            // libsvbony blobs). The vendored blob carries NO embedded
+            // DT_SONAME (byte-verified; indi-3rdparty's `SOVERSION 1` is a
+            // CMake install-time property only), but glibc's ldconfig falls
+            // back to the on-disk filename as its cache key, so a
+            // `libSVBCameraSDK.so` linker name in an ldconfig-scanned prefix
+            // (how CI installs it) resolves `-lSVBCameraSDK` with no RUNPATH
+            // trick; the packaged binary instead resolves the blob through
+            // RUNPATH=/usr/lib/rusty-photon (ADR-018 §4).
             println!("cargo:rustc-link-search=native=/usr/local/lib");
             println!("cargo:rustc-link-lib=dylib=SVBCameraSDK");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
