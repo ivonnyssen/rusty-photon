@@ -4,20 +4,25 @@
 the design for the real `planetarium-bridge` service — P3 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md).
 The P3a verification-spike findings that ground it are preserved in the
-[appendix](#appendix-p3a-verification-spike-findings-2026-07-29). The
-throwaway spike crate `spikes/planetarium-bridge-p3a` remains in the
-tree until the implementation PR lands (it is still needed for the
-[P3b horizon experiment](#open-item-p3b-horizon-experiment)), and is
-deleted there.
+[appendix](#appendix-p3a-verification-spike-findings-2026-07-29); the
+[P3b follow-up experiment](#appendix-p3b-horizon-experiment-findings-2026-07-30)
+(run 2026-07-30) overturned the below-horizon story and **flipped the
+import gesture from GoTo to Align** (Decision 2's second amendment).
+The throwaway spike crate `spikes/planetarium-bridge-p3a` remains in
+the tree until the implementation PR lands, and is deleted there.
 
 ## Overview
 
 `planetarium-bridge` serves a **virtual ASCOM Alpaca Telescope** that
 planetarium apps (SkySafari 7+, Stellarium, Cartes du Ciel) connect to
-as if it were a mount. Pressing **GoTo** in the planetarium does not
-move anything — it **imports the exact framed coordinates as a paused
-target** into rp's target store, named by reverse catalog lookup, for
-the operator to review and activate later. The service never touches
+as if it were a mount. Pressing **Align** in the planetarium does not
+correct any pointing model — it **imports the selected coordinates as
+a paused target** into rp's target store, named by reverse catalog
+lookup, for the operator to review and activate later. GoTo is
+accepted as simulated motion but never imports: P3b proved SkySafari
+horizon-gates every GoTo form unconditionally, which would restrict
+planning to currently-risen targets — unacceptable for couch
+planning — while Align is never gated. The service never touches
 hardware and is never on the imaging path; rp's planner images the
 target whenever conditions are right, fully decoupled from the
 planetarium (workspace tenet 3 is satisfied trivially: there is nothing
@@ -30,11 +35,11 @@ to actuate).
 ┌───────────────────────────┐    Alpaca HTTP    ┌──────────────────────────────────────┐
 │  "scope" preset →         │ ────────────────► │ ascom-alpaca server: one Telescope    │
 │  connect, 1 Hz poll,      │                   │  ├─ virtual pointing state machine    │
-│  GoTo / (Sync rejected)   │ ◄──────────────── │  │   (simulated slews, altitude floor)│
+│  Align=import, GoTo=sim   │ ◄──────────────── │  │   (simulated slews, altitude floor)│
 └───────────────────────────┘   position reports│  └─ site/LST/alt-az (rp-ephemeris)    │
                                                 │                                      │
                                                 │ import pipeline                      │
-                                                │  GoTo coords ─ epoch ─► ICRS         │
+                                                │  Align coords ─ epoch ─► ICRS        │
                                                 │        │                             │
                                                 │        ▼            rp down?        │
                                                 │  rp-mcp-client ◄──── on-disk spool   │
@@ -87,7 +92,7 @@ target-entry device, not a mount** — e.g. name
 | `AlignmentMode` | `GermanPolar` (spike-proven with SkySafari) |
 | `EquatorialSystem` | `J2000` |
 | `CanSlew` / `CanSlewAsync` | `true` |
-| `CanSync` | **`false`** — see [Sync is rejected](#sync-is-rejected) |
+| `CanSync` | **`true`** — sync **is** the import gesture; see [Align is the import gesture](#align-sync-is-the-import-gesture) |
 | `CanSyncAltAz`, `CanSlewAltAz`, `CanSlewAltAzAsync` | `false` |
 | `CanPark`, `CanUnpark`, `CanFindHome`, `CanSetPark` | `false` (`AtPark` reads `false`) |
 | `CanMoveAxis`, `CanPulseGuide`, `CanSetGuideRates` | `false` |
@@ -109,12 +114,17 @@ declaration:
 - `"jnow"` — received coordinates are apparent-of-date; converted to
   ICRS via ERFA (`Atic13`, with TT derived from host UTC) before import.
 
-The conversion happens once, at receipt; everything downstream
-(spool, rp, the store) is ICRS only.
+The conversion happens once, at receipt — identically for slew and
+sync coordinates; everything downstream (spool, rp, the store) is
+ICRS only.
 
-### Slew lifecycle — the add-target gesture
+### Slew lifecycle — simulated motion, never an import
 
-All three ASCOM slew forms are the gesture, treated identically:
+*(Amended 2026-07-30 after P3b, settled interactively: slew verbs no
+longer fire imports; Align does. See
+[Align is the import gesture](#align-sync-is-the-import-gesture).)*
+
+All three ASCOM slew forms are accepted and treated identically:
 `SlewToCoordinatesAsync` (the only one SkySafari sends),
 `SlewToCoordinates` (blocking — completes after the convergence
 window), and `SlewToTarget`/`SlewToTargetAsync` (via the
@@ -126,30 +136,36 @@ On any slew verb:
 
 1. Validate ranges (`ra ∈ [0,24)`, `dec ∈ [-90,90]`) — out-of-range →
    ASCOM `InvalidValue`.
-2. **Fire the import** (§ [import pipeline](#the-import-pipeline)) —
-   the GoTo tap is the operator's intent, so the import happens at
-   receipt, not at convergence. `AbortSlew` ends the simulated motion
-   but never cancels the import.
-3. Start the simulated slew: `Slewing` reads `true` for the
+2. Start the simulated slew: `Slewing` reads `true` for the
    convergence window (`slew_duration`, default `3s` — the cadence P3a
    proved SkySafari accepts), with reported position interpolating
    from the current pointing to the target (shortest-path RA wrap).
    A new slew verb during convergence supersedes: the new slew starts
-   from the current interpolated position, and fires its own import
-   (rp-side dedup collapses repeats).
+   from the current interpolated position. `AbortSlew` ends the
+   simulated motion (always callable, stop-class).
 
-A **below-horizon target is accepted and imported** — couch-planning
-an object that has not risen is a core use case, and rp's altitude
-gating decides when it is actually imaged. Only the *reported*
-position is constrained (next section).
+Slews never create targets. P3b killed GoTo as the gesture: SkySafari
+refuses **every** GoTo form — object *and* coordinate-entry — for a
+below-horizon target, under every horizon display setting, so a
+GoTo-based import would restrict planning to currently-risen objects,
+defeating the couch-planning use case; and the P3a wedge additionally
+makes GoTo availability client-state-dependent. A GoTo is still
+useful to the operator (the scope marker moves, confirming the
+connection is live), but it expresses "point there", not "keep this".
 
 ### Reported-position policy (the altitude floor)
 
 P3a found that SkySafari **refuses every GoTo while the scope's
 reported position is below the horizon** — a below-horizon report
 wedges the whole session. This can happen with no operator error at
-all: a tracked position imported at dusk sets hours later. The bridge
-therefore maintains two notions of position:
+all: a tracked position set at dusk sinks below the horizon hours
+later. P3b could **not** reproduce the wedge on a second device
+running the identical SkySafari build (no wedge under any horizon
+display setting), so the hazard is client-state-dependent and
+unpredictable — the floor stays as cheap, always-on defense. With
+Align as the import gesture the wedge can no longer block imports,
+only GoTo's confirm-the-connection usefulness. The bridge maintains
+two notions of position:
 
 - **Virtual pointing** — where the last slew converged. Follows the
   slew interpolation, then holds (RA/Dec constant, i.e. tracking).
@@ -167,23 +183,53 @@ imported target while that target is meaningfully up, and drifts to
 "parked overhead" when it sets — and the client can always GoTo.
 
 `report_altitude_floor_deg: null` disables the policy (reports raw
-virtual pointing) — the knob the
-[P3b experiment](#open-item-p3b-horizon-experiment) may justify
-loosening or per-client documentation may want.
+virtual pointing) — safe on clients proven wedge-free (the P3b phone
+never wedged), but the default stays `10.0` because an identical
+build did wedge in P3a.
 
-### Sync is rejected
+### Align (sync) is the import gesture
 
-`CanSync = false`; `SyncToCoordinates`/`SyncToTarget` return
-`NOT_IMPLEMENTED`. In every planetarium, Sync/Align means "the scope
-IS pointing here" — a pointing-model correction, never target intent —
-and a virtual device has no pointing model to correct. Rejecting (vs
-the P3a spike's accept-and-reflect) keeps the device honest, removes
-the sync-induced below-horizon wedge vector entirely, and surfaces a
-clear client-side error instead of silently absorbing a meaningless
-gesture. P3a showed operators do tap Align casually; the error dialog
-is the teaching moment that the button doesn't apply to a virtual
-device. *(This supersedes plan Decision 2's "accepted, logged, and
-ignored" wording — settled interactively 2026-07-29.)*
+`CanSync = true`; `SyncToCoordinates` (the only form SkySafari sends)
+and `SyncToTarget` are both accepted. On any sync verb:
+
+1. Validate ranges — out-of-range → ASCOM `InvalidValue`, no import.
+2. Convert per [`assume_epoch`](#epoch-handling) and **fire the
+   import** (§ [import pipeline](#the-import-pipeline)) — the Align
+   tap is the operator's intent, so the import happens at receipt.
+3. Set the virtual pointing to the synced coordinates (the ASCOM
+   contract: the scope "is" now there). The reported position stays
+   subject to the
+   [altitude floor](#reported-position-policy-the-altitude-floor), so
+   a below-horizon Align parks the *report* at the idle point while
+   the import proceeds normally.
+
+The operator workflow is **Center → Align**: Center frames the object
+on screen (display-only — P3a/P3b confirmed it sends nothing), Align
+imports it. Repeated Aligns on the same object collapse via rp-side
+proximity dedup (P3b aligned NGC 253 three times; that is one pending
+target).
+
+*(This is Decision 2's second amendment — settled interactively
+2026-07-30 after P3b, reversing the 2026-07-29 sync rejection. Why:
+Align is the **only** gesture that works regardless of horizon —
+SkySafari unconditionally refuses both GoTo forms for below-horizon
+targets, and planning must not be restricted to currently-risen
+objects. The two rationales for rejecting sync both fell: the
+sync-induced wedge is neutralized by the altitude floor (and did not
+even reproduce in P3b), and a casual Align tap now costs one paused
+inbox row that dedup or a discard tap cleans up. The "sync corrects a
+pointing model" semantics are knowingly bent for a virtual device
+that has none.)*
+
+Limitation, from P3b: SkySafari offers Align only on a **selected
+object**, never on an entered coordinate point — so a direct
+arbitrary-point import does not exist under the Align gesture. The
+framing path — at any altitude — is the P3a faint-star-adjacent
+gesture: select a faint HD/Tycho star at the intended frame center
+and Align on it; the rp-side star naming tier (2′ cone) then names
+the import after exactly that anchor. SkySafari's selectable catalog
+is deep enough that an anchor within arcminutes of any frame center
+almost always exists (P3a).
 
 ### Site and time writes
 
@@ -218,13 +264,19 @@ The device must pass ConformU via the existing harness pattern
 deliberately minimal-but-coherent: every `false` capability's verbs
 return `NOT_IMPLEMENTED`, every `true` capability behaves per the
 ASCOM contract (Target* propagation, `Slewing` state, `AbortSlew`
-always callable as a stop-class verb).
+always callable as a stop-class verb). Two `CanSync = true`
+consequences: sync verbs must round-trip per the ASCOM contract, and
+the altitude floor can mask that round-trip (a below-floor sync reads
+back as the idle point) — the conformance run therefore uses a config
+with `report_altitude_floor_deg: null` (the floor is a client-UX
+policy, not device semantics). ConformU's sync tests also fire
+imports; the harness's stub rp (or the spool) absorbs them.
 
 ## The import pipeline
 
-### GoTo → `add_target`
+### Align → `add_target`
 
-Each accepted slew verb produces one import request:
+Each accepted sync verb produces one import request:
 
 ```jsonc
 // MCP tool call to rp
@@ -251,7 +303,7 @@ will be rejected again on replay. Only *delivery* failures spool.
 
 ### Spooling — rp unreachable
 
-rp being down must never lose a GoTo. Delivery failures (transport
+rp being down must never lose an Align. Delivery failures (transport
 loss, TLS failure, timeouts) append the import request to a **bounded
 on-disk FIFO spool**:
 
@@ -263,7 +315,7 @@ on-disk FIFO spool**:
 - Replay runs in order (FIFO) whenever rp is reachable again, paced by
   exponential backoff between reconnect attempts (1 s doubling to
   `spool.replay_backoff_max`, default `5m`). Replayed entries carry
-  their original `received_at`, so provenance reflects the GoTo, not
+  their original `received_at`, so provenance reflects the Align, not
   the replay.
 - **Bounded**: at `spool.max_entries` (default `1000`, comfortably
   above any human session), the oldest entry is dropped to admit the
@@ -348,7 +400,7 @@ naming is rp's job here). Semantics that differ from an operator add:
 3. **Goals default** from `target_store.default_goals` (Decision 10),
    as for any add without `goals[]`.
 4. The `catalog_ref`-match branch of slug allocation is **never**
-   consulted for imports: two GoTos 15′ apart that both resolve to
+   consulted for imports: two imports 15′ apart that both resolve to
    "NGC 7000" are two targets (mosaic panels), not one.
 
 ### Naming — reverse cone-search at add-time
@@ -523,11 +575,11 @@ latitude/floor ranges, positive `max_entries`, a well-formed
 
 | Condition | Behavior |
 |---|---|
-| Slew coords out of range | ASCOM `InvalidValue`; no import |
-| Sync verbs | ASCOM `NOT_IMPLEMENTED` (`CanSync = false`) |
+| Slew or sync coords out of range | ASCOM `InvalidValue`; no import |
+| Slew verbs | Simulated motion only — never an import (P3b) |
 | Motion verbs for `false` capabilities | ASCOM `NOT_IMPLEMENTED` |
 | rp rejects `add_target` (tool error) | `error!` log; **not** spooled (would fail again) |
-| rp unreachable | Spool append (`fsync` per entry); GoTo still converges normally |
+| rp unreachable | Spool append (`fsync` per entry); the sync verb still succeeds normally |
 | Spool full | Drop oldest; `error!` per drop; `dropped_total`++ |
 | Spool file unreadable at startup | `error!`, start with an empty spool (never refuse to start) |
 | Corrupt spool line on replay | Skip + `error!` with the line number; continue |
@@ -536,8 +588,9 @@ latitude/floor ranges, positive `max_entries`, a well-formed
 ## MVP scope
 
 **In scope:** the single virtual Telescope device (capability matrix
-above), all three slew verbs as the import gesture, sync rejection,
-the altitude-floor reported-position policy, live site adoption,
+above), sync (Align) as the sole import gesture, all three slew verbs
+as simulated motion, the altitude-floor reported-position policy,
+live site adoption,
 `assume_epoch`, the bounded spool with restart-surviving replay,
 `/health`, doctor registration + the fake-mount check, ConformU clean,
 and the rp-side contract (writer identity, `source` semantics,
@@ -566,9 +619,9 @@ the real store.
 
 | Feature file (bridge) | Scenarios |
 |---|---|
-| `device_contract.feature` | Capability matrix; sync verbs rejected; Target* propagation; abort ends motion but not import; site push adoption; UTCDate write rejected |
-| `target_import.feature` | GoTo → `add_target` (all three verbs); epoch conversion under `assume_epoch: jnow`; below-horizon GoTo imported; superseding slews each import |
-| `position_policy.feature` | Floor snap to idle point; below-floor target converges but reports idle; `null` floor reports raw pointing |
+| `device_contract.feature` | Capability matrix; sync sets pointing + Target*; slew Target* propagation; abort ends motion; site push adoption; UTCDate write rejected |
+| `target_import.feature` | Align → `add_target` (both sync verbs); slews never import; epoch conversion under `assume_epoch: jnow`; below-horizon Align imported; repeated Aligns each submitted (rp dedup collapses) |
+| `position_policy.feature` | Floor snap to idle point; below-floor slew converges but reports idle; below-floor Align imports but reports idle; `null` floor reports raw pointing |
 | `spooling.feature` | rp down → spool; replay in order on recovery; replay after restart; overflow drops oldest with counter; corrupt line skipped; tool-error not spooled |
 
 rp-side additions (rp's suite): import creates pending with writer
@@ -584,26 +637,20 @@ per-class tolerance edges).
 ConformU runs under `bazel test --config=conformu` per the existing
 mock-backend pattern.
 
-## Open item: P3b horizon experiment
+## P3b horizon experiment — closed 2026-07-30
 
-SkySafari's below-horizon GoTo gate is documented as unconditional
-("you cannot GoTo an object which is below the horizon" — SkySafari
-Pro 8 user guide) but P3a proved it leaky (coordinate-entry GoTos are
-not gated; the wedge keys on the *reported scope position*). Whether
-the **Horizon & Sky display settings** (horizon off / transparent)
-affect the gate is undocumented in both directions. Before the
-implementation PR merges its operator docs, re-run the spike
-(`spikes/planetarium-bridge-p3a`, still in tree) with SkySafari's
-horizon display off and/or transparent and answer:
-
-1. Is an object-GoTo to a below-horizon target still refused?
-2. Does the reported-position wedge still occur?
-3. Is coordinate-entry GoTo still ungated below 0°?
-
-Outcome shapes the *default posture and operator docs only* — the
-altitude-floor mechanism above is safe under every outcome (a
-disabled gate just makes `report_altitude_floor_deg: null` a
-documented client-specific option).
+Run against the spike with a second device (identical SkySafari
+build); full findings in the
+[P3b appendix](#appendix-p3b-horizon-experiment-findings-2026-07-30).
+The three questions resolved: (1) an object-GoTo to a below-horizon
+target is refused under **every** horizon display setting — the gate
+is unconditional; (2) the wedge did **not** reproduce on the second
+device under any setting — device/state-dependent, cause
+unattributed, floor policy retained; (3) coordinate-entry GoTo **is**
+horizon-gated below 0° — P3a's "ungated" observation had only ever
+reached an above-horizon point. Net consequence: GoTo cannot express
+below-horizon planning at all, which drove Decision 2's second
+amendment (§ [Align is the import gesture](#align-sync-is-the-import-gesture)).
 
 ---
 
@@ -675,8 +722,9 @@ in the P3 implementation PR.
 
 1. Manual IP:port is the primary connection story → § Discovery.
 2. The GoTo/Sync verb split is exactly as Decision 2 assumed; sync
-   carries zero intent → § Sync is rejected (rejection chosen over the
-   plan's accept-and-ignore, 2026-07-29).
+   carries zero intent → sync was rejected at design time (chosen over
+   the plan's accept-and-ignore, 2026-07-29; **reversed by P3b** —
+   § Align is the import gesture).
 3. The wire is J2000 end-to-end for this client → `assume_epoch`
    default `"j2000"`, kept as cheap insurance.
 4. Site/UTC pushes and scientific-notation floats → § Site and time
@@ -688,3 +736,60 @@ in the P3 implementation PR.
    ~20′ off; framing via a nearby faint catalog star avoids the
    pitfall entirely.
 7. No explicit disconnect arrives → no bridge state may depend on one.
+
+---
+
+## Appendix: P3b horizon-experiment findings (2026-07-30)
+
+Session: 2026-07-30 (UTC), **SkySafari Pro 8.0.3 on a phone — the
+same app build as P3a's iPad** — driving the same spike over Wi-Fi
+(manual IP:port across routed subnets, as before); the JSONL wire log
+is the raw evidence (kept off-repo with the operator). The build
+identity matters: every P3a/P3b behavioral difference below is
+device- or state-dependent, not a version difference.
+
+### The P3b questions — answered
+
+| # | Question | Verdict | Finding |
+|---|----------|---------|---------|
+| 1 | Object-GoTo below horizon still refused with horizon display off/transparent? | **Refused, always** | NGC 253 (≈ −17° to −20° alt) GoTo refused with the horizon off, transparent, and on. Nothing reaches the wire (client-side refusal). The gate is unconditional. |
+| 2 | Does the reported-position wedge still occur? | **Did not reproduce** | After a below-horizon Align (reported position ≈ −20°), an object GoTo to the Moon (≈ 24° up) went through — under every horizon display setting. The P3a iPad wedged on the identical build. Device/state-dependent; unattributed. The altitude floor stays as defense. |
+| 3 | Coordinate-entry GoTo still ungated below 0°? | **Gated** | RA 6h / Dec +20° (≈ −37° alt) refused with "command failure cannot go to". Overturns P3a's impression — its coordinate-entry probe had only ever reached a +17°-altitude point, so the below-0° case was never actually exercised until now. |
+
+### Additional findings
+
+- **Align is never horizon-gated.** Three below-horizon
+  `SyncToCoordinates` for NGC 253 arrived J2000-exact
+  (0.79253h / −25.2875°), matching the catalog centroid to the
+  arcsecond each time.
+- **Align is object-only**: SkySafari offers no Align on an entered
+  coordinate point, so arbitrary-point import rides the
+  faint-star-adjacent anchor gesture at any altitude.
+- **The faint-star anchor gesture works end-to-end.** An Align on a
+  mag 8.15 field star near NGC 6633 arrived 0.12″ from the packed
+  catalog's Tycho-2-derived position for **HD 170881**; run through
+  `rp_catalog::nearest()` (post-#767 catalog, 10′/2′ tolerances) the
+  point names as `HD 170881` dead-center, while NGC 6633 — 62′ away,
+  outside its DSO cone — correctly does not outrank the anchor. A
+  second Align on a mag 9.27 star with nothing else in frame resolved
+  identically (**HD 172011**, 0.12″): the anchor works in empty
+  fields too, and SkySafari's selectable depth comfortably reaches
+  the HD layer's magnitude range.
+- **Center is display-only** (crosshair motion, zero wire traffic) —
+  re-confirmed; it is the visual-confirmation half of the
+  Center → Align workflow.
+- The coordinate-entry form exposed **no minus sign** for declination
+  in this session — the below-horizon probe used a positive-dec
+  anti-meridian point instead. (P3a *did* enter −40°, so the sign
+  control's availability varies with device or context.)
+- Two Moon GoTos 16 minutes apart arrived with coordinates drifted
+  ~8′ — solar-system GoTos carry live positions.
+
+### Design implications carried into this document
+
+1. GoTo cannot import below-horizon targets under any client setting
+   → the import gesture is **Align** (Decision 2's second amendment,
+   § Align is the import gesture); slews are simulated motion only.
+2. The wedge is real (P3a) but not reliably reproducible (P3b) → the
+   altitude floor stays, default `10.0`, `null` documented as safe
+   for wedge-free clients.
