@@ -145,12 +145,20 @@ reload` equivalent under `brew services`; a restart is always safe):
 brew services restart rusty-photon-<svc>
 ```
 
-Caveat: `rp`'s self-created config defaults `session.data_directory` to
-the Linux path `/var/lib/rusty-photon/rp/data`, which is not writable on
-macOS. rp starts and serves fine (the directory is only created when a
-session persists data) — point it at a writable directory, e.g.
-`~/Library/Application Support/rusty-photon/rp-data`, before running real
-sessions.
+`rp`'s self-created config defaults `session.data_directory` to
+`~/Library/Application Support/rusty-photon/rp/data` — beside the config,
+under the same platform root, since macOS has no systemd `StateDirectory=`
+equivalent to provision the Linux `/var/lib/rusty-photon/rp/data`. rp
+creates it at startup when it opens the target store, so the account
+running the service must be able to write there; under `sudo brew
+services` that resolves under root's home like the config does.
+
+Caveat for configs written before this default was corrected: they carry
+the unwritable Linux path verbatim, and rp now exits at startup with
+`target_store.db_path ...: failed to create parent directory: Permission
+denied`. Edit `session.data_directory` in
+`~/Library/Application Support/rusty-photon/rp.json` to the path above and
+restart.
 
 **sentinel as watchdog**: sentinel discovers the installed
 `rusty-photon-*` services from `brew services list` and derives each
