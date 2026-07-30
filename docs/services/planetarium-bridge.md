@@ -757,9 +757,17 @@ device- or state-dependent, not a version difference.
   arcsecond each time.
 - **Align is object-only**: SkySafari offers no Align on an entered
   coordinate point, so arbitrary-point import rides the
-  faint-star-adjacent anchor gesture at any altitude. (Align on a
-  faint star was not separately exercised this session; the Align
-  control is selection-generic.)
+  faint-star-adjacent anchor gesture at any altitude.
+- **The faint-star anchor gesture works end-to-end.** An Align on a
+  mag 8.15 field star near NGC 6633 arrived 0.12″ from the packed
+  catalog's Tycho-2-derived position for **HD 170881**; run through
+  `rp_catalog::nearest()` (post-#767 catalog, 10′/2′ tolerances) the
+  point names as `HD 170881` dead-center, while NGC 6633 — 62′ away,
+  outside its DSO cone — correctly does not outrank the anchor. A
+  second Align on a mag 9.27 star with nothing else in frame resolved
+  identically (**HD 172011**, 0.12″): the anchor works in empty
+  fields too, and SkySafari's selectable depth comfortably reaches
+  the HD layer's magnitude range.
 - **Center is display-only** (crosshair motion, zero wire traffic) —
   re-confirmed; it is the visual-confirmation half of the
   Center → Align workflow.
