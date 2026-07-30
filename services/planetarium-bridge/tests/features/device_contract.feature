@@ -1,4 +1,3 @@
-@wip
 Feature: Virtual telescope device contract
   planetarium-bridge serves one ASCOM Alpaca Telescope (device number 0) that
   planetarium apps connect to as if it were a mount, while it never touches

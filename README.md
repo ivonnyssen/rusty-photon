@@ -27,6 +27,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
 | [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
 | [zwo-focuser](services/zwo-focuser) | ASCOM Focuser | 11124 | [![coverage][cov-zwo-focuser]][cov-zwo-focuser-link] | Driver for the ZWO EAF (vendored `zwo-rs` bindings, MIT SDK; links only the focuser SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`) |
+| [planetarium-bridge](services/planetarium-bridge) | ASCOM Telescope (virtual) | 11126 | [![coverage][cov-planetarium-bridge]][cov-planetarium-bridge-link] | Virtual target-entry telescope for planetarium apps (SkySafari etc.): Align imports the selection as a paused rp target; never touches hardware |
 | [doctor](services/doctor) | Install diagnosis CLI | — | [![coverage][cov-doctor]][cov-doctor-link] | Read-only diagnosis of a multi-service install: config parsing, port collisions, cross-service wiring, unit and privilege gaps (ADR-016) |
 
 ### RP (Main Application)
@@ -118,6 +119,10 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 ### ZWO Focuser
 
 ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`; ADR-014) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend; real-hardware validation is pending. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
+
+### Planetarium Bridge
+
+Virtual ASCOM Alpaca **Telescope** that planetarium apps (SkySafari 7+, Stellarium, Cartes du Ciel) connect to as if it were a mount. Pressing **Align** imports the selected coordinates as a paused target into rp's target store (named by rp's reverse catalog lookup); slews are simulated motion and never import. Imports spool durably on disk while rp is unreachable and replay in order once it is back. The service never touches hardware and is never on the imaging path. See [docs/services/planetarium-bridge.md](docs/services/planetarium-bridge.md) for design documentation.
 
 ### Doctor
 
@@ -243,6 +248,7 @@ rusty-photon/
     qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored qhyccd-rs bindings)
     zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored zwo-rs bindings, MIT SDK)
     zwo-focuser/           ASCOM Focuser — ZWO EAF (implemented; vendored zwo-rs bindings, MIT SDK)
+    planetarium-bridge/    ASCOM Telescope (virtual) — planetarium Align gestures become paused rp targets
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
@@ -315,5 +321,7 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-camera
 [cov-zwo-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-focuser
 [cov-zwo-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-focuser
+[cov-planetarium-bridge]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=planetarium-bridge
+[cov-planetarium-bridge-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=planetarium-bridge
 [cov-doctor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=doctor
 [cov-doctor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=doctor

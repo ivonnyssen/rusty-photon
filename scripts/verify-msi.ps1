@@ -67,6 +67,7 @@ $ports = @{
     'star-adventurer-gti' = 11117; 'pa-falcon-rotator' = 11118
     'dsd-fp2' = 11119; 'ui-htmx' = 11120; 'qhy-camera' = 11121
     'zwo-camera' = 11122; 'pa-scops-oag' = 11123; 'zwo-focuser' = 11124
+    'planetarium-bridge' = 11126
     'phd2-guider' = 11130; 'plate-solver' = 11131; 'calibrator-flats' = 11170
     'session-runner' = 11171
 }
@@ -77,13 +78,13 @@ $gated = @('sky-survey-camera', 'plate-solver', 'calibrator-flats', 'session-run
 $serial = @('ppba-driver', 'qhy-focuser', 'pa-falcon-rotator', 'pa-scops-oag',
     'dsd-fp2', 'star-adventurer-gti')
 $active = @('sentinel', 'ui-htmx', 'filemonitor', 'rp',
-    'phd2-guider', 'zwo-camera', 'zwo-focuser')
+    'phd2-guider', 'zwo-camera', 'zwo-focuser', 'planetarium-bridge')
 # Plain-HTTP services expose /health; Alpaca services answer the management
 # API. The cameras, zwo-focuser, phd2-guider and session-runner never
 # self-create a config (SDK-derived identity / built-in defaults); ui-htmx
 # self-creates its default (the required rp target — no drivers map, #569).
 $healthProbe = @('sentinel', 'rp', 'ui-htmx', 'phd2-guider')
-$selfCreatesConfig = @('sentinel', 'rp', 'filemonitor', 'ui-htmx') + $serial
+$selfCreatesConfig = @('sentinel', 'rp', 'filemonitor', 'ui-htmx', 'planetarium-bridge') + $serial
 
 $dataDir = Join-Path $env:ProgramData 'rusty-photon'
 $logsDir = Join-Path $dataDir 'logs'

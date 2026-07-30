@@ -3462,35 +3462,31 @@ name = "planetarium-bridge"
 version = "0.1.0"
 dependencies = [
  "ascom-alpaca",
+ "async-trait",
  "axum",
  "bdd-infra",
  "chrono",
  "clap",
  "cucumber",
+ "erfars",
+ "humantime-serde",
  "reqwest 0.13.4",
  "rmcp",
+ "rp-auth",
+ "rp-ephemeris",
+ "rp-mcp-client",
+ "rusty-photon-config",
+ "rusty-photon-doctor-checks",
+ "rusty-photon-driver",
+ "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
+ "schemars 1.2.2",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "planetarium-bridge-p3a"
-version = "0.1.0"
-dependencies = [
- "ascom-alpaca",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "erfars",
- "rp-catalog",
- "rp-ephemeris",
- "serde",
- "serde_json",
- "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

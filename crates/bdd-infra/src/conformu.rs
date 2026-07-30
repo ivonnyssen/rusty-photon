@@ -67,18 +67,59 @@ pub async fn run_conformu(
     // (Alpaca wire-protocol conformance) then `conformance` (full ASCOM
     // device-interface tests). Both must pass.
     for mode in ["alpacaprotocol", "conformance"] {
-        run_mode(&conformu, mode, settings_file, &device_url).await?;
+        run_mode(&conformu, mode, settings_file, Some(&device_url)).await?;
     }
     Ok(ConformuRun::Passed)
 }
 
-/// Run a single ConformU mode (`alpacaprotocol` or `conformance`) against
-/// `device_url`, streaming its output. Returns `Err` on a non-zero exit.
+/// Run both ConformU suites in their `*-settings` variants, where the device
+/// under test **and** the enabled test set both come from `settings_file`
+/// (its `AlpacaDevice` block names the device; `TelescopeTests` etc. select
+/// the tests).
+///
+/// This exists because the URL-argument commands (`alpacaprotocol <url>`,
+/// used by [`run_conformu`]) call ConformU's `SetFullTest()`, which
+/// force-enables every test — and some capability sets cannot satisfy the
+/// full set. The worked example is a `CanPulseGuide = false` Telescope
+/// (planetarium-bridge): the protocol suite's PulseGuide test polls
+/// `IsPulseGuiding` as its completion check and records the spec-mandated
+/// NOT_IMPLEMENTED answer as an error, so the test must be deselected —
+/// which only the `*-settings` commands honor.
+///
+/// A deliberately omitted test produces a ConformU "configuration alert",
+/// and alerts count into the exit code exactly like errors and issues. A
+/// run whose only marks are configuration alerts is therefore accepted as a
+/// pass here, detected via the summary line ConformU prints; errors and
+/// issues still fail.
+pub async fn run_conformu_from_settings(
+    settings_file: &Path,
+) -> Result<ConformuRun, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(conformu) = std::env::var_os("CONFORMU_PATH").filter(|v| !v.is_empty()) else {
+        eprintln!(
+            "CONFORMU_PATH not set; skipping ConformU run for {}",
+            settings_file.display()
+        );
+        return Ok(ConformuRun::Skipped);
+    };
+
+    for mode in ["alpacaprotocol-settings", "conformance-settings"] {
+        run_mode(&conformu, mode, Some(settings_file), None).await?;
+    }
+    Ok(ConformuRun::Passed)
+}
+
+/// Run a single ConformU mode, streaming its output. `device_url` is the
+/// positional device argument for the URL-based commands and `None` for the
+/// `*-settings` commands (which read the device from the settings file).
+/// Returns `Err` on a non-zero exit, except when the output's summary line
+/// shows zero errors and zero issues — the exit code also counts
+/// configuration alerts (deliberately deselected tests), which are not
+/// device defects.
 async fn run_mode(
     conformu: &std::ffi::OsStr,
     mode: &str,
     settings_file: Option<&Path>,
-    device_url: &str,
+    device_url: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut command = Command::new(conformu);
     command.arg(mode);
@@ -96,21 +137,41 @@ async fn run_mode(
     if let Some(path) = settings_file {
         command.arg("--settingsfile").arg(path);
     }
-    let mut child = command.arg(device_url).stdout(Stdio::piped()).spawn()?;
+    if let Some(url) = device_url {
+        command.arg(url);
+    }
+    let mut child = command.stdout(Stdio::piped()).spawn()?;
 
     // Stream ConformU's (unstructured) stdout into the test log so progress is
-    // visible and a verbose run can't deadlock on an undrained pipe.
+    // visible and a verbose run can't deadlock on an undrained pipe. The
+    // summary lines are also inspected for the alerts-only pass below.
+    let mut clean_except_alerts = false;
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines.next_line().await? {
             println!("[conformu {mode}] {line}");
+            // The two summary shapes: the conformance suite prints
+            // "Your device had 0 issues, 0 errors and N configuration
+            // alert(s)"; the protocol suite prints "Found 0 errors, 0
+            // issues and N information messages" (informational messages
+            // never affect its exit code).
+            if line.contains("0 issues, 0 errors and") {
+                clean_except_alerts = true;
+            }
         }
     }
 
     let status = child.wait().await?;
+    let target = device_url.unwrap_or("the settings-file device");
     if status.success() {
         Ok(())
+    } else if clean_except_alerts {
+        println!(
+            "[conformu {mode}] non-zero exit {status} accepted: the summary reported 0 issues \
+             and 0 errors (configuration alerts only)"
+        );
+        Ok(())
     } else {
-        Err(format!("ConformU `{mode}` exited with {status} testing {device_url}").into())
+        Err(format!("ConformU `{mode}` exited with {status} testing {target}").into())
     }
 }

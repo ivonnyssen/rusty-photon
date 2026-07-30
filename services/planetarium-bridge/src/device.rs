@@ -1,28 +1,40 @@
-//! The virtual Telescope device: answers plausibly, actuates nothing,
-//! narrates everything.
+//! The virtual Telescope device
+//! (docs/services/planetarium-bridge.md § The virtual Telescope device).
 //!
-//! Slews are simulated — `Slewing` reports true for a configurable
-//! convergence window while the reported position interpolates toward the
-//! target, so the client sees a mount that "arrives". Sync is accepted and
-//! reflected (the real bridge will ignore it; the spike reflects it to keep
-//! the client's pointing model happy and to observe the client's follow-up
-//! behavior). Every intent verb narrates at info level; poll getters stay
-//! quiet here because the wire middleware records them all.
+//! Align (sync) is the sole import gesture: each accepted sync verb fires
+//! one import and sets the virtual pointing. Slew verbs are simulated
+//! motion — `Slewing` reads true for the convergence window while the
+//! reported position interpolates — and never import. What
+//! `RightAscension`/`Declination` return is subject to the altitude floor:
+//! below it, the report snaps to the zenith idle point (RA = LST,
+//! Dec = site latitude), the P3a wedge defense.
 
+use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use ascom_alpaca::api::telescope::{
-    AlignmentMode, DriveRate, EquatorialCoordinateType, Telescope, TelescopeAxis,
+    AlignmentMode, DriveRate, EquatorialCoordinateType, PierSide, Telescope, TelescopeAxis,
 };
 use ascom_alpaca::api::Device;
 use ascom_alpaca::{ASCOMError, ASCOMResult};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, Site};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-use crate::epoch::{EpochInference, EpochVerdict};
+use crate::config::{AssumeEpoch, DeviceConfig, SiteConfig};
+use crate::epoch;
+use crate::import::{ImportRequest, ImportSource, Importer, SOURCE_KIND};
+
+/// The exact device name — pinned by device_contract.feature. It states
+/// loudly that connecting planetarium clients are not driving a mount.
+pub const DEVICE_NAME: &str = "Planetarium Bridge (virtual target entry — NOT a mount)";
+
+const DESCRIPTION: &str = "Virtual ASCOM Alpaca Telescope for target entry from planetarium \
+     apps: Align imports the selected coordinates as a paused rusty-photon target, slews are \
+     simulated. It is NOT a mount and never moves hardware.";
 
 /// A simulated slew in flight.
 #[derive(Debug, Clone, Copy)]
@@ -36,59 +48,68 @@ struct Slew {
 #[derive(Debug)]
 struct MountState {
     connected: bool,
-    tracking: bool,
+    /// Virtual pointing (ICRS): where the last slew converged or the last
+    /// sync placed it. Constant between motions (i.e. tracking).
     ra_hours: f64,
     dec_degrees: f64,
     target_ra: Option<f64>,
     target_dec: Option<f64>,
     slew: Option<Slew>,
     site: Site,
-    site_elevation: f64,
+    site_elevation_m: f64,
 }
 
-pub struct SpikeTelescope {
+pub struct BridgeTelescope {
+    unique_id: String,
     state: Mutex<MountState>,
     ephemeris: ErfarsEphemeris,
-    inference: EpochInference,
+    assume_epoch: AssumeEpoch,
     slew_duration: Duration,
-    equatorial_system: EquatorialCoordinateType,
+    /// `None` disables the reported-position policy.
+    floor_deg: Option<f64>,
+    importer: Importer,
+    /// Peer address of the most recent Alpaca request — the import
+    /// provenance's `client` field (single-client in practice; P3a).
+    last_client: Arc<Mutex<Option<SocketAddr>>>,
 }
 
-impl SpikeTelescope {
+impl BridgeTelescope {
     pub fn new(
-        site: Site,
-        site_elevation: f64,
+        device: &DeviceConfig,
+        site_config: &SiteConfig,
         ephemeris: ErfarsEphemeris,
-        inference: EpochInference,
-        slew_duration: Duration,
-        equatorial_system: EquatorialCoordinateType,
-    ) -> Self {
-        // Start pointed at the meridian on the celestial equator — a
-        // plausible idle pointing that is always above the horizon
-        // somewhere sensible.
+        importer: Importer,
+        last_client: Arc<Mutex<Option<SocketAddr>>>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let site = Site::new(
+            site_config.site_latitude_deg.degrees(),
+            site_config.site_longitude_deg.degrees(),
+        )?;
+        // Start pointed at the zenith idle point — the "parked overhead"
+        // resting pose the reported-position policy snaps to anyway.
         let initial_ra = ephemeris.sidereal_time(&site, Utc::now()).lst_hours;
-        Self {
+        Ok(Self {
+            unique_id: device.unique_id.clone(),
             state: Mutex::new(MountState {
                 connected: false,
-                tracking: true,
                 ra_hours: initial_ra,
-                dec_degrees: 0.0,
+                dec_degrees: site.latitude_degrees,
                 target_ra: None,
                 target_dec: None,
                 slew: None,
                 site,
-                site_elevation,
+                site_elevation_m: site_config.site_elevation_m,
             }),
             ephemeris,
-            inference,
-            slew_duration,
-            equatorial_system,
-        }
+            assume_epoch: device.assume_epoch,
+            slew_duration: device.slew_duration,
+            floor_deg: device.report_altitude_floor_deg.map(|f| f.degrees()),
+            importer,
+            last_client,
+        })
     }
 
-    /// Run `f` against the folded-forward mount state. A poisoned lock is
-    /// unreachable in practice (no closure here panics), but the spike
-    /// shrugs and reuses the inner state rather than propagating.
+    /// Run `f` against the folded-forward mount state.
     fn with_state<R>(&self, f: impl FnOnce(&mut MountState) -> R) -> R {
         let mut guard = match self.state.lock() {
             Ok(guard) => guard,
@@ -98,47 +119,50 @@ impl SpikeTelescope {
         f(&mut guard)
     }
 
-    fn position(&self) -> (f64, f64) {
-        self.with_state(|s| (s.ra_hours, s.dec_degrees))
+    /// The reported position: virtual pointing while its computed altitude
+    /// clears the floor, else the zenith idle point. Evaluated at read time
+    /// from the live site.
+    fn reported_position(&self) -> (f64, f64) {
+        let (pointing, site) = self.with_state(|s| ((s.ra_hours, s.dec_degrees), s.site));
+        let Some(floor) = self.floor_deg else {
+            return pointing;
+        };
+        let now = Utc::now();
+        match self.ephemeris.alt_az(
+            &site,
+            IcrsCoord {
+                ra_hours: pointing.0,
+                dec_degrees: pointing.1,
+            },
+            now,
+        ) {
+            Ok(alt_az) if alt_az.altitude_degrees < floor => {
+                let lst = self.ephemeris.sidereal_time(&site, now).lst_hours;
+                (lst, site.latitude_degrees)
+            }
+            Ok(_) => pointing,
+            Err(e) => {
+                debug!("alt-az for the floor policy failed ({e}); reporting raw pointing");
+                pointing
+            }
+        }
     }
 
-    /// Shared GoTo path: narrate, run epoch inference, start the simulated
-    /// slew.
-    fn record_goto(&self, verb: &str, ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
+    /// Shared slew path: validate, convert, start the simulated motion.
+    fn start_slew(&self, verb: &str, ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
         validate_coords(ra_hours, dec_degrees)?;
-        info!(
-            "GOTO [{verb}] RA {} Dec {}  (raw: {ra_hours:.6} h / {dec_degrees:+.5}°)",
-            fmt_hms(ra_hours),
-            fmt_dms(dec_degrees),
+        let (icrs_ra, icrs_dec) =
+            epoch::to_icrs(self.assume_epoch, ra_hours, dec_degrees, Utc::now());
+        debug!(
+            verb,
+            ra_hours, dec_degrees, "simulated slew started (never an import)"
         );
-        let report = self.inference.analyze(ra_hours, dec_degrees, Utc::now());
-        if let Some((name, sep)) = &report.nearest_j2000 {
-            info!(
-                "  nearest probe (J2000 frame): {name} at {:.2}′",
-                sep * 60.0
-            );
-        }
-        if let Some((name, sep)) = &report.nearest_apparent {
-            info!(
-                "  nearest probe (JNow frame):  {name} at {:.2}′",
-                sep * 60.0
-            );
-        }
-        match report.verdict {
-            EpochVerdict::LooksJ2000 => info!("  ⇒ EPOCH VERDICT: client sent J2000/ICRS"),
-            EpochVerdict::LooksApparentOfDate => {
-                info!("  ⇒ EPOCH VERDICT: client sent JNow (apparent of date)");
-            }
-            EpochVerdict::NoVerdict => {
-                info!("  ⇒ no epoch verdict (not near a probe object — GoTo e.g. M 31 for one)")
-            }
-        }
         self.with_state(|s| {
             s.target_ra = Some(ra_hours);
             s.target_dec = Some(dec_degrees);
             s.slew = Some(Slew {
                 from: (s.ra_hours, s.dec_degrees),
-                to: (ra_hours, dec_degrees),
+                to: (icrs_ra, icrs_dec),
                 started: Instant::now(),
                 duration: self.slew_duration,
             });
@@ -146,18 +170,38 @@ impl SpikeTelescope {
         Ok(())
     }
 
-    fn record_sync(&self, verb: &str, ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
+    /// Shared sync path — the import gesture: validate, convert, fire the
+    /// import, and move the virtual pointing to the synced coordinates.
+    fn do_sync(&self, verb: &str, ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
         validate_coords(ra_hours, dec_degrees)?;
-        info!(
-            "SYNC [{verb}] RA {} Dec {} — pointing-model gesture; the real bridge \
-             ignores this (accepted here so the client stays happy)",
-            fmt_hms(ra_hours),
-            fmt_dms(dec_degrees),
+        let now = Utc::now();
+        let (icrs_ra, icrs_dec) = epoch::to_icrs(self.assume_epoch, ra_hours, dec_degrees, now);
+        let client = {
+            let guard = match self.last_client.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.map_or_else(|| "unknown".to_owned(), |addr| addr.to_string())
+        };
+        debug!(
+            verb,
+            ra_hours, dec_degrees, client, "Align received; firing the import"
         );
+        self.importer.submit(ImportRequest {
+            ra_hours: icrs_ra,
+            dec_degrees: icrs_dec,
+            source: ImportSource {
+                kind: SOURCE_KIND.to_owned(),
+                client,
+                received_at: now.to_rfc3339_opts(SecondsFormat::Millis, true),
+            },
+        });
         self.with_state(|s| {
             s.slew = None;
-            s.ra_hours = ra_hours;
-            s.dec_degrees = dec_degrees;
+            s.ra_hours = icrs_ra;
+            s.dec_degrees = icrs_dec;
+            s.target_ra = Some(ra_hours);
+            s.target_dec = Some(dec_degrees);
         });
         Ok(())
     }
@@ -178,10 +222,10 @@ fn fold_position(state: &mut MountState) {
             state.ra_hours = slew.to.0;
             state.dec_degrees = slew.to.1;
             state.slew = None;
-            info!(
-                "slew complete: now at RA {} Dec {}",
-                fmt_hms(state.ra_hours),
-                fmt_dms(state.dec_degrees)
+            debug!(
+                ra_hours = state.ra_hours,
+                dec_degrees = state.dec_degrees,
+                "simulated slew converged"
             );
         } else {
             state.ra_hours = interp_ra(slew.from.0, slew.to.0, frac);
@@ -201,49 +245,28 @@ fn interp_ra(from: f64, to: f64, frac: f64) -> f64 {
 
 fn validate_coords(ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
     if !(0.0..24.0).contains(&ra_hours) || !(-90.0..=90.0).contains(&dec_degrees) {
-        warn!("client sent out-of-range coordinates: RA {ra_hours} h Dec {dec_degrees}°");
+        warn!("client sent out-of-range coordinates: RA {ra_hours} h / Dec {dec_degrees} deg");
         return Err(ASCOMError::invalid_value(format!(
-            "RA {ra_hours} h / Dec {dec_degrees}° out of range"
+            "RA {ra_hours} h / Dec {dec_degrees} deg out of range"
         )));
     }
     Ok(())
 }
 
-fn fmt_hms(ra_hours: f64) -> String {
-    let total_seconds = (ra_hours.rem_euclid(24.0) * 3600.0).round() as u64;
-    format!(
-        "{:02}h{:02}m{:02}s",
-        total_seconds / 3600,
-        (total_seconds / 60) % 60,
-        total_seconds % 60
-    )
-}
-
-fn fmt_dms(dec_degrees: f64) -> String {
-    let sign = if dec_degrees < 0.0 { '-' } else { '+' };
-    let total_arcsec = (dec_degrees.abs() * 3600.0).round() as u64;
-    format!(
-        "{sign}{:02}°{:02}′{:02}″",
-        total_arcsec / 3600,
-        (total_arcsec / 60) % 60,
-        total_arcsec % 60
-    )
-}
-
-impl std::fmt::Debug for SpikeTelescope {
+impl std::fmt::Debug for BridgeTelescope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SpikeTelescope").finish_non_exhaustive()
+        f.debug_struct("BridgeTelescope").finish_non_exhaustive()
     }
 }
 
 #[async_trait]
-impl Device for SpikeTelescope {
+impl Device for BridgeTelescope {
     fn static_name(&self) -> &str {
-        "P3a Spike (virtual target-entry device, NOT a mount)"
+        DEVICE_NAME
     }
 
     fn unique_id(&self) -> &str {
-        "planetarium-bridge-p3a-spike-0"
+        &self.unique_id
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
@@ -252,27 +275,33 @@ impl Device for SpikeTelescope {
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         info!(
-            "CLIENT {}",
+            "planetarium client {}",
             if connected {
-                "CONNECTED"
+                "connected"
             } else {
-                "DISCONNECTED"
+                "disconnected"
             }
         );
-        self.with_state(|s| s.connected = connected);
+        self.with_state(|s| {
+            s.connected = connected;
+            if connected {
+                // The Target properties are session state: a fresh connect
+                // starts with them unset (read-before-write errors per the
+                // ASCOM contract). The virtual pointing survives — the
+                // reported-position story spans sessions.
+                s.target_ra = None;
+                s.target_dec = None;
+            }
+        });
         Ok(())
     }
 
     async fn description(&self) -> ASCOMResult<String> {
-        Ok(
-            "P3a verification spike: virtual Alpaca Telescope that records planetarium \
-            GoTos. It is not a mount and never moves hardware."
-                .to_owned(),
-        )
+        Ok(DESCRIPTION.to_owned())
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("rusty-photon planetarium-bridge P3a spike (throwaway)".to_owned())
+        Ok("rusty-photon planetarium-bridge".to_owned())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {
@@ -281,17 +310,13 @@ impl Device for SpikeTelescope {
 }
 
 #[async_trait]
-impl Telescope for SpikeTelescope {
+impl Telescope for BridgeTelescope {
     async fn alignment_mode(&self) -> ASCOMResult<AlignmentMode> {
         Ok(AlignmentMode::GermanPolar)
     }
 
     async fn equatorial_system(&self) -> ASCOMResult<EquatorialCoordinateType> {
-        info!(
-            "client read EquatorialSystem → {:?}",
-            self.equatorial_system
-        );
-        Ok(self.equatorial_system)
+        Ok(EquatorialCoordinateType::J2000)
     }
 
     async fn at_home(&self) -> ASCOMResult<bool> {
@@ -300,22 +325,6 @@ impl Telescope for SpikeTelescope {
 
     async fn at_park(&self) -> ASCOMResult<bool> {
         Ok(false)
-    }
-
-    async fn can_park(&self) -> ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn can_find_home(&self) -> ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn can_set_tracking(&self) -> ASCOMResult<bool> {
-        Ok(true)
     }
 
     async fn can_slew(&self) -> ASCOMResult<bool> {
@@ -330,12 +339,35 @@ impl Telescope for SpikeTelescope {
         Ok(true)
     }
 
+    async fn destination_side_of_pier(
+        &self,
+        right_ascension: f64,
+        declination: f64,
+    ) -> ASCOMResult<PierSide> {
+        validate_coords(right_ascension, declination)?;
+        let site = self.with_state(|s| s.site);
+        let lst = self.ephemeris.sidereal_time(&site, Utc::now()).lst_hours;
+        // GEM convention: a target west of the meridian (positive hour
+        // angle) is observed from the east side of the pier. A GermanPolar
+        // device must answer this consistently on both sides of the
+        // meridian even though it never flips anything.
+        let mut hour_angle = (lst - right_ascension).rem_euclid(24.0);
+        if hour_angle > 12.0 {
+            hour_angle -= 24.0;
+        }
+        Ok(if hour_angle > 0.0 {
+            PierSide::East
+        } else {
+            PierSide::West
+        })
+    }
+
     async fn right_ascension(&self) -> ASCOMResult<f64> {
-        Ok(self.position().0)
+        Ok(self.reported_position().0)
     }
 
     async fn declination(&self) -> ASCOMResult<f64> {
-        Ok(self.position().1)
+        Ok(self.reported_position().1)
     }
 
     async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
@@ -347,7 +379,7 @@ impl Telescope for SpikeTelescope {
     }
 
     async fn altitude(&self) -> ASCOMResult<f64> {
-        let (ra_hours, dec_degrees) = self.position();
+        let (ra_hours, dec_degrees) = self.reported_position();
         let site = self.with_state(|s| s.site);
         self.ephemeris
             .alt_az(
@@ -358,12 +390,12 @@ impl Telescope for SpikeTelescope {
                 },
                 Utc::now(),
             )
-            .map(|aa| aa.altitude_degrees)
+            .map(|alt_az| alt_az.altitude_degrees)
             .map_err(|e| ASCOMError::invalid_operation(format!("alt-az failed: {e}")))
     }
 
     async fn azimuth(&self) -> ASCOMResult<f64> {
-        let (ra_hours, dec_degrees) = self.position();
+        let (ra_hours, dec_degrees) = self.reported_position();
         let site = self.with_state(|s| s.site);
         self.ephemeris
             .alt_az(
@@ -374,7 +406,7 @@ impl Telescope for SpikeTelescope {
                 },
                 Utc::now(),
             )
-            .map(|aa| aa.azimuth_degrees)
+            .map(|alt_az| alt_az.azimuth_degrees)
             .map_err(|e| ASCOMError::invalid_operation(format!("alt-az failed: {e}")))
     }
 
@@ -388,10 +420,10 @@ impl Telescope for SpikeTelescope {
     }
 
     async fn set_site_latitude(&self, site_latitude: f64) -> ASCOMResult<()> {
-        info!("client SET SiteLatitude = {site_latitude}°");
         let longitude = self.with_state(|s| s.site.longitude_degrees);
         let site = Site::new(site_latitude, longitude)
             .map_err(|e| ASCOMError::invalid_value(e.to_string()))?;
+        info!("adopting client-pushed SiteLatitude = {site_latitude} deg");
         self.with_state(|s| s.site = site);
         Ok(())
     }
@@ -401,21 +433,27 @@ impl Telescope for SpikeTelescope {
     }
 
     async fn set_site_longitude(&self, site_longitude: f64) -> ASCOMResult<()> {
-        info!("client SET SiteLongitude = {site_longitude}°");
         let latitude = self.with_state(|s| s.site.latitude_degrees);
         let site = Site::new(latitude, site_longitude)
             .map_err(|e| ASCOMError::invalid_value(e.to_string()))?;
+        info!("adopting client-pushed SiteLongitude = {site_longitude} deg");
         self.with_state(|s| s.site = site);
         Ok(())
     }
 
     async fn site_elevation(&self) -> ASCOMResult<f64> {
-        Ok(self.with_state(|s| s.site_elevation))
+        Ok(self.with_state(|s| s.site_elevation_m))
     }
 
     async fn set_site_elevation(&self, site_elevation: f64) -> ASCOMResult<()> {
-        info!("client SET SiteElevation = {site_elevation} m");
-        self.with_state(|s| s.site_elevation = site_elevation);
+        // The ASCOM valid range (also what ConformU enforces).
+        if !(-300.0..=10_000.0).contains(&site_elevation) {
+            return Err(ASCOMError::invalid_value(format!(
+                "SiteElevation {site_elevation} m out of range [-300, 10000]"
+            )));
+        }
+        debug!("client set SiteElevation = {site_elevation} m");
+        self.with_state(|s| s.site_elevation_m = site_elevation);
         Ok(())
     }
 
@@ -432,7 +470,6 @@ impl Telescope for SpikeTelescope {
     }
 
     async fn set_target_right_ascension(&self, target_right_ascension: f64) -> ASCOMResult<()> {
-        info!("client SET TargetRightAscension = {target_right_ascension} h");
         validate_coords(target_right_ascension, 0.0)?;
         self.with_state(|s| s.target_ra = Some(target_right_ascension));
         Ok(())
@@ -443,20 +480,15 @@ impl Telescope for SpikeTelescope {
     }
 
     async fn set_target_declination(&self, target_declination: f64) -> ASCOMResult<()> {
-        info!("client SET TargetDeclination = {target_declination}°");
         validate_coords(0.0, target_declination)?;
         self.with_state(|s| s.target_dec = Some(target_declination));
         Ok(())
     }
 
     async fn tracking(&self) -> ASCOMResult<bool> {
-        Ok(self.with_state(|s| s.tracking))
-    }
-
-    async fn set_tracking(&self, tracking: bool) -> ASCOMResult<()> {
-        info!("client SET Tracking = {tracking}");
-        self.with_state(|s| s.tracking = tracking);
-        Ok(())
+        // Constant: the virtual pointing holds RA/Dec, which is exactly
+        // what a tracking mount reports.
+        Ok(true)
     }
 
     async fn tracking_rate(&self) -> ASCOMResult<DriveRate> {
@@ -464,7 +496,6 @@ impl Telescope for SpikeTelescope {
     }
 
     async fn set_tracking_rate(&self, tracking_rate: DriveRate) -> ASCOMResult<()> {
-        info!("client SET TrackingRate = {tracking_rate:?}");
         if tracking_rate == DriveRate::Sidereal {
             Ok(())
         } else {
@@ -484,21 +515,20 @@ impl Telescope for SpikeTelescope {
         &self,
         axis: TelescopeAxis,
     ) -> ASCOMResult<Vec<std::ops::RangeInclusive<f64>>> {
-        debug!("client read AxisRates for {axis:?} → none (no manual motion)");
+        debug!("client read AxisRates for {axis:?}: none (no manual motion)");
         Ok(Vec::new())
     }
 
     async fn abort_slew(&self) -> ASCOMResult<()> {
-        info!("ABORT SLEW received");
+        debug!("AbortSlew: ending the simulated motion");
         self.with_state(|s| s.slew = None);
         Ok(())
     }
 
     async fn slew_to_coordinates(&self, right_ascension: f64, declination: f64) -> ASCOMResult<()> {
-        self.record_goto("SlewToCoordinates (blocking)", right_ascension, declination)?;
-        // The blocking variant's contract: return once the slew completes.
+        self.start_slew("SlewToCoordinates", right_ascension, declination)?;
+        // The blocking form's contract: return once the slew completes.
         tokio::time::sleep(self.slew_duration).await;
-        debug!("blocking slew returned after the convergence window");
         Ok(())
     }
 
@@ -507,40 +537,39 @@ impl Telescope for SpikeTelescope {
         right_ascension: f64,
         declination: f64,
     ) -> ASCOMResult<()> {
-        self.record_goto("SlewToCoordinatesAsync", right_ascension, declination)
+        self.start_slew("SlewToCoordinatesAsync", right_ascension, declination)
     }
 
     async fn slew_to_target(&self) -> ASCOMResult<()> {
         let (ra, dec) = self.stored_target()?;
-        self.record_goto("SlewToTarget (blocking)", ra, dec)?;
+        self.start_slew("SlewToTarget", ra, dec)?;
         tokio::time::sleep(self.slew_duration).await;
         Ok(())
     }
 
     async fn slew_to_target_async(&self) -> ASCOMResult<()> {
         let (ra, dec) = self.stored_target()?;
-        self.record_goto("SlewToTargetAsync", ra, dec)
+        self.start_slew("SlewToTargetAsync", ra, dec)
     }
 
     async fn sync_to_coordinates(&self, right_ascension: f64, declination: f64) -> ASCOMResult<()> {
-        self.record_sync("SyncToCoordinates", right_ascension, declination)
+        self.do_sync("SyncToCoordinates", right_ascension, declination)
     }
 
     async fn sync_to_target(&self) -> ASCOMResult<()> {
         let (ra, dec) = self.stored_target()?;
-        self.record_sync("SyncToTarget", ra, dec)
+        self.do_sync("SyncToTarget", ra, dec)
     }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 
     #[test]
     fn interp_ra_takes_the_short_way_across_the_wrap() {
-        // 23.8h → 0.2h is a 0.4h eastward hop through 24h/0h, not a 23.6h
-        // westward sweep.
         let halfway = interp_ra(23.8, 0.2, 0.5);
         assert!(
             (halfway - 0.0).abs() < 1e-9 || (halfway - 24.0).abs() < 1e-9,
@@ -558,14 +587,18 @@ mod tests {
     fn out_of_range_coordinates_are_rejected() {
         assert!(validate_coords(24.0, 0.0).is_err());
         assert!(validate_coords(-0.1, 0.0).is_err());
-        assert!(validate_coords(0.0, 90.1).is_err());
+        assert!(validate_coords(0.0, 90.5).is_err());
+        assert!(validate_coords(0.0, -90.5).is_err());
         assert!(validate_coords(12.0, -45.0).is_ok());
+        assert!(validate_coords(0.0, 90.0).is_ok());
     }
 
     #[test]
-    fn formatting_matches_astronomical_notation() {
-        assert_eq!(fmt_hms(0.712_305), "00h42m44s");
-        assert_eq!(fmt_dms(41.269_167), "+41°16′09″");
-        assert_eq!(fmt_dms(-11.623), "-11°37′23″");
+    fn the_device_name_matches_the_contract_pin() {
+        assert_eq!(
+            DEVICE_NAME,
+            "Planetarium Bridge (virtual target entry — NOT a mount)"
+        );
+        assert!(DESCRIPTION.contains("NOT a mount"));
     }
 }

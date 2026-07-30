@@ -1,4 +1,3 @@
-@wip
 Feature: Align imports targets
   Align (sync) is the sole import gesture: each accepted sync verb fires one
   add_target MCP call to rp carrying bare ICRS coordinates plus provenance —

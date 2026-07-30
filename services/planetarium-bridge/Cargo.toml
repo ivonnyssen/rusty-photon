@@ -11,9 +11,96 @@ description = "Virtual ASCOM Alpaca Telescope: planetarium Align gestures become
 [lints]
 workspace = true
 
+[features]
+# Gates the ConformU integration test only; the service binary itself has no
+# feature-dependent behavior (nothing to mock — the device is virtual).
+conformu = []
+
+[package.metadata.conformu]
+command = "cargo test -p planetarium-bridge --features conformu --test conformu_integration -- --nocapture"
+
+[package.metadata.deb]
+name = "rusty-photon-planetarium-bridge"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "Virtual ASCOM Alpaca Telescope: planetarium Align gestures become paused rusty-photon targets."
+section = "science"
+priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
+assets = [
+    ["target/release/planetarium-bridge", "usr/bin/rusty-photon-planetarium-bridge", "755"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-planetarium-bridge"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-planetarium-bridge"
+summary = "Virtual ASCOM Alpaca Telescope: planetarium Align gestures become paused rusty-photon targets"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/planetarium-bridge", dest = "/usr/bin/rusty-photon-planetarium-bridge", mode = "755" },
+    { source = "pkg/rusty-photon-planetarium-bridge.service", dest = "/usr/lib/systemd/system/rusty-photon-planetarium-bridge.service", mode = "644" },
+]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+if [ "$1" -eq 1 ]; then
+    systemctl enable rusty-photon-planetarium-bridge.service
+fi
+"""
+# rpm scriptlet arg $1 = package instances remaining after the operation.
+# On upgrade the old %preun runs AFTER the new %post, so an unguarded
+# stop/disable would take the service down right after every upgrade.
+# Guarded: enable fires on first install only (upgrades keep the
+# operator's enable/disable choice), stop/disable on final erase only,
+# and try-restart hands a running service over to the upgraded binary
+# (the deb restart-after-upgrade equivalent).
+pre_uninstall_script = """
+if [ "$1" -eq 0 ]; then
+    systemctl stop rusty-photon-planetarium-bridge.service || true
+    systemctl disable rusty-photon-planetarium-bridge.service || true
+fi
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = """
+systemctl daemon-reload
+if [ "$1" -ge 1 ]; then
+    systemctl try-restart rusty-photon-planetarium-bridge.service || true
+fi
+"""
+require-sh = true
+
 [dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "telescope"] }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
+erfars = { workspace = true }
+humantime-serde = { workspace = true }
+rp-auth = { workspace = true }
+rp-ephemeris = { workspace = true }
+rp-mcp-client = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-tls = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
@@ -23,20 +110,15 @@ tracing = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 
 [dev-dependencies]
-# Client API for the BDD harness (tests/bdd/world.rs); the production `server`
-# feature arrives with the device implementation.
 ascom-alpaca = { workspace = true, features = ["client", "telescope"] }
-axum = { workspace = true }
-bdd-infra = { workspace = true }
-chrono = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }
 reqwest = { workspace = true }
 # The stub rp MCP server (tests/bdd/stub_rp.rs) serves the same streamable
 # HTTP transport rp does, so the bridge needs no client-side test seams.
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [[test]]
 name = "bdd"

@@ -127,7 +127,7 @@ identities get declared the day the hardware is measured on a USB port —
 so the USB-presence check simply does not run for them; their device-node
 checks work regardless.
 
-The catalog today (19 packaged services):
+The catalog today (20 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -146,6 +146,7 @@ The catalog today (19 packaged services):
 | pa-scops-oag | alpaca | 11123 |
 | zwo-focuser | alpaca | 11124 |
 | svbony-camera | alpaca | 11125 |
+| planetarium-bridge | alpaca | 11126 |
 | phd2-guider | core | 11130 |
 | plate-solver | core | 11131 |
 | calibrator-flats | core | 11170 |

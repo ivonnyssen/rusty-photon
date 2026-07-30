@@ -1,0 +1,38 @@
+[Unit]
+Description=Rusty Photon planetarium-bridge - virtual planetarium target-entry telescope (port 11126)
+After=network.target
+
+[Service]
+Type=simple
+# Self-creates its default config at /etc/rusty-photon/planetarium-bridge.json
+# on first start and serves the virtual Alpaca Telescope immediately. rp being
+# unreachable is not fatal: Align imports spool on disk and replay once rp is
+# back, so no ConditionPathExists gate is needed.
+ExecStart=/usr/bin/rusty-photon-planetarium-bridge
+Restart=on-failure
+RestartSec=5
+User=rusty-photon
+Group=rusty-photon
+Environment=RUST_LOG=info
+Environment=HOME=/var/lib/rusty-photon
+WorkingDirectory=/var/lib/rusty-photon
+StateDirectory=rusty-photon/planetarium-bridge
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rusty-photon
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

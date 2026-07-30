@@ -1,4 +1,3 @@
-@wip
 Feature: Import spooling and health
   rp being down must never lose an Align. Delivery failures append the import
   request to a bounded on-disk FIFO spool — one JSON request per line,

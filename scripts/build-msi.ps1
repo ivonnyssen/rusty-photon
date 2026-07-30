@@ -235,7 +235,8 @@ $allServices = @(
     "sentinel", "ui-htmx", "filemonitor", "ppba-driver", "qhy-focuser",
     "sky-survey-camera", "star-adventurer-gti", "pa-falcon-rotator",
     "dsd-fp2", "qhy-camera", "pa-scops-oag", "rp", "session-runner",
-    "plate-solver", "phd2-guider", "calibrator-flats", "doctor"
+    "plate-solver", "phd2-guider", "calibrator-flats", "planetarium-bridge",
+    "doctor"
 )
 
 if (-not $SkipBuild) {
