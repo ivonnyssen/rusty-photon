@@ -1,0 +1,43 @@
+[package]
+name = "planetarium-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Virtual ASCOM Alpaca Telescope: planetarium Align gestures become paused rusty-photon targets"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+tracing = { workspace = true }
+
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
+[dev-dependencies]
+# Client API for the BDD harness (tests/bdd/world.rs); the production `server`
+# feature arrives with the device implementation.
+ascom-alpaca = { workspace = true, features = ["client", "telescope"] }
+axum = { workspace = true }
+bdd-infra = { workspace = true }
+chrono = { workspace = true }
+cucumber = { workspace = true }
+reqwest = { workspace = true }
+# The stub rp MCP server (tests/bdd/stub_rp.rs) serves the same streamable
+# HTTP transport rp does, so the bridge needs no client-side test seams.
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
