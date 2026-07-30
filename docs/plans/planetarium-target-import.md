@@ -11,11 +11,14 @@ offset center to fit a nebula plus a star field, a mosaic anchor, a rotation
 that puts a companion galaxy in the corner. None of that survives into
 rusty-photon; it is retyped, approximately, into the store.
 
-The outcome of this plan: **pressing GoTo in the planetarium adds the target
-to rusty-photon's target database.** The planetarium connects to a virtual
-ASCOM Alpaca telescope served by a new `planetarium-bridge` service; a GoTo
-delivers the exact framed coordinates (never a catalog-centroid
-approximation), the bridge names the target by reverse catalog lookup, and
+The outcome of this plan: **pressing Align in the planetarium adds the
+target to rusty-photon's target database** (the gesture was GoTo until
+P3b proved GoTo unconditionally horizon-gated — see Decision 2's
+2026-07-30 amendment). The planetarium connects to a virtual
+ASCOM Alpaca telescope served by a new `planetarium-bridge` service; an
+Align delivers the selected object's exact J2000 coordinates — composed
+framings ride a faint anchor star at the intended frame center — the
+target is named rp-side by reverse catalog lookup, and
 the target lands *paused* in an inbox for the operator to review — attach
 acquisition goals, adjust the position angle, activate. rp's planner then
 images it whenever conditions are right; the planetarium and the scheduler
@@ -40,7 +43,7 @@ P5/P6 frontends.
 | P0 | This plan | In progress | feature/planetarium-target-import |
 | P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11), plus a **shared plan-data vocabulary crate** `rp-vocabulary` with validation-by-construction (Decision 12, settled 2026-07-23 — value types + the `Target`/`PlannerTarget` `coord: IcrsCoord` newtype migration and the `rp-ephemeris` bridge landed; the `schema`/`validate` MCP tools follow) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `target_store.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. The Dynamic Planner cutover has now **landed**: `record_exposure`/`get_session_progress`/`get_target_status` read only the active rows of the target store, identifying targets by slug — the legacy `targets[]` config array is **removed** (`Config.targets` renamed to the typed `target_store`; a stray `targets` key or an array-shaped `target_store` now fails config load loudly). The `record_exposure` progress counters keep their `{completed, goal}` shape; only their source moved from the config array to the store, and plan rotation / target balancing / all-goals-met end_of_session still run off those counters. **Still not landed**: the full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
-| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | **P3a COMPLETE 2026-07-29** — real-SkySafari session run against the spike (`spikes/planetarium-bridge-p3a`); all five questions answered in [planetarium-bridge.md](../services/planetarium-bridge.md). Headlines: **go/no-go = GO** (coordinate-entry GoTos arbitrary points; the entry box is implicitly JNow, converted to J2000 on the wire; tap-empty-sky is not a thing, but faint-star-adjacent framing works), J2000 honored, GoTo = `SlewToCoordinatesAsync` / Align = `SyncToCoordinates`, 1 Hz poll cadence, discovery is subnet-local, GoTo is client-side horizon-gated (below-horizon targets can't be imported until risen; reported position lingering below horizon wedges the client). **P3 design doc drafted 2026-07-29** (settled interactively — sync rejected not ignored, typed writer-identity provenance, rp-side naming; amendments recorded under Decisions 2/3/4 below); BDD + implementation not started. The spike is deleted in the *implementation* PR, not before — it is still needed for the P3b horizon experiment ([planetarium-bridge.md](../services/planetarium-bridge.md) § Open item) | feature/planetarium-bridge-design |
+| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | **P3a COMPLETE 2026-07-29** — real-SkySafari session run against the spike (`spikes/planetarium-bridge-p3a`); all five questions answered in [planetarium-bridge.md](../services/planetarium-bridge.md). Headlines: **go/no-go = GO** (coordinate-entry GoTos arbitrary points; the entry box is implicitly JNow, converted to J2000 on the wire; tap-empty-sky is not a thing, but faint-star-adjacent framing works), J2000 honored, GoTo = `SlewToCoordinatesAsync` / Align = `SyncToCoordinates`, 1 Hz poll cadence, discovery is subnet-local, GoTo is client-side horizon-gated (below-horizon targets can't be imported until risen; reported position lingering below horizon wedges the client). **P3 design doc drafted 2026-07-29** (settled interactively — sync rejected not ignored, typed writer-identity provenance, rp-side naming; amendments recorded under Decisions 2/3/4 below). **P3b horizon experiment COMPLETE 2026-07-30** (second device, identical SkySafari build): the GoTo horizon gate is unconditional (both forms, every horizon display setting — coordinate entry is gated too), the wedge did not reproduce (device/state-dependent) — outcome: **the import gesture flipped from GoTo to Align** (Decision 2's second amendment; [planetarium-bridge.md](../services/planetarium-bridge.md) § P3b appendix). BDD + implementation not started. The spike is deleted in the *implementation* PR, not before | feature/planetarium-bridge-design |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
 | P5 | Stellarium enrichment frontend (telescope-protocol doorbell + RemoteControl name/Oculars-angle query) | Deferred | |
 | P6 | Cartes du Ciel frontend (TCP 3292 client: named selections, `GETFRAMES` mosaic import with per-panel PA) | Deferred | |
@@ -96,6 +99,24 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    return `NOT_IMPLEMENTED`. A virtual device has no pointing model to
    correct; rejection also eliminates the sync-induced below-horizon
    wedge P3a discovered. Sync-carries-no-intent stands unchanged.*
+
+   *Amended again 2026-07-30 (P3b, settled interactively) — **full
+   reversal: Align (sync) is now the sole add-target gesture; GoTo
+   never imports.** P3b proved SkySafari horizon-gates **both** GoTo
+   forms (object and coordinate entry) unconditionally, under every
+   horizon display setting — a GoTo gesture would restrict planning to
+   currently-risen targets, defeating couch planning — and the P3a
+   wedge makes GoTo availability client-state-dependent on top (it did
+   not even reproduce on a second device running the identical build).
+   Align is never gated. `CanSync = true`; sync verbs validate, import,
+   and set the virtual pointing; slew verbs remain accepted as
+   simulated motion only. Sync-carries-no-intent is superseded for
+   this virtual device: imports land paused in the inbox, so a casual
+   Align costs one discardable pending row, and proximity dedup
+   collapses repeats. The operator workflow is Center (visual framing,
+   display-only) → Align (import). Full contract:
+   [planetarium-bridge.md](../services/planetarium-bridge.md)
+   § Align is the import gesture.*
 3. **Captured targets land paused (`active: false`) with default goals, and
    the bridge never mutates operator-owned state.** Planetariums say
    *where*, never filters/exposures; the operator reviews in the P4 inbox.
@@ -338,7 +359,7 @@ Explicitly rejected / out of scope (see Decisions 6–8):
 *(Superseded 2026-07-29: the authoritative design is now
 [docs/services/planetarium-bridge.md](../services/planetarium-bridge.md).
 The sketch below is kept as the pre-design record; where they differ —
-sync rejected vs accepted-and-ignored, rp-side naming, the
+the import gesture (Align since P3b, not GoTo), rp-side naming, the
 reported-position altitude floor — the design doc wins.)*
 
 - New service `services/planetarium-bridge`, port **11126** (next free in
@@ -430,3 +451,11 @@ All three were answered by the P3a session; full findings in
 - ~~Minimum position-report cadence?~~ **1 Hz** poll cycle
   (`Slewing`/`Tracking`/`RightAscension`/`Declination`); a 3 s
   simulated convergence was accepted cleanly.
+
+*P3b correction (2026-07-30): the second answer's "coordinate entry is
+not horizon-gated" held only because the observed case reached an
+above-horizon point — below 0°, **both** GoTo forms are refused under
+every horizon display setting, which is what flipped the import
+gesture to Align (Decision 2's second amendment; findings in
+[planetarium-bridge.md](../services/planetarium-bridge.md) § P3b
+appendix).*
