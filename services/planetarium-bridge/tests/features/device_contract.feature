@@ -97,14 +97,14 @@ Feature: Virtual telescope device contract
     And TargetDeclination should read 40.0 degrees
 
   Scenario: An async slew simulates convergence to the requested coordinates
-    Given the simulated slew duration is "1s"
+    Given the simulated slew duration is "3s"
     And the bridge is running
     And a connected planetarium client
     When the client starts an async slew to ra 5.5 hours dec 40.0 degrees
     Then Slewing should read true
     And TargetRightAscension should read 5.5 hours
     And TargetDeclination should read 40.0 degrees
-    And within 3 seconds Slewing should read false
+    And within 6 seconds Slewing should read false
     And the reported position should be ra 5.5 hours dec 40.0 degrees
 
   Scenario: The blocking slew form completes after convergence
