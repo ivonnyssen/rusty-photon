@@ -333,13 +333,16 @@ mod tests {
 
     #[test]
     fn macos_data_directory_sits_under_the_config_root() {
-        let dir = macos_data_directory(Some(std::path::PathBuf::from(
-            "/Users/astro/Library/Application Support/rusty-photon",
-        )));
-        assert_eq!(
-            dir,
-            "/Users/astro/Library/Application Support/rusty-photon/rp/data"
-        );
+        let root = "/Users/astro/Library/Application Support/rusty-photon";
+        let dir = macos_data_directory(Some(std::path::PathBuf::from(root)));
+        // Compared as `Path`s, not strings: `PathBuf::join` emits the *host's*
+        // separator, and this macOS-only path is also built on the Windows and
+        // Linux hosts that run the test. `Path` equality is component-wise, so
+        // this still pins the tail exactly.
+        let relative = std::path::Path::new(&dir)
+            .strip_prefix(root)
+            .unwrap_or_else(|_| panic!("{dir} is not under {root}"));
+        assert_eq!(relative, std::path::Path::new("rp/data"));
     }
 
     #[test]
