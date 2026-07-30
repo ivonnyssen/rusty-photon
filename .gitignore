@@ -35,3 +35,4 @@ user.bazelrc
 # camera is opened (e.g. U3SM900C-AST_Cfg_A.bin for the SV605CC).
 *_Cfg_A.bin
 *_Cfg_SAVE.bin
+crates/rp-catalog/scripts/build/

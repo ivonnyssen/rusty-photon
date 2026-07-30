@@ -52,7 +52,7 @@ impl From<&ResolvedTarget> for ResolvedTargetView {
 pub fn resolve(name: &str) -> ResolveOutcome {
     let catalog = Catalog::embedded();
     if let Some(target) = catalog.resolve(name) {
-        return ResolveOutcome::Resolved(target.into());
+        return ResolveOutcome::Resolved((&target).into());
     }
     let suggestions = catalog.fuzzy_suggestions(name, 3);
     ResolveOutcome::NotFound { suggestions }
