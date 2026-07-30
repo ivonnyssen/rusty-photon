@@ -28,19 +28,38 @@ fn loads_with_expected_size() {
     assert!(!c.is_empty());
 }
 
+// `Catalog::load` reads its blob zero-copy and so takes `&'static [u8]`.
+// The malformed fixtures below are therefore `static` arrays built at
+// compile time: promoting a heap buffer to `'static` by leaking it is a
+// genuine leak, and the nightly leak sanitizer fails the build on it.
+
+/// All zeroes: long enough to hold a header, but the magic does not match.
+static BAD_MAGIC_BLOB: [u8; 64] = [0; 64];
+
+/// The embedded blob's real header followed by 16 bytes of body — valid
+/// magic, but far fewer bytes than its row counts describe.
+static TRUNCATED_BLOB: [u8; HEADER_LEN + 16] = {
+    let mut blob = [0u8; HEADER_LEN + 16];
+    let mut i = 0;
+    while i < HEADER_LEN {
+        blob[i] = CATALOG_BIN[i];
+        i += 1;
+    }
+    blob
+};
+
 #[test]
 fn load_rejects_bad_magic() {
-    let bytes: &'static [u8] = Box::leak(vec![0u8; 64].into_boxed_slice());
-    assert!(matches!(Catalog::load(bytes), Err(CatalogError::BadMagic)));
+    assert!(matches!(
+        Catalog::load(&BAD_MAGIC_BLOB),
+        Err(CatalogError::BadMagic)
+    ));
 }
 
 #[test]
 fn load_rejects_truncated_blob() {
-    let mut buf = Vec::from(&CATALOG_BIN[..HEADER_LEN]);
-    buf.extend_from_slice(&[0u8; 16]);
-    let bytes: &'static [u8] = Box::leak(buf.into_boxed_slice());
     assert!(matches!(
-        Catalog::load(bytes),
+        Catalog::load(&TRUNCATED_BLOB),
         Err(CatalogError::Truncated { .. })
     ));
 }
