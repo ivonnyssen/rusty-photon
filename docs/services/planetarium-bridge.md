@@ -398,22 +398,24 @@ wording)*:
 Catalog coverage bounds *naming quality only*, never import
 correctness: identity, dedup, and slug allocation are pure
 coordinate proximity, so a target the catalog has never heard of
-(a Sharpless nebula, a dark-nebula framing, empty sky) imports
-exactly as well as M31 — it just arrives with the coordinate name
-and slug, ready for an operator rename during the `active: false`
-review. `rp-catalog` currently embeds Messier + NGC + IC (from
-OpenNGC); widening coverage is a pure data-layer change that
-improves initial names with no bridge or rp code change, tracked
-as issue #767: the astrophoto DSO catalogs (Sh2, Barnard, LDN/LBN,
-vdB, RCW, Abell PNe, …) plus an HD-depth star layer (Tycho-2-derived
-J2000 positions) so the P3a faint-star-adjacent framing gesture
-arrives named after its anchor. Until that lands the star tier of
-the cone-search is simply vacuous. Existing rows are never
-retroactively renamed when coverage grows.
+imports exactly as well as M31 — it just arrives with the coordinate
+name and slug, ready for an operator rename during the
+`active: false` review. Issue #767 (landed) widened `rp-catalog` from
+Messier + NGC + IC to the astrophoto DSO catalogs (Sh2, Barnard,
+LDN/LBN, vdB, RCW, Gum, Ced, Abell PNe, Arp, Hickson, Collinder,
+Melotte, Stock, Trumpler; ~19k DSO rows) plus the full HD/HDE/HDEC
+star layer from the Tycho-2/HD cross-index (~354k rows,
+Tycho-2-derived J2000 positions), so the P3a faint-star-adjacent
+framing gesture arrives named after its anchor — as the IAU proper
+name (`"Vega"`) for the ~400 CSN-named stars, as the designation
+(`"HD 227018"`) otherwise. Existing rows are never retroactively
+renamed when coverage grows.
 
 ### `rp-catalog`: nearest-neighbor query
 
-New API (explicit P3 scope per Decision 4):
+Landed with #767 (amends the earlier sketch, which borrowed
+`&'a ResolvedTarget` — the catalog now materializes rows on demand
+from a packed blob, so matches are owned):
 
 ```rust
 pub struct NearestTolerances {
@@ -421,8 +423,8 @@ pub struct NearestTolerances {
     pub star_arcmin: f64,  // target_store.import.star_naming_tolerance_arcmin
 }
 
-pub struct NearestMatch<'a> {
-    pub target: &'a ResolvedTarget,
+pub struct NearestMatch {
+    pub target: ResolvedTarget,    // owned; carries class: ObjectClass
     pub separation_arcmin: f64,
     pub east_offset_arcmin: f64,   // Δα·cosδ of the query FROM the centroid
     pub north_offset_arcmin: f64,  // Δδ of the query FROM the centroid
@@ -430,15 +432,20 @@ pub struct NearestMatch<'a> {
 
 impl Catalog {
     pub fn nearest(&self, coord: &IcrsCoord, tolerances: &NearestTolerances)
-        -> Option<NearestMatch<'_>>;
+        -> Option<NearestMatch>;
 }
 ```
 
-One linear scan over the embedded rows (microseconds at embedded
-sizes): the best DSO within its radius wins outright; otherwise the
-best star within its radius; separation breaks ties within a class.
-Deliberately *not* the DB-seeded indexed cone-search browse that
-`rp-targets.md` defers; the two must not be conflated.
+One logical search over one dec-sorted embedded structure (a
+binary-searched declination band per class, well under a millisecond):
+the best DSO within its radius wins outright; otherwise the best star
+within its radius; separation breaks ties within a class, and *exact*
+separation ties (entries packed at identical coordinates, e.g.
+M 42 / NGC 1976) fall back to a fixed catalog rank
+(M > NGC > IC > Sh2 > …) and then name, so the winner is
+deterministic *(settled 2026-07-29 on #767)*. Deliberately *not* the
+DB-seeded indexed cone-search browse that `rp-targets.md` defers; the
+two must not be conflated.
 
 ### rp config additions
 

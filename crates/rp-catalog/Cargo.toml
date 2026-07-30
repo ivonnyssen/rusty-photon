@@ -5,17 +5,18 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embedded Messier + NGC + IC catalog with name/alias resolution for Rusty Photon"
+description = "Embedded deep-sky + HD star catalog with name resolution and nearest-neighbor naming for Rusty Photon"
 rust-version.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-csv = { workspace = true }
 rp-vocabulary = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+csv = { workspace = true }
+serde_json = { workspace = true }

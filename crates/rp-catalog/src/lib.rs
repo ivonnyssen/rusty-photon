@@ -1,249 +1,646 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! Embedded Messier + NGC + IC deep-sky object catalog with
-//! case- and whitespace-insensitive name resolution.
+//! Embedded deep-sky + star catalog with case-, whitespace-, and
+//! dash-insensitive name resolution and a class-tiered nearest-neighbor
+//! query for planetarium-import naming.
 //!
-//! Data is sourced from the OpenNGC project (CC-BY-SA-4.0; see
-//! `src/data/LICENSE-DATA`) and pre-converted into per-catalog CSVs by
-//! `scripts/openngc_to_catalog.py`. The CSVs are embedded via
-//! `include_str!` and parsed once at first call to [`Catalog::embedded`].
+//! One logical catalog spans two entry classes:
+//!
+//! - **Deep-sky objects** (~19k): Messier + NGC + IC (OpenNGC) plus the
+//!   astrophoto catalogs — Sharpless, Abell planetaries, vdB, RCW, Gum,
+//!   Cederblad, Barnard, LDN, LBN, Arp, Hickson, Collinder, Melotte,
+//!   Stock, Trumpler (SIMBAD/VizieR; see `src/data/LICENSE-DATA`).
+//! - **Stars** (~354k): every HD/HDE/HDEC designation in the Tycho-2/HD
+//!   cross-index (VizieR IV/25), with J2000 Tycho-2-derived positions.
+//!   The ~400 stars carrying IAU proper names are canonical under that
+//!   name (`"Vega"`); their HD designation resolves to the same entry.
+//!
+//! All data lives in one packed little-endian blob
+//! (`src/data/catalog.bin`, format `RPCAT001`, produced by
+//! `scripts/pack_catalog.py` from the committed per-catalog CSVs and
+//! the fetched star layer) embedded via `include_bytes!` and read
+//! zero-copy: lookups binary-search the blob in place, star names are
+//! formatted on demand from the HD number, and the only per-call heap
+//! use is the returned [`ResolvedTarget`]. The
+//! `embedded_matches_committed_csvs` test locks the blob to its CSV
+//! sources so the two cannot drift.
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
 use std::sync::OnceLock;
 
 use rp_vocabulary::IcrsCoord;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error};
+use tracing::error;
 
-const MESSIER_CSV: &str = include_str!("data/messier.csv");
-const NGC_CSV: &str = include_str!("data/ngc.csv");
-const IC_CSV: &str = include_str!("data/ic.csv");
-const ALIASES_CSV: &str = include_str!("data/aliases.csv");
+const CATALOG_BIN: &[u8] = include_bytes!("data/catalog.bin");
+const MAGIC: &[u8; 8] = b"RPCAT001";
+const HEADER_LEN: usize = 8 + 6 * 4;
+/// Sentinel for "no magnitude" in the packed centi-magnitude columns.
+const MAG_NONE: i16 = i16::MIN;
+/// Bit 31 of a key-table row reference marks a star row.
+const STAR_BIT: u32 = 0x8000_0000;
+const MAS_PER_DEGREE: f64 = 3_600_000.0;
+const ARCMIN_PER_DEGREE: f64 = 60.0;
+
+/// Which class of catalog entry a [`ResolvedTarget`] came from. The
+/// planetarium-import naming contract treats the classes asymmetrically:
+/// a deep-sky hit outranks any star hit regardless of separation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectClass {
+    DeepSky,
+    Star,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedTarget {
-    /// Canonical name as it appears in the source CSV
-    /// (e.g. `"M 31"`, `"NGC 224"`, `"IC 1396"`).
+    /// Canonical name as packed (e.g. `"M 31"`, `"Sh2-101"`,
+    /// `"HD 227018"`, `"Vega"`).
     pub name: String,
-    /// OpenNGC type code (`G` = galaxy, `OCl` = open cluster, `GCl`
-    /// = globular, `Neb` = nebula, etc.). Documented at
-    /// <https://github.com/mattiaverga/OpenNGC>.
+    /// OpenNGC type code (`G` = galaxy, `OCl` = open cluster, `HII`,
+    /// `DrkN`, etc.; documented at
+    /// <https://github.com/mattiaverga/OpenNGC>). Stars are `"*"`.
     pub object_type: String,
     /// J2000/ICRS pointing, validated by construction (ADR-019): one
     /// coordinate type spans catalog → store → planner, serialized as a
     /// nested `"coord": { "ra_hours", "dec_degrees" }` object (no
     /// `#[serde(flatten)]`).
     pub coord: IcrsCoord,
-    /// V-Mag from OpenNGC, falling back to B-Mag when V is missing.
-    /// `None` if the source row lacks both.
+    /// V magnitude (or B fallback for OpenNGC rows; VT-derived V for
+    /// stars). `None` if the source lacks one.
     pub magnitude: Option<f64>,
-    /// Major axis in arcmin (OpenNGC `MajAx`). `None` for stellar /
-    /// point-source entries.
+    /// Major axis in arcmin. `None` for stars and point sources.
     pub size_arcmin: Option<f64>,
+    /// Entry class; see [`ObjectClass`].
+    pub class: ObjectClass,
+}
+
+/// Per-class acceptance radii for [`Catalog::nearest`], wired from
+/// `target_store.import.naming_tolerance_arcmin` /
+/// `star_naming_tolerance_arcmin` in rp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NearestTolerances {
+    pub dso_arcmin: f64,
+    pub star_arcmin: f64,
+}
+
+/// A [`Catalog::nearest`] hit. Offsets are of the query **from** the
+/// catalog centroid: East = Δα·cos δ, North = Δδ.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NearestMatch {
+    pub target: ResolvedTarget,
+    pub separation_arcmin: f64,
+    pub east_offset_arcmin: f64,
+    pub north_offset_arcmin: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
-    #[error("failed to parse {file}: {source}")]
-    CsvParse {
-        file: &'static str,
-        #[source]
-        source: csv::Error,
-    },
+    #[error("catalog blob has wrong magic (expected RPCAT001)")]
+    BadMagic,
+    #[error("catalog blob truncated: {actual} bytes, layout needs {expected}")]
+    Truncated { expected: usize, actual: usize },
 }
 
-#[derive(Debug, Deserialize)]
-struct CsvRow {
-    name: String,
-    #[serde(rename = "type")]
-    object_type: String,
-    ra_hours: f64,
-    dec_degrees: f64,
-    magnitude: String,
-    size_arcmin: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AliasRow {
-    alias: String,
-    canonical_name: String,
-}
-
-/// Look-up structure built once from the four embedded CSVs.
+/// Zero-copy view over the packed catalog blob. All section offsets are
+/// validated once at construction; accessors after that are defensive
+/// (a logic error yields a zero/empty value, never a panic).
 #[derive(Debug)]
 pub struct Catalog {
-    by_normalized_name: HashMap<String, ResolvedTarget>,
+    bytes: &'static [u8],
+    dso_count: usize,
+    star_count: usize,
+    key_count: usize,
+    named_count: usize,
+    type_count: usize,
+    // Section start offsets into `bytes`.
+    dso_dec: usize,
+    dso_ra: usize,
+    dso_mag: usize,
+    dso_size: usize,
+    dso_type: usize,
+    dso_cat: usize,
+    dso_name: usize,
+    star_dec: usize,
+    star_ra: usize,
+    star_hd: usize,
+    star_mag: usize,
+    keys: usize,
+    named: usize,
+    types: usize,
+    pool: usize,
 }
 
-/// Normalize a query string for lookup: strip whitespace, lower-case,
-/// and rewrite a leading `messier` prefix to `m` so `"Messier 41"`,
-/// `"M 41"`, `"m41"`, and `"MESSIER41"` all collide on the same key.
+/// Normalize a query string for lookup: strip whitespace and dashes,
+/// ASCII-lowercase, then rewrite well-known catalog prefixes onto the
+/// canonical short form when followed by a digit — so `"Messier 41"`,
+/// `"Sharpless 2-101"`, `"Barnard 33"`, `"HDE 227018"` collide with
+/// `"M 41"`, `"Sh2-101"`, `"B 33"`, `"HD 227018"`.
+///
+/// MUST stay byte-identical to `normalize()` in
+/// `scripts/pack_catalog.py`, which produces the packed key table this
+/// function is matched against.
 fn normalize(name: &str) -> String {
     let buf: String = name
         .chars()
-        .filter(|c| !c.is_whitespace())
+        .filter(|c| !c.is_whitespace() && *c != '-')
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    // Rewrite "messier" → "m" only when followed by a digit (or end);
-    // otherwise we'd corrupt things like "messierr" or hypothetical
-    // catalog names that happen to share the prefix.
-    if let Some(rest) = buf.strip_prefix("messier") {
-        if rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_digit()) {
-            return format!("m{rest}");
+    const REWRITES: [(&str, &str); 8] = [
+        ("sharpless2", "sh2"),
+        ("sharpless", "sh2"),
+        ("messier", "m"),
+        ("barnard", "b"),
+        ("collinder", "cr"),
+        ("melotte", "mel"),
+        ("trumpler", "tr"),
+        ("hde", "hd"),
+    ];
+    for (prefix, replacement) in REWRITES {
+        if let Some(rest) = buf.strip_prefix(prefix) {
+            if rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_digit()) {
+                return format!("{replacement}{rest}");
+            }
+            break;
         }
     }
     buf
 }
 
+fn read_u32(bytes: &[u8], off: usize) -> u32 {
+    match bytes.get(off..off + 4) {
+        Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+        None => 0,
+    }
+}
+
+fn read_i32(bytes: &[u8], off: usize) -> i32 {
+    read_u32(bytes, off) as i32
+}
+
+fn read_i16(bytes: &[u8], off: usize) -> i16 {
+    match bytes.get(off..off + 2) {
+        Some(b) => i16::from_le_bytes([b[0], b[1]]),
+        None => 0,
+    }
+}
+
+fn read_u16(bytes: &[u8], off: usize) -> u16 {
+    read_i16(bytes, off) as u16
+}
+
+/// Great-circle separation between two points given in degrees, via the
+/// haversine form (stable at small angles, exact at the poles).
+fn separation_arcmin(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
+    let (ra1, dec1, ra2, dec2) = (
+        ra1.to_radians(),
+        dec1.to_radians(),
+        ra2.to_radians(),
+        dec2.to_radians(),
+    );
+    let sin_ddec = ((dec2 - dec1) / 2.0).sin();
+    let sin_dra = ((ra2 - ra1) / 2.0).sin();
+    let h = sin_ddec * sin_ddec + dec1.cos() * dec2.cos() * sin_dra * sin_dra;
+    2.0 * h.sqrt().asin().to_degrees() * ARCMIN_PER_DEGREE
+}
+
+/// Δα wrapped to ±180°, in degrees.
+fn ra_delta_degrees(from: f64, to: f64) -> f64 {
+    let mut d = to - from;
+    if d > 180.0 {
+        d -= 360.0;
+    } else if d < -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
 impl Catalog {
     /// Process-wide singleton catalog, lazily initialized on first call.
-    /// The embedded data is committed and proven-parseable by the
-    /// `loads_with_expected_size` test, so the error branch below is
-    /// defensive: it logs the parse failure and yields an empty catalog
-    /// (every `resolve()` returns `NotFound`) rather than panicking at
-    /// first use of the service.
+    /// The embedded blob is committed and proven valid by the unit
+    /// tests, so the error branch is defensive: it logs the failure and
+    /// yields an empty catalog (every lookup misses) rather than
+    /// panicking at first use of the service.
     pub fn embedded() -> &'static Catalog {
         static SINGLETON: OnceLock<Catalog> = OnceLock::new();
         SINGLETON.get_or_init(|| {
             Self::load_embedded().unwrap_or_else(|e| {
-                error!("embedded catalog failed to parse: {e}; serving empty catalog");
-                Catalog {
-                    by_normalized_name: HashMap::new(),
-                }
+                error!("embedded catalog failed to validate: {e}; serving empty catalog");
+                Self::empty()
             })
         })
     }
 
-    /// Build a catalog from the embedded CSVs without using the
-    /// process-wide singleton. Useful for tests that want to construct
-    /// independent instances.
+    /// Validate the embedded blob and build a view over it, without the
+    /// process-wide singleton. Useful for tests that want independent
+    /// instances.
     pub fn load_embedded() -> Result<Self, CatalogError> {
-        let mut by_normalized_name: HashMap<String, ResolvedTarget> =
-            HashMap::with_capacity(15_000);
+        Self::load(CATALOG_BIN)
+    }
 
-        for (label, body) in [
-            ("messier.csv", MESSIER_CSV),
-            ("ngc.csv", NGC_CSV),
-            ("ic.csv", IC_CSV),
-        ] {
-            let mut rdr = csv::Reader::from_reader(body.as_bytes());
-            for record in rdr.deserialize::<CsvRow>() {
-                let r = record.map_err(|e| CatalogError::CsvParse {
-                    file: label,
-                    source: e,
-                })?;
-                // Validate coordinates at the parse boundary. The committed
-                // data is proven in-range by `loads_with_expected_size`, so
-                // this is defensive: a malformed row is skipped (logged),
-                // not fatal — one bad row must not empty the whole catalog.
-                let coord = match IcrsCoord::try_new(r.ra_hours, r.dec_degrees) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!(
-                            file = label,
-                            name = %r.name,
-                            ra_hours = r.ra_hours,
-                            dec_degrees = r.dec_degrees,
-                            "catalog row has out-of-range coordinates ({e}); skipping"
-                        );
-                        continue;
-                    }
-                };
-                let target = ResolvedTarget {
-                    name: r.name.clone(),
-                    object_type: r.object_type,
-                    coord,
-                    magnitude: r.magnitude.trim().parse().ok(),
-                    size_arcmin: r.size_arcmin.trim().parse().ok(),
-                };
-                by_normalized_name.insert(normalize(&r.name), target);
-            }
-        }
+    fn empty() -> Self {
+        // An all-zero header describes a valid catalog with no rows;
+        // every section is empty and every lookup misses.
+        Self::layout(&[], 0, 0, 0, 0, 0, 0)
+    }
 
-        // Aliases: human-readable names → canonical NGC/IC entries.
-        // We collect first, then resolve in a second pass — order of
-        // appearance in the file should not matter.
-        let mut alias_rdr = csv::Reader::from_reader(ALIASES_CSV.as_bytes());
-        let mut alias_pairs: Vec<(String, String)> = Vec::new();
-        for record in alias_rdr.deserialize::<AliasRow>() {
-            let r = record.map_err(|e| CatalogError::CsvParse {
-                file: "aliases.csv",
-                source: e,
-            })?;
-            alias_pairs.push((normalize(&r.alias), normalize(&r.canonical_name)));
+    fn load(bytes: &'static [u8]) -> Result<Self, CatalogError> {
+        if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC {
+            return Err(CatalogError::BadMagic);
         }
-        // Track aliases we've already inserted from aliases.csv so a
-        // genuinely ambiguous common name (e.g. "Antennae Galaxies"
-        // covers a pair of interacting NGCs) doesn't silently
-        // overwrite the first-seen target. First-wins, with a debug
-        // log for forensic audits — predictable behaviour beats
-        // alphabetical lottery.
-        let mut alias_origins: HashMap<String, String> = HashMap::new();
-        for (alias_key, canon_key) in alias_pairs {
-            if by_normalized_name.contains_key(&alias_key) {
-                // alias collides with a first-class catalogue entry
-                // (M / NGC / IC); the canonical row always wins.
-                continue;
-            }
-            if let Some(prior) = alias_origins.get(&alias_key) {
-                if prior != &canon_key {
-                    debug!(
-                        alias = %alias_key,
-                        first = %prior,
-                        skipped = %canon_key,
-                        "ambiguous common-name alias maps to multiple targets; keeping first"
-                    );
+        let dso = read_u32(bytes, 8) as usize;
+        let star = read_u32(bytes, 12) as usize;
+        let keys = read_u32(bytes, 16) as usize;
+        let named = read_u32(bytes, 20) as usize;
+        let types = read_u32(bytes, 24) as usize;
+        let pool = read_u32(bytes, 28) as usize;
+        let catalog = Self::layout(bytes, dso, star, keys, named, types, pool);
+        let expected = catalog.pool + pool;
+        if bytes.len() != expected {
+            return Err(CatalogError::Truncated {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        Ok(catalog)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn layout(
+        bytes: &'static [u8],
+        dso_count: usize,
+        star_count: usize,
+        key_count: usize,
+        named_count: usize,
+        type_count: usize,
+        _pool_len: usize,
+    ) -> Self {
+        let dso_dec = HEADER_LEN;
+        let dso_ra = dso_dec + 4 * dso_count;
+        let dso_mag = dso_ra + 4 * dso_count;
+        let dso_size = dso_mag + 2 * dso_count;
+        let dso_type = dso_size + 2 * dso_count;
+        let dso_cat = dso_type + dso_count;
+        let dso_name = dso_cat + dso_count;
+        let star_dec = dso_name + 4 * dso_count;
+        let star_ra = star_dec + 4 * star_count;
+        let star_hd = star_ra + 4 * star_count;
+        let star_mag = star_hd + 4 * star_count;
+        let keys = star_mag + 2 * star_count;
+        let named = keys + 8 * key_count;
+        let types = named + 8 * named_count;
+        let pool = types + 4 * type_count;
+        Self {
+            bytes,
+            dso_count,
+            star_count,
+            key_count,
+            named_count,
+            type_count,
+            dso_dec,
+            dso_ra,
+            dso_mag,
+            dso_size,
+            dso_type,
+            dso_cat,
+            dso_name,
+            star_dec,
+            star_ra,
+            star_hd,
+            star_mag,
+            keys,
+            named,
+            types,
+            pool,
+        }
+    }
+
+    fn pool_str(&self, off: usize) -> &str {
+        let Some(&len) = self.bytes.get(self.pool + off) else {
+            return "";
+        };
+        let start = self.pool + off + 1;
+        self.bytes
+            .get(start..start + len as usize)
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or_default()
+    }
+
+    fn dso_coord_degrees(&self, idx: usize) -> (f64, f64) {
+        (
+            f64::from(read_u32(self.bytes, self.dso_ra + 4 * idx)) / MAS_PER_DEGREE,
+            f64::from(read_i32(self.bytes, self.dso_dec + 4 * idx)) / MAS_PER_DEGREE,
+        )
+    }
+
+    fn star_coord_degrees(&self, idx: usize) -> (f64, f64) {
+        (
+            f64::from(read_u32(self.bytes, self.star_ra + 4 * idx)) / MAS_PER_DEGREE,
+            f64::from(read_i32(self.bytes, self.star_dec + 4 * idx)) / MAS_PER_DEGREE,
+        )
+    }
+
+    fn dso_name(&self, idx: usize) -> &str {
+        self.pool_str(read_u32(self.bytes, self.dso_name + 4 * idx) as usize)
+    }
+
+    fn dso_rank(&self, idx: usize) -> u8 {
+        self.bytes.get(self.dso_cat + idx).copied().unwrap_or(0)
+    }
+
+    fn star_hd(&self, idx: usize) -> u32 {
+        read_u32(self.bytes, self.star_hd + 4 * idx)
+    }
+
+    /// Proper name for an HD number, if that star is IAU-named.
+    fn proper_name(&self, hd: u32) -> Option<&str> {
+        let mut lo = 0usize;
+        let mut hi = self.named_count;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let entry_hd = read_u32(self.bytes, self.named + 8 * mid);
+            match entry_hd.cmp(&hd) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => {
+                    let off = read_u32(self.bytes, self.named + 8 * mid + 4) as usize;
+                    return Some(self.pool_str(off));
                 }
-                continue;
-            }
-            if let Some(target) = by_normalized_name.get(&canon_key).cloned() {
-                by_normalized_name.insert(alias_key.clone(), target);
-                alias_origins.insert(alias_key, canon_key);
             }
         }
-
-        Ok(Self { by_normalized_name })
+        None
     }
 
-    /// Resolve a name to a target. Case- and whitespace-insensitive;
-    /// `"M 41"`, `"M41"`, `"m 41"`, and `"Messier 41"` are equivalent.
-    /// Common-name aliases (`"Andromeda Galaxy"` → `NGC 224`) are
-    /// honoured.
-    pub fn resolve(&self, name: &str) -> Option<&ResolvedTarget> {
-        self.by_normalized_name.get(&normalize(name))
+    fn magnitude_from(&self, section: usize, idx: usize) -> Option<f64> {
+        match read_i16(self.bytes, section + 2 * idx) {
+            MAG_NONE => None,
+            m => Some(f64::from(m) / 100.0),
+        }
     }
 
+    /// Coordinates are range-validated at pack time, so a `None` here is
+    /// a blob-corruption bug: the row is logged and treated as a miss
+    /// rather than panicking.
+    fn checked_coord(&self, ra_degrees: f64, dec_degrees: f64) -> Option<IcrsCoord> {
+        match IcrsCoord::try_new(ra_degrees / 15.0, dec_degrees) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                error!("packed catalog row has invalid coordinates ({e}); ignoring row");
+                None
+            }
+        }
+    }
+
+    fn materialize_dso(&self, idx: usize) -> Option<ResolvedTarget> {
+        let (ra, dec) = self.dso_coord_degrees(idx);
+        let type_idx = self.bytes.get(self.dso_type + idx).copied().unwrap_or(0) as usize;
+        let type_off = if type_idx < self.type_count {
+            read_u32(self.bytes, self.types + 4 * type_idx) as usize
+        } else {
+            usize::MAX // out-of-table index reads as an empty type string
+        };
+        let size = match read_u16(self.bytes, self.dso_size + 2 * idx) {
+            0 => None,
+            s => Some(f64::from(s) / 10.0),
+        };
+        Some(ResolvedTarget {
+            name: self.dso_name(idx).to_string(),
+            object_type: self.pool_str(type_off).to_string(),
+            coord: self.checked_coord(ra, dec)?,
+            magnitude: self.magnitude_from(self.dso_mag, idx),
+            size_arcmin: size,
+            class: ObjectClass::DeepSky,
+        })
+    }
+
+    fn materialize_star(&self, idx: usize) -> Option<ResolvedTarget> {
+        let (ra, dec) = self.star_coord_degrees(idx);
+        let hd = self.star_hd(idx);
+        let name = match self.proper_name(hd) {
+            Some(n) => n.to_string(),
+            None => format!("HD {hd}"),
+        };
+        Some(ResolvedTarget {
+            name,
+            object_type: "*".to_string(),
+            coord: self.checked_coord(ra, dec)?,
+            magnitude: self.magnitude_from(self.star_mag, idx),
+            size_arcmin: None,
+            class: ObjectClass::Star,
+        })
+    }
+
+    fn materialize(&self, row_ref: u32) -> Option<ResolvedTarget> {
+        let idx = (row_ref & !STAR_BIT) as usize;
+        if row_ref & STAR_BIT != 0 {
+            self.materialize_star(idx)
+        } else {
+            self.materialize_dso(idx)
+        }
+    }
+
+    fn key_at(&self, idx: usize) -> &str {
+        self.pool_str(read_u32(self.bytes, self.keys + 8 * idx) as usize)
+    }
+
+    fn key_ref_at(&self, idx: usize) -> u32 {
+        read_u32(self.bytes, self.keys + 8 * idx + 4)
+    }
+
+    fn key_lookup(&self, key: &str) -> Option<u32> {
+        let mut lo = 0usize;
+        let mut hi = self.key_count;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match self.key_at(mid).cmp(key) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => return Some(self.key_ref_at(mid)),
+            }
+        }
+        None
+    }
+
+    fn star_row_by_hd(&self, hd: u32) -> Option<usize> {
+        // Star rows are dec-sorted, so HD lookup is a linear scan of the
+        // u32 column — ~350k reads, well under a millisecond, and only
+        // paid by explicit `HD nnn` queries.
+        (0..self.star_count).find(|&i| self.star_hd(i) == hd)
+    }
+
+    /// Resolve a name to a target. Case-, whitespace-, and
+    /// dash-insensitive; `"M 41"`, `"Messier 41"`, `"Sh2-101"`,
+    /// `"sharpless 101"`, `"HD 227018"`, `"HDE 227018"`, `"Vega"`, and
+    /// common-name aliases (`"Andromeda Galaxy"`) all resolve.
+    pub fn resolve(&self, name: &str) -> Option<ResolvedTarget> {
+        let key = normalize(name);
+        if let Some(hd) = key.strip_prefix("hd").and_then(|d| d.parse::<u32>().ok()) {
+            return self
+                .star_row_by_hd(hd)
+                .and_then(|i| self.materialize_star(i));
+        }
+        self.key_lookup(&key).and_then(|r| self.materialize(r))
+    }
+
+    /// Total number of catalog entries (deep-sky rows + star rows).
+    /// Aliases are lookup keys, not entries, and are not counted.
     pub fn len(&self) -> usize {
-        self.by_normalized_name.len()
+        self.dso_count + self.star_count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_normalized_name.is_empty()
+        self.len() == 0
+    }
+
+    /// First row whose dec (mas) is ≥ `min_mas`, by binary search over
+    /// the dec-sorted column at `section`.
+    fn dec_lower_bound(&self, section: usize, count: usize, min_mas: i64) -> usize {
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if i64::from(read_i32(self.bytes, section + 4 * mid)) < min_mas {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// Nearest catalog entry to `coord` under the class-tiered naming
+    /// contract (planetarium-bridge design, issue #767): the best
+    /// deep-sky hit within `tolerances.dso_arcmin` outranks any star hit
+    /// regardless of separation; otherwise the best star within
+    /// `tolerances.star_arcmin` wins. Separation orders hits within a
+    /// class; exact ties fall back to catalog rank (M > NGC > IC >
+    /// Sh2 > …) and then name, so entries at identical coordinates
+    /// (M 42 / NGC 1976) resolve deterministically.
+    pub fn nearest(
+        &self,
+        coord: &IcrsCoord,
+        tolerances: &NearestTolerances,
+    ) -> Option<NearestMatch> {
+        let ra = coord.ra_hours() * 15.0;
+        let dec = coord.dec_degrees();
+
+        let dso = self
+            .scan_band(
+                self.dso_dec,
+                self.dso_count,
+                ra,
+                dec,
+                tolerances.dso_arcmin,
+                |idx| self.dso_coord_degrees(idx),
+            )
+            .into_iter()
+            .min_by(|a, b| {
+                cmp_f64(a.1, b.1)
+                    .then_with(|| self.dso_rank(a.0).cmp(&self.dso_rank(b.0)))
+                    .then_with(|| self.dso_name(a.0).cmp(self.dso_name(b.0)))
+            });
+        if let Some((idx, separation)) = dso {
+            return self
+                .materialize_dso(idx)
+                .map(|t| self.build_match(t, separation, ra, dec));
+        }
+
+        let star = self
+            .scan_band(
+                self.star_dec,
+                self.star_count,
+                ra,
+                dec,
+                tolerances.star_arcmin,
+                |idx| self.star_coord_degrees(idx),
+            )
+            .into_iter()
+            .min_by(|a, b| {
+                cmp_f64(a.1, b.1).then_with(|| self.star_hd(a.0).cmp(&self.star_hd(b.0)))
+            });
+        star.and_then(|(idx, separation)| {
+            self.materialize_star(idx)
+                .map(|t| self.build_match(t, separation, ra, dec))
+        })
+    }
+
+    /// All rows of a dec-sorted section within `radius_arcmin` of
+    /// (`ra`, `dec`), as `(row index, separation arcmin)`. The dec band
+    /// is binary-searched; candidates get the exact great-circle test.
+    fn scan_band(
+        &self,
+        dec_section: usize,
+        count: usize,
+        ra: f64,
+        dec: f64,
+        radius_arcmin: f64,
+        coord_of: impl Fn(usize) -> (f64, f64),
+    ) -> Vec<(usize, f64)> {
+        if radius_arcmin <= 0.0 || !radius_arcmin.is_finite() {
+            return Vec::new();
+        }
+        let radius_mas = (radius_arcmin / ARCMIN_PER_DEGREE * MAS_PER_DEGREE).ceil() as i64;
+        let dec_mas = (dec * MAS_PER_DEGREE) as i64;
+        let mut hits = Vec::new();
+        let mut idx = self.dec_lower_bound(dec_section, count, dec_mas - radius_mas);
+        while idx < count {
+            if i64::from(read_i32(self.bytes, dec_section + 4 * idx)) > dec_mas + radius_mas {
+                break;
+            }
+            let (row_ra, row_dec) = coord_of(idx);
+            let separation = separation_arcmin(ra, dec, row_ra, row_dec);
+            if separation <= radius_arcmin {
+                hits.push((idx, separation));
+            }
+            idx += 1;
+        }
+        hits
+    }
+
+    fn build_match(
+        &self,
+        target: ResolvedTarget,
+        separation_arcmin: f64,
+        query_ra: f64,
+        query_dec: f64,
+    ) -> NearestMatch {
+        let centroid_ra = target.coord.ra_hours() * 15.0;
+        let centroid_dec = target.coord.dec_degrees();
+        NearestMatch {
+            east_offset_arcmin: ra_delta_degrees(centroid_ra, query_ra)
+                * centroid_dec.to_radians().cos()
+                * ARCMIN_PER_DEGREE,
+            north_offset_arcmin: (query_dec - centroid_dec) * ARCMIN_PER_DEGREE,
+            separation_arcmin,
+            target,
+        }
     }
 
     /// Up to `limit` canonical names with the smallest Levenshtein
     /// distance from the query (≤ 3). Used to populate "did you
     /// mean…?" suggestions on a lookup miss in the MCP wrapper.
-    /// Each returned string is the human-facing canonical name
-    /// (e.g. `"M 41"`, `"NGC 224"`) — never the internal lookup key
-    /// or an alias. Multiple lookup keys mapping to the same
-    /// canonical name (the alias case) are deduped so suggestions
-    /// don't fill up with the same target under different spellings.
+    /// Operates over the packed key table — canonical DSO names,
+    /// common-name aliases, and IAU proper star names. Plain HD
+    /// designations are deliberately not keys: suggesting `HD 227019`
+    /// for a typo of `HD 227018` helps nobody, and resolving them goes
+    /// through the numeric path instead. Aliases mapping to the same
+    /// entry are deduped by canonical name.
     pub fn fuzzy_suggestions(&self, query: &str, limit: usize) -> Vec<String> {
         let q = normalize(query);
-        let mut scored: Vec<(usize, &str)> = self
-            .by_normalized_name
-            .iter()
-            .map(|(k, t)| (levenshtein(k, &q, 4), t.name.as_str()))
+        let mut scored: Vec<(usize, u32)> = (0..self.key_count)
+            .map(|i| (levenshtein(self.key_at(i), &q, 4), self.key_ref_at(i)))
             .filter(|(d, _)| *d <= 3)
             .collect();
-        scored.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let mut named: Vec<(usize, String)> = scored
+            .drain(..)
+            .filter_map(|(d, r)| self.materialize(r).map(|t| (d, t.name)))
+            .collect();
+        named.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         let mut out: Vec<String> = Vec::with_capacity(limit);
-        for (_, name) in scored {
-            let s = name.to_string();
-            if !out.contains(&s) {
-                out.push(s);
+        for (_, name) in named {
+            if !out.contains(&name) {
+                out.push(name);
                 if out.len() == limit {
                     break;
                 }
@@ -253,9 +650,15 @@ impl Catalog {
     }
 }
 
+/// Total order over separations; NaN cannot occur (inputs are finite by
+/// construction) but sorts last defensively.
+fn cmp_f64(a: f64, b: f64) -> Ordering {
+    a.partial_cmp(&b).unwrap_or(Ordering::Greater)
+}
+
 /// Truncated Levenshtein distance: returns `cap` if the true distance
 /// is `≥ cap`. Cheap enough for a one-shot suggestion list across the
-/// full catalog (~14k entries).
+/// ~20k-entry key table.
 fn levenshtein(a: &str, b: &str, cap: usize) -> usize {
     if a.len().abs_diff(b.len()) > cap {
         return cap;
@@ -288,141 +691,4 @@ fn levenshtein(a: &str, b: &str, cap: usize) -> usize {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-mod tests {
-    use super::*;
-
-    fn cat() -> &'static Catalog {
-        Catalog::embedded()
-    }
-
-    #[test]
-    fn loads_with_expected_size() {
-        let c = cat();
-        // ~13.7k canonical entries plus 100+ aliases. Lower bound: M+NGC+IC
-        // canonicals only.
-        assert!(
-            c.len() > 13_500,
-            "catalog smaller than expected: {}",
-            c.len()
-        );
-    }
-
-    #[test]
-    fn resolves_messier_objects_with_canonical_format() {
-        let m31 = cat().resolve("M 31").expect("M 31 must resolve");
-        assert_eq!(m31.name, "M 31");
-        assert!(m31.object_type.starts_with('G')); // galaxy
-        assert!((m31.coord.ra_hours() - 0.7123).abs() < 0.001);
-        assert!((m31.coord.dec_degrees() - 41.269).abs() < 0.001);
-    }
-
-    #[test]
-    fn resolves_messier_with_alternate_spellings() {
-        let canon = cat().resolve("M 41").unwrap();
-        for variant in ["m41", "M41", "m 41", "M  41", "Messier 41", "messier 41"] {
-            let v = cat().resolve(variant).unwrap_or_else(|| {
-                panic!("variant {:?} did not resolve", variant);
-            });
-            assert_eq!(
-                v, canon,
-                "variant {:?} resolved to a different target",
-                variant
-            );
-        }
-    }
-
-    #[test]
-    fn ngc_alias_resolves_same_object_as_messier_for_orion_nebula() {
-        let m42 = cat().resolve("M 42").unwrap();
-        let ngc = cat().resolve("NGC 1976").unwrap();
-        assert!((m42.coord.ra_hours() - ngc.coord.ra_hours()).abs() < 1e-4);
-        assert!((m42.coord.dec_degrees() - ngc.coord.dec_degrees()).abs() < 1e-4);
-    }
-
-    #[test]
-    fn ngc_resolution_is_whitespace_insensitive() {
-        let by_canon = cat().resolve("NGC 224").unwrap();
-        let by_squashed = cat().resolve("ngc224").unwrap();
-        assert_eq!(by_canon, by_squashed);
-    }
-
-    #[test]
-    fn ic_resolves() {
-        let ic1396 = cat().resolve("IC 1396").expect("IC 1396 must resolve");
-        assert_eq!(ic1396.name, "IC 1396");
-        // Cepheus, ~21.6h RA, ~+57.5° Dec
-        assert!((ic1396.coord.ra_hours() - 21.6).abs() < 0.5);
-        assert!((ic1396.coord.dec_degrees() - 57.5).abs() < 1.0);
-    }
-
-    #[test]
-    fn common_name_alias_resolves_to_canonical_ngc() {
-        let andromeda = cat()
-            .resolve("Andromeda Galaxy")
-            .expect("alias must resolve");
-        // openNGC maps "Andromeda Galaxy" to NGC 224 (= M31).
-        assert_eq!(andromeda.name, "NGC 224");
-        let crab = cat().resolve("Crab Nebula").expect("alias must resolve");
-        assert_eq!(crab.name, "NGC 1952");
-    }
-
-    #[test]
-    fn missing_object_returns_none() {
-        assert!(cat().resolve("M 999").is_none());
-        assert!(cat().resolve("not a thing at all").is_none());
-    }
-
-    #[test]
-    fn fuzzy_suggestions_finds_close_neighbours() {
-        let suggestions = cat().fuzzy_suggestions("M 41", 5);
-        assert!(
-            suggestions.iter().any(|s| s == "M 41"),
-            "exact match should appear in fuzzy list as canonical name: {:?}",
-            suggestions
-        );
-        let typo = cat().fuzzy_suggestions("M 411", 5);
-        assert!(
-            typo.iter().any(|s| s == "M 41"),
-            "typo M 411 should suggest M 41 by canonical name: {:?}",
-            typo
-        );
-    }
-
-    #[test]
-    fn fuzzy_suggestions_dedup_canonical_names() {
-        // "Andromeda Galaxy" is an alias of NGC 224; a query close to
-        // it should yield the canonical "NGC 224" once, not twice.
-        let suggestions = cat().fuzzy_suggestions("NGC 224", 10);
-        let copies = suggestions.iter().filter(|s| *s == "NGC 224").count();
-        assert_eq!(
-            copies, 1,
-            "expected canonical name once, got {copies}: {suggestions:?}"
-        );
-    }
-
-    #[test]
-    fn no_panics_on_empty_or_garbage_query() {
-        assert!(cat().resolve("").is_none());
-        assert!(cat().resolve("   \t  ").is_none());
-        assert!(cat().resolve("!!!").is_none());
-    }
-
-    #[test]
-    fn levenshtein_capped() {
-        assert_eq!(levenshtein("kitten", "sitting", 100), 3);
-        assert_eq!(levenshtein("kitten", "sitting", 2), 2);
-        assert_eq!(levenshtein("", "abc", 4), 3);
-        assert_eq!(levenshtein("abc", "", 4), 3);
-        assert_eq!(levenshtein("abc", "abc", 4), 0);
-    }
-
-    #[test]
-    fn normalize_handles_messier_prefix_variants() {
-        assert_eq!(normalize("Messier 41"), "m41");
-        assert_eq!(normalize("MESSIER41"), "m41");
-        assert_eq!(normalize("M 41"), "m41");
-        assert_eq!(normalize("m41"), "m41");
-        // Don't rewrite mid-string occurrences.
-        assert_eq!(normalize("messieRR"), "messierr");
-    }
-}
+mod tests;

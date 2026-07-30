@@ -18,9 +18,9 @@ rust_library(
     name = "rp-catalog",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    # The four CSVs are pulled in via `include_str!` at compile time;
-    # Bazel's sandbox only stages files declared as inputs.
-    compile_data = glob(["src/data/*.csv"]),
+    # The packed catalog blob is pulled in via `include_bytes!` at
+    # compile time; Bazel's sandbox only stages files declared as inputs.
+    compile_data = ["src/data/catalog.bin"],
     crate_name = "rp_catalog",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -35,6 +35,9 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    # The sync tests `include_str!` the committed CSV sources to prove
+    # the packed blob has not drifted from them.
+    compile_data = ["src/data/catalog.bin"] + glob(["src/data/*.csv"]),
     crate = ":rp-catalog",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

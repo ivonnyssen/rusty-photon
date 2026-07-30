@@ -1,35 +1,86 @@
 Catalog data sources
 ====================
 
-The deep-sky object data embedded under `src/data/{messier,ngc,ic,aliases}.csv`
-is derived from the OpenNGC catalogue at:
+The embedded catalog (`catalog.bin`, format RPCAT001) is packed by
+`crates/rp-catalog/scripts/pack_catalog.py` from the CSV files in this
+directory plus a fetched star layer. Per-source provenance:
+
+OpenNGC (messier.csv, ngc.csv, ic.csv, aliases.csv)
+---------------------------------------------------
+
+Derived from the OpenNGC catalogue at
 
     https://github.com/mattiaverga/OpenNGC
 
-Specifically, `database_files/NGC.csv` was converted into the four files
-in this directory by the one-shot script preserved at
-`crates/rp-catalog/scripts/openngc_to_catalog.py`. Only the columns
-needed for `resolve_target` (canonical name, object type, ICRS RA/Dec,
-visual or B magnitude, major-axis size) were retained; the openNGC
-"common names" column populated `aliases.csv`.
-
-Licence
--------
+by `scripts/openngc_to_catalog.py` (canonical name, object type, ICRS
+RA/Dec, V or B magnitude, major-axis size; the "Common names" column
+populated `aliases.csv`).
 
 OpenNGC is published under **Creative Commons Attribution-ShareAlike
 4.0 International (CC-BY-SA-4.0)** —
 https://creativecommons.org/licenses/by-sa/4.0/
-
 Attribution: openNGC by Mattia Verga, 2018-present.
 
-The `rp-catalog` crate code itself is dual-licensed MIT/Apache-2.0
-(workspace inheritance). The CC-BY-SA-4.0 attribution requirement
-applies only to the *embedded data* under `src/data/`. Distribution
-of the compiled crate must preserve this `LICENSE-DATA` file or
-include an equivalent attribution.
+SIMBAD (sh2, barnard, ldn, lbn, rcw, gum, ced, abell, arp, hcg,
+collinder, melotte, stock, trumpler .csv; aliases_simbad.csv)
+----------------------------------------------------------------
 
-CC-BY-SA-4.0's share-alike clause applies to derivative works *of the
-data*, not to the Rust code that consumes it. A downstream service
-that reads `Catalog::resolve(name)` and uses the returned coordinates
-for its own purposes is not creating a derivative work of the
-catalogue.
+Positions, object types, magnitudes, sizes, and NAME cross-identifiers
+fetched from the SIMBAD database, CDS, Strasbourg, via TAP by
+`scripts/fetch_dso_catalogs.py`. Sharpless positions deliberately come
+from SIMBAD's curated data rather than the original 1959 list (VizieR
+VII/20), whose coordinates are unreliable for some entries.
+
+    This work made use of the SIMBAD database, operated at CDS,
+    Strasbourg, France (Wenger et al. 2000, A&AS 143, 9).
+
+CDS data are reusable with attribution (https://cds.unistra.fr/).
+SIMBAD's identifier coverage of the Collinder, Melotte, and Gum lists
+is partial; the missing numbers are mostly objects whose primary
+designation is NGC/IC, which already have rows of their own.
+
+VizieR VII/21 (vdb.csv)
+-----------------------
+
+van den Bergh reflection nebulae (van den Bergh 1966, AJ 71, 990),
+VizieR catalogue VII/21, fetched by `scripts/fetch_dso_catalogs.py`
+using the VizieR-computed J2000 positions. Same CDS attribution terms
+as above.
+
+VizieR IV/25 + I/259 (star layer inside catalog.bin only)
+---------------------------------------------------------
+
+The star layer is every HD/HDE/HDEC designation in the Tycho-2/HD
+cross-index (Fabricius et al. 2002, A&A 386, 709; VizieR IV/25) with
+the VizieR-computed J2000 (Tycho-2-derived) positions — not the
+original epoch-1900 HD positions — and Johnson V magnitudes
+approximated from Tycho-2 (Høg et al. 2000, A&A 355, L27; VizieR
+I/259) as V ≈ VT − 0.090·(BT − VT). Fetched by
+`scripts/fetch_star_layer.py` into an uncommitted intermediate; only
+the packed rows are committed. Same CDS attribution terms as above.
+
+IAU Catalog of Star Names (named_stars.csv)
+-------------------------------------------
+
+Proper star names from the IAU Working Group on Star Names (WGSN),
+converted by `scripts/fetch_iau_csn.py` from
+
+    https://www.pas.rochester.edu/~emamajek/WGSN/IAU-CSN.txt
+
+IAU products are released under **Creative Commons Attribution**
+(https://www.iau.org/public/themes/naming_stars/).
+
+Curated additions (aliases_curated.csv)
+---------------------------------------
+
+Hand-maintained common names absent from both OpenNGC and SIMBAD
+(e.g. "Tulip Nebula" → Sh2-101). Original to this repository.
+
+Licence of the crate vs. the data
+---------------------------------
+
+The `rp-catalog` crate code itself is dual-licensed MIT/Apache-2.0
+(workspace inheritance). The attribution requirements above apply to
+the *embedded data* under `src/data/`. Distribution of the compiled
+crate must preserve this `LICENSE-DATA` file or include an equivalent
+attribution.
