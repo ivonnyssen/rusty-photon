@@ -264,11 +264,19 @@ build:windows --remote_download_outputs=all
 # demand only the inputs of suites that actually execute. Cache uploads on
 # trusted runs are unaffected (the upload path is independent of the download
 # mode); an evicted CAS blob a later local action needs is covered by
-# --experimental_remote_cache_eviction_retries below. Deliberately the single
-# explicit flag rather than the --remote_download_minimal alias, which would
-# also flip --nobuild_runfile_links. Platform config appends after build:ci,
-# so this outranks `toplevel` exactly like the Windows `all` override above.
+# --experimental_remote_cache_eviction_retries below. Platform config appends
+# after build:ci, so this outranks `toplevel` exactly like the Windows `all`
+# override above.
 build:macos --remote_download_outputs=minimal
+# `minimal` alone does not stop the tail: runfiles-tree creation is a local
+# action, and with --build_runfile_links (the default) every executable
+# target's tree is built at build time, forcing a download of every test and
+# service binary anyway (bazelbuild/bazel#18580, open as of Bazel 9.2 — the
+# fix that would make these flags orthogonal has not landed). Deferring tree
+# creation moves it to just before something actually executes the target:
+# in CI that means the test steps, only for suites whose results aren't
+# already cached, a few at a time.
+build:macos --nobuild_runfile_links
 # `--jobs` and `--local_resources=cpu=N` are separate knobs: `--jobs` caps how
 # many actions may be outstanding at once, the CPU resource pool (left on
 # auto-detect, i.e. the runner's real core count) caps how many can actively
