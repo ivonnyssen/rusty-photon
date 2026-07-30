@@ -239,10 +239,15 @@ impl BoundServer {
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
 
         // Stop the import worker after serving ends; the spool keeps any
-        // undelivered backlog durable across the restart.
+        // undelivered backlog durable across the restart. The wait is
+        // bounded so a wedged rp session can never hold the service's stop
+        // hostage (the Windows SCM escalates a slow stop into an uninstall
+        // failure) — an abandoned worker's backlog is already on disk.
         cancel.cancel();
-        if let Err(e) = worker_handle.await {
-            tracing::warn!("import worker task ended abnormally: {e}");
+        match tokio::time::timeout(std::time::Duration::from_secs(10), worker_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("import worker task ended abnormally: {e}"),
+            Err(_) => tracing::warn!("import worker did not stop within 10s; abandoning it"),
         }
         debug!("planetarium-bridge shut down");
         serve_result

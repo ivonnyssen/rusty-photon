@@ -85,15 +85,31 @@ impl HealthState {
     }
 }
 
+/// One queued Align, stamped with the reachability decision taken at
+/// receipt: whether rp was believed reachable when the sync verb was
+/// accepted. The worker processes the queue later, and rp coming back in
+/// between must not turn an outage-time Align into a direct delivery —
+/// its fate was sealed at receipt.
+#[derive(Debug)]
+struct QueuedImport {
+    request: ImportRequest,
+    spool_first: bool,
+}
+
 /// The device's handle into the pipeline: a fire-and-forget submit.
 #[derive(Debug, Clone)]
 pub struct Importer {
-    tx: mpsc::UnboundedSender<ImportRequest>,
+    tx: mpsc::UnboundedSender<QueuedImport>,
+    health: Arc<HealthState>,
 }
 
 impl Importer {
     pub fn submit(&self, request: ImportRequest) {
-        if self.tx.send(request).is_err() {
+        let queued = QueuedImport {
+            spool_first: !self.health.is_reachable(),
+            request,
+        };
+        if self.tx.send(queued).is_err() {
             // Only during shutdown, after the worker ended.
             debug!("import worker gone; request not submitted");
         }
@@ -110,7 +126,7 @@ pub struct RpTarget {
 
 /// Everything the worker task needs.
 pub struct ImportWorker {
-    rx: mpsc::UnboundedReceiver<ImportRequest>,
+    rx: mpsc::UnboundedReceiver<QueuedImport>,
     spool: Spool,
     health: Arc<HealthState>,
     rp: RpTarget,
@@ -142,7 +158,11 @@ pub fn pipeline(
         replay_backoff_max,
         cancel,
     };
-    (Importer { tx }, health, worker)
+    let importer = Importer {
+        tx,
+        health: Arc::clone(&health),
+    };
+    (importer, health, worker)
 }
 
 enum Delivery {
@@ -159,8 +179,8 @@ impl ImportWorker {
         self.run_inner().await;
         // Aligns still queued in the channel must survive the restart:
         // spool them before exiting (the accepted-sync contract).
-        while let Ok(request) = self.rx.try_recv() {
-            self.spool_request(&request);
+        while let Ok(queued) = self.rx.try_recv() {
+            self.spool_request(&queued.request);
         }
     }
 
@@ -192,10 +212,11 @@ impl ImportWorker {
                         }
                         break;
                     }
-                    request = self.rx.recv() => match request {
-                        Some(request) => {
+                    queued = self.rx.recv() => match queued {
+                        Some(queued) => {
                             warn!("rp not yet reachable; spooling the import");
-                            self.spool_request(&request);
+                            self.spool_request(&queued.request);
+                            self.drain_queued_to_spool();
                         }
                         None => return,
                     },
@@ -205,23 +226,27 @@ impl ImportWorker {
 
         loop {
             if self.spool.is_empty() {
-                let request = tokio::select! {
+                let queued = tokio::select! {
                     () = self.cancel.cancelled() => return,
-                    request = self.rx.recv() => match request {
-                        Some(request) => request,
+                    queued = self.rx.recv() => match queued {
+                        Some(queued) => queued,
                         None => return,
                     },
                 };
-                if !self.health.is_reachable() {
-                    // rp was unreachable at receipt: spool durably first;
-                    // the replay loop delivers (and counts) it once rp is
+                if queued.spool_first || !self.health.is_reachable() {
+                    // rp was unreachable at receipt (the submit-time stamp)
+                    // or is unreachable now: spool durably first; the
+                    // replay loop delivers (and counts) it once rp is
                     // back. Attempting delivery here instead would race
-                    // rp's recovery and turn a spooled import into a
-                    // direct one.
+                    // rp's recovery and turn an outage-time Align into a
+                    // direct delivery. Anything else already queued
+                    // arrived under the same outage and spools with it.
                     warn!("rp unreachable; spooling the import");
-                    self.spool_request(&request);
+                    self.spool_request(&queued.request);
+                    self.drain_queued_to_spool();
                     continue;
                 }
+                let request = queued.request;
                 match deliver(&mut client, &self.rp, &request).await {
                     Delivery::Delivered => {
                         self.health.set_reachable(true);
@@ -309,11 +334,18 @@ impl ImportWorker {
             tokio::select! {
                 () = self.cancel.cancelled() => return false,
                 () = &mut sleep => return true,
-                request = self.rx.recv() => match request {
-                    Some(request) => self.spool_request(&request),
+                queued = self.rx.recv() => match queued {
+                    Some(queued) => self.spool_request(&queued.request),
                     None => return false,
                 },
             }
+        }
+    }
+
+    /// Move every already-queued request into the spool (receipt order).
+    fn drain_queued_to_spool(&mut self) {
+        while let Ok(queued) = self.rx.try_recv() {
+            self.spool_request(&queued.request);
         }
     }
 

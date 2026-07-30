@@ -154,13 +154,18 @@ impl Spool {
 
     fn rewrite(&self) {
         let tmp = self.path.with_extension("jsonl.tmp");
-        let mut content = String::new();
-        for entry in &self.entries {
-            content.push_str(&entry.line);
-            content.push('\n');
-        }
-        let result = std::fs::write(&tmp, &content)
-            .and_then(|()| std::fs::File::open(&tmp).and_then(|f| f.sync_all()))
+        // One writable handle for write + fsync: syncing through a separate
+        // read-only open fails on Windows (FlushFileBuffers needs write
+        // access). std::fs::rename replaces an existing destination on
+        // every supported platform.
+        let result = std::fs::File::create(&tmp)
+            .and_then(|mut file| {
+                for entry in &self.entries {
+                    file.write_all(entry.line.as_bytes())?;
+                    file.write_all(b"\n")?;
+                }
+                file.sync_all()
+            })
             .and_then(|()| std::fs::rename(&tmp, &self.path));
         if let Err(e) = result {
             error!(path = %self.path.display(), "spool rewrite failed: {e}");

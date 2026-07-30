@@ -90,6 +90,7 @@ $dataDir = Join-Path $env:ProgramData 'rusty-photon'
 $logsDir = Join-Path $dataDir 'logs'
 $installDir = Join-Path ${env:ProgramFiles} 'rusty-photon'
 $installLog = Join-Path $env:TEMP 'rusty-photon-msi-install.log'
+$uninstallLog = Join-Path $env:TEMP 'rusty-photon-msi-uninstall.log'
 
 # Fresh-box preflight: the run asserts fresh-install invariants (gated
 # services have no config, ui-htmx self-creates its rp-target default,
@@ -112,11 +113,12 @@ function Fail([string]$svc, [string]$msg) {
         Write-Host "--- last 40 lines of $($svcLog.Name) ---"
         Get-Content $svcLog.FullName -Tail 40
     }
-    if (Test-Path $installLog) {
+    foreach ($msiLog in @($uninstallLog, $installLog)) {
+        if (-not (Test-Path $msiLog)) { continue }
         # The verbose log is huge; the failure signal is the action(s) that
         # ended with "Return value 3" plus any Error-coded lines.
-        Write-Host "--- msiexec log: failed actions + error lines ---"
-        Select-String -Path $installLog -Pattern 'Return value 3|^Error \d+|error 1\d{3}|CustomAction .+ returned actual error|failed to start|could not be|MainEngineThread is returning' |
+        Write-Host "--- msiexec log ($(Split-Path $msiLog -Leaf)): failed actions + error lines ---"
+        Select-String -Path $msiLog -Pattern 'Return value 3|^Error \d+|error 1\d{3}|CustomAction .+ returned actual error|failed to start|could not be|MainEngineThread is returning' |
             Select-Object -Last 30 | ForEach-Object { Write-Host $_.Line }
     }
     exit 1
@@ -332,8 +334,8 @@ if ($Keep) {
 
 # ---- full uninstall ---------------------------------------------------------
 Write-Host "== uninstall: msiexec /qn /x"
-$code = Msiexec @('/x', "`"$Msi`"", '/qn', '/norestart')
-if ($code -ne 0) { Fail 'msiexec' "uninstall exited $code" }
+$code = Msiexec @('/x', "`"$Msi`"", '/qn', '/norestart', "/l*v", "`"$uninstallLog`"")
+if ($code -ne 0) { Fail 'msiexec' "uninstall exited $code (log: $uninstallLog)" }
 foreach ($svc in $allServices) {
     if (Get-Service -Name "rusty-photon-$svc" -ErrorAction SilentlyContinue) {
         Fail $svc "service still installed after uninstall"
