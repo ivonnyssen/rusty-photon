@@ -1,15 +1,22 @@
 # planetarium-bridge
 
-**Status: P3 design (development-workflow Phase 1).** This document is
-the design for the real `planetarium-bridge` service — P3 of
+**Status: P3 design + Phase-2 BDD scaffold (implementation pending).**
+This document is the design for the real `planetarium-bridge` service —
+P3 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md).
 The P3a verification-spike findings that ground it are preserved in the
 [appendix](#appendix-p3a-verification-spike-findings-2026-07-29); the
 [P3b follow-up experiment](#appendix-p3b-horizon-experiment-findings-2026-07-30)
 (run 2026-07-30) overturned the below-horizon story and **flipped the
 import gesture from GoTo to Align** (Decision 2's second amendment).
-The throwaway spike crate `spikes/planetarium-bridge-p3a` remains in
-the tree until the implementation PR lands, and is deleted there.
+The development-workflow Phase-2 scaffold is in the tree: the
+[Testing](#testing) section's four feature files live in
+`services/planetarium-bridge/tests/features/` as `@wip` executable
+specifications, alongside the crate skeleton and the BDD harness
+(typed Alpaca Telescope client + stub rp MCP server); the tags come
+off with the implementation. The throwaway spike crate
+`spikes/planetarium-bridge-p3a` remains in the tree until the
+implementation PR lands, and is deleted there.
 
 ## Overview
 

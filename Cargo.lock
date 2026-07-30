@@ -3458,6 +3458,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
+name = "planetarium-bridge"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "axum",
+ "bdd-infra",
+ "chrono",
+ "clap",
+ "cucumber",
+ "reqwest 0.13.4",
+ "rmcp",
+ "rusty-photon-service-lifecycle",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "planetarium-bridge-p3a"
 version = "0.1.0"
 dependencies = [

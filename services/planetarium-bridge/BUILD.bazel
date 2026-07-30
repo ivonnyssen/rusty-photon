@@ -1,0 +1,66 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Phase-2 scaffold (docs/services/planetarium-bridge.md § Testing): the binary
+# is a lifecycle-correct placeholder and every BDD feature is `@wip`, so the
+# `bdd` target builds the full harness (typed Alpaca client + stub rp MCP
+# server) but runs zero scenarios until the implementation phase removes the
+# tags.
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_binary(
+    name = "planetarium-bridge",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to
+    # the Bazel target name), matching the other services.
+    rustc_env = {"CARGO_PKG_NAME": "planetarium-bridge"},
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd",
+    size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":planetarium-bridge",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/planetarium-bridge",
+        "PLANETARIUM_BRIDGE_BINARY": "$(rootpath :planetarium-bridge)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :planetarium-bridge)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must
+    # be the service name, not the crate name ("bdd").
+    rustc_env = {"CARGO_PKG_NAME": "planetarium-bridge"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

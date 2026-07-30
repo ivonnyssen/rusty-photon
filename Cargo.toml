@@ -26,6 +26,7 @@ members = [
   "services/pa-falcon-rotator",
   "services/pa-scops-oag",
   "services/phd2-guider",
+  "services/planetarium-bridge",
   "services/ppba-driver",
   "services/qhy-camera",
   "services/qhy-focuser",
