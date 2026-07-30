@@ -1102,7 +1102,17 @@ services/phd2-guider/tests/
 - Command-line argument parsing
 - Config file loading
 - Error handling (connection failures, invalid arguments)
-- Uses mock_phd2 server on random ports for parallel execution
+- `mock_phd2` binds `:0` and announces the result on stdout
+  (`MOCK_PHD2_PORT:<port>`), so these run in parallel without contending for a
+  port. The CLI is given `--host 127.0.0.1` explicitly: the config default is
+  `localhost`, which resolves `::1` first on a dual-stack host, and the mock
+  binds `127.0.0.1` only.
+- The tests driving `Phd2ProcessManager` cannot use an announced port, because
+  the port is an *input* to that API — `start_phd2` probes it before spawning,
+  the child receives it through `spawn_env`, and `wait_for_ready` polls it — and
+  neither can the tests that want a port with nothing listening. Both take one
+  from `reserved_test_port()`, a band below the platform ephemeral floor that no
+  `bind(0)` can be assigned (see docs/skills/testing.md §5.1).
 
 ### Library Integration Tests
 - Connect to PHD2 and verify version event

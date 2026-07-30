@@ -560,6 +560,33 @@ A local `bazel build //...` pre-builds the affected packages; the nightly
 they bind. The parser looks for `bound_addr=` in any line (the human-readable
 prefix before it can vary per service).
 
+**Picking a port a child process will bind.** Default to the announced-port
+pattern above: let the child `bind(0)` and print what the kernel gave it. When a
+test genuinely has to know the port *first* — because the port is an input to the
+API under test, or because the test needs a port with **nothing** listening —
+take it from a reserved band **below the platform's ephemeral floor** (32768 on
+Linux, 49152 on Windows and macOS), entered at a per-process start so concurrent
+test binaries do not march in step. `reserved_test_port()` in
+`services/phd2-guider/tests/test_integration.rs` is the reference implementation.
+
+Do **not** probe by binding `:0` and releasing it. Two things go wrong:
+
+- The port comes from the range the OS hands to every other `bind(0)` in the
+  process, so a server started concurrently can be given that port between the
+  probe and its use. This was issue #745: the losing test's `Phd2ProcessManager`
+  found the winner's mock on "its" port, reported success without spawning
+  anything, then shut that mock down over RPC — failing whichever unrelated test
+  owned it.
+- The probe's own listener is duplicated into any child a sibling thread forks in
+  that instant, and survives the probe's close until that child execs. So the
+  probe can hand back a port that still answers — measured at ~6% of probes at
+  that suite's spawn rate. **Probe by connecting instead**: a refused connect is
+  the same "nobody is there" answer and leaves nothing behind.
+
+Where a bind-and-release probe does survive (`omnisim.rs::pick_free_port`,
+`pebble.rs::free_ports`) it is paired with a retry on the lost race. Keep that
+pairing if you add another.
+
 #### 5.2 Entry Point Structure
 
 Each service's BDD tests follow this structure:
