@@ -145,7 +145,8 @@ impl Config {
 /// Minimal runnable scaffold `rp` writes on first start when no config
 /// exists at the platform default path: no equipment, default server,
 /// session data under a platform-dependent directory — the packaged unit's
-/// `StateDirectory` (`/var/lib/rusty-photon/rp/`) on Unix,
+/// `StateDirectory` (`/var/lib/rusty-photon/rp/`) on Linux,
+/// `~/Library/Application Support/rusty-photon/rp/` on macOS,
 /// `%PROGRAMDATA%\rusty-photon\rp\` on Windows (ADR-015). Must stay
 /// deserializable into [`Config`] — the packaged first-start contract
 /// depends on it.
@@ -157,10 +158,27 @@ pub fn default_scaffold() -> serde_json::Value {
     })
 }
 
+/// The Linux state path, provisioned and owned by the packaged unit's
+/// systemd `StateDirectory=`; also the macOS last-resort fallback.
+#[cfg(any(not(windows), test))]
+const LINUX_STATE_DATA_DIR: &str = "/var/lib/rusty-photon/rp/data";
+
 /// The scaffold's platform-dependent `session.data_directory` default.
-#[cfg(not(windows))]
+///
+/// The startup target-store open creates this directory (rp.md § Target
+/// Store), so the default has to be writable by whatever account the
+/// packaged service runs as. Linux gets that from systemd `StateDirectory=`
+/// and Windows from `LocalSystem`'s access to `%PROGRAMDATA%`; macOS has no
+/// equivalent — `brew services` runs as the invoking user, who cannot write
+/// `/var/lib` — so macOS puts session data beside the config, mirroring the
+/// Windows layout under its own platform root.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn default_data_directory() -> String {
-    "/var/lib/rusty-photon/rp/data".to_string()
+    LINUX_STATE_DATA_DIR.to_string()
+}
+#[cfg(target_os = "macos")]
+fn default_data_directory() -> String {
+    macos_data_directory(rusty_photon_config::default_config_dir().ok())
 }
 #[cfg(windows)]
 fn default_data_directory() -> String {
@@ -170,6 +188,23 @@ fn default_data_directory() -> String {
         .join("data")
         .to_string_lossy()
         .into_owned()
+}
+
+/// Pure resolution of the macOS `session.data_directory` default from the
+/// resolved platform config directory (`~/Library/Application Support/
+/// rusty-photon`, what `rusty-photon-config` puts `rp.json` in): session
+/// data lands in `rp/data` beneath it. Falls back to
+/// [`LINUX_STATE_DATA_DIR`] when no home directory resolves at all — a
+/// machine with no home is no better served by either path, and that one
+/// is at least documented. Parameterized over the resolved directory, and
+/// compiled on macOS and in test builds on every platform, so the logic is
+/// unit-testable on non-macOS hosts.
+#[cfg(any(target_os = "macos", test))]
+fn macos_data_directory(config_dir: Option<std::path::PathBuf>) -> String {
+    match config_dir {
+        Some(dir) => dir.join("rp").join("data").to_string_lossy().into_owned(),
+        None => LINUX_STATE_DATA_DIR.to_string(),
+    }
 }
 
 /// Pure resolution of the Windows `ProgramData` root from the value of the
@@ -269,10 +304,18 @@ mod tests {
     #[test]
     fn default_scaffold_deserializes_into_config() {
         let config: Config = serde_json::from_value(default_scaffold()).unwrap();
-        #[cfg(not(windows))]
-        assert_eq!(
-            config.session.data_directory,
-            "/var/lib/rusty-photon/rp/data"
+        #[cfg(not(any(windows, target_os = "macos")))]
+        assert_eq!(config.session.data_directory, LINUX_STATE_DATA_DIR);
+        // Under the config root when a home resolves, else the fallback —
+        // both end the same way, so this holds without a home on the runner.
+        #[cfg(target_os = "macos")]
+        assert!(
+            config
+                .session
+                .data_directory
+                .ends_with("/rusty-photon/rp/data"),
+            "{}",
+            config.session.data_directory
         );
         #[cfg(windows)]
         assert!(
@@ -286,6 +329,25 @@ mod tests {
         assert!(config.equipment.cameras.is_empty());
         assert!(config.site.is_none());
         assert_eq!(config.server.port, 11115);
+    }
+
+    #[test]
+    fn macos_data_directory_sits_under_the_config_root() {
+        let root = "/Users/astro/Library/Application Support/rusty-photon";
+        let dir = macos_data_directory(Some(std::path::PathBuf::from(root)));
+        // Compared as `Path`s, not strings: `PathBuf::join` emits the *host's*
+        // separator, and this macOS-only path is also built on the Windows and
+        // Linux hosts that run the test. `Path` equality is component-wise, so
+        // this still pins the tail exactly.
+        let relative = std::path::Path::new(&dir)
+            .strip_prefix(root)
+            .unwrap_or_else(|_| panic!("{dir} is not under {root}"));
+        assert_eq!(relative, std::path::Path::new("rp/data"));
+    }
+
+    #[test]
+    fn macos_data_directory_falls_back_without_a_home() {
+        assert_eq!(macos_data_directory(None), LINUX_STATE_DATA_DIR);
     }
 
     #[test]

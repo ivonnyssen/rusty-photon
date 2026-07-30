@@ -4399,9 +4399,16 @@ All configuration is in a single JSON file. `rp serve --config <path>`
 `%PROGRAMDATA%\rusty-photon\rp.json` on Windows) via
 `rusty-photon-config`, and a minimal runnable scaffold (no equipment,
 default port, `session.data_directory` under the platform-dependent state
-directory — `/var/lib/rusty-photon/rp/` on Unix,
+directory — `/var/lib/rusty-photon/rp/` on Linux,
+`~/Library/Application Support/rusty-photon/rp/` on macOS,
 `%PROGRAMDATA%\rusty-photon\rp\` on Windows)
-is written on first start if the file is absent. An explicit `--config`
+is written on first start if the file is absent. The default has to be
+writable by the account the packaged service runs as, because opening the
+target store creates it (§ [Target Store](#target-store)): Linux gets that
+from the unit's systemd `StateDirectory=` and Windows from `LocalSystem`'s
+access to `%PROGRAMDATA%`, while macOS — where `brew services` runs as the
+invoking user, who cannot write `/var/lib` — puts session data beside the
+config under its own platform root. An explicit `--config`
 naming a missing file stays a hard error. Equipment is listed with Alpaca
 connection details. Plugins register their webhook URLs and command endpoints.
 Every block (top-level `Config` and each equipment/service sub-config) rejects

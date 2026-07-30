@@ -16,17 +16,75 @@ use phd2_guider::{
 #[cfg_attr(miri, allow(unused_imports))]
 use std::io::{BufRead, BufReader};
 #[cfg_attr(miri, allow(unused_imports))]
-use std::net::TcpListener;
+use std::net::TcpStream;
 #[cfg_attr(miri, allow(unused_imports))]
 use std::path::PathBuf;
 #[cfg_attr(miri, allow(unused_imports))]
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
-/// Get an available TCP port by binding to port 0
-fn get_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port 0");
-    listener.local_addr().unwrap().port()
+/// Port band reserved for the tests in this file: below every platform's
+/// ephemeral floor (32768 on Linux, 49152 on Windows and macOS) so the OS can
+/// never assign one of these to a `bind(0)` caller, and clear of the services'
+/// own fixed ports (11112-11130).
+const RESERVED_PORT_BAND_START: u16 = 20_000;
+const RESERVED_PORT_BAND_LEN: u16 = 12_000;
+
+/// How many band ports one call will try before giving up. Only a port some
+/// other process is on gets skipped, so the ceiling is never approached.
+const RESERVED_PORT_TRIES: u16 = 64;
+
+/// A port for a test that has to know its port *before* anything binds it.
+///
+/// Two kinds of test here need that. The ones driving a `mock_phd2` child
+/// through [`Phd2ProcessManager`] cannot learn a kernel-assigned port after the
+/// fact, because the port is an *input* to the API under test: `start_phd2`
+/// probes it before spawning, the child receives it through `spawn_env`, and
+/// `wait_for_ready` polls it. Real PHD2 announces nothing — it listens on its
+/// configured port — so config-first is the production contract. The tests that
+/// want a port with nothing listening cannot use an announced port either, since
+/// nothing binds.
+///
+/// Probing with `bind(0)` and releasing the port — the scheme this replaced —
+/// draws from the very range the OS assigns to every other `bind(0)` in the
+/// process, including the mock servers the CLI tests start concurrently, so the
+/// probed port could be claimed before its own test used it. Ports here cannot
+/// be handed out that way.
+///
+/// Each process walks the band from its own start, so concurrent test binaries
+/// (two worktrees, `--runs_per_test`) do not march in step. Two of them can
+/// still land on overlapping stretches; the probe below moves past whatever the
+/// other one already holds, and a residual conflict fails an assertion loudly
+/// rather than corrupting another test.
+fn reserved_test_port() -> u16 {
+    static START: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    static CURSOR: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+    // Distinct per process: pids alone are too regular when a harness starts
+    // many copies at once.
+    let start = *START.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        ((std::process::id() ^ nanos) % u32::from(RESERVED_PORT_BAND_LEN)) as u16
+    });
+
+    for _ in 0..RESERVED_PORT_TRIES {
+        // A distinct step per call, so no two callers get the same port.
+        let step = CURSOR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate =
+            RESERVED_PORT_BAND_START + (start.wrapping_add(step) % RESERVED_PORT_BAND_LEN);
+        // Probe by connecting, never by binding. A listener opened here is
+        // duplicated into any child another test thread happens to fork in the
+        // same instant and outlives this close until that child execs, so a bind
+        // probe can hand back a port that still answers — measured at ~6% of
+        // probes at this suite's spawn rate. A refused connect carries the same
+        // "nobody is there" answer and leaves nothing behind.
+        if TcpStream::connect(("127.0.0.1", candidate)).is_err() {
+            return candidate;
+        }
+    }
+    panic!("no free port in {} tries", RESERVED_PORT_TRIES);
 }
 
 /// Route a spawned child's coverage counters into the `bazel coverage` test
@@ -59,17 +117,6 @@ fn apply_child_coverage_profile(cmd: &mut Command) {
         cmd.env("LLVM_PROFILE_FILE", path);
     }
 }
-
-/// Fixed port for error-path tests (exit_immediately, connection_timeout).
-/// These tests require that nothing is listening on the port, so they use a
-/// dedicated fixed port and serialize via ERROR_PATH_LOCK to prevent any
-/// interference from parallel tests whose mock servers use auto-assigned ports.
-#[cfg(not(miri))]
-const ERROR_PATH_PORT: u16 = 19876;
-
-/// Mutex to serialize error-path process tests that share ERROR_PATH_PORT.
-#[cfg(not(miri))]
-static ERROR_PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Helper to check if PHD2 is available on the system
 fn is_phd2_available() -> bool {
@@ -505,8 +552,8 @@ async fn test_start_phd2_already_running() {
 #[cfg(not(miri))]
 async fn test_connect_to_nonexistent_server() {
     let config = Phd2Config {
-        host: "localhost".to_string(),
-        port: 59999, // Unlikely to be in use
+        host: "127.0.0.1".to_string(),
+        port: reserved_test_port(),
         connection_timeout: Duration::from_secs(2),
         ..Default::default()
     };
@@ -534,9 +581,10 @@ async fn test_send_request_when_not_connected() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_executable_not_found() {
-    // Use a port unlikely to be in use to ensure we actually try to start the executable
+    // A reserved port nothing listens on, so we really do try to start the executable
     let config = Phd2Config {
-        port: 59997,
+        host: "127.0.0.1".to_string(),
+        port: reserved_test_port(),
         executable_path: Some(PathBuf::from("/nonexistent/path/to/phd2")),
         ..Default::default()
     };
@@ -1214,7 +1262,7 @@ async fn test_mock_phd2_reconnect_on_disconnect() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_start_stop_mock() {
-    let port = get_available_port();
+    let port = reserved_test_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1351,7 +1399,7 @@ async fn test_process_manager_start_already_running() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_force_kill() {
-    let port = get_available_port();
+    let port = reserved_test_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1383,6 +1431,15 @@ async fn test_process_manager_force_kill() {
     // Start the mock PHD2
     let start_result = manager.start_phd2().await;
     assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+    // start_phd2 reports success without spawning anything when something else
+    // already answers on the port. This test owns a reserved port, so an
+    // adopted stranger means the reservation broke: fail here rather than carry
+    // on and shut down a server that belongs to another test.
+    assert!(
+        manager.has_managed_process().await,
+        "start_phd2 adopted a foreign server on port {} instead of spawning",
+        port
+    );
 
     // Force stop without client (no graceful shutdown)
     let stop_result = manager.stop_phd2(None).await;
@@ -1405,7 +1462,7 @@ async fn test_process_manager_force_kill() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_shutdown_via_rpc() {
-    let port = get_available_port();
+    let port = reserved_test_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1437,6 +1494,15 @@ async fn test_process_manager_shutdown_via_rpc() {
     // Start the mock PHD2
     let start_result = manager.start_phd2().await;
     assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+    // start_phd2 reports success without spawning anything when something else
+    // already answers on the port. This test owns a reserved port, so an
+    // adopted stranger means the reservation broke: fail here rather than carry
+    // on and shut down a server that belongs to another test.
+    assert!(
+        manager.has_managed_process().await,
+        "start_phd2 adopted a foreign server on port {} instead of spawning",
+        port
+    );
 
     // Connect a client
     let client = Phd2Client::new(config);
@@ -1464,7 +1530,7 @@ async fn test_process_manager_shutdown_via_rpc() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_manager_stop_without_client() {
-    let port = get_available_port();
+    let port = reserved_test_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1496,6 +1562,15 @@ async fn test_process_manager_stop_without_client() {
     // Start the mock PHD2
     let start_result = manager.start_phd2().await;
     assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+    // start_phd2 reports success without spawning anything when something else
+    // already answers on the port. This test owns a reserved port, so an
+    // adopted stranger means the reservation broke: fail here rather than carry
+    // on and shut down a server that belongs to another test.
+    assert!(
+        manager.has_managed_process().await,
+        "start_phd2 adopted a foreign server on port {} instead of spawning",
+        port
+    );
 
     // Verify it's running
     assert!(manager.is_phd2_running().await, "Mock should be running");
@@ -1579,8 +1654,7 @@ async fn test_process_manager_no_executable_no_default() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_exit_immediately() {
-    let _lock = ERROR_PATH_LOCK.lock().await;
-    let port = ERROR_PATH_PORT;
+    let port = reserved_test_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1622,8 +1696,7 @@ async fn test_process_exit_immediately() {
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_process_connection_timeout() {
-    let _lock = ERROR_PATH_LOCK.lock().await;
-    let port = ERROR_PATH_PORT;
+    let port = reserved_test_port();
 
     let Some(binary_path) = find_mock_phd2_binary() else {
         eprintln!("Mock PHD2 binary not found");
@@ -1718,20 +1791,9 @@ async fn test_graceful_shutdown_fails_fallback_to_kill() {
 // ============================================================================
 //
 // These tests spawn the mock_phd2 server and run the phd2-guider CLI as a
-// subprocess to verify end-to-end behavior. All tests use random ports to
-// allow parallel execution.
-
-/// Wait for a TCP server to be ready on the given port
-fn wait_for_server_ready(port: u16, timeout: Duration) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
+// subprocess to verify end-to-end behavior. Each mock binds `:0` and announces
+// the port it got, so they run in parallel without contending for one. The few
+// that need a port with nothing listening take one from [`reserved_test_port`].
 
 /// Guard that kills a child process when dropped
 struct ProcessGuard {
@@ -1801,15 +1863,18 @@ fn spawn_mock_server_with_mode(mode: &str) -> (ProcessGuard, u16) {
     let (port, child) = spawn_mock_phd2_dynamic_port(mock_phd2_bin(), mode, Stdio::null())
         .expect("Failed to start mock_phd2 server");
 
-    let guard = ProcessGuard::new(child, "mock_phd2");
+    // The mock prints its port line only after `bind` returns, so the port is
+    // already accepting connections here. A further connect-and-drop probe
+    // would add nothing and would leave a dead connection in the accept queue
+    // ahead of the CLI's real one.
+    (ProcessGuard::new(child, "mock_phd2"), port)
+}
 
-    // Server is bound by the time the port line is printed, but wait for the
-    // accept queue to settle before handing the port to the test.
-    if !wait_for_server_ready(port, Duration::from_secs(5)) {
-        panic!("Mock server did not start within timeout on port {}", port);
-    }
-
-    (guard, port)
+/// A scratch config path unique to this process, so two test binaries sharing a
+/// `TMPDIR` (two worktrees, `--runs_per_test`) cannot clobber or delete each
+/// other's fixture mid-run.
+fn temp_config_path(stem: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("test_{}_{}.json", stem, std::process::id()))
 }
 
 /// Run the phd2-guider CLI with given arguments
@@ -1817,10 +1882,16 @@ fn run_cli(args: &[&str], port: u16) -> Output {
     run_cli_with_timeout(args, port, Duration::from_secs(10))
 }
 
-/// Run the phd2-guider CLI with a custom timeout
+/// Run the phd2-guider CLI with a custom timeout.
+///
+/// `--host 127.0.0.1` is explicit because the config default is `localhost`,
+/// which resolves `::1` ahead of `127.0.0.1` on a dual-stack host: the CLI
+/// would spend a refused connect on `[::1]:port` (the mock binds `127.0.0.1`
+/// only) before reaching it, and would talk to whatever *else* happens to hold
+/// that port on `::1`.
 fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
     let mut cmd = phd2_guider_command();
-    cmd.args(["--port", &port.to_string()])
+    cmd.args(["--host", "127.0.0.1", "--port", &port.to_string()])
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1936,7 +2007,7 @@ fn test_status_shows_equipment_status() {
 #[cfg_attr(miri, ignore)]
 fn test_status_connection_failure() {
     // Use a port that nothing is listening on
-    let port = get_available_port();
+    let port = reserved_test_port();
     let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(5));
 
     assert!(
@@ -2607,15 +2678,14 @@ fn test_config_file_option() {
     let config_content = format!(
         r#"{{
             "phd2": {{
-                "host": "localhost",
+                "host": "127.0.0.1",
                 "port": {}
             }}
         }}"#,
         port
     );
 
-    let temp_dir = std::env::temp_dir();
-    let config_path = temp_dir.join("test_phd2_config.json");
+    let config_path = temp_config_path("phd2_config");
     std::fs::write(&config_path, config_content).expect("Failed to write config file");
 
     let output = phd2_guider_command()
@@ -2646,8 +2716,7 @@ fn test_config_file_not_found() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_invalid_config_file() {
-    let temp_dir = std::env::temp_dir();
-    let config_path = temp_dir.join("test_invalid_config.json");
+    let config_path = temp_config_path("invalid_config");
     std::fs::write(&config_path, "{ invalid json }").expect("Failed to write config file");
 
     let output = run_cli_no_server(&["--config", config_path.to_str().unwrap(), "status"]);
@@ -2669,7 +2738,13 @@ fn test_monitor_receives_version_event() {
 
     // Start monitor in background and kill it after a short time
     let mut child = phd2_guider_command()
-        .args(["--port", &port.to_string(), "monitor"])
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "monitor",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2701,7 +2776,7 @@ fn test_connection_refused() {
     // Use a port that's definitely not listening.
     // The CLI has a 10s connection timeout, so allow enough time for it to
     // fail and exit (Windows TCP refusal can be slower than Linux).
-    let port = get_available_port();
+    let port = reserved_test_port();
 
     let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(15));
 
@@ -2716,7 +2791,7 @@ fn test_connection_refused() {
 fn test_connection_timeout_message() {
     // The CLI has a 10s connection timeout; allow enough for it to fail
     // and exit on Windows where TCP refusal is slower.
-    let port = get_available_port();
+    let port = reserved_test_port();
 
     let output = run_cli_with_timeout(&["status"], port, Duration::from_secs(15));
 
@@ -2753,7 +2828,13 @@ fn test_monitor_shuts_down_on_sigterm() {
     // stream can fill the OS pipe buffer and deadlock the child. Same
     // pattern as spawn_mock_phd2_dynamic_port's default in this file.
     let mut child = phd2_guider_command()
-        .args(["--port", &port.to_string(), "monitor"])
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "monitor",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
