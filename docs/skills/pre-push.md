@@ -243,24 +243,41 @@ the workspace level.
 | **address sanitizer** | See below | nightly, llvm | Off-PR |
 | **leak sanitizer** | See below | nightly | Off-PR |
 
+Both jobs export `ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1
+SVBONY_SKIP_NATIVE_LINK=1` so the three native-SDK camera stacks build their
+pure-Rust simulation path and need no SDK provisioned, exclude `bdd-infra`
+(its unit tests look for binaries under `target/debug/`, which does not exist
+once `--target` is set), and pass `--no-fail-fast` so one crate's report does
+not hide the rest of the workspace.
+
 Address sanitizer:
 
 ```bash
 ASAN_OPTIONS="detect_odr_violation=0:detect_leaks=0" \
 RUSTFLAGS="-Z sanitizer=address" \
-  cargo +nightly test --workspace --lib --tests --all-features --target x86_64-unknown-linux-gnu
+ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1 \
+  cargo +nightly test --workspace --exclude bdd-infra --lib --tests --all-features \
+    --no-fail-fast --target x86_64-unknown-linux-gnu
 ```
 
 Leak sanitizer:
 
 ```bash
 RUSTFLAGS="-Z sanitizer=leak" \
-  cargo +nightly test --workspace --all-features --all-targets --target x86_64-unknown-linux-gnu
+ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1 \
+  cargo +nightly test --workspace --exclude bdd-infra --all-features --all-targets \
+    --no-fail-fast --target x86_64-unknown-linux-gnu
 ```
 
 > **Note:** The sanitizers modify `Cargo.toml` in CI to set `[profile.dev] opt-level = 1`.
-> Locally you can either do the same (and revert), or accept slightly different
-> behavior. The sanitizer results are still meaningful without the opt-level tweak.
+> Locally you can either do the same (and revert), or pass `-C opt-level=1` in
+> `RUSTFLAGS` alongside the sanitizer flag. LeakSanitizer is documented as
+> unreliable at `opt-level = 0`, so prefer one of the two over accepting the
+> default.
+
+LeakSanitizer counts an intentionally leaked allocation as a leak — `Box::leak`
+to satisfy a `&'static` bound in a test is a real finding, not a false positive.
+Build such fixtures as `static` items instead.
 
 ### conformu.yml (rolling)
 
