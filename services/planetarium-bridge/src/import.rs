@@ -204,10 +204,10 @@ impl ImportWorker {
                     () = self.cancel.cancelled() => return,
                     result = &mut probe => {
                         match result {
-                            Ok(c) => {
-                                client = Some(c);
-                                self.health.set_reachable(true);
-                            }
+                            // The probe session is dropped right away: the
+                            // bridge never holds an idle MCP session (see
+                            // the idle drop in the main loop).
+                            Ok(_) => self.health.set_reachable(true),
                             Err(e) => debug!("rp not reachable at startup: {e}"),
                         }
                         break;
@@ -226,6 +226,16 @@ impl ImportWorker {
 
         loop {
             if self.spool.is_empty() {
+                // Idle: drop the session. Sessions live only across a
+                // delivery burst — a standing idle session holds an open
+                // stream into rp that stalls rp's own graceful shutdown
+                // (MSI verify: rp failed to stop, Error 1921, while an
+                // idle bridge sat connected), and rp terminates MCP
+                // sessions on safety transitions anyway, so every burst
+                // reconnects explicitly per ADR-017.
+                if client.take().is_some() {
+                    debug!("import queue idle; dropping the rp session");
+                }
                 let queued = tokio::select! {
                     () = self.cancel.cancelled() => return,
                     queued = self.rx.recv() => match queued {
