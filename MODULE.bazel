@@ -127,6 +127,19 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    --enable_platform_specific_config appends platform lines last (see
 #    .bazelrc), so every output is materialized even on remote-cache hits.
 #
+#    The flake has a MAIN-REPO leg too (issue #781): when the build script
+#    belongs to a first-party path dependency (libqhyccd-sys), its
+#    `build_script.linksearchpaths` `--arg-file` value is spelled bare
+#    workspace-relative (`crates/...`), which the resolver used to pass
+#    through untouched — and the real/sim qhyccd-rs doc-test pair, which
+#    shares that runfile, raced on the dangling tree entry whenever both
+#    executed on the same runner (exactly one lost per attempt, alternating
+#    victims). RF() therefore also looks bare relative-path argv elements up
+#    under the workspace runfiles directory (`TEST_WORKSPACE`, `_main` under
+#    Bzlmod), which routes the crate root and first-party `--arg-file` values
+#    through the manifest's execroot targets as well; a lookup miss falls
+#    through silently, since a bare element may not be a path at all.
+#
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that
 #    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that

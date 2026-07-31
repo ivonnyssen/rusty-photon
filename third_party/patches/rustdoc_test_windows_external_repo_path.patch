@@ -79,7 +79,7 @@
  
      let argv_str = argv
          .iter()
-@@ -226,20 +261,160 @@
+@@ -226,20 +261,178 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -87,17 +87,24 @@
 +        // Every argument is routed through the RF() resolver defined in the
 +        // script template below. Bazel hands cross-repo runfiles to this argv
 +        // as `..`-relative short_paths (e.g.
-+        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`) and
++        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`),
 +        // generated cross-repo files as `external/`-relative paths after
 +        // root-stripping (e.g. the `--arg-file` values naming build-script
-+        // `_bs.linksearchpaths` outputs). Neither resolves reliably through
-+        // the runfiles tree: entries have been observed absent or dangling on
++        // `_bs.linksearchpaths` outputs), and main-repo files as bare
++        // workspace-relative paths (the crate root, and the same `--arg-file`
++        // values when the build script belongs to a first-party path
++        // dependency). None of these resolves reliably through the runfiles
++        // tree: entries have been observed absent or dangling on
 +        // remote-cache-hit builds (a bazelbuild/bazel#18580-class
-+        // build-without-the-bytes / runfiles interplay). RF looks each path up
++        // build-without-the-bytes / runfiles interplay), including a
++        // main-repo `build_script.linksearchpaths` entry left dangling while
++        // the sibling doc-test variant sharing that runfile ran concurrently.
++        // RF looks each path up
 +        // in the runfiles MANIFEST and substitutes the absolute execroot
 +        // target, sidestepping the tree entirely; the tree path remains as
 +        // the no-manifest fallback, and every miss prints a Write-Warning
-+        // naming the exact gap.
++        // naming the exact gap — except main-repo lookups, where a bare
++        // element may simply not be a path, so a miss stays silent.
 +        //
 +        // RF also rewrites `--sysroot=<dir>` (via RFD). rustc expands that
 +        // directory into the std rlib paths it hands the linker, and spelled
@@ -199,6 +206,17 @@
 +        if (-not (Test-Path $p)) { Write-Warning ('runfile not found via manifest or tree: ' + $rel) }
 +        return $p
 +    }
++    # Main-repo files arrive as bare workspace-relative paths; their manifest
++    # keys sit under the workspace runfiles directory (`_main` under Bzlmod).
++    # The match skips flags and name=path pairs, and a bare element may still
++    # not be a path at all, so a manifest miss falls through untouched and
++    # silent.
++    if ($p -match '^[^-][^=]*[\\/]') {
++        $ws = $env:TEST_WORKSPACE
++        if (-not $ws) { $ws = '_main' }
++        $t = RFF ($ws + '/' + ($p -replace '\\','/'))
++        if ($t) { return $t }
++    }
 +    return $p
 +}"#;
 +
@@ -247,7 +265,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +441,29 @@
+@@ -266,14 +459,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -278,7 +296,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +477,11 @@
+@@ -287,5 +495,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  
