@@ -10,8 +10,12 @@ description: >-
   official per-SDK developer zips from ZWO's download CDN. The Linux/macOS
   blobs are wrapped in actions/cache (keyed on arch + `ref`) so a warm cache
   skips the mirror fetch entirely — the mirror rate-limits CI's ephemeral IPs
-  (429s), see issue #476. The unpinned Windows CDN URLs are not cached (no
-  version to key on).
+  (429s), see issue #476. The Windows zips are cached too, keyed on the ISO
+  week (the rolling "latest" CDN URLs offer no version to key on): the first
+  run each week refreshes from the CDN, every other run skips it, and a
+  failed refresh falls back to the newest previous week's zips — ZWO's CDN
+  drops connections often enough that an uncached, retry-less fetch was a
+  recurring source of Windows CI failures.
 
 inputs:
   ref:
@@ -286,13 +290,44 @@ runs:
         } >> "$GITHUB_ENV"
         echo "install-zwo-sdk (sudo-free): exported ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH=$LIBDIR"
 
+    - name: Compute ZWO Windows SDK cache key (Windows)
+      if: runner.os == 'Windows'
+      id: win-key
+      shell: bash
+      run: |
+        # ZWO's Windows CDN URLs are rolling "latest" (see the
+        # windows_camera_sdk_url input note), so there is no version to key
+        # on. Key on the ISO week instead: the first run each week refreshes
+        # from the CDN (a new SDK release is adopted within a week), every
+        # other run hits this week's entry and skips the CDN entirely. The
+        # `v1` is a schema version for the set of zips cached — bump it to
+        # invalidate stale entries if that set changes.
+        echo "cache-key=zwo-windows-sdk-zips-v1-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore ZWO Windows SDK zips (Windows)
+      if: runner.os == 'Windows'
+      id: win-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: zwo-windows-sdk-zips
+        # An older week's zips restore via restore-keys when this week's key
+        # misses. They are only *used* if this week's fresh download then
+        # fails (see the install step): an unreachable CDN degrades to a
+        # stale-but-working SDK install instead of a failed job.
+        key: ${{ steps.win-key.outputs.cache-key }}
+        restore-keys: |
+          zwo-windows-sdk-zips-v1-
+
     - name: Install the ZWO SDK (Windows)
       if: runner.os == 'Windows'
+      id: win-install
       shell: pwsh
       env:
         CAMERA_URL: ${{ inputs.windows_camera_sdk_url }}
         EFW_URL: ${{ inputs.windows_efw_sdk_url }}
         EAF_URL: ${{ inputs.windows_eaf_sdk_url }}
+        CACHE_HIT: ${{ steps.win-cache.outputs.cache-hit }}
+        CACHE_MATCHED_KEY: ${{ steps.win-cache.outputs.cache-matched-key }}
       run: |
         $ErrorActionPreference = "Stop"
 
@@ -304,27 +339,59 @@ runs:
         }
         "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+        # The three SDK zips live in the actions/cache'd dir restored above
+        # and saved below, only after a complete fresh download. ZWO's CDN
+        # drops or black-holes connections routinely, so downloads run with
+        # retries and short connect timeouts, land in a scratch dir first (a
+        # partial batch must never clobber restored zips), and a failed
+        # refresh falls back to the restored previous-week zips rather than
+        # failing the job.
+        $zipdir = "zwo-windows-sdk-zips"
+        New-Item -ItemType Directory -Force -Path $zipdir | Out-Null
+        $names = "asi", "efw", "eaf"
+        $restored = @($names | Where-Object { Test-Path (Join-Path $zipdir "$_.zip") })
+        $downloaded = "false"
+
+        function Get-Sdk($url, $name, $dir) {
+          Write-Host "install-zwo-sdk: downloading $name SDK"
+          # curl.exe, not Invoke-WebRequest: --retry-all-errors also covers
+          # connect timeouts/resets (-MaximumRetryCount retries HTTP status
+          # codes only), and --connect-timeout keeps each attempt short so
+          # the stale-cache fallback engages in seconds, not minutes.
+          curl.exe -fsSL --retry 4 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 300 $url -o (Join-Path $dir "$name.zip")
+          if ($LASTEXITCODE -ne 0) { throw "install-zwo-sdk: $name SDK download failed (curl exit $LASTEXITCODE)" }
+        }
+
+        if ($env:CACHE_HIT -eq "true") {
+          Write-Host "install-zwo-sdk: using this week's cached SDK zips (no CDN fetch)"
+        } else {
+          $dl = Join-Path $env:RUNNER_TEMP "zwo-sdk-dl"
+          New-Item -ItemType Directory -Force -Path $dl | Out-Null
+          try {
+            # All three are required (the Stage calls below hard-require each
+            # SDK's lib/DLL), so the cache refreshes only as a complete set.
+            Get-Sdk $env:CAMERA_URL "asi" $dl
+            Get-Sdk $env:EFW_URL    "efw" $dl
+            Get-Sdk $env:EAF_URL    "eaf" $dl
+            Copy-Item (Join-Path $dl "*.zip") $zipdir -Force
+            $downloaded = "true"
+          } catch {
+            if ($restored.Count -eq $names.Count) {
+              Write-Host "::warning::install-zwo-sdk: CDN download failed ($_) - continuing with the cached zips from '$($env:CACHE_MATCHED_KEY)'"
+            } else {
+              throw
+            }
+          }
+        }
+        "downloaded=$downloaded" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
         $work    = Join-Path $env:RUNNER_TEMP "zwo-sdk"
         $extract = Join-Path $work "extract"
         $libdir  = Join-Path $work "lib"
         New-Item -ItemType Directory -Force -Path $extract, $libdir | Out-Null
-
-        function Get-Sdk($url, $name, $required) {
-          try {
-            $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
-            Write-Host "install-zwo-sdk: downloading $name SDK"
-            Invoke-WebRequest -Uri $url -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath (Join-Path $extract $name) -Force
-          } catch {
-            if ($required) { throw } else { Write-Host "install-zwo-sdk: $name SDK skipped ($_)" }
-          }
+        foreach ($n in $names) {
+          Expand-Archive -Path (Join-Path $zipdir "$n.zip") -DestinationPath (Join-Path $extract $n) -Force
         }
-        Get-Sdk $env:CAMERA_URL "asi" $true
-        Get-Sdk $env:EFW_URL    "efw" $true
-        # Required, same as ASICamera2/EFWFilter: the Stage calls below already
-        # treat EAFFocuser as required, so tolerating a failed download here
-        # would just defer to a less direct "not found in the Windows SDK" error.
-        Get-Sdk $env:EAF_URL    "eaf" $true
 
         # The per-arch import libs/DLLs live inside nested *Windows*SDK*.zip
         # archives; extract those too before staging.
@@ -362,3 +429,14 @@ runs:
         "ZWO_SDK_LIB_DIR=$libdir" | Out-File -FilePath $env:GITHUB_ENV -Append
         $libdir | Out-File -FilePath $env:GITHUB_PATH -Append
         Write-Host "install-zwo-sdk: ZWO_SDK_LIB_DIR=$libdir (also on PATH for the DLLs)"
+
+    - name: Save ZWO Windows SDK zips (Windows)
+      # Only after a complete fresh download — never re-save restored stale
+      # zips under this week's key, which would stop the weekly refresh from
+      # retrying the CDN. Concurrent jobs racing to save the same key produce
+      # a non-fatal "cache already exists" warning.
+      if: runner.os == 'Windows' && steps.win-install.outputs.downloaded == 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: zwo-windows-sdk-zips
+        key: ${{ steps.win-key.outputs.cache-key }}
