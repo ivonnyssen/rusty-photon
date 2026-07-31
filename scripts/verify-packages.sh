@@ -152,6 +152,16 @@ port_of() {
     esac
 }
 
+# Fail fast on missing port mappings, before the container build: checked
+# only later, a gap would surface minutes into the lifecycle run, one
+# service at a time. check-pkg-assets.sh cross-checks this table against
+# verify-brew.sh's, but only when it is run.
+missing=""
+for s in $SERVICES; do
+    [ -n "$(port_of "$s")" ] || missing="$missing $s"
+done
+[ -z "$missing" ] || die "no port mapping for:$missing — extend port_of()"
+
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
     # (sentinel dashboard, rp orchestrator, ui-htmx BFF, phd2-guider,
