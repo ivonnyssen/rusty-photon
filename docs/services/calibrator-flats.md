@@ -29,6 +29,11 @@ requested number of flat frames at that duration.
    orchestrator exits.
 4. **Per-filter optimization.** Each filter has different throughput. The
    exposure time is found independently for each filter in the plan.
+5. **Filterless rigs are first-class.** A one-shot-color camera has no
+   filter wheel; `filter_wheel_id` is optional, and without one the plan
+   entries are plain capture groups (no `set_filter` calls) — typically a
+   single `{ "name": "OSC", "count": N }` entry whose `name` is only a
+   label in logs and the completion report.
 
 ## Architecture
 
@@ -111,9 +116,10 @@ target_adu = info.max_adu * target_adu_fraction
 close_cover(calibrator_id)
 calibrator_on(calibrator_id, brightness)
 
-# 3. Capture flats per filter
+# 3. Capture flats per filter (or per capture group on a filterless rig)
 for each filter in plan.filters:
-    set_filter(filter_wheel_id, filter.name)
+    if plan.filter_wheel_id is set:
+        set_filter(filter_wheel_id, filter.name)
 
     # 3a. Find optimal exposure time for this filter
     duration = initial_duration
@@ -207,9 +213,11 @@ explicitly; when omitted, the path resolves to the platform default
 (`~/.config/rusty-photon/calibrator-flats.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\calibrator-flats.json` on Windows) via
 `rusty-photon-config`. There is no built-in default plan —
-the file must exist (`camera_id`, `filter_wheel_id`, `calibrator_id`,
-`filters` are mandatory), so the packaged systemd unit gates on it with
-`ConditionPathExists` instead of crash-looping on a fresh install. Both
+the file must exist (`camera_id`, `calibrator_id`, `filters` are
+mandatory; `filter_wheel_id` is optional — absent, `null`, or `""` means
+the rig has no filter wheel and `set_filter` is never called), so the
+packaged systemd unit gates on it with `ConditionPathExists` instead of
+crash-looping on a fresh install. Both
 `FlatPlan` and `FilterPlan` reject unknown keys at deserialize
 (`deny_unknown_fields`), so a typo or a key removed by a schema change
 fails loudly at load instead of being silently ignored.
@@ -232,6 +240,19 @@ block for its HTTP endpoint (`/invoke`, `/health`):
   "calibrator_id": "flat-panel",
   "filters": [
     { "name": "Luminance", "count": 20 }
+  ]
+}
+```
+
+A one-shot-color rig omits `filter_wheel_id` and lists a single capture
+group (the `name` is a label, not a filter):
+
+```json
+{
+  "camera_id": "osc-cam",
+  "calibrator_id": "flat-panel",
+  "filters": [
+    { "name": "OSC", "count": 20 }
   ]
 }
 ```
@@ -298,7 +319,7 @@ The plan is part of `rp`'s plugin configuration:
 | `service_auth` | object or null | null | HTTP Basic credentials presented to `rp`'s MCP server (own config file only) — the D6 observatory credential |
 | `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` (own config file only) |
 | `camera_id` | string | required | Camera to use for flat exposures |
-| `filter_wheel_id` | string | required | Filter wheel to use |
+| `filter_wheel_id` | string or null | null | Filter wheel to use; absent, `null`, or `""` = no filter wheel (OSC rig): `set_filter` is never called and plan entries are plain capture groups |
 | `calibrator_id` | string | required | CoverCalibrator device to control |
 | `target_adu_fraction` | float | 0.5 | Target median as fraction of max ADU |
 | `tolerance` | float | 0.05 | Acceptable deviation from target (5%) |

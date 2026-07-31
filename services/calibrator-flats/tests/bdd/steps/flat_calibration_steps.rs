@@ -48,9 +48,29 @@ async fn webhook_receiver_subscribed_to(world: &mut CalibratorFlatsWorld, event_
 }
 
 #[given(
+    expr = "the calibrator-flats service is configured for {int} {string} flats with no filter wheel"
+)]
+async fn configure_calibrator_flats_filterless(
+    world: &mut CalibratorFlatsWorld,
+    count: u32,
+    group: String,
+) {
+    world.flat_plan = vec![(group, count)];
+    world.no_filter_wheel = true;
+}
+
+#[given(
     "rp is running with a camera, filter wheel, cover calibrator, and the calibrator-flats orchestrator"
 )]
 async fn rp_running_with_equipment_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
+    configure_default_equipment(world).await;
+    start_calibrator_flats_service(world).await;
+    register_calibrator_flats_plugin(world);
+    start_rp_service(world).await;
+}
+
+#[given("rp is running with a camera, cover calibrator, and the calibrator-flats orchestrator")]
+async fn rp_running_filterless_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
     configure_default_equipment(world).await;
     start_calibrator_flats_service(world).await;
     register_calibrator_flats_plugin(world);
@@ -160,7 +180,7 @@ async fn configure_default_equipment(world: &mut CalibratorFlatsWorld) {
             cooler_targets_c: Vec::new(),
         });
     }
-    if world.filter_wheels.is_empty() {
+    if !world.no_filter_wheel && world.filter_wheels.is_empty() {
         world
             .filter_wheels
             .push(bdd_infra::rp_harness::FilterWheelConfig {
@@ -192,7 +212,8 @@ async fn start_calibrator_flats_service(world: &mut CalibratorFlatsWorld) {
         return;
     }
 
-    let config = build_calibrator_flats_config(&world.flat_plan);
+    let filter_wheel = (!world.no_filter_wheel).then_some("main-fw");
+    let config = build_calibrator_flats_config(&world.flat_plan, filter_wheel);
     let config_path = write_temp_config_file("calibrator-flats-config", &config).await;
 
     world.calibrator_flats = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);

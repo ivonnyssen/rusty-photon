@@ -981,7 +981,10 @@ Abridged to the load-bearing shape:
   "name": "calibrator-flats",
   "parameters": {
     "camera_id": { "type": "string", "required": true },
-    "filter_wheel_id": { "type": "string", "required": true },
+    // "" (the default) = no filter wheel — an OSC rig; set_filter is skipped.
+    // The parameter grammar has no optional-without-default, so the empty
+    // string is the sentinel (house style — deep_sky's pass_filter does the same).
+    "filter_wheel_id": { "type": "string", "default": "" },
     "calibrator_id": { "type": "string", "required": true },
     "filters": { "type": "array", "required": true },   // [ { "name", "count" }, … ]
     "target_adu_fraction": { "type": "number", "default": 0.5 },
@@ -1010,8 +1013,10 @@ Abridged to the load-bearing shape:
         { "id": "filter-plan",
           "repeat": { "while": "has(params.filters[session.filter_index])", "max_iterations": 64 },
           "body": [
-            { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-                                              "filter_name": { "$expr": "params.filters[session.filter_index].name" } } },
+            { "if": "params.filter_wheel_id != ''",
+              "then": [
+                { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                                                  "filter_name": { "$expr": "params.filters[session.filter_index].name" } } } ] },
             { "set": { "session.duration": "seconds(params.initial_duration)" } },  // reset per filter
             { "id": "find-exposure",
               "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",

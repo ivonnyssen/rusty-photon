@@ -41,6 +41,9 @@ pub struct CalibratorFlatsWorld {
     // --- Flat calibration plan ---
     /// Filter name → count for the calibrator-flats service config.
     pub flat_plan: Vec<(String, u32)>,
+    /// Filterless (OSC) rig: no filter wheel is rostered and the plan
+    /// omits `filter_wheel_id`, so entries are plain capture groups.
+    pub no_filter_wheel: bool,
 
     // --- TLS + auth smoke test (`auth.feature`) ---
     /// State for the shared TLS + auth smoke steps.
@@ -77,7 +80,7 @@ impl TlsAuthSmokeWorld for CalibratorFlatsWorld {
     fn base_test_config(&self) -> serde_json::Value {
         // The suite's usual plan; it is never invoked — the smoke
         // scenario only probes `/health`.
-        build_calibrator_flats_config(&[("Luminance".to_string(), 1)])
+        build_calibrator_flats_config(&[("Luminance".to_string(), 1)], Some("main-fw"))
     }
 
     async fn start_with_tls_auth(&mut self, config: serde_json::Value) {

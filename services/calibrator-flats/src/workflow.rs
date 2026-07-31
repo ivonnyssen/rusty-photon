@@ -95,8 +95,12 @@ async fn run_capture_loop(
     let mut total_frames = 0u32;
 
     for filter in &plan.filters {
-        debug!(filter = %filter.name, count = filter.count, "switching filter");
-        mcp.set_filter(&plan.filter_wheel_id, &filter.name).await?;
+        if let Some(filter_wheel_id) = plan.filter_wheel() {
+            debug!(filter = %filter.name, count = filter.count, "switching filter");
+            mcp.set_filter(filter_wheel_id, &filter.name).await?;
+        } else {
+            debug!(group = %filter.name, count = filter.count, "filterless rig, capture group");
+        }
 
         // Find optimal exposure time
         let (duration, median_adu, iterations, converged) =
@@ -241,7 +245,7 @@ mod tests {
         FlatPlan {
             server: crate::config::ServerConfig::new(0),
             camera_id: "main-cam".into(),
-            filter_wheel_id: "fw".into(),
+            filter_wheel_id: Some("fw".into()),
             calibrator_id: "cc".into(),
             target_adu_fraction: 0.5,
             tolerance,

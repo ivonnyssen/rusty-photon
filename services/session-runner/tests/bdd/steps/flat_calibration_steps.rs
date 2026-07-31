@@ -11,8 +11,9 @@ use std::time::Duration;
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::{
-    add_event_plugin, configure_default_equipment, ensure_omnisim, ensure_webhook_receiver,
-    register_orchestrator, start_rp_service, start_session_runner_service,
+    add_event_plugin, configure_default_equipment, ensure_camera, ensure_cover_calibrator,
+    ensure_omnisim, ensure_webhook_receiver, register_orchestrator, start_rp_service,
+    start_session_runner_service,
 };
 use crate::world::SessionRunnerWorld;
 
@@ -42,9 +43,25 @@ async fn webhook_receiver_subscribed_to(world: &mut SessionRunnerWorld, event_ty
     add_event_plugin(world, vec![event_type]);
 }
 
+#[given(expr = "a flat plan of {int} {string} flats with no filter wheel")]
+async fn flat_plan_filterless(world: &mut SessionRunnerWorld, count: u32, group: String) {
+    world.flat_plan = vec![(group, count)];
+    world.no_filter_wheel = true;
+}
+
 #[given("rp is running with a camera, filter wheel, cover calibrator, and the session-runner orchestrator")]
 async fn rp_running_with_equipment_and_session_runner(world: &mut SessionRunnerWorld) {
     configure_default_equipment(world).await;
+    start_session_runner_service(world).await;
+    register_calibrator_flats(world);
+    start_rp_service(world).await;
+}
+
+#[given("rp is running with a camera, cover calibrator, and the session-runner orchestrator")]
+async fn rp_running_filterless_and_session_runner(world: &mut SessionRunnerWorld) {
+    ensure_omnisim(world).await;
+    ensure_camera(world);
+    ensure_cover_calibrator(world);
     start_session_runner_service(world).await;
     register_calibrator_flats(world);
     start_rp_service(world).await;
@@ -139,9 +156,8 @@ fn register_calibrator_flats(world: &mut SessionRunnerWorld) {
         .iter()
         .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
         .collect();
-    let parameters = serde_json::json!({
+    let mut parameters = serde_json::json!({
         "camera_id": "main-cam",
-        "filter_wheel_id": "main-fw",
         "calibrator_id": "flat-panel",
         "target_adu_fraction": 0.5,
         "tolerance": 1.0,
@@ -149,5 +165,10 @@ fn register_calibrator_flats(world: &mut SessionRunnerWorld) {
         "initial_duration": "100ms",
         "filters": filters
     });
+    // A filterless plan omits the parameter, exercising the document's
+    // `""` default (set_filter is skipped).
+    if !world.no_filter_wheel {
+        parameters["filter_wheel_id"] = serde_json::json!("main-fw");
+    }
     register_orchestrator(world, "calibrator_flats", Some(parameters));
 }

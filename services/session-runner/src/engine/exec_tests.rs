@@ -1861,6 +1861,43 @@ async fn test_golden_calibrator_flats_document_runs_the_full_algorithm() {
 }
 
 #[tokio::test]
+async fn test_golden_calibrator_flats_skips_set_filter_on_a_filterless_rig() {
+    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
+    // No `filter_wheel_id` supplied — the parameter defaults to `""`,
+    // the document's no-filter-wheel sentinel.
+    let params = bind_parameters(
+        &doc.parameters,
+        Some(&json!({
+            "camera_id": "cam",
+            "calibrator_id": "panel",
+            "filters": [{ "name": "OSC", "count": 2 }]
+        })),
+    )
+    .unwrap();
+    let tools = flats_tools(vec![32000]);
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec![
+            "get_camera_info",
+            "close_cover",
+            "calibrator_on",
+            "capture",             // find-exposure pass 1
+            "compute_image_stats", // 32000 → converged
+            "capture",             // OSC flat 1
+            "capture",             // OSC flat 2
+            "calibrator_off",
+            "open_cover",
+        ],
+        "a filterless plan must never call set_filter"
+    );
+    assert_eq!(session["report"]["total_frames"], json!(2.0));
+}
+
+#[tokio::test]
 async fn test_golden_calibrator_flats_cleans_up_when_the_loop_fails() {
     let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
     let params = flats_params(&doc, json!([{ "name": "L", "count": 2 }]));

@@ -1,10 +1,10 @@
 {
   "version": 1,
   "name": "calibrator-flats",
-  "description": "Flat-field capture against a cover calibrator: close the cover, light the panel, then per filter find the exposure that hits the target ADU and capture the requested flats. The document port of the calibrator-flats Rust orchestrator (docs/services/calibrator-flats.md), whose BDD suite is the behavioral oracle.",
+  "description": "Flat-field capture against a cover calibrator: close the cover, light the panel, then per filter find the exposure that hits the target ADU and capture the requested flats. On a filterless (one-shot color) rig, leave filter_wheel_id at its '' default: set_filter is skipped and filters entries are plain capture groups. The document port of the calibrator-flats Rust orchestrator (docs/services/calibrator-flats.md), whose BDD suite is the behavioral oracle.",
   "parameters": {
     "camera_id": { "type": "string", "required": true },
-    "filter_wheel_id": { "type": "string", "required": true },
+    "filter_wheel_id": { "type": "string", "default": "" },
     "calibrator_id": { "type": "string", "required": true },
     "filters": { "type": "array", "required": true },
     "target_adu_fraction": { "type": "number", "default": 0.5 },
@@ -56,11 +56,16 @@
             },
             "body": [
               {
-                "tool": "set_filter",
-                "args": {
-                  "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-                  "filter_name": { "$expr": "params.filters[session.filter_index].name" }
-                }
+                "if": "params.filter_wheel_id != ''",
+                "then": [
+                  {
+                    "tool": "set_filter",
+                    "args": {
+                      "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                      "filter_name": { "$expr": "params.filters[session.filter_index].name" }
+                    }
+                  }
+                ]
               },
               {
                 "set": { "session.duration": "seconds(params.initial_duration)" }

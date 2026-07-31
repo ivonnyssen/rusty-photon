@@ -114,6 +114,10 @@ pub struct SessionRunnerWorld {
     /// Filter name → count, forwarded as the document's `filters`
     /// parameter in the orchestrator registration's `config`.
     pub flat_plan: Vec<(String, u32)>,
+    /// Filterless (OSC) rig: no filter wheel is rostered and the
+    /// registration omits `filter_wheel_id`, exercising the document's
+    /// `""` default (set_filter is skipped).
+    pub no_filter_wheel: bool,
 
     // --- REST API state ---
     pub last_api_status: Option<u16>,
