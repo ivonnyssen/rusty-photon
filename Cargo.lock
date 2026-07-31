@@ -6270,6 +6270,7 @@ dependencies = [
  "mockall",
  "reqwest 0.13.4",
  "rp-auth",
+ "rp-mcp-client",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-server-config",

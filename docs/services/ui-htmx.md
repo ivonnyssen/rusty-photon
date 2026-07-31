@@ -1303,17 +1303,15 @@ avoids.
   placement, gap + disconnect translation.
 - `probe.rs`: tier classification per probe outcome (mocked responses),
   timeout → Unreachable, 401 → Auth required.
-- `targets_client.rs`: form-to-tool-args mapping (the PA tri-state:
-  absent field vs explicit `null` vs number in the `update_target`
-  arguments), and the `McpCallError` → page-state mapping (`Request` →
-  unavailable, `Tool` → field error, `Malformed` → banner) — driven
-  through a stub `TargetsClient` for the states the end-to-end suite
-  can't produce (the gated/down card, `Malformed`).
-- `pages/targets.rs`: goal-row parsing (blank-row dropping, string
-  passthrough), the stale-goal flag (roster union membership; empty
-  union flags nothing), PA rendering (explicit vs inherit + the hint
-  from train defaults), provenance-line rendering, and inbox ordering
-  (pending by `updated_at` desc, active by name).
+- `pages/targets.rs`: the PA tri-state (blank → explicit `null`,
+  number passthrough, non-numeric → field error), goal-row parsing
+  (zip in row order, blank-row dropping, string passthrough), the
+  stale-goal flag (roster union membership; empty union flags
+  nothing), the config join (wheel union + imaging-train defaults) and
+  the inherit hint, inbox ordering (pending by `updated_at` desc,
+  active by name), and — through a stub `TargetsClient` for the states
+  the end-to-end suite can't produce — the unavailable card naming the
+  safety gate and the `Malformed` error banner.
 - `pages/equipment.rs`: roster join (config ⨝ status by id, mount pairing),
   config surgery (insert/replace/remove per kind incl. the singular mount),
   and the per-kind subschema field generation.
@@ -1327,8 +1325,8 @@ avoids.
 | `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
 | `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing, and `GET /api/services` (the `probe_port` listing the restart match resolves against). |
 | `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
-| `targets_client.rs` | `TargetsClient` trait (mockable seam) + `McpTargetsClient`: per-request `rp-mcp-client` sessions driving rp's target tools (`list_targets` / `get_target` / `update_target` / `set_goals` / `delete_target`), the form→tool-args mapping incl. the PA tri-state, and the `McpCallError` → page-state mapping. |
-| `pages/targets.rs` | The targets inbox: pending/active listing (provenance, stale-goal flags, goal summaries), the review form (goals editor + goal-row fragment, PA field with inherit hint), and the roster/train-default join over rp's config value. |
+| `targets_client.rs` | `TargetsClient` trait (mockable seam) + `McpTargetsClient`: per-request `rp-mcp-client` sessions driving rp's target tools (`list_targets` / `get_target` / `update_target` / `set_goals` / `delete_target`), with the `McpCallError` → `TargetsError` mapping the pages render from. |
+| `pages/targets.rs` | The targets inbox: pending/active listing (provenance, stale-goal flags, goal summaries), the review form (goals editor + goal-row fragment, PA field with inherit hint), the form parsing (PA tri-state, goal-row zip), its handlers, and the roster/train-default join over rp's config value. |
 | `roster.rs` | The roster domain: `EquipKind` (kind ⇄ ASCOM-type mapping), `parse_roster` over rp's config value, the `rp:{kind}:{id}` key codec, and the insert/replace/remove config surgery with duplicate-id/singular-mount guards. |
 | `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the integer-enum-array checkbox group and the array-item subschema entry point), `config_card`/fragment templates, the schema-driven `merge_form` coercion over duplicate-key-preserving form pairs, and the shared `layout` shell (nav tabs + night-vision toggle). |
 | `pages/equipment.rs` | The equipment page: roster join, tier badges, add/edit/remove forms, roster mutation via config surgery. |

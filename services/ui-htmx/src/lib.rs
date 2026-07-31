@@ -36,6 +36,7 @@ pub mod sentinel_client;
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod sse_fixtures;
 pub mod sse_proxy;
+pub mod targets_client;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -43,7 +44,7 @@ use std::sync::Arc;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use maud::Markup;
 use serde::Deserialize;
@@ -92,6 +93,9 @@ impl DriverHandle {
 pub struct RpState {
     /// rp's config over REST — shared with the `/config/rp` `DriverHandle`.
     pub(crate) config_client: Arc<dyn ConfigClient>,
+    /// rp's MCP-only target tools (the targets inbox) — per-request
+    /// sessions through `rp-mcp-client`, same `rp` block credentials.
+    pub(crate) targets: targets_client::SharedTargetsClient,
     /// rp's non-config REST surface (equipment status, session status).
     pub(crate) api: Arc<dyn rp_client::RpApi>,
     /// Bounded-timeout prober for the roster's capability tiers.
@@ -232,6 +236,11 @@ impl AppState {
         let rp_state = Some(Arc::new(RpState {
             api: Arc::new(rp_client::RestRpApi::new(Arc::clone(&http), &rp.base_url)),
             config_client,
+            targets: Arc::new(targets_client::McpTargetsClient::new(
+                &rp.base_url,
+                rp.auth.as_ref(),
+                rp.ca_cert_path.clone(),
+            )),
             probe_http: Arc::new(
                 probe::ReqwestProbeHttp::new(rp.ca_cert_path.as_deref())
                     .map_err(|e| format!("rp target: {e}"))?,
@@ -304,9 +313,31 @@ impl AppState {
         }
     }
 
+    /// Swap the targets-tools client on the test state (targets-page unit
+    /// tests inject a stub for states the end-to-end suite can't produce —
+    /// the gated/down card, malformed responses).
+    #[must_use]
+    pub fn with_targets_client(mut self, targets: Arc<dyn targets_client::TargetsClient>) -> Self {
+        if let Some(rp) = self.rp.take() {
+            self.rp = Some(Arc::new(RpState {
+                config_client: Arc::clone(&rp.config_client),
+                targets,
+                api: Arc::clone(&rp.api),
+                probe_http: Arc::clone(&rp.probe_http),
+                ca_cert_path: rp.ca_cert_path.clone(),
+                base_url: rp.base_url.clone(),
+                stream_client: rp.stream_client.clone(),
+                stream_auth: rp.stream_auth.clone(),
+            }));
+        }
+        self
+    }
+
     /// Build rp-only state from explicit parts (tests inject stubs for the
     /// equipment / stream handlers). The `rp` config-page handle is wired to
-    /// the same `config_client`, mirroring production.
+    /// the same `config_client`, mirroring production. The targets client
+    /// defaults to an always-unavailable stub; inject a real one with
+    /// [`with_targets_client`](Self::with_targets_client).
     pub fn with_rp_parts(
         config_client: Arc<dyn ConfigClient>,
         api: Arc<dyn rp_client::RpApi>,
@@ -328,6 +359,7 @@ impl AppState {
             sentinel_host: None,
             rp: Some(Arc::new(RpState {
                 config_client,
+                targets: Arc::new(targets_client::UnwiredTargets),
                 api,
                 probe_http,
                 ca_cert_path: None,
@@ -348,6 +380,7 @@ impl AppState {
             // rebuild keeps the test constructor simple.
             let rp = Arc::new(RpState {
                 config_client: Arc::clone(&rp.config_client),
+                targets: Arc::clone(&rp.targets),
                 api: Arc::clone(&rp.api),
                 probe_http: Arc::clone(&rp.probe_http),
                 ca_cert_path: rp.ca_cert_path.clone(),
@@ -505,6 +538,14 @@ pub fn build_router(state: AppState) -> Router {
             "/config/{service}/restart",
             axum::routing::post(config_restart),
         )
+        .route("/targets", get(pages::targets::page))
+        .route("/targets/goal-row", get(pages::targets::goal_row_fragment))
+        .route(
+            "/targets/{slug}",
+            get(pages::targets::review).post(pages::targets::save),
+        )
+        .route("/targets/{slug}/active", post(pages::targets::set_active))
+        .route("/targets/{slug}/delete", post(pages::targets::delete))
         .route("/equipment", get(pages::equipment::page))
         .route(
             "/equipment/{kind}/new",

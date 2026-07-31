@@ -8,3 +8,4 @@ pub mod restart_steps;
 pub mod rp_config_steps;
 pub mod sse_steps;
 pub mod stream_steps;
+pub mod targets_steps;

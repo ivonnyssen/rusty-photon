@@ -17,6 +17,7 @@
 
 pub mod equipment;
 pub mod stream;
+pub mod targets;
 
 use maud::{html, Markup, DOCTYPE};
 use serde_json::Value;
@@ -67,6 +68,8 @@ pub enum NavTab {
     Activity,
     /// The equipment roster (`/equipment`).
     Equipment,
+    /// The targets inbox (`/targets`).
+    Targets,
     /// The config pages (`/`, `/config/{service}`).
     Configuration,
 }
@@ -98,6 +101,7 @@ pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
                     div.nav-tabs {
                         a .active[active == NavTab::Activity] href="/stream" { "Activity" }
                         a .active[active == NavTab::Equipment] href="/equipment" { "Equipment" }
+                        a .active[active == NavTab::Targets] href="/targets" { "Targets" }
                         a .active[active == NavTab::Configuration] href="/" { "Configuration" }
                     }
                     span.grow {}
