@@ -2362,12 +2362,13 @@ fn deep_sky_params(doc: &Document, overrides: Value) -> Value {
 }
 
 /// `get_next_target` result carrying an exposure plan, in rp's current
-/// wire shape: the target's coordinate nests as `coord`, and the plan
+/// wire shape: the target's coordinate nests as `coord`, the plan
 /// entry to shoot next is a nested `exposure` object (`{filter,
-/// duration_secs}`), or `null` when the target defines no plan. A null
-/// `duration_secs` argument is the "no plan entry" signal — it yields a
-/// null `exposure`, matching the workflow's `result.exposure != null`
-/// fallback guard.
+/// duration_secs}`), or `null` when the target defines no plan, and
+/// `position_angle_degrees` is the effective framing angle (rp.md §
+/// Target Store → Position angle). A null `duration_secs` argument is
+/// the "no plan entry" signal — it yields a null `exposure`, matching
+/// the workflow's `result.exposure != null` fallback guard.
 fn planned_recommendation(filter: Value, duration_secs: Value) -> Value {
     let exposure = if duration_secs.is_null() {
         Value::Null
@@ -2381,7 +2382,8 @@ fn planned_recommendation(filter: Value, duration_secs: Value) -> Value {
             "min_altitude_degrees": null
         },
         "reason": "best_transiting_candidate",
-        "exposure": exposure
+        "exposure": exposure,
+        "position_angle_degrees": 121.25
     })
 }
 
@@ -2428,6 +2430,132 @@ async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
     assert_eq!(
         capture.1["duration"], "2m",
         "the capture must run at the plan's 120 s, not params.exposure_duration"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_rotates_to_the_planner_angle_when_enabled() {
+    // With rotate: true the acquisition issues a train-addressed
+    // move_rotator to the recommendation's effective position angle,
+    // after the slew and before the capture; get_next_target itself is
+    // train-addressed so rp can resolve the per-train default layer
+    // (rp.md § Target Store → Position angle).
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "rotate": true,
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "set_filter" | "move_rotator" | "record_exposure" => {
+            Ok(json!({}))
+        }
+        "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    let next_target = calls
+        .iter()
+        .find(|(name, _)| name == "get_next_target")
+        .expect("get_next_target must be called");
+    assert_eq!(
+        next_target.1["train_id"], "main",
+        "get_next_target must be train-addressed for the per-train angle layer"
+    );
+    let rotate_idx = calls
+        .iter()
+        .position(|(name, _)| name == "move_rotator")
+        .expect("move_rotator must be called when rotate is enabled");
+    assert_eq!(calls[rotate_idx].1["train_id"], "main");
+    assert_eq!(calls[rotate_idx].1["angle"], 121.25);
+    let slew_idx = calls
+        .iter()
+        .position(|(name, _)| name == "slew")
+        .expect("slew must be called");
+    let capture_idx = calls
+        .iter()
+        .position(|(name, _)| name == "capture")
+        .expect("capture must be called");
+    assert!(
+        slew_idx < rotate_idx && rotate_idx < capture_idx,
+        "the rotator must move after the slew and before the capture; got slew {slew_idx}, \
+         move_rotator {rotate_idx}, capture {capture_idx}"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_does_not_rotate_by_default() {
+    // rotate defaults to false (rotator-less rigs): the train default
+    // angle is config-documented reality and nothing moves. The mock
+    // panics on any unexpected tool, so a stray move_rotator would
+    // fail the run outright; the explicit assertion documents intent.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        !tools.calls().iter().any(|(name, _)| name == "move_rotator"),
+        "rotate defaults to off — no rotator motion"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_continues_when_the_rotator_move_fails() {
+    // A failed rotator move degrades framing, not the night: the
+    // try/catch logs and the capture still happens (tenet: robustness).
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "rotate": true,
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "move_rotator" => Err(ToolCallError::Failed("rotator jammed".to_owned())),
+        "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    assert!(calls.iter().any(|(name, _)| name == "move_rotator"));
+    assert!(
+        calls.iter().any(|(name, _)| name == "capture"),
+        "the capture must still happen after a failed rotator move"
     );
 }
 

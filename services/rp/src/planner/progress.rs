@@ -179,6 +179,7 @@ mod tests {
             name: name.to_string(),
             coord: rp_targets::IcrsCoord::try_new(0.0, 0.0).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures,
         }
     }

@@ -2073,6 +2073,7 @@ decisions recorded there are fixed.
 ```jsonc
 "optical_trains": [
   { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
+    "default_position_angle_degrees": 254.0,
     "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
                     "min_area": 4, "max_area": 500 } },
@@ -2100,6 +2101,19 @@ Semantics:
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
   carry no `optics` block, exactly like a camera outside any train.
+- `default_position_angle_degrees` is the train's default framing
+  angle in degrees east of north, sky frame — the same domain as
+  `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
+  at load otherwise. Optional. It is layer two of the three-layer
+  effective position angle (target value → this default → `0.0`
+  north-up; [Target Store → Position angle](#position-angle), plan
+  Decision 5): for a rotator-less train it documents the camera's
+  fixed mounting angle as a physical fact of that light path — set it
+  once, dial the same angle into the planetarium's FOV indicator, and
+  frames match. Resolution happens at read time by design, so
+  re-mounting the camera (and updating this value) deliberately
+  reinterprets every target that inherits the default; per-target
+  explicit angles freeze framing and are never reinterpreted.
 - `auto_focus` is an optional per-train block holding the V-curve
   sweep parameters for focusing this train. Which fields it takes
   depends on the train's `purpose`, validated at load with
@@ -3824,11 +3838,14 @@ keys on, and what the P4 inbox reads as "who touched this last".
 planetarium bridge ([planetarium-bridge.md](planetarium-bridge.md)
 § rp-side contract is the design record; this section is the landed
 contract): bare `ra_hours` + `dec_degrees` + `source {kind, client,
-received_at}`. `catalog_ref`, `display_name`, `active`, and `notes`
-are all rejected alongside `source` — naming is rp's job here, imports
-always land paused (`active: false`), and rp writes the human-readable
-provenance line (`"Imported via <kind> from <client> at
-<received_at>"`) into `notes` itself (display data, never parsed).
+received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
+`position_angle_degrees` are all rejected alongside `source` — naming
+is rp's job here, imports always land paused (`active: false`) with no
+framing angle (no planetarium channel carries one; per-target angles
+are entered in the P4 inbox — [Position angle](#position-angle)), and
+rp writes the human-readable provenance line (`"Imported via <kind>
+from <client> at <received_at>"`) into `notes` itself (display data,
+never parsed).
 `source.kind` must not be `"operator"` (reserved). `goals[]` defaults
 from `target_store.default_goals` and `scheduling` falls back exactly
 as for any other add.
@@ -3875,6 +3892,46 @@ Semantics that differ from an operator add:
   never import correctness — identity, dedup, and slug allocation are
   pure coordinate proximity.
 
+### Position angle
+
+*(P2 of [planetarium-target-import.md](../plans/planetarium-target-import.md),
+Decision 5.)* `Target` carries `position_angle_degrees` — the sky
+position angle this target should be framed at, in degrees east of
+north (`0.0 ≤ angle < 360.0`, finite; the same sky frame as
+`move_rotator`'s `angle`). The **effective** angle is a three-layer
+fallback resolved at read time, homed per optical train:
+
+1. the target's own `position_angle_degrees` — an explicit angle
+   freezes framing and is never reinterpreted;
+2. the imaging train's
+   `equipment.optical_trains[].default_position_angle_degrees`
+   ([Optical Trains](#optical-trains)) — per-train, not global,
+   because a camera's fixed mounting angle is a physical fact of one
+   light path, and a rig with two rotator-less trains can carry two
+   different angles;
+3. `0.0` (north-up).
+
+`get_next_target` resolves the fallback: it accepts an optional
+`train_id` (an `equipment.optical_trains[]` id — unknown ids are an
+error; omitted, layer two is skipped) and returns the effective angle
+as a top-level `position_angle_degrees` field beside `exposure` (null
+only when `target` is null). With a rotator in the train, the
+`deep_sky` workflow threads that value through its blackboard into a
+`move_rotator` call after slew/centering
+([session-runner.md](session-runner.md) § `deep_sky.json`); on a
+rotator-less train the config value documents physical reality and
+nothing moves — the operator dials the same angle into the
+planetarium's FOV indicator.
+
+The field is operator-owned: `add_target` (non-import forms) and
+`update_target` accept it, the [import form](#import-form-source)
+rejects it, and imports always land with no angle (inherit). On
+`update_target` an explicit `null` clears the field back to
+inherit-the-train-default — the only `update_target` field with
+explicit-null semantics, because "blank" (inherit) and "0.0"
+(explicit north-up) must stay distinguishable for the P4 inbox
+(plan § P4 note).
+
 ### Capture-time target linkage
 
 `rp` has no session-side "current target" — see [Capture Tool
@@ -3892,10 +3949,10 @@ Document).
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session. **Not yet accepted:** `grading` (wait on the on-disk frame scan), `position_angle_degrees` (P2) |
+| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`), `position_angle_degrees` (optional — degrees east of north, `0.0 ≤ angle < 360.0`, see [Position angle](#position-angle); rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session. **Not yet accepted:** `grading` (wait on the on-disk frame scan) |
 | `get_target` | slug | target, progress | Fetch one target with derived progress (below) |
 | `list_targets` | active_only (optional) | targets: [{...target fields, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the P4 inbox read. Each element is the flattened target plus a `progress` field (not the `{target, progress}` nesting `get_target` uses) |
-| `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the P4 inbox) accepts a pending target into the rotation. `scheduling`, when supplied, replaces the whole overrides object rather than merging field-wise |
+| `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the P4 inbox) accepts a pending target into the rotation. `scheduling`, when supplied, replaces the whole overrides object rather than merging field-wise. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (the only field with explicit-null semantics — see [Position angle](#position-angle)) |
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
 
@@ -4016,7 +4073,7 @@ decide what to do next — `rp` does not make workflow decisions.
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `get_next_target` | — | target (nested `coord`), reason, exposure (nested `{filter, duration_secs}`, null when none) | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter |
+| `get_next_target` | train_id (optional — the imaging train, for the position-angle fallback; unknown ids are an error) | target (nested `coord`), reason, exposure (nested `{filter, duration_secs}`, null when none), position_angle_degrees (the effective framing angle — target value → the named train's `default_position_angle_degrees` → `0.0`; null when target is null. See [Target Store → Position angle](#position-angle)) | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter |
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
 | `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress. Reads store rows only *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
@@ -4643,6 +4700,7 @@ return a structured "site not configured" error.
         "id": "main",
         "purpose": "imaging",
         "focal_length_mm": 1000.0,
+        "default_position_angle_degrees": 254.0,
         "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
         "auto_focus": {
           "duration": "3s",

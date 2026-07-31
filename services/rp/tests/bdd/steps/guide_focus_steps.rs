@@ -78,6 +78,7 @@ async fn rp_with_sim_rotator_in_guiding_train(world: &mut RpWorld, train_id: Str
             id: train_id,
             purpose: Some("guiding".to_string()),
             focal_length_mm: None,
+            default_position_angle_degrees: None,
             devices: vec!["main-rotator".to_string(), "guide-cam".to_string()],
             auto_focus: None,
         });
@@ -99,6 +100,7 @@ fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block:
             id: train_id,
             purpose: Some("guiding".to_string()),
             focal_length_mm: None,
+            default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "guide-cam".to_string()],
             auto_focus,
         });

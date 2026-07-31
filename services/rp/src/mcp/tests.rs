@@ -3865,7 +3865,10 @@ async fn get_target_status_accepts_radec_form() {
 async fn get_next_target_errors_when_site_absent() {
     let h = test_handler(empty_registry());
     let r = h
-        .get_next_target(Parameters(GetNextTargetParams { time: None }))
+        .get_next_target(Parameters(GetNextTargetParams {
+            time: None,
+            train_id: None,
+        }))
         .await;
     assert_tool_error(r, "site not configured");
 }
@@ -3874,7 +3877,10 @@ async fn get_next_target_errors_when_site_absent() {
 async fn get_next_target_with_no_targets_returns_no_targets_configured() {
     let h = test_handler_with_site(test_site());
     let r = h
-        .get_next_target(Parameters(GetNextTargetParams { time: None }))
+        .get_next_target(Parameters(GetNextTargetParams {
+            time: None,
+            train_id: None,
+        }))
         .await
         .expect("tool returned protocol error");
     let text = r
@@ -3954,6 +3960,7 @@ fn test_store_target(
         object_type: None,
         magnitude: None,
         size_arcmin: None,
+        position_angle_degrees: None,
         priority: 0,
         active: true,
         goals,
@@ -4042,8 +4049,11 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
     // through one shared progress store.
     let (h, _store_dir) = handler_with_planned_target().await;
     let v = ok_json(
-        h.get_next_target(Parameters(GetNextTargetParams { time: None }))
-            .await,
+        h.get_next_target(Parameters(GetNextTargetParams {
+            time: None,
+            train_id: None,
+        }))
+        .await,
     );
     assert_eq!(v["exposure"]["filter"], "Red");
     assert_eq!(v["exposure"]["duration_secs"], 120.0);
@@ -4055,8 +4065,11 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
         .await,
     );
     let v = ok_json(
-        h.get_next_target(Parameters(GetNextTargetParams { time: None }))
-            .await,
+        h.get_next_target(Parameters(GetNextTargetParams {
+            time: None,
+            train_id: None,
+        }))
+        .await,
     );
     assert_eq!(
         v["exposure"]["filter"], "Blue",
@@ -4071,8 +4084,11 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
         .await,
     );
     let v = ok_json(
-        h.get_next_target(Parameters(GetNextTargetParams { time: None }))
-            .await,
+        h.get_next_target(Parameters(GetNextTargetParams {
+            time: None,
+            train_id: None,
+        }))
+        .await,
     );
     assert_eq!(v["reason"], "end_of_session");
     assert!(v["target"].is_null());

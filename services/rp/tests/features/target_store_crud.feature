@@ -129,3 +129,53 @@ Feature: Target store CRUD (P1)
     When the MCP client calls "delete_target" for slug "does-not-exist"
     Then the tool call should succeed
     And the target result deleted should be false
+
+  # Framing angle (P2, rp.md § Target Store → Position angle): the
+  # per-target sky position angle in degrees east of north, in
+  # move_rotator's domain (0.0 inclusive to 360.0 exclusive, finite).
+  # Absent means "inherit the imaging train's configured default" —
+  # the effective-angle fallback itself is pinned in
+  # target_position_angle.feature.
+  Scenario: A framing angle set at add time is stored and returned
+    Given rp is running with a target store
+    And an MCP client connected to rp
+    When the MCP client calls "add_target" with display_name "Framed" ra_hours 5.0 dec_degrees 10.0 and position angle 254.5
+    Then the tool call should succeed
+    When the MCP client fetches the target it just added
+    Then the tool call should succeed
+    And the fetched target position angle should be 254.5
+
+  Scenario: An out-of-range framing angle fails at add time
+    Given rp is running with a target store
+    And an MCP client connected to rp
+    When the MCP client calls "add_target" with display_name "Framed" ra_hours 5.0 dec_degrees 10.0 and position angle 360.0
+    Then the tool call should fail
+    And the tool error message should mention "position_angle_degrees"
+
+  Scenario: update_target sets a framing angle on an existing target
+    Given rp is running with a target store
+    And an MCP client connected to rp
+    And the MCP client has added a target named "Frame A" at ra_hours 5.0 dec_degrees 10.0
+    When the MCP client calls "update_target" for slug "frame-a" setting position angle 12.5
+    Then the tool call should succeed
+    And the fetched target position angle should be 12.5
+
+  # Explicit null is the one update_target field with clearing
+  # semantics: blank (inherit the train default) and 0.0 (explicit
+  # north-up) must stay distinguishable for the P4 inbox.
+  Scenario: An explicit null clears the framing angle back to inherit
+    Given rp is running with a target store
+    And an MCP client connected to rp
+    When the MCP client calls "add_target" with display_name "Frame A" ra_hours 5.0 dec_degrees 10.0 and position angle 12.5
+    Then the tool call should succeed
+    When the MCP client calls "update_target" for slug "frame-a" clearing the position angle
+    Then the tool call should succeed
+    And the fetched target position angle should be null
+
+  Scenario: An out-of-range framing angle fails at update time
+    Given rp is running with a target store
+    And an MCP client connected to rp
+    And the MCP client has added a target named "Frame A" at ra_hours 5.0 dec_degrees 10.0
+    When the MCP client calls "update_target" for slug "frame-a" setting position angle -1.0
+    Then the tool call should fail
+    And the tool error message should mention "position_angle_degrees"

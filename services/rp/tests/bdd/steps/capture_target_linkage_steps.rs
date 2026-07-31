@@ -33,6 +33,7 @@ async fn rp_running_with_capture_rig(world: &mut RpWorld) {
         id: "main".to_string(),
         purpose: None,
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices: vec!["main-fw".to_string(), "main-cam".to_string()],
         auto_focus: None,
     });
@@ -49,6 +50,7 @@ async fn rp_running_with_capture_rig_no_templates(world: &mut RpWorld) {
         id: "main".to_string(),
         purpose: None,
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices: vec!["main-fw".to_string(), "main-cam".to_string()],
         auto_focus: None,
     });

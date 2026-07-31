@@ -90,6 +90,7 @@ mod tests {
             object_type: Some("Galaxy".to_string()),
             magnitude: Some(5.7),
             size_arcmin: Some(62.0),
+            position_angle_degrees: None,
             priority: 0,
             active: true,
             goals: Vec::new(),

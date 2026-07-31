@@ -51,6 +51,10 @@ pub struct Train {
     pub id: String,
     pub purpose: TrainPurpose,
     pub focal_length_mm: Option<f64>,
+    /// The train's default framing angle, degrees east of north —
+    /// layer two of the effective position angle `get_next_target`
+    /// resolves (rp.md § Target Store → Position angle).
+    pub default_position_angle_degrees: Option<f64>,
     pub devices: Vec<TrainDevice>,
     /// The train's V-curve sweep parameters
     /// (`optical_trains[].auto_focus`), carried through for the
@@ -332,6 +336,9 @@ impl TrainModel {
                     id: train.id.clone(),
                     purpose: train.purpose,
                     focal_length_mm: train.focal_length_mm.map(|f| f.value()),
+                    default_position_angle_degrees: train
+                        .default_position_angle_degrees
+                        .map(|a| a.value()),
                     devices,
                     auto_focus: train.auto_focus.clone(),
                 });

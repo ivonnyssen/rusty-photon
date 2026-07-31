@@ -168,6 +168,7 @@ async fn import_with_extra_parameter(
         "display_name" => json!("My Frame"),
         "active" => json!(false),
         "notes" => json!("hand-written"),
+        "position_angle_degrees" => json!(90.0),
         other => panic!("unsupported extra parameter {other:?}"),
     };
     call_import(world, args).await;

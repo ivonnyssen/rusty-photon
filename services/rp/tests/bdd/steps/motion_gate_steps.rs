@@ -86,6 +86,7 @@ async fn rp_with_guiding_train_and_slow_guider(
         id: train_id,
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices: vec!["main-cam".to_string()],
         auto_focus: None,
     });

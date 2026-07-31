@@ -16,7 +16,7 @@ Feature: Target store import form (P3)
   (created_by / updated_by = source.kind) and a human-readable
   provenance line in notes.
 
-  Scenario: The source form rejects naming, activation, and notes parameters
+  Scenario: The source form rejects naming, activation, notes, and framing parameters
     Given rp is running with a target store
     And an MCP client connected to rp
     When the MCP client imports at ra_hours 5.5 dec_degrees 40.0 with extra parameter "catalog_ref"
@@ -26,6 +26,8 @@ Feature: Target store import form (P3)
     When the MCP client imports at ra_hours 5.5 dec_degrees 40.0 with extra parameter "active"
     Then the tool call should fail
     When the MCP client imports at ra_hours 5.5 dec_degrees 40.0 with extra parameter "notes"
+    Then the tool call should fail
+    When the MCP client imports at ra_hours 5.5 dec_degrees 40.0 with extra parameter "position_angle_degrees"
     Then the tool call should fail
 
   Scenario: The source form requires coordinates

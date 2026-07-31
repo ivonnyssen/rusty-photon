@@ -309,6 +309,65 @@ async fn call_update_target_active(world: &mut RpWorld, slug: String, active: St
     world.last_tool_result = Some(result);
 }
 
+#[when(
+    expr = "the MCP client calls \"add_target\" with display_name {string} ra_hours {float} dec_degrees {float} and position angle {float}"
+)]
+async fn call_add_target_with_angle(
+    world: &mut RpWorld,
+    display_name: String,
+    ra_hours: f64,
+    dec_degrees: f64,
+    angle: f64,
+) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "add_target",
+            serde_json::json!({
+                "display_name": display_name,
+                "ra_hours": ra_hours,
+                "dec_degrees": dec_degrees,
+                "position_angle_degrees": angle
+            }),
+        )
+        .await;
+    remember_slug_and_result(world, result);
+}
+
+#[when(
+    expr = "the MCP client calls \"update_target\" for slug {string} setting position angle {float}"
+)]
+async fn call_update_target_position_angle(world: &mut RpWorld, slug: String, angle: f64) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "update_target",
+            serde_json::json!({ "slug": slug, "position_angle_degrees": angle }),
+        )
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+// The explicit-null clearing form (rp.md § Target Store → Position
+// angle): `position_angle_degrees: null` is "back to inherit", distinct
+// from omitting the field (leave untouched).
+#[when(
+    expr = "the MCP client calls \"update_target\" for slug {string} clearing the position angle"
+)]
+async fn call_update_target_clear_position_angle(world: &mut RpWorld, slug: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "update_target",
+            serde_json::json!({ "slug": slug, "position_angle_degrees": null }),
+        )
+        .await;
+    world.last_tool_result = Some(result);
+}
+
 #[when(expr = "the MCP client calls \"delete_target\" for slug {string}")]
 async fn call_delete_target(world: &mut RpWorld, slug: String) {
     ensure_mcp_client(world).await;
@@ -398,6 +457,26 @@ fn fetched_target_display_name(world: &mut RpWorld, expected: String) {
 fn fetched_target_active(world: &mut RpWorld) {
     let active = target_field(world, "active");
     assert_eq!(active.as_bool(), Some(true), "expected target to be active");
+}
+
+#[then(expr = "the fetched target position angle should be {float}")]
+fn fetched_target_position_angle(world: &mut RpWorld, expected: f64) {
+    let angle = target_field(world, "position_angle_degrees")
+        .as_f64()
+        .expect("position_angle_degrees is not a number");
+    assert!(
+        (angle - expected).abs() < f64::EPSILON,
+        "expected position_angle_degrees={expected}, got {angle}"
+    );
+}
+
+#[then("the fetched target position angle should be null")]
+fn fetched_target_position_angle_null(world: &mut RpWorld) {
+    let angle = target_field(world, "position_angle_degrees");
+    assert!(
+        angle.is_null(),
+        "expected position_angle_degrees=null, got {angle}"
+    );
 }
 
 #[then(expr = "the fetched target slug should still be {string}")]

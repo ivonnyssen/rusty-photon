@@ -112,6 +112,16 @@ pub struct Target {
     pub magnitude: Option<f64>,
     pub size_arcmin: Option<f64>,
 
+    // --- Framing ---
+    /// Sky position angle to frame this target at, in degrees east of
+    /// north (rp.md § Target Store → Position angle). None ⇒ inherit
+    /// the imaging train's configured default angle, then 0.0
+    /// north-up — resolved by rp at read time, never written back.
+    /// `#[serde(default)]`, so pre-P2 rows deserialize as None (the
+    /// whole migration story, exactly like the writer-identity
+    /// fields; no version bump).
+    pub position_angle_degrees: Option<f64>,
+
     // --- Planning ---
     pub priority: i32,
     pub active: bool,
