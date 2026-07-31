@@ -249,21 +249,56 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
     Ok(password)
 }
 
-/// The services whose configs carry a full rp/service client block — the
-/// shared `service_auth` / `ca_cert` field pair: sentinel's probe client
-/// and the MCP clients (session-runner, calibrator-flats — ADR-017).
-const CLIENT_WIRING_SERVICES: &[&str] = &["sentinel", "session-runner", "calibrator-flats"];
+/// One client-wiring target: a service whose config carries the shared
+/// `service_auth` / `ca_cert` field pair, and where in its config that
+/// pair lives. `prefix` is a JSON-pointer prefix — empty for the
+/// top-level shape (sentinel's probe client, the session-runner /
+/// calibrator-flats MCP clients — ADR-017), `"/rp"` for
+/// planetarium-bridge, whose client block nests under its `rp` key
+/// (planetarium-bridge.md § Configuration).
+struct ClientWiring {
+    service: &'static str,
+    /// `false` for services with only a `ca_cert` setting — no
+    /// `service_auth`, because they carry no
+    /// shared-observatory-credential client role. `rp`'s outbound
+    /// Alpaca / plate-solver / guider clients trust the observatory CA
+    /// the same way, but device credentials are per-device `auth`
+    /// blocks, not the D6 shared credential (issue #609).
+    wire_auth: bool,
+    prefix: &'static str,
+}
 
-/// Services with only a `ca_cert` setting — no `service_auth`, because
-/// they carry no shared-observatory-credential client role. `rp`'s
-/// outbound Alpaca / plate-solver / guider clients trust the observatory
-/// CA the same way, but device credentials are per-device `auth` blocks,
-/// not the D6 shared credential (issue #609).
-const CA_ONLY_WIRING_SERVICES: &[&str] = &["rp"];
+const CLIENT_WIRING: &[ClientWiring] = &[
+    ClientWiring {
+        service: "sentinel",
+        wire_auth: true,
+        prefix: "",
+    },
+    ClientWiring {
+        service: "session-runner",
+        wire_auth: true,
+        prefix: "",
+    },
+    ClientWiring {
+        service: "calibrator-flats",
+        wire_auth: true,
+        prefix: "",
+    },
+    ClientWiring {
+        service: "planetarium-bridge",
+        wire_auth: true,
+        prefix: "/rp",
+    },
+    ClientWiring {
+        service: "rp",
+        wire_auth: false,
+        prefix: "",
+    },
+];
 
 /// The client-block wiring `--fix` distributes into each client service's
 /// config once the material exists: the plaintext credential into an
-/// absent `service_auth` (skipped for [`CA_ONLY_WIRING_SERVICES`]), the CA
+/// absent `service_auth` (skipped where `wire_auth` is off), the CA
 /// path into an absent `ca_cert`. On an ACME install ([`acme_active`]) the
 /// `ca_cert` half is skipped entirely: the targets are publicly trusted,
 /// and a written `ca_cert` would disable the platform roots the client
@@ -271,23 +306,14 @@ const CA_ONLY_WIRING_SERVICES: &[&str] = &["rp"];
 /// Empty when the service has no usable config or the material is not
 /// there to point at.
 pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
-    CLIENT_WIRING_SERVICES
+    CLIENT_WIRING
         .iter()
-        .flat_map(|service| plan_service_client_wiring(config_dir, service, true))
-        .chain(
-            CA_ONLY_WIRING_SERVICES
-                .iter()
-                .flat_map(|service| plan_service_client_wiring(config_dir, service, false)),
-        )
+        .flat_map(|wiring| plan_service_client_wiring(config_dir, wiring))
         .collect()
 }
 
-fn plan_service_client_wiring(
-    config_dir: &Path,
-    service: &str,
-    wire_auth: bool,
-) -> Vec<(String, FixOp)> {
-    let path = config_dir.join(format!("{service}.json"));
+fn plan_service_client_wiring(config_dir: &Path, wiring: &ClientWiring) -> Vec<(String, FixOp)> {
+    let path = config_dir.join(format!("{}.json", wiring.service));
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -295,31 +321,48 @@ fn plan_service_client_wiring(
         debug!(path = %path.display(), "config is not valid JSON; no client wiring");
         return Vec::new();
     };
+    // Fix ops never create intermediate structure (fix.rs), so a nested
+    // client block's parent must already exist — a service self-creates
+    // its full default config on first start, which is also what makes
+    // the block's absence meaningful rather than "never started".
+    if !wiring.prefix.is_empty()
+        && !value
+            .pointer(wiring.prefix)
+            .is_some_and(serde_json::Value::is_object)
+    {
+        return Vec::new();
+    }
     let mut ops = Vec::new();
-    if wire_auth
+    let auth_pointer = format!("{}/service_auth", wiring.prefix);
+    if wiring.wire_auth
         && value
-            .get("service_auth")
+            .pointer(&auth_pointer)
             .is_none_or(serde_json::Value::is_null)
     {
         if let Some(password) = read_credential(config_dir) {
             ops.push((
                 "auth.absent".to_string(),
                 FixOp::SetObject {
-                    service: service.to_string(),
-                    pointer: "/service_auth".to_string(),
+                    service: wiring.service.to_string(),
+                    pointer: auth_pointer,
                     value: json!({ "username": CREDENTIAL_USERNAME, "password": password }),
                 },
             ));
         }
     }
-    if !acme_active(config_dir) && value.get("ca_cert").is_none_or(serde_json::Value::is_null) {
+    let ca_pointer = format!("{}/ca_cert", wiring.prefix);
+    if !acme_active(config_dir)
+        && value
+            .pointer(&ca_pointer)
+            .is_none_or(serde_json::Value::is_null)
+    {
         let ca = rusty_photon_tls::config::ca_cert_path(&absolute_pki_dir(config_dir));
         if ca.is_file() {
             ops.push((
                 "tls.absent".to_string(),
                 FixOp::SetString {
-                    service: service.to_string(),
-                    pointer: "/ca_cert".to_string(),
+                    service: wiring.service.to_string(),
+                    pointer: ca_pointer,
                     value: ca.to_string_lossy().into_owned(),
                 },
             ));
@@ -715,6 +758,47 @@ mod tests {
                 "missing ca_cert wiring for {wired}: {ops:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_plan_client_wiring_wires_the_bridge_nested_rp_block() {
+        // planetarium-bridge's client pair nests under its `rp` key
+        // (planetarium-bridge.md § Configuration), so its wiring ops
+        // carry the nested pointers — and are planned only when the
+        // `rp` block exists, since fix ops never create parents.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("planetarium-bridge.json"),
+            r#"{ "server": { "port": 11126 },
+                 "rp": { "mcp_server_url": "http://127.0.0.1:11115/mcp" } }"#,
+        )
+        .unwrap();
+        ensure_material(dir.path(), &[], &[], false).unwrap();
+        ensure_credential(dir.path()).unwrap();
+
+        let ops = plan_client_wiring(dir.path());
+        assert_eq!(ops.len(), 2, "{ops:?}");
+        assert!(
+            ops.iter().any(|(check, op)| check == "auth.absent"
+                && matches!(op, FixOp::SetObject { service, pointer, .. }
+                    if service == "planetarium-bridge" && pointer == "/rp/service_auth")),
+            "{ops:?}"
+        );
+        assert!(
+            ops.iter().any(|(check, op)| check == "tls.absent"
+                && matches!(op, FixOp::SetString { service, pointer, .. }
+                    if service == "planetarium-bridge" && pointer == "/rp/ca_cert")),
+            "{ops:?}"
+        );
+
+        // Without the `rp` parent the ops could never apply — none are
+        // planned.
+        std::fs::write(
+            dir.path().join("planetarium-bridge.json"),
+            r#"{ "server": { "port": 11126 } }"#,
+        )
+        .unwrap();
+        assert!(plan_client_wiring(dir.path()).is_empty());
     }
 
     #[test]

@@ -280,6 +280,23 @@ pub struct RpSessionView {
     pub data_directory: Option<String>,
 }
 
+/// planetarium-bridge: the one field the fake-mount check reads
+/// (`joins.fake-mount`, planetarium-bridge.md § Doctor integration) —
+/// the bridge's minted Alpaca `UniqueID`, which the probe leg compares
+/// against what rp's configured mount actually reports.
+#[derive(Debug, Deserialize, Default)]
+pub struct BridgeView {
+    #[serde(default)]
+    pub device: Option<BridgeDeviceView>,
+}
+
+/// See [`BridgeView`].
+#[derive(Debug, Deserialize, Default)]
+pub struct BridgeDeviceView {
+    #[serde(default)]
+    pub unique_id: Option<String>,
+}
+
 /// rp: the client target block for `plate_solver` — a URL plus an
 /// optional per-target credential (issue #620). CA trust is a separate,
 /// top-level `RpView::ca_cert` shared by every rp client (issue #609 /
@@ -340,6 +357,27 @@ impl RpView {
             .get("url")?
             .as_str()
             .map(str::to_string)
+    }
+
+    /// The mount driver's own URL at `equipment.mount.alpaca_url` — the
+    /// subject of the fake-mount hazard check (`joins.fake-mount`,
+    /// planetarium-bridge.md § Doctor integration). Also walked by
+    /// [`Self::equipment_targets`] for the generic scheme/auth joins.
+    pub fn mount_alpaca_url(&self) -> Option<String> {
+        self.equipment
+            .as_ref()?
+            .get("mount")?
+            .get("alpaca_url")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// rp's client credential for the mount at `equipment.mount.auth` —
+    /// what the fake-mount probe presents to the mount's management API,
+    /// exactly as rp itself would connect.
+    pub fn mount_auth(&self) -> Option<ClientAuthView> {
+        let auth = self.equipment.as_ref()?.get("mount")?.get("auth")?;
+        serde_json::from_value(auth.clone()).ok()
     }
 
     /// The guider service's credential at `equipment.mount.guiding.auth`

@@ -22,12 +22,15 @@ const DEVICES_JSON: &str = r#"{ "Value": [
 ] }"#;
 
 /// How the stub management endpoint answers.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum StubBehavior {
     Devices,
     RequireAuth,
     ServerError,
     BadPayload,
+    /// One Telescope device reporting this `UniqueID` — the fake-mount
+    /// probe's subject (`joins.fake-mount`, aggregate.rs).
+    UniqueId(String),
 }
 
 async fn management_response(behavior: StubBehavior, headers: HeaderMap) -> (StatusCode, String) {
@@ -48,13 +51,23 @@ async fn management_response(behavior: StubBehavior, headers: HeaderMap) -> (Sta
             StatusCode::OK,
             "this is not the management JSON".to_string(),
         ),
+        StubBehavior::UniqueId(unique_id) => (
+            StatusCode::OK,
+            serde_json::json!({ "Value": [ {
+                "DeviceName": "Stub Telescope", "DeviceType": "Telescope",
+                "DeviceNumber": 0, "UniqueID": unique_id } ] })
+            .to_string(),
+        ),
     }
 }
 
 fn stub_router(behavior: StubBehavior) -> axum::Router {
     axum::Router::new().route(
         "/management/v1/configureddevices",
-        axum::routing::get(move |headers: HeaderMap| management_response(behavior, headers)),
+        axum::routing::get(move |headers: HeaderMap| {
+            let behavior = behavior.clone();
+            management_response(behavior, headers)
+        }),
     )
 }
 
@@ -86,6 +99,28 @@ async fn stub_endpoint(world: &mut DoctorWorld) {
 #[given("a stub management endpoint that requires authentication")]
 async fn stub_endpoint_authenticated(world: &mut DoctorWorld) {
     start_http_stub(world, StubBehavior::RequireAuth).await;
+}
+
+#[given(expr = "a stub management endpoint serving a device with UniqueID {string}")]
+async fn stub_endpoint_unique_id(world: &mut DoctorWorld, unique_id: String) {
+    start_http_stub(world, StubBehavior::UniqueId(unique_id)).await;
+}
+
+/// rp's mount wired at the stub — the fake-mount probe's subject. The
+/// stub's ephemeral port matches no catalog service, so the static
+/// loopback join resolves to nothing and the UniqueID probe leg runs.
+#[given(
+    expr = "a config file {string} whose equipment.mount.alpaca_url points at the stub endpoint"
+)]
+fn config_mount_at_stub(world: &mut DoctorWorld, file: String) {
+    let port = world.stub_port.expect("no stub endpoint started yet");
+    world.write_config(
+        &file,
+        &format!(
+            r#"{{ "server": {{ "port": 11115 }},
+                 "equipment": {{ "mount": {{ "alpaca_url": "http://127.0.0.1:{port}" }} }} }}"#
+        ),
+    );
 }
 
 #[given("a stub management endpoint answering HTTP 500")]

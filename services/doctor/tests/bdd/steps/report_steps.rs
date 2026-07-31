@@ -29,6 +29,20 @@ pub fn find_check(world: &mut DoctorWorld, status: &str, name: &str, service: Op
     }
 }
 
+#[then(expr = "the report contains no check named {string}")]
+fn no_check_named(world: &mut DoctorWorld, name: String) {
+    let matching: Vec<Value> = world
+        .checks()
+        .iter()
+        .filter(|c| c["name"] == name.as_str())
+        .cloned()
+        .collect();
+    assert!(
+        matching.is_empty(),
+        "unexpected check(s) named {name}: {matching:?}"
+    );
+}
+
 #[then(expr = "doctor exits with code {int}")]
 fn exit_code(world: &mut DoctorWorld, expected: i32) {
     let output = world.output.as_ref().expect("run doctor first");

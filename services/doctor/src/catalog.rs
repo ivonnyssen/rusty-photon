@@ -74,6 +74,10 @@ static RAW: &[(&str, &str)] = &[
         include_str!("../../phd2-guider/pkg/doctor.toml"),
     ),
     (
+        "planetarium-bridge",
+        include_str!("../../planetarium-bridge/pkg/doctor.toml"),
+    ),
+    (
         "plate-solver",
         include_str!("../../plate-solver/pkg/doctor.toml"),
     ),
