@@ -481,22 +481,29 @@ build:remote-cache --experimental_remote_cache_eviction_retries=30
 # that actually matters here.
 build:remote-cache --keep_going
 
-# macOS runners intermittently wedge inside Bazel's HTTP remote-cache client
-# during the bulk-download tail of a warm build: with `build:ci --jobs=64`
-# up to ~60 downloads run concurrently and the client's connection pool
-# (default cap 100) opens one TLS connection per transfer. Under that
-# concurrency either every in-flight transfer black-holes at once (total
-# output silence — `--remote_timeout` above never fires because it bounds an
-# established RPC, not a wedged pool) or the client<->server loopback stream
-# collapses (`Server terminated abruptly`, exit 37). Linux and Windows read
-# the same cache at the same parallelism without ever wedging, so the cap is
-# macOS-only. 16 keeps the download tail fast — connections are reused
-# across queued transfers — while staying far below the concurrency where
-# the wedge appears. Placed on the platform config rather than
-# `build:remote-cache` deliberately: the flag is inert when no remote cache
-# is configured, and this way local macOS builds that opt into a cache get
-# the same protection.
-build:macos --remote_max_connections=16
+# macOS runners intermittently wedge inside Bazel's HTTP remote-cache client:
+# the step goes totally silent mid-build and dies at its timeout, leaving an
+# orphan java + bazel for the runner to reap, while the same commit builds
+# normally on Linux and Windows.
+#
+# 0 = uncapped, and that is the point. Any positive value makes the cache
+# client build its channel pool as a netty `FixedChannelPool` via the 3-arg
+# constructor, which leaves `acquireTimeoutAction` unset — a caller that finds
+# no free permit waits forever. Nothing upstream of it bounds that wait:
+# `--remote_timeout` installs its idle handler on an *acquired* channel, so a
+# drained pool parks silently past every timeout flag we have. The acquire
+# failure paths compound it by completing their promise without releasing the
+# channel, so each one burns a permit permanently. At 0 the client uses
+# `SimpleChannelPool`, whose acquire never blocks, and the whole shape becomes
+# unreachable. Giving up the limit costs little: the flag's own default of 100
+# is a `FixedChannelPool` too, so "capped" was never the protection — and the
+# `minimal` download mode above already cut concurrent cache traffic far below
+# what any of these numbers bound.
+#
+# Placed on the platform config rather than `build:remote-cache` deliberately:
+# the flag is inert when no remote cache is configured, and this way local
+# macOS builds that opt into a cache behave like CI.
+build:macos --remote_max_connections=0
 
 # --- Conformu config -------------------------------------------------------
 
