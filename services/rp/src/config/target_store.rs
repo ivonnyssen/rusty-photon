@@ -36,6 +36,35 @@ pub struct TargetStoreConfig {
     /// parity (Decision 9) reads `min_altitude_degrees` from here when
     /// a store-backed target carries no per-target override.
     pub default_scheduling: rp_targets::SchedulingConstraints,
+    /// Tunables for `add_target`'s `source` import form (rp.md § Target
+    /// Store → Import form).
+    pub import: ImportConfig,
+}
+
+/// Validated import tunables (`target_store.import`): all three are
+/// checked finite and positive by [`parse_target_store_config`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImportConfig {
+    /// Proximity window, in arcseconds, within which a repeated import
+    /// upserts a still-pending, import-owned row instead of creating a
+    /// new target. Identity, never naming.
+    pub dedup_arcsec: f64,
+    /// Deep-sky-class cone radius, in arcminutes, for the add-time
+    /// reverse cone-search that names an import. Display only.
+    pub naming_tolerance_arcmin: f64,
+    /// Star-class cone radius, in arcminutes. A star names an import
+    /// only when no deep-sky object is inside its own cone.
+    pub star_naming_tolerance_arcmin: f64,
+}
+
+impl Default for ImportConfig {
+    fn default() -> Self {
+        Self {
+            dedup_arcsec: 30.0,
+            naming_tolerance_arcmin: 10.0,
+            star_naming_tolerance_arcmin: 2.0,
+        }
+    }
 }
 
 /// The `target_store` config block as it appears on the wire (config JSON)
@@ -55,6 +84,33 @@ pub struct TargetStoreConfigWire {
     /// See [`TargetStoreConfig::default_scheduling`]; wire shape is
     /// [`SchedulingWire`].
     pub default_scheduling: SchedulingWire,
+    /// See [`TargetStoreConfig::import`]; wire shape is [`ImportWire`].
+    pub import: ImportWire,
+}
+
+/// The `target_store.import` block as it appears on the wire — mirrors
+/// [`ImportConfig`], whose range validation lives in
+/// [`parse_target_store_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImportWire {
+    /// See [`ImportConfig::dedup_arcsec`].
+    pub dedup_arcsec: f64,
+    /// See [`ImportConfig::naming_tolerance_arcmin`].
+    pub naming_tolerance_arcmin: f64,
+    /// See [`ImportConfig::star_naming_tolerance_arcmin`].
+    pub star_naming_tolerance_arcmin: f64,
+}
+
+impl Default for ImportWire {
+    fn default() -> Self {
+        let d = ImportConfig::default();
+        Self {
+            dedup_arcsec: d.dedup_arcsec,
+            naming_tolerance_arcmin: d.naming_tolerance_arcmin,
+            star_naming_tolerance_arcmin: d.star_naming_tolerance_arcmin,
+        }
+    }
 }
 
 /// JsonSchema-able wire projection of [`rp_targets::SchedulingConstraints`]
@@ -89,13 +145,15 @@ impl From<SchedulingWire> for rp_targets::SchedulingConstraints {
 
 /// Validates a [`TargetStoreConfigWire`] into [`TargetStoreConfig`]: serde
 /// has already checked the block's shape at config-load (typed field +
-/// `deny_unknown_fields`), so the only remaining fallible step is parsing
-/// each `default_goals` entry's `binning` / `exposure_duration` strings.
+/// `deny_unknown_fields`), so the remaining fallible steps are parsing
+/// each `default_goals` entry's `binning` / `exposure_duration` strings
+/// and range-checking the `import` tunables.
 ///
 /// # Errors
 ///
 /// Returns a human-readable message if a `default_goals` entry fails
-/// its `TryFrom<&GoalWire>` conversion into [`rp_targets::AcquisitionGoal`].
+/// its `TryFrom<&GoalWire>` conversion into [`rp_targets::AcquisitionGoal`],
+/// or an `import` field is not a finite positive number.
 pub fn parse_target_store_config(
     wire: &TargetStoreConfigWire,
 ) -> Result<TargetStoreConfig, String> {
@@ -103,10 +161,32 @@ pub fn parse_target_store_config(
     for g in &wire.default_goals {
         default_goals.push(rp_targets::AcquisitionGoal::try_from(g)?);
     }
+    for (field, value) in [
+        ("target_store.import.dedup_arcsec", wire.import.dedup_arcsec),
+        (
+            "target_store.import.naming_tolerance_arcmin",
+            wire.import.naming_tolerance_arcmin,
+        ),
+        (
+            "target_store.import.star_naming_tolerance_arcmin",
+            wire.import.star_naming_tolerance_arcmin,
+        ),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!(
+                "{field} must be a finite positive number, got {value}"
+            ));
+        }
+    }
     Ok(TargetStoreConfig {
         db_path: wire.db_path.clone(),
         default_goals,
         default_scheduling: wire.default_scheduling.into(),
+        import: ImportConfig {
+            dedup_arcsec: wire.import.dedup_arcsec,
+            naming_tolerance_arcmin: wire.import.naming_tolerance_arcmin,
+            star_naming_tolerance_arcmin: wire.import.star_naming_tolerance_arcmin,
+        },
     })
 }
 
@@ -177,6 +257,45 @@ mod tests {
         .unwrap();
         let err = parse_target_store_config(&wire).unwrap_err();
         assert!(err.contains("binning"), "{err}");
+    }
+
+    #[test]
+    fn import_defaults_are_the_documented_tunables() {
+        let config = parse_target_store_config(&TargetStoreConfigWire::default()).unwrap();
+        assert_eq!(config.import.dedup_arcsec, 30.0);
+        assert_eq!(config.import.naming_tolerance_arcmin, 10.0);
+        assert_eq!(config.import.star_naming_tolerance_arcmin, 2.0);
+    }
+
+    #[test]
+    fn import_block_overrides_parse() {
+        let wire: TargetStoreConfigWire = serde_json::from_value(serde_json::json!({
+            "import": { "dedup_arcsec": 45.0, "star_naming_tolerance_arcmin": 1.0 }
+        }))
+        .unwrap();
+        let config = parse_target_store_config(&wire).unwrap();
+        assert_eq!(config.import.dedup_arcsec, 45.0);
+        assert_eq!(config.import.naming_tolerance_arcmin, 10.0);
+        assert_eq!(config.import.star_naming_tolerance_arcmin, 1.0);
+    }
+
+    #[test]
+    fn import_block_rejects_nonpositive_tolerance() {
+        let wire: TargetStoreConfigWire = serde_json::from_value(serde_json::json!({
+            "import": { "dedup_arcsec": 0.0 }
+        }))
+        .unwrap();
+        let err = parse_target_store_config(&wire).unwrap_err();
+        assert!(err.contains("target_store.import.dedup_arcsec"), "{err}");
+    }
+
+    #[test]
+    fn import_block_rejects_unknown_field() {
+        let err = serde_json::from_value::<TargetStoreConfigWire>(serde_json::json!({
+            "import": { "dedup_arcmin": 1.0 }
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("dedup_arcmin"), "{err}");
     }
 
     #[test]

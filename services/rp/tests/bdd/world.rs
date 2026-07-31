@@ -183,6 +183,12 @@ pub struct RpWorld {
     /// Raw JSON array from the most recent `list_targets` call
     /// (Target Store scenarios).
     pub last_target_list: Option<Vec<Value>>,
+    /// Catalog centroid captured by "the MCP client has resolved
+    /// catalog target ..." (import scenarios —
+    /// `target_store_import.feature`), so later steps can import at or
+    /// offset from it without the feature file hard-coding catalog
+    /// coordinates.
+    pub resolved_coord: Option<(f64, f64)>,
     /// Raw `target_store` config block override (Target Store scenarios —
     /// `db_path`/`default_scheduling`/`default_grading`/`default_goals`,
     /// see rp.md § Target Store → Configuration), merged over whatever

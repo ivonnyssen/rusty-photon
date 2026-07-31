@@ -25,7 +25,7 @@ pub use memory::InMemoryTargetStore;
 pub use migrate::CURRENT_SCHEMA_VERSION;
 pub use model::{
     validate_goals, AcquisitionGoal, GradingThresholds, SchedulingConstraints, Target, TargetSlug,
-    TargetSlugError,
+    TargetSlugError, WriteStamp, OPERATOR_WRITER,
 };
 pub use redb_store::RedbTargetStore;
 // The plan value types live in `rp-vocabulary` (ADR-019); re-export the ones
@@ -43,8 +43,8 @@ use async_trait::async_trait;
 pub trait TargetStore: Send + Sync {
     /// Writes `target`, creating it or overwriting an existing row with the
     /// same slug in place — never a duplicate row. Preserves the existing
-    /// row's `created_at` on overwrite. Validates `target.goals` per
-    /// [`validate_goals`] before writing.
+    /// row's `created_at` and `created_by` on overwrite. Validates
+    /// `target.goals` per [`validate_goals`] before writing.
     async fn upsert_target(&self, target: Target) -> Result<(), TargetStoreError>;
 
     /// Returns the target for `slug`, including its goals, or `None` if
@@ -60,8 +60,8 @@ pub trait TargetStore: Send + Sync {
     /// absent. On-disk frames under the slug are left untouched.
     async fn delete_target(&self, slug: &TargetSlug) -> Result<bool, TargetStoreError>;
 
-    /// Replaces `slug`'s goal set atomically, leaving the rest of the row
-    /// untouched.
+    /// Replaces `slug`'s goal set atomically, applying `stamp` to
+    /// `updated_at`/`updated_by` and leaving the rest of the row untouched.
     ///
     /// # Errors
     ///
@@ -71,5 +71,6 @@ pub trait TargetStore: Send + Sync {
         &self,
         slug: &TargetSlug,
         goals: Vec<AcquisitionGoal>,
+        stamp: WriteStamp,
     ) -> Result<(), TargetStoreError>;
 }

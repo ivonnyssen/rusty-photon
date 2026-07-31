@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::error::TargetStoreError;
-use crate::model::{validate_goals, AcquisitionGoal, Target, TargetSlug};
+use crate::model::{validate_goals, AcquisitionGoal, Target, TargetSlug, WriteStamp};
 use crate::TargetStore;
 
 /// In-memory [`TargetStore`] test double: a `BTreeMap` behind a `Mutex`,
@@ -35,6 +35,7 @@ impl TargetStore for InMemoryTargetStore {
         let mut targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(existing) = targets.get(target.slug.as_str()) {
             target.created_at.clone_from(&existing.created_at);
+            target.created_by.clone_from(&existing.created_by);
         }
         targets.insert(target.slug.as_str().to_string(), target);
         Ok(())
@@ -59,6 +60,7 @@ impl TargetStore for InMemoryTargetStore {
         &self,
         slug: &TargetSlug,
         goals: Vec<AcquisitionGoal>,
+        stamp: WriteStamp,
     ) -> Result<(), TargetStoreError> {
         validate_goals(&goals)?;
         let mut targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
@@ -68,6 +70,8 @@ impl TargetStore for InMemoryTargetStore {
                 slug: slug.as_str().to_string(),
             })?;
         target.goals = goals;
+        target.updated_at = stamp.updated_at;
+        target.updated_by = stamp.updated_by;
         Ok(())
     }
 }
@@ -94,6 +98,8 @@ mod tests {
             notes: None,
             created_at: "2026-07-22T00:00:00Z".to_string(),
             updated_at: "2026-07-22T00:00:00Z".to_string(),
+            created_by: "operator".to_string(),
+            updated_by: "operator".to_string(),
         }
     }
 
@@ -133,7 +139,27 @@ mod tests {
     async fn set_goals_on_absent_slug_is_not_found() {
         let store = InMemoryTargetStore::new();
         let slug = TargetSlug::new("m33").unwrap();
-        let err = store.set_goals(&slug, Vec::new()).await.unwrap_err();
+        let stamp = WriteStamp {
+            updated_at: "2026-07-23T00:00:00Z".to_string(),
+            updated_by: "operator".to_string(),
+        };
+        let err = store.set_goals(&slug, Vec::new(), stamp).await.unwrap_err();
         assert!(matches!(err, TargetStoreError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn upsert_preserves_created_by_of_existing_row() {
+        let store = InMemoryTargetStore::new();
+        let mut imported = sample_target("m33");
+        imported.created_by = "planetarium-bridge".to_string();
+        imported.updated_by = "planetarium-bridge".to_string();
+        store.upsert_target(imported).await.unwrap();
+
+        store.upsert_target(sample_target("m33")).await.unwrap();
+
+        let slug = TargetSlug::new("m33").unwrap();
+        let stored = store.get_target(&slug).await.unwrap().unwrap();
+        assert_eq!(stored.created_by, "planetarium-bridge");
+        assert_eq!(stored.updated_by, "operator");
     }
 }

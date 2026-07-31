@@ -18,7 +18,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
+use rp_targets::{
+    AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore, WriteStamp, OPERATOR_WRITER,
+};
 
 use crate::equipment::EquipmentRegistry;
 use crate::planner::goal_wire::GoalWire;
@@ -37,21 +39,25 @@ const DEDUP_TOLERANCE_DEGREES: f64 = 10.0 / 60.0;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddTargetParams {
     /// Catalog name, resolved via `resolve_target`. Mutually exclusive
-    /// with `display_name`.
+    /// with `display_name`; not accepted with `source`.
     #[serde(default)]
     pub catalog_ref: Option<String>,
     /// Custom target name. Requires `ra_hours` + `dec_degrees`.
-    /// Mutually exclusive with `catalog_ref`.
+    /// Mutually exclusive with `catalog_ref`; not accepted with
+    /// `source` (rp names imports itself).
     #[serde(default)]
     pub display_name: Option<String>,
-    /// Required with `display_name`; optional with `catalog_ref` to
-    /// override the catalog centroid with a precisely-framed pointing.
+    /// Required with `display_name` and with `source`; optional with
+    /// `catalog_ref` to override the catalog centroid with a
+    /// precisely-framed pointing.
     #[serde(default)]
     pub ra_hours: Option<f64>,
     #[serde(default)]
     pub dec_degrees: Option<f64>,
-    #[serde(default = "default_active")]
-    pub active: bool,
+    /// Defaults to true. Not accepted with `source` — imports always
+    /// land paused pending operator review.
+    #[serde(default)]
+    pub active: Option<bool>,
     /// Defaults to `targets.default_goals` from config when omitted.
     #[serde(default)]
     pub goals: Option<Vec<GoalWire>>,
@@ -60,12 +66,29 @@ pub struct AddTargetParams {
     /// fields fall back to `targets.default_scheduling` from config.
     #[serde(default)]
     pub scheduling: Option<SchedulingWire>,
+    /// Not accepted with `source` — rp writes the provenance line into
+    /// `notes` itself for imports.
     #[serde(default)]
     pub notes: Option<String>,
+    /// Selects the import form (rp.md § Target Store → Import form):
+    /// bare `ra_hours` + `dec_degrees` plus this typed provenance.
+    #[serde(default)]
+    pub source: Option<SourceWire>,
 }
 
-fn default_active() -> bool {
-    true
+/// `add_target`'s `source` parameter — typed provenance from a
+/// non-operator writer (the planetarium bridge today). `kind` becomes
+/// the row's `created_by`/`updated_by` writer identity; all three
+/// fields feed the human-readable provenance line in `notes`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SourceWire {
+    /// Writer identity, e.g. `"planetarium-bridge"`. `"operator"` is
+    /// reserved for the operator surface and rejected here.
+    pub kind: String,
+    /// Originating client address, `"ip:port"`.
+    pub client: String,
+    /// RFC3339 receipt time at the importing service.
+    pub received_at: String,
 }
 
 /// The wire shape of `add_target`/`update_target`'s `scheduling`
@@ -156,7 +179,16 @@ impl McpHandler {
                        in the connected rig's configured filter roster. \
                        scheduling overrides fall back field-wise to \
                        targets.default_scheduling from config when \
-                       omitted (Decision 9 — altitude-gating parity).")]
+                       omitted (Decision 9 — altitude-gating parity). \
+                       A third form for importers: bare ra_hours + \
+                       dec_degrees + source {kind, client, received_at} — \
+                       catalog_ref, display_name, active, and notes are \
+                       all rejected with source; the import lands paused \
+                       (active: false), rp names it by reverse cone-search \
+                       against the catalog, dedup is proximity-only \
+                       (target_store.import.dedup_arcsec), and only a \
+                       still-pending row last written by the same \
+                       source.kind is ever upserted in place.")]
     pub(crate) async fn add_target(
         &self,
         Parameters(params): Parameters<AddTargetParams>,
@@ -164,6 +196,10 @@ impl McpHandler {
         let Some(store) = self.target_store.as_ref() else {
             return Ok(tool_error!("target store not configured"));
         };
+
+        if let Some(source) = &params.source {
+            return self.add_target_import(&params, source).await;
+        }
 
         let (
             display_name,
@@ -263,18 +299,9 @@ impl McpHandler {
             },
         };
 
-        let goals = match &params.goals {
-            Some(wire_goals) => {
-                let mut parsed = Vec::with_capacity(wire_goals.len());
-                for g in wire_goals {
-                    match AcquisitionGoal::try_from(g) {
-                        Ok(pg) => parsed.push(pg),
-                        Err(e) => return Ok(tool_error!("{}", e)),
-                    }
-                }
-                parsed
-            }
-            None => self.target_store_defaults.default_goals.clone(),
+        let goals = match parse_goals(&params.goals, &self.target_store_defaults.default_goals) {
+            Ok(g) => g,
+            Err(e) => return Ok(tool_error!("{}", e)),
         };
         if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
             return Ok(tool_error!("{}", e));
@@ -290,13 +317,15 @@ impl McpHandler {
             magnitude,
             size_arcmin,
             priority: 0,
-            active: params.active,
+            active: params.active.unwrap_or(true),
             goals,
             scheduling: params.scheduling.map(Into::into),
             grading: None,
             notes: params.notes,
             created_at: now.clone(),
             updated_at: now,
+            created_by: OPERATOR_WRITER.to_string(),
+            updated_by: OPERATOR_WRITER.to_string(),
         };
         if let Err(e) = store.upsert_target(target.clone()).await {
             return Ok(tool_error!("target store error: {}", e));
@@ -410,6 +439,7 @@ impl McpHandler {
             target.notes = params.notes;
         }
         target.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        target.updated_by = OPERATOR_WRITER.to_string();
         if let Err(e) = store.upsert_target(target.clone()).await {
             return Ok(tool_error!("target store error: {}", e));
         }
@@ -460,7 +490,11 @@ impl McpHandler {
         if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
             return Ok(tool_error!("{}", e));
         }
-        if let Err(e) = store.set_goals(&slug, goals).await {
+        let stamp = WriteStamp {
+            updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            updated_by: OPERATOR_WRITER.to_string(),
+        };
+        if let Err(e) = store.set_goals(&slug, goals, stamp).await {
             return Ok(tool_error!("target store error: {}", e));
         }
         match store.get_target(&slug).await {
@@ -468,6 +502,193 @@ impl McpHandler {
             Ok(None) => Ok(tool_error!("no target with slug {:?}", params.slug)),
             Err(e) => Ok(tool_error!("target store error: {}", e)),
         }
+    }
+}
+
+impl McpHandler {
+    /// `add_target`'s import form (rp.md § Target Store → Import form):
+    /// bare coordinates plus typed provenance. Naming is rp's job here —
+    /// reverse cone-search against the catalog — identity is proximity-only
+    /// dedup, and the import always lands paused.
+    async fn add_target_import(
+        &self,
+        params: &AddTargetParams,
+        source: &SourceWire,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(store) = self.target_store.as_ref() else {
+            return Ok(tool_error!("target store not configured"));
+        };
+        if params.catalog_ref.is_some() || params.display_name.is_some() {
+            return Ok(tool_error!(
+                "catalog_ref and display_name are not accepted with source — rp names imports itself"
+            ));
+        }
+        if params.active.is_some() {
+            return Ok(tool_error!(
+                "active is not accepted with source — imports always land paused (active: false)"
+            ));
+        }
+        if params.notes.is_some() {
+            return Ok(tool_error!(
+                "notes is not accepted with source — rp writes the provenance line itself"
+            ));
+        }
+        if source.kind.trim().is_empty() || source.kind == OPERATOR_WRITER {
+            return Ok(tool_error!(
+                "source.kind must be a non-empty writer identity other than {:?}",
+                OPERATOR_WRITER
+            ));
+        }
+        let (Some(ra_hours), Some(dec_degrees)) = (params.ra_hours, params.dec_degrees) else {
+            return Ok(tool_error!(
+                "the source form requires ra_hours and dec_degrees"
+            ));
+        };
+        let coord = match IcrsCoord::try_new(ra_hours, dec_degrees) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        let goals = match parse_goals(&params.goals, &self.target_store_defaults.default_goals) {
+            Ok(g) => g,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
+            return Ok(tool_error!("{}", e));
+        }
+
+        let import = &self.target_store_defaults.import;
+        let all = match store.list_targets().await {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("target store error: {}", e)),
+        };
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        // Identity: proximity-only dedup — the nearest stored row within
+        // dedup_arcsec, whatever its name. The catalog_ref-match branch of
+        // slug allocation is never consulted for imports: two framings of
+        // the same object beyond tolerance are two targets (mosaic panels).
+        let dedup_degrees = import.dedup_arcsec / 3600.0;
+        let neighbor = all
+            .iter()
+            .map(|t| {
+                (
+                    t,
+                    flat_separation_degrees(
+                        ra_hours,
+                        dec_degrees,
+                        t.coord.ra_hours(),
+                        t.coord.dec_degrees(),
+                    ),
+                )
+            })
+            .filter(|(_, separation)| *separation < dedup_degrees)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(t, _)| t);
+
+        if let Some(existing) = neighbor {
+            if !existing.active && existing.updated_by == source.kind {
+                // Still pending and unedited since the same importer wrote
+                // it: refresh coordinates and provenance in place; slug,
+                // display_name, and goals stay (Decision 3).
+                let mut target = existing.clone();
+                target.coord = coord;
+                target.notes = Some(provenance_line(source));
+                target.updated_at = now;
+                target.updated_by = source.kind.clone();
+                if let Err(e) = store.upsert_target(target.clone()).await {
+                    return Ok(tool_error!("target store error: {}", e));
+                }
+                return Ok(tool_success!({
+                    "slug": target.slug.as_str(),
+                    "created": false,
+                    "target": target_to_json(&target),
+                }));
+            }
+            // Active, operator-edited, or operator-created: the row is
+            // never modified — fall through and create a new pending
+            // target beside it (Decision 3's protection, enforced here).
+        }
+
+        // Naming: one reverse cone-search over the one logical catalog;
+        // coverage bounds naming quality only, never import correctness.
+        let tolerances = rp_catalog::NearestTolerances {
+            dso_arcmin: import.naming_tolerance_arcmin,
+            star_arcmin: import.star_naming_tolerance_arcmin,
+        };
+        let (display_name, catalog_ref, object_type, magnitude, size_arcmin, base_slug_input) =
+            match crate::planner::catalog::nearest(&coord, &tolerances) {
+                Some(hit) => {
+                    let name = hit.target.name.clone();
+                    // The plain name is reserved for a dead-center import
+                    // of an object no stored target already claims; any
+                    // other hit reads as *how this framing differs*.
+                    let sole_claim = !all
+                        .iter()
+                        .any(|t| t.catalog_ref.as_deref() == Some(name.as_str()));
+                    let centered = hit.separation_arcmin * 60.0 <= import.dedup_arcsec;
+                    let display = if sole_claim && centered {
+                        name.clone()
+                    } else {
+                        offset_display_name(&name, hit.east_offset_arcmin, hit.north_offset_arcmin)
+                    };
+                    (
+                        display,
+                        Some(name.clone()),
+                        Some(hit.target.object_type.clone()),
+                        hit.target.magnitude,
+                        hit.target.size_arcmin,
+                        name,
+                    )
+                }
+                None => {
+                    let (display, slug) = coordinate_forms(ra_hours, dec_degrees);
+                    (display, None, None, None, None, slug)
+                }
+            };
+
+        let base_slug = match TargetSlug::new(&base_slug_input) {
+            Ok(s) => s,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        // Imports never take over an existing slug — dedup above already
+        // decided this is a distinct target, so a collision always
+        // suffix-allocates.
+        let final_slug = match store.get_target(&base_slug).await {
+            Ok(None) => base_slug,
+            Ok(Some(_)) => match allocate_suffix(store.as_ref(), &base_slug).await {
+                Ok(s) => s,
+                Err(e) => return Ok(tool_error!("target store error: {}", e)),
+            },
+            Err(e) => return Ok(tool_error!("target store error: {}", e)),
+        };
+
+        let target = Target {
+            slug: final_slug,
+            display_name,
+            coord,
+            catalog_ref,
+            object_type,
+            magnitude,
+            size_arcmin,
+            priority: 0,
+            active: false,
+            goals,
+            scheduling: params.scheduling.map(Into::into),
+            grading: None,
+            notes: Some(provenance_line(source)),
+            created_at: now.clone(),
+            updated_at: now,
+            created_by: source.kind.clone(),
+            updated_by: source.kind.clone(),
+        };
+        if let Err(e) = store.upsert_target(target.clone()).await {
+            return Ok(tool_error!("target store error: {}", e));
+        }
+        Ok(tool_success!({
+            "slug": target.slug.as_str(),
+            "created": true,
+            "target": target_to_json(&target),
+        }))
     }
 }
 
@@ -486,9 +707,102 @@ fn kebab_slug_candidate(display_name: &str) -> String {
 }
 
 fn same_object(ra1_hours: f64, dec1_degrees: f64, ra2_hours: f64, dec2_degrees: f64) -> bool {
-    let ra_deg_diff = (ra1_hours - ra2_hours) * 15.0 * dec1_degrees.to_radians().cos();
+    flat_separation_degrees(ra1_hours, dec1_degrees, ra2_hours, dec2_degrees)
+        < DEDUP_TOLERANCE_DEGREES
+}
+
+/// Flat, `cos(dec)`-weighted angular separation in degrees, wrap-correct
+/// in RA. At arcsecond-to-arcminute dedup scales the flat approximation
+/// is indistinguishable from the great-circle distance.
+fn flat_separation_degrees(
+    ra1_hours: f64,
+    dec1_degrees: f64,
+    ra2_hours: f64,
+    dec2_degrees: f64,
+) -> f64 {
+    let mut ra_diff_hours = (ra1_hours - ra2_hours).rem_euclid(24.0);
+    if ra_diff_hours > 12.0 {
+        ra_diff_hours -= 24.0;
+    }
+    let ra_deg_diff = ra_diff_hours * 15.0 * dec1_degrees.to_radians().cos();
     let dec_diff = dec1_degrees - dec2_degrees;
-    ra_deg_diff.hypot(dec_diff) < DEDUP_TOLERANCE_DEGREES
+    ra_deg_diff.hypot(dec_diff)
+}
+
+fn parse_goals(
+    wire: &Option<Vec<GoalWire>>,
+    defaults: &[AcquisitionGoal],
+) -> Result<Vec<AcquisitionGoal>, String> {
+    match wire {
+        Some(wire_goals) => wire_goals.iter().map(AcquisitionGoal::try_from).collect(),
+        None => Ok(defaults.to_vec()),
+    }
+}
+
+/// The human-readable provenance line an import writes into `notes` —
+/// display data, never parsed (Decision 3). Refreshed wholesale on an
+/// in-place import upsert, which is safe because only rows the importer
+/// itself last wrote are ever upserted.
+fn provenance_line(source: &SourceWire) -> String {
+    format!(
+        "Imported via {} from {} at {}",
+        source.kind, source.client, source.received_at
+    )
+}
+
+/// The offset display form for a framed import of a catalog object —
+/// `"NGC 7000 +8′E −4′N"`: East = Δα·cos δ and North = Δδ of the framing
+/// from the catalog centroid, reading as *how this framing differs*.
+fn offset_display_name(base: &str, east_arcmin: f64, north_arcmin: f64) -> String {
+    let mut name = base.to_string();
+    for (value, axis) in [(east_arcmin, 'E'), (north_arcmin, 'N')] {
+        if let Some(component) = offset_component(value, axis) {
+            name.push(' ');
+            name.push_str(&component);
+        }
+    }
+    name
+}
+
+/// One offset component, rendered to 0.1′ with a trailing `.0` stripped
+/// (`+8′E`, `+0.3′E`); `None` under 0.05′. Typography matches the design
+/// doc: U+2032 prime, U+2212 minus.
+fn offset_component(value_arcmin: f64, axis: char) -> Option<String> {
+    let magnitude = value_arcmin.abs();
+    if magnitude < 0.05 {
+        return None;
+    }
+    let sign = if value_arcmin < 0.0 { '\u{2212}' } else { '+' };
+    let rendered = format!("{magnitude:.1}");
+    let rendered = rendered.strip_suffix(".0").unwrap_or(&rendered);
+    Some(format!("{sign}{rendered}\u{2032}{axis}"))
+}
+
+/// The display name and slug for an import with no catalog neighbor:
+/// IAU-style truncation `Jhhmm±ddmm` (`"J2059+4432"`) and its matching
+/// slug shape (`"j2059p4432"`, `p`/`m` for the sign).
+fn coordinate_forms(ra_hours: f64, dec_degrees: f64) -> (String, String) {
+    let (ra_hh, ra_mm) = truncated_minutes(ra_hours);
+    let ra_hh = ra_hh.min(23); // IcrsCoord bounds RA to [0, 24)
+    let (dec_dd, dec_mm) = truncated_minutes(dec_degrees.abs());
+    let display_sign = if dec_degrees < 0.0 { '-' } else { '+' };
+    let slug_sign = if dec_degrees < 0.0 { 'm' } else { 'p' };
+    (
+        format!("J{ra_hh:02}{ra_mm:02}{display_sign}{dec_dd:02}{dec_mm:02}"),
+        format!("j{ra_hh:02}{ra_mm:02}{slug_sign}{dec_dd:02}{dec_mm:02}"),
+    )
+}
+
+/// Splits a non-negative value into truncated `(whole, minutes)` — the
+/// IAU convention truncates rather than rounds. Decimal inputs like
+/// `1.9` h sit a hair *below* the exact minute boundary in binary
+/// floating point (`1.9 * 60` = 53.999…96), so round to a micro-minute
+/// first: truncation then reflects the intended coordinate, not its
+/// representation.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn truncated_minutes(value: f64) -> (u32, u32) {
+    let total_minutes = ((value * 60.0 * 1e6).round() / 1e6) as u32;
+    (total_minutes / 60, total_minutes % 60)
 }
 
 /// Lowest unused `"{base}-{n}"` for `n` from 2. Terminates by the
@@ -572,4 +886,84 @@ fn progress_for(t: &Target) -> Vec<ProgressRow> {
             total: 0,
         })
         .collect()
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offset_component_renders_to_tenth_arcmin_with_trailing_zero_stripped() {
+        assert_eq!(offset_component(8.0, 'E').unwrap(), "+8\u{2032}E");
+        assert_eq!(offset_component(-4.0, 'N').unwrap(), "\u{2212}4\u{2032}N");
+        assert_eq!(offset_component(0.3, 'E').unwrap(), "+0.3\u{2032}E");
+        assert_eq!(offset_component(12.34, 'N').unwrap(), "+12.3\u{2032}N");
+    }
+
+    #[test]
+    fn offset_component_omits_under_a_twentieth_arcmin() {
+        assert_eq!(offset_component(0.04, 'E'), None);
+        assert_eq!(offset_component(-0.04, 'N'), None);
+    }
+
+    #[test]
+    fn offset_display_name_matches_the_design_doc_example() {
+        assert_eq!(
+            offset_display_name("NGC 7000", 8.0, -4.0),
+            "NGC 7000 +8\u{2032}E \u{2212}4\u{2032}N"
+        );
+    }
+
+    #[test]
+    fn offset_display_name_degenerates_to_the_plain_name() {
+        assert_eq!(offset_display_name("NGC 7000", 0.01, -0.02), "NGC 7000");
+    }
+
+    #[test]
+    fn coordinate_forms_truncate_iau_style() {
+        // The design doc's own example shape: Jhhmm±ddmm, truncated.
+        assert_eq!(
+            coordinate_forms(20.99, 44.54),
+            ("J2059+4432".to_string(), "j2059p4432".to_string())
+        );
+        assert_eq!(
+            coordinate_forms(5.5, -0.75),
+            ("J0530-0045".to_string(), "j0530m0045".to_string())
+        );
+    }
+
+    #[test]
+    fn flat_separation_is_wrap_correct_in_ra() {
+        let separation = flat_separation_degrees(23.999, 0.0, 0.001, 0.0);
+        assert!(separation < 0.05, "wrapped separation was {separation}");
+    }
+
+    #[test]
+    fn provenance_line_names_kind_client_and_receipt_time() {
+        let source = SourceWire {
+            kind: "planetarium-bridge".to_string(),
+            client: "192.0.2.10:52441".to_string(),
+            received_at: "2026-07-30T01:23:45.678Z".to_string(),
+        };
+        assert_eq!(
+            provenance_line(&source),
+            "Imported via planetarium-bridge from 192.0.2.10:52441 at 2026-07-30T01:23:45.678Z"
+        );
+    }
+
+    // Pins the empty-sky fixture point the import BDD suite uses for the
+    // coordinate-form naming scenario: no deep-sky object within 10' and
+    // no star within 2' at the default tolerances. If a catalog expansion
+    // ever populates this spot, move both this test and the scenario.
+    #[test]
+    fn empty_sky_fixture_point_has_no_catalog_neighbor() {
+        let coord = IcrsCoord::try_new(1.9, -44.9).unwrap();
+        let tolerances = rp_catalog::NearestTolerances {
+            dso_arcmin: 10.0,
+            star_arcmin: 2.0,
+        };
+        assert_eq!(crate::planner::catalog::nearest(&coord, &tolerances), None);
+    }
 }

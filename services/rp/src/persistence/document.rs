@@ -496,6 +496,8 @@ mod tests {
             notes: None,
             created_at: String::new(),
             updated_at: String::new(),
+            created_by: "operator".to_string(),
+            updated_by: "operator".to_string(),
         };
         let exposure_target = ExposureTarget::from(&target);
         assert_eq!(exposure_target.slug, "m33");

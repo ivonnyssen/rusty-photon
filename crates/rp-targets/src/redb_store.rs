@@ -10,7 +10,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use crate::error::TargetStoreError;
 use crate::migrate::{check_schema_version, CURRENT_SCHEMA_VERSION};
-use crate::model::{validate_goals, AcquisitionGoal, Target, TargetSlug};
+use crate::model::{validate_goals, AcquisitionGoal, Target, TargetSlug, WriteStamp};
 use crate::TargetStore;
 
 const TARGETS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("targets");
@@ -119,15 +119,16 @@ fn upsert_target_sync(db: &Database, mut target: Target) -> Result<(), TargetSto
     let write_txn = db.begin_write()?;
     {
         let mut table = write_txn.open_table(TARGETS_TABLE)?;
-        let prior_created_at = match table.get(target.slug.as_str())? {
+        let prior = match table.get(target.slug.as_str())? {
             Some(existing) => {
                 let existing: Target = serde_json::from_slice(existing.value())?;
-                Some(existing.created_at)
+                Some((existing.created_at, existing.created_by))
             }
             None => None,
         };
-        if let Some(created_at) = prior_created_at {
+        if let Some((created_at, created_by)) = prior {
             target.created_at = created_at;
+            target.created_by = created_by;
         }
         let bytes = serde_json::to_vec(&target)?;
         table.insert(target.slug.as_str(), bytes.as_slice())?;
@@ -151,6 +152,7 @@ fn set_goals_sync(
     db: &Database,
     slug: &str,
     goals: Vec<AcquisitionGoal>,
+    stamp: WriteStamp,
 ) -> Result<(), TargetStoreError> {
     validate_goals(&goals)?;
     let write_txn = db.begin_write()?;
@@ -165,6 +167,8 @@ fn set_goals_sync(
             }
         };
         target.goals = goals;
+        target.updated_at = stamp.updated_at;
+        target.updated_by = stamp.updated_by;
         let bytes = serde_json::to_vec(&target)?;
         table.insert(slug, bytes.as_slice())?;
     }
@@ -208,10 +212,11 @@ impl TargetStore for RedbTargetStore {
         &self,
         slug: &TargetSlug,
         goals: Vec<AcquisitionGoal>,
+        stamp: WriteStamp,
     ) -> Result<(), TargetStoreError> {
         let db = Arc::clone(&self.db);
         let slug = slug.as_str().to_string();
-        tokio::task::spawn_blocking(move || set_goals_sync(&db, &slug, goals))
+        tokio::task::spawn_blocking(move || set_goals_sync(&db, &slug, goals, stamp))
             .await
             .map_err(|e| TargetStoreError::Join(e.to_string()))?
     }
@@ -239,6 +244,8 @@ mod tests {
             notes: None,
             created_at: "2026-07-22T00:00:00Z".to_string(),
             updated_at: "2026-07-22T00:00:00Z".to_string(),
+            created_by: "operator".to_string(),
+            updated_by: "operator".to_string(),
         }
     }
 
@@ -321,16 +328,26 @@ mod tests {
         assert!(!store.delete_target(&slug).await.unwrap());
     }
 
+    fn sample_stamp() -> WriteStamp {
+        WriteStamp {
+            updated_at: "2026-07-23T00:00:00Z".to_string(),
+            updated_by: "operator".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn set_goals_on_absent_slug_is_not_found() {
         let (store, _dir) = open_temp().await;
         let slug = TargetSlug::new("ngc7000").unwrap();
-        let err = store.set_goals(&slug, Vec::new()).await.unwrap_err();
+        let err = store
+            .set_goals(&slug, Vec::new(), sample_stamp())
+            .await
+            .unwrap_err();
         assert!(matches!(err, TargetStoreError::NotFound { .. }));
     }
 
     #[tokio::test]
-    async fn set_goals_replaces_and_leaves_rest_of_row_untouched() {
+    async fn set_goals_replaces_and_stamps_leaving_rest_of_row_untouched() {
         let (store, _dir) = open_temp().await;
         let target = sample_target("ngc7000");
         store.upsert_target(target.clone()).await.unwrap();
@@ -342,11 +359,36 @@ mod tests {
             exposure_duration: std::time::Duration::from_secs(300),
             desired_count: 20,
         }];
-        store.set_goals(&slug, goals.clone()).await.unwrap();
+        store
+            .set_goals(&slug, goals.clone(), sample_stamp())
+            .await
+            .unwrap();
 
         let stored = store.get_target(&slug).await.unwrap().unwrap();
         assert_eq!(stored.goals, goals);
         assert_eq!(stored.display_name, target.display_name);
+        assert_eq!(stored.updated_at, "2026-07-23T00:00:00Z");
+        assert_eq!(stored.updated_by, "operator");
+    }
+
+    #[tokio::test]
+    async fn upsert_preserves_created_by_and_created_at_of_existing_row() {
+        let (store, _dir) = open_temp().await;
+        let mut imported = sample_target("ngc7000");
+        imported.created_by = "planetarium-bridge".to_string();
+        imported.updated_by = "planetarium-bridge".to_string();
+        store.upsert_target(imported).await.unwrap();
+
+        // A later write claiming operator creation must not rewrite the
+        // creation attribution — only the update attribution.
+        let overwrite = sample_target("ngc7000");
+        store.upsert_target(overwrite).await.unwrap();
+
+        let slug = TargetSlug::new("ngc7000").unwrap();
+        let stored = store.get_target(&slug).await.unwrap().unwrap();
+        assert_eq!(stored.created_by, "planetarium-bridge");
+        assert_eq!(stored.created_at, "2026-07-22T00:00:00Z");
+        assert_eq!(stored.updated_by, "operator");
     }
 
     #[tokio::test]

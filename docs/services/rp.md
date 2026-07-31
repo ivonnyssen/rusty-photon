@@ -3777,6 +3777,78 @@ goes through `TargetSlug::new` unchanged, whose whitespace-*stripping*
 normalization suits compact catalog names (`"NGC 7000"` → `ngc7000`,
 matching `rp-catalog`).
 
+### Writer identity
+
+`Target` carries `created_by` / `updated_by` writer-identity fields
+beside the timestamps (settled in the P3 design, refining plan
+Decision 3's notes-only provenance): every operator-surface write
+(`add_target` without `source`, `update_target`, `set_goals`) stamps
+`"operator"` on `updated_by`; an [import](#import-form-source) stamps
+`source.kind`. The store preserves `created_at` *and* `created_by`
+across `upsert_target` of an existing slug, so creation attribution
+survives later edits. Rows written before these fields existed
+deserialize as operator-owned (serde defaults; no redb schema step).
+"Pending and unedited since import" is the first-class predicate
+`!active && updated_by == source.kind` — what the import dedup below
+keys on, and what the P4 inbox reads as "who touched this last".
+
+### Import form (`source`)
+
+`add_target`'s third parameter form, activated for the P3
+planetarium bridge ([planetarium-bridge.md](planetarium-bridge.md)
+§ rp-side contract is the design record; this section is the landed
+contract): bare `ra_hours` + `dec_degrees` + `source {kind, client,
+received_at}`. `catalog_ref`, `display_name`, `active`, and `notes`
+are all rejected alongside `source` — naming is rp's job here, imports
+always land paused (`active: false`), and rp writes the human-readable
+provenance line (`"Imported via <kind> from <client> at
+<received_at>"`) into `notes` itself (display data, never parsed).
+`source.kind` must not be `"operator"` (reserved). `goals[]` defaults
+from `target_store.default_goals` and `scheduling` falls back exactly
+as for any other add.
+
+Semantics that differ from an operator add:
+
+- **Proximity-only dedup** replaces the slug-keyed same-object rule:
+  rp searches all stored targets for the nearest row within
+  `target_store.import.dedup_arcsec` (default 30″) of the received
+  coordinates. A match that is still pending and import-owned
+  (`!active && updated_by == source.kind`) is upserted in place —
+  coordinates take the new value, `updated_at`/`updated_by` stamped,
+  the provenance line refreshed; slug, `display_name`, and goals
+  untouched; `created: false`. A match that is active,
+  operator-edited, or operator-created is **never modified** — a new
+  pending target is created beside it with a suffixed slug (Decision
+  3's protection, enforced in rp, not bridge courtesy). No match
+  creates.
+- **The `catalog_ref`-match branch of slug allocation is never
+  consulted**: two imports 15′ apart that both resolve to "NGC 7000"
+  are two targets (mosaic panels), not one. An import never takes over
+  an existing slug — a base-slug collision always suffix-allocates.
+- **Naming by reverse cone-search** (`rp_catalog::nearest`, one query
+  over the one logical catalog): entries carry a class, each class has
+  its own acceptance radius — `naming_tolerance_arcmin` (default 10′)
+  for deep-sky objects, `star_naming_tolerance_arcmin` (default 2′)
+  for stars — and a DSO hit outranks any star hit regardless of
+  separation (the tight star radius matches the faint-star-anchor
+  gesture; flat nearest-wins would let field stars take names from
+  nebula framings exactly where the nebulae live). A hit sets
+  `catalog_ref` and denormalizes `object_type`/`magnitude`/
+  `size_arcmin` exactly as a catalog add does. The display name is the
+  plain name (`"NGC 7000"`) only when no stored target already claims
+  that `catalog_ref` *and* the offset from the centroid is within
+  `dedup_arcsec`; otherwise the offset form — `"NGC 7000 +8′E −4′N"`
+  (East = Δα·cos δ, North = Δδ, each component rendered to 0.1′ with a
+  trailing `.0` stripped and a component under 0.05′ omitted) — reads
+  as *how this framing differs*. No hit falls back to the IAU-style
+  truncated coordinate form `"J2059+4432"` (`Jhhmm±ddmm`), whose slug
+  (`j2059p4432`, `p`/`m` for the sign) matches by construction. Names
+  are initial values only: `display_name` stays freely editable, and
+  existing rows are never retroactively renamed when a second framing
+  or a wider catalog arrives. Catalog coverage bounds naming quality,
+  never import correctness — identity, dedup, and slug allocation are
+  pure coordinate proximity.
+
 ### Capture-time target linkage
 
 `rp` has no session-side "current target" — see [Capture Tool
@@ -3794,7 +3866,7 @@ Document).
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` — exactly one form; `active` (optional, default `true`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above. `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session. **Not yet accepted:** `grading` (wait on the on-disk frame scan), `position_angle_degrees` (P2), `source` (P3 bridge provenance) |
+| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session. **Not yet accepted:** `grading` (wait on the on-disk frame scan), `position_angle_degrees` (P2) |
 | `get_target` | slug | target, progress | Fetch one target with derived progress (below) |
 | `list_targets` | active_only (optional) | targets: [{...target fields, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the P4 inbox read. Each element is the flattened target plus a `progress` field (not the `{target, progress}` nesting `get_target` uses) |
 | `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the P4 inbox) accepts a pending target into the rotation. `scheduling`, when supplied, replaces the whole overrides object rather than merging field-wise |
@@ -3858,9 +3930,18 @@ Landed today:
     "min_moon_separation_degrees": 30.0,
     "max_moon_illumination_fraction": 1.0,     // 1.0 ⇒ no moon-brightness limit
     "meridian_window_hours": null              // null ⇒ no meridian window
+  },
+  "import": {
+    "dedup_arcsec": 30.0,                      // proximity-upsert window; below any mosaic panel spacing
+    "naming_tolerance_arcmin": 10.0,           // DSO-class cone radius; display only, never identity
+    "star_naming_tolerance_arcmin": 2.0        // star-class cone; a star names a target only when no DSO is in its cone
   }
 }
 ```
+
+The three `import` tunables drive the [`source` import
+form](#import-form-source); each must be a finite positive number
+(config load rejects anything else, naming the field).
 
 `default_goals` is rp-owned policy (Decision 10): `add_target` applies
 it when the caller supplies no `goals[]`, so a target created with no
