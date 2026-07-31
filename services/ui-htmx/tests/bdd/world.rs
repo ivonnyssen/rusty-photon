@@ -102,6 +102,10 @@ pub struct UiWorld {
     pub pending_config: Option<Value>,
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+    /// rp's pinned `session.data_directory` for scenarios that restart rp
+    /// over the same target store (the stale-goal roster flag). `None`
+    /// until a targets-suite Given pins it.
+    rp_data_dir: Option<PathBuf>,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for UiWorld {
@@ -530,6 +534,102 @@ impl UiWorld {
     /// Spawn a BFF pointed at an rp that is not running.
     pub async fn start_bff_with_unreachable_rp(&mut self) {
         self.start_bff_with_rp_at(UNREACHABLE_PORT).await;
+    }
+
+    /// Spawn rp with one imaging train (an unconnectable camera entry —
+    /// target CRUD and the config joins need no live device) carrying the
+    /// given `default_position_angle_degrees` — the targets suite's
+    /// inherit-hint fixture.
+    pub async fn start_rp_with_imaging_train(&mut self, default_angle: f64) {
+        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
+        builder.with_site(47.6, -122.3);
+        builder.add_camera(bdd_infra::rp_harness::CameraConfig {
+            id: "main-cam".to_string(),
+            alpaca_url: format!("http://127.0.0.1:{UNREACHABLE_PORT}"),
+            device_number: 0,
+            cooler_targets_c: Vec::new(),
+        });
+        builder.add_optical_train(bdd_infra::rp_harness::OpticalTrainConfig {
+            id: "main".to_string(),
+            purpose: Some("imaging".to_string()),
+            focal_length_mm: None,
+            default_position_angle_degrees: Some(default_angle),
+            devices: vec!["main-cam".to_string()],
+            auto_focus: None,
+        });
+        self.start_rp(&builder).await;
+    }
+
+    /// Spawn rp with one filter wheel (unconnectable — the roster union is
+    /// config-level) listing `filters`, over a **pinned** data directory so
+    /// [`restart_rp_with_filters`](Self::restart_rp_with_filters) reopens
+    /// the same target store.
+    pub async fn start_rp_with_filters(&mut self, filters: &[String]) {
+        let builder = self.filters_builder(filters);
+        self.start_rp(&builder).await;
+    }
+
+    /// Stop the running rp and start a fresh one whose filter wheel lists
+    /// `filters`, over the same pinned data directory — the only way a
+    /// stored goal can come to reference a filter outside the roster,
+    /// since rp validates goals at write time.
+    pub async fn restart_rp_with_filters(&mut self, filters: &[String]) {
+        let mut rp = self.rp.take().expect("rp not started");
+        rp.stop().await;
+        let builder = self.filters_builder(filters);
+        self.start_rp(&builder).await;
+    }
+
+    fn filters_builder(&mut self, filters: &[String]) -> bdd_infra::rp_harness::RpConfigBuilder {
+        let data_dir = self
+            .rp_data_dir
+            .get_or_insert_with(|| {
+                let dir = self
+                    .temp_dir
+                    .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"))
+                    .path()
+                    .join("rp-data");
+                std::fs::create_dir_all(&dir).expect("failed to create rp data dir");
+                dir
+            })
+            .clone();
+        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
+        builder.with_site(47.6, -122.3);
+        builder.with_data_directory(data_dir.to_str().unwrap());
+        builder.add_filter_wheel(bdd_infra::rp_harness::FilterWheelConfig {
+            id: "wheel".to_string(),
+            alpaca_url: format!("http://127.0.0.1:{UNREACHABLE_PORT}"),
+            device_number: 0,
+            filters: filters.to_vec(),
+        });
+        builder
+    }
+
+    // --- seeding and inspecting rp's target store over MCP -----------------
+
+    /// Call one of rp's target MCP tools on a fresh session (connect, call,
+    /// drop — the BFF's own per-request pattern), returning the parsed
+    /// result or the tool-error message.
+    pub async fn rp_tool(&self, tool: &str, args: Value) -> Result<Value, String> {
+        let rp = self.rp.as_ref().expect("rp not started");
+        let client = bdd_infra::rp_harness::McpTestClient::connect(&format!("{}/mcp", rp.base_url))
+            .await
+            .expect("MCP connect to rp failed");
+        client.call_tool(tool, args).await
+    }
+
+    /// Seed a target through rp's own `add_target` (the operator form).
+    pub async fn add_target_via_mcp(&self, params: Value) {
+        self.rp_tool("add_target", params)
+            .await
+            .expect("add_target failed");
+    }
+
+    /// Fetch one target's row through `get_target`.
+    pub async fn target_via_mcp(&self, slug: &str) -> Result<Value, String> {
+        self.rp_tool("get_target", json!({ "slug": slug }))
+            .await
+            .map(|v| v.get("target").cloned().expect("get_target without target"))
     }
 
     /// The rp config file as currently persisted on disk.

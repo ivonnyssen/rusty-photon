@@ -51,6 +51,12 @@ pub fn input(html: &str, name: &str) -> Option<InputState> {
 }
 
 /// Whether any element matches `css`.
+/// How many elements match `css` — e.g. the inbox's pending-target rows.
+pub fn count(html: &str, css: &str) -> usize {
+    let doc = Html::parse_document(html);
+    doc.select(&selector(css)).count()
+}
+
 pub fn matches(html: &str, css: &str) -> bool {
     let doc = Html::parse_document(html);
     doc.select(&selector(css)).next().is_some()

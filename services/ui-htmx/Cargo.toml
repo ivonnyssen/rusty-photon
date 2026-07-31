@@ -46,6 +46,10 @@ strum = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 rp-auth = { workspace = true }
+# The targets inbox drives rp's MCP-only target tools through the standard
+# ADR-017 client (per-request sessions; see docs/services/ui-htmx.md
+# "Targets inbox").
+rp-mcp-client = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
