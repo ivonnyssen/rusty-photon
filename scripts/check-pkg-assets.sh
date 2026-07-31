@@ -520,6 +520,38 @@ if [ -f "$pkg_wxs" ]; then
         || err "installer: build-msi.ps1 \$allServices must include doctor"
 fi
 
+# ---- lifecycle-verify port tables -------------------------------------------
+# verify-packages.sh (Linux) and verify-brew.sh (macOS) each keep a hand-typed
+# port_of(); a service missing from one only surfaces when that platform's
+# nightly verify leg actually starts the service — long after the PR that
+# added it merged. Enforce membership and cross-table agreement here (the
+# verifiers also fail fast on their own tables at startup). svbony-camera is
+# exempt from the brew table: macOS skips it entirely (no tarball, no
+# formula).
+port_in() { # $1=script $2=svc — the port_of() entry, empty when absent
+    sed -n "s/^ *$2) echo \([0-9][0-9]*\) ;;\$/\1/p" "$1" | head -1
+}
+vpk=scripts/verify-packages.sh
+vbr=scripts/verify-brew.sh
+if [ -f "$vpk" ] && [ -f "$vbr" ]; then
+    for pkgdir in services/*/pkg; do
+        [ -d "$pkgdir" ] || continue
+        svc=$(basename "$(dirname "$pkgdir")")
+        lport=$(port_in "$vpk" "$svc")
+        if [ -z "$lport" ]; then
+            err "$svc: no port mapping in $vpk port_of() — its verify leg would fail; extend it"
+            continue
+        fi
+        [ "$svc" = svbony-camera ] && continue
+        bport=$(port_in "$vbr" "$svc")
+        if [ -z "$bport" ]; then
+            err "$svc: no port mapping in $vbr port_of() — the macOS verify leg would fail; extend it"
+        elif [ "$bport" != "$lport" ]; then
+            err "$svc: port mismatch — $vpk port_of() says $lport, $vbr port_of() says $bport"
+        fi
+    done
+fi
+
 # The QHY Windows pin lives in four shipped places; they must all match the
 # Linux pin (same SDK release linked and reported everywhere): build-msi.ps1,
 # libqhyccd-sys build.rs (sdk_win64_<ver> search path), and qhy-camera's

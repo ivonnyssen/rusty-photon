@@ -79,4 +79,9 @@ packaged services by the presence of `pkg/` dirs, so adding a service means:
    copy the rpm scriptlets from filemonitor's block — they carry the `$1`
    guards that keep rpm upgrades from stopping the service, since the old
    package's `%preun` runs after the new one's `%post`),
-4. run `scripts/check-pkg-assets.sh`.
+4. add the service's port to `port_of()` in **both**
+   `scripts/verify-packages.sh` and `scripts/verify-brew.sh`, and to
+   `win_port_of()` in the checker (plus a WiX fragment under
+   `installer/fragments/`) — the checker cross-checks the port tables
+   against each other,
+5. run `scripts/check-pkg-assets.sh`.

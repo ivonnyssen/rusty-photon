@@ -127,6 +127,7 @@ port_of() {
         zwo-camera) echo 11122 ;;
         pa-scops-oag) echo 11123 ;;
         zwo-focuser) echo 11124 ;;
+        planetarium-bridge) echo 11126 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
@@ -134,6 +135,16 @@ port_of() {
         *) echo "" ;;
     esac
 }
+
+# Fail fast on missing port mappings, before any install work: checked only
+# later, a gap would surface minutes into the lifecycle run, one service at
+# a time. check-pkg-assets.sh cross-checks this table against
+# verify-packages.sh's, but only when it is run.
+missing=""
+for s in $SERVICES; do
+    [ -n "$(port_of "$s")" ] || missing="$missing $s"
+done
+[ -z "$missing" ] || die "no port mapping for:$missing — extend port_of()"
 
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
