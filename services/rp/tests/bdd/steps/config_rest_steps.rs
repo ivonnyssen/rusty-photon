@@ -21,11 +21,26 @@ use crate::world::RpWorld;
 /// `pub(crate)`: the optical-trains validation steps stage their configs
 /// through the same path.
 pub(crate) fn write_scenario_config(world: &mut RpWorld, equipment: Value) {
+    write_scenario_config_with_server(
+        world,
+        equipment,
+        serde_json::json!({ "port": 0, "bind_address": "127.0.0.1" }),
+    );
+}
+
+/// [`write_scenario_config`] with an explicit `server` block — the
+/// Host-allowlist scenarios need the wildcard bind that derives rp's
+/// advertised hostname URL.
+pub(crate) fn write_scenario_config_with_server(
+    world: &mut RpWorld,
+    equipment: Value,
+    server: Value,
+) {
     let dir = tempfile::tempdir().expect("create temp dir for rp config");
     let config = serde_json::json!({
         "session": { "data_directory": dir.path().join("data").to_string_lossy() },
         "equipment": equipment,
-        "server": { "port": 0, "bind_address": "127.0.0.1" }
+        "server": server
     });
     let path = dir.path().join("rp.json");
     std::fs::write(

@@ -275,6 +275,12 @@ pub struct RpWorld {
     /// a doc captured several steps ago.
     pub remembered_document_ids: std::collections::HashMap<String, String>,
 
+    // --- MCP Host allowlist test state (mcp_host_allowlist.feature) ---
+    /// Status of the last `/mcp` request sent with an explicit `Host`
+    /// header — 403 when the transport's allowlist rejected the
+    /// authority, the initialize response status when it accepted it.
+    pub last_mcp_host_status: Option<u16>,
+
     // --- Config REST test state (config_rest.feature) ---
     /// TempDir holding the scenario's private rp config file (and its data
     /// directory). Held so the file survives until scenario teardown.
