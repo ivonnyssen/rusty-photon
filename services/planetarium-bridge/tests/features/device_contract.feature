@@ -1,4 +1,3 @@
-@wip
 Feature: Virtual telescope device contract
   planetarium-bridge serves one ASCOM Alpaca Telescope (device number 0) that
   planetarium apps connect to as if it were a mount, while it never touches
@@ -97,15 +96,23 @@ Feature: Virtual telescope device contract
     And TargetRightAscension should read 5.5 hours
     And TargetDeclination should read 40.0 degrees
 
-  Scenario: An async slew simulates convergence to the requested coordinates
-    Given the simulated slew duration is "1s"
+  Scenario: An async slew returns immediately and reports Slewing while it converges
+    Given the simulated slew duration is "30s"
     And the bridge is running
     And a connected planetarium client
     When the client starts an async slew to ra 5.5 hours dec 40.0 degrees
     Then Slewing should read true
     And TargetRightAscension should read 5.5 hours
     And TargetDeclination should read 40.0 degrees
-    And within 3 seconds Slewing should read false
+    When the client aborts the slew
+    Then Slewing should read false
+
+  Scenario: An async slew converges to the requested coordinates
+    Given the simulated slew duration is "1s"
+    And the bridge is running
+    And a connected planetarium client
+    When the client starts an async slew to ra 5.5 hours dec 40.0 degrees
+    Then within 10 seconds Slewing should read false
     And the reported position should be ra 5.5 hours dec 40.0 degrees
 
   Scenario: The blocking slew form completes after convergence

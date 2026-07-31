@@ -54,6 +54,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path failure-logs | Out-Null
           Copy-Item "$env:TEMP\rusty-photon-msi-install.log" failure-logs\ -ErrorAction SilentlyContinue
+          Copy-Item "$env:TEMP\rusty-photon-msi-uninstall.log" failure-logs\ -ErrorAction SilentlyContinue
           Copy-Item "$env:ProgramData\rusty-photon\logs\*" failure-logs\ -ErrorAction SilentlyContinue
       - name: Upload install + service logs (on failure)
         if: failure()

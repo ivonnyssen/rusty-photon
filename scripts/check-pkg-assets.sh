@@ -420,6 +420,7 @@ win_port_of() {
         zwo-camera) echo 11122 ;;
         pa-scops-oag) echo 11123 ;;
         zwo-focuser) echo 11124 ;;
+        planetarium-bridge) echo 11126 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;

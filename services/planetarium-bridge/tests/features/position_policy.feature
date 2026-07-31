@@ -1,4 +1,3 @@
-@wip
 Feature: Reported-position altitude floor
   The device keeps two positions. Virtual pointing is where the last slew or
   sync converged. The reported position — what RightAscension and Declination

@@ -1,24 +1,43 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
-    ["Cargo.toml"],
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
     visibility = ["//visibility:public"],
 )
 
-# Phase-2 scaffold (docs/services/planetarium-bridge.md § Testing): the binary
-# is a lifecycle-correct placeholder and every BDD feature is `@wip`, so the
-# `bdd` target builds the full harness (typed Alpaca client + stub rp MCP
-# server) but runs zero scenarios until the implementation phase removes the
-# tags.
-
 _INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rp-ephemeris:rp-ephemeris",
+    "//crates/rp-mcp-client:rp-mcp-client",
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
 ]
+
+rust_library(
+    name = "planetarium-bridge_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "planetarium_bridge",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
 
 rust_binary(
     name = "planetarium-bridge",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = ["src/main.rs"],
     aliases = aliases(),
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -26,12 +45,33 @@ rust_binary(
     # the Bazel target name), matching the other services.
     rustc_env = {"CARGO_PKG_NAME": "planetarium-bridge"},
     visibility = ["//visibility:public"],
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":planetarium-bridge_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "planetarium-bridge_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    compile_data = ["pkg/doctor.toml"],
+    crate = ":planetarium-bridge_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
 
 rust_test(
     name = "bdd",
-    size = "small",
+    # The spooling scenarios legitimately wait out replay backoffs and
+    # absence checks; the suite runs ~1-2 minutes wall-clock.
+    size = "large",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
@@ -59,6 +99,36 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "conformu_integration",
+    size = "large",
+    srcs = ["tests/conformu_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["conformu"],
+    data = [":planetarium-bridge"],
+    edition = "2021",
+    env = {
+        "PLANETARIUM_BRIDGE_BINARY": "$(rootpath :planetarium-bridge)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :planetarium-bridge)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "planetarium-bridge"},
+    tags = ["conformu"],
+    deps = [
+        ":planetarium-bridge_lib",
+        "//crates/bdd-infra:bdd-infra_conformu",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

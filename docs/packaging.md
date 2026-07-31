@@ -45,6 +45,7 @@ doubles as the PHD2 CLI via subcommands.)
 | zwo-camera | 11122 | USB camera; its SDK blob bundled |
 | pa-scops-oag | 11123 | serial (dialout; deb adds plugdev) |
 | zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
+| planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |

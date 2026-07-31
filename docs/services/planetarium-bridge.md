@@ -1,7 +1,8 @@
 # planetarium-bridge
 
-**Status: P3 design + Phase-2 BDD scaffold (implementation pending).**
-This document is the design for the real `planetarium-bridge` service —
+**Status: implemented (bridge service; the [rp-side contract](#rp-side-contract)
+is the remaining P3 slice).**
+This document is the design for the `planetarium-bridge` service —
 P3 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md).
 The P3a verification-spike findings that ground it are preserved in the
@@ -9,14 +10,11 @@ The P3a verification-spike findings that ground it are preserved in the
 [P3b follow-up experiment](#appendix-p3b-horizon-experiment-findings-2026-07-30)
 (run 2026-07-30) overturned the below-horizon story and **flipped the
 import gesture from GoTo to Align** (Decision 2's second amendment).
-The development-workflow Phase-2 scaffold is in the tree: the
-[Testing](#testing) section's four feature files live in
-`services/planetarium-bridge/tests/features/` as `@wip` executable
-specifications, alongside the crate skeleton and the BDD harness
-(typed Alpaca Telescope client + stub rp MCP server); the tags come
-off with the implementation. The throwaway spike crate
-`spikes/planetarium-bridge-p3a` remains in the tree until the
-implementation PR lands, and is deleted there.
+The [Testing](#testing) section's four feature files run live in the
+default suite (65 scenarios), the device passes ConformU (see
+[ConformU](#conformu) for the harness specifics), and the throwaway
+P3a spike crate is deleted. What this service sends rp is final; the
+rp-side `source` semantics land in rp as their own P3 slice.
 
 ## Overview
 
@@ -106,9 +104,11 @@ target-entry device, not a mount** — e.g. name
 | `CanSetTracking`, `CanSetDeclinationRate`, `CanSetRightAscensionRate` | `false` |
 | `Tracking` | reads `true` (constant) |
 | `SideOfPier` | `NOT_IMPLEMENTED` (legal for ITelescopeV3; nothing polls it — P3a) |
+| `DestinationSideOfPier` | hour-angle prediction: positive-HA (west-of-meridian) targets answer `East`, the rest `West` — ConformU requires a GermanPolar device to answer differently on the two sides of the meridian |
 | `UTCDate` read | host clock UTC |
 | `SetUTCDate` | `NOT_IMPLEMENTED` (P3a: SkySafari retries once, carries on) |
 | `AxisRates` | empty set |
+| `TargetRightAscension` / `TargetDeclination` | session state: cleared on every `Connected = true`, so a fresh connection reads `VALUE_NOT_SET` until it writes them (the ASCOM read-before-write contract) |
 
 ### Epoch handling
 
@@ -249,7 +249,9 @@ P3a: SkySafari pushes its own GPS-derived site
   config, and using it keeps the bridge's horizon math consistent with
   the client's own — exactly what the floor policy wants. Adoption is
   logged at `info!`; the configured site is the startup default, and a
-  restart reverts to it.
+  restart reverts to it. Latitude/longitude writes are range-checked
+  (`InvalidValue` outside them); `SiteElevation` writes accept the
+  ASCOM range `[-300, 10000]` meters.
 - **`SetUTCDate` stays `NOT_IMPLEMENTED`** — the host clock is
   authoritative for a virtual device, and P3a proved the rejection is
   tolerated (one retry, no fallout).
@@ -266,18 +268,38 @@ P3a confirmed is also the only story that works across routed subnets
 
 ### ConformU
 
-The device must pass ConformU via the existing harness pattern
-(`bazel test --config=conformu`). The capability matrix above is
-deliberately minimal-but-coherent: every `false` capability's verbs
-return `NOT_IMPLEMENTED`, every `true` capability behaves per the
-ASCOM contract (Target* propagation, `Slewing` state, `AbortSlew`
-always callable as a stop-class verb). Two `CanSync = true`
-consequences: sync verbs must round-trip per the ASCOM contract, and
-the altitude floor can mask that round-trip (a below-floor sync reads
-back as the idle point) — the conformance run therefore uses a config
-with `report_altitude_floor_deg: null` (the floor is a client-UX
-policy, not device semantics). ConformU's sync tests also fire
-imports; the harness's stub rp (or the spool) absorbs them.
+The device passes ConformU (`bazel test --config=conformu`). The
+capability matrix above is deliberately minimal-but-coherent: every
+`false` capability's verbs return `NOT_IMPLEMENTED`, every `true`
+capability behaves per the ASCOM contract (Target* propagation,
+`Slewing` state, `AbortSlew` always callable as a stop-class verb).
+Two `CanSync = true` consequences: sync verbs must round-trip per the
+ASCOM contract, and the altitude floor can mask that round-trip (a
+below-floor sync reads back as the idle point) — the conformance run
+therefore uses a config with `report_altitude_floor_deg: null` (the
+floor is a client-UX policy, not device semantics). ConformU's sync
+tests also fire imports; the harness points `rp.mcp_server_url` at a
+dead loopback port so they land in the scenario's spool.
+
+Three harness specifics, all consequences of ConformU's own behavior
+rather than device semantics:
+
+- The suites run via ConformU's `*-settings` commands (the device
+  under test is configured inside the settings file;
+  `bdd_infra::run_conformu_from_settings`). The URL-argument commands
+  force-enable every test, and a `CanPulseGuide = false` device cannot
+  satisfy the full set: the protocol suite's PulseGuide test polls
+  `IsPulseGuiding` as its completion check and records the
+  spec-mandated `NOT_IMPLEMENTED` answer as an error, while the
+  conformance suite requires exactly that answer. The settings
+  deselect the PulseGuide test (`TelescopeTests`), which only the
+  `*-settings` commands honor.
+- Deliberately deselected tests surface as ConformU "configuration
+  alerts", which count into its exit code like errors; the runner
+  accepts a run whose summary shows zero errors and zero issues.
+- The harness config sets `slew_duration: "5s"`: ConformU's AbortSlew
+  test validates `Slewing == true` a fixed 1.5 s after starting an
+  async slew, so the convergence window must comfortably exceed that.
 
 ## The import pipeline
 
@@ -307,6 +329,15 @@ operator derives clear value from):
 Tool failures (rp rejected the call — e.g. a validation error) are
 logged at `error!` and **not** spooled: a request rp actively rejected
 will be rejected again on replay. Only *delivery* failures spool.
+
+The bridge holds **no standing MCP session**: it connects for a
+delivery burst and drops the session when the queue goes idle. An idle
+held session keeps a long-lived stream open into rp, which stalls rp's
+own graceful shutdown (found by the MSI lifecycle verify: rp could not
+be stopped while an idle bridge sat connected) — and rp terminates MCP
+sessions on safety transitions anyway, so reconnecting explicitly per
+burst is the ADR-017-consistent posture. Imports are human-paced; the
+extra handshakes are noise-level.
 
 ### Spooling — rp unreachable
 
@@ -669,8 +700,8 @@ log is the raw evidence (kept off-repo with the operator). Findings are
 from this one client/version; the plan's SkySafari floor is v7
 (Decision 1), not separately tested. The spike crate
 `spikes/planetarium-bridge-p3a` (throwaway, sanctioned per Decision 8 /
-ADR-005) remains runnable for the P3b experiment above and is deleted
-in the P3 implementation PR.
+ADR-005) stayed runnable through the P3b experiment above and was
+deleted when the bridge implementation landed.
 
 ### The P3a questions — answered
 
