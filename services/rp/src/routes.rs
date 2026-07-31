@@ -57,10 +57,18 @@ pub struct AppState {
     pub config_path: Arc<std::path::PathBuf>,
 }
 
-pub fn build_router(state: AppState) -> Router {
+/// Build rp's router. `mcp_extra_allowed_hosts` are the `Host`
+/// authorities the MCP transport accepts on top of rmcp's loopback
+/// defaults — the names rp advertises itself as (rp.md § MCP Server).
+pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Router {
     let mcp_handler = state.mcp.clone();
     let mut mcp_config = StreamableHttpServerConfig::default();
     mcp_config.json_response = true;
+    // rmcp's DNS-rebinding protection answers 403 to any `Host` outside
+    // this list, whose defaults cover loopback only — which would reject
+    // the hostname URL rp advertises for a wildcard bind. Extend it, never
+    // replace it: an empty list switches the protection off entirely.
+    mcp_config.allowed_hosts.extend(mcp_extra_allowed_hosts);
     let mcp_service = StreamableHttpService::new(
         move || Ok(mcp_handler.clone()),
         state.mcp_sessions.clone(),
@@ -557,7 +565,7 @@ mod tests {
     async fn mcp_gate_rejects_with_503_while_unsafe_and_lifts_after() {
         let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
         let safety_ok = state.safety_ok.clone();
-        let app = build_router(state);
+        let app = build_router(state, vec![]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -620,6 +628,61 @@ mod tests {
             .await
             .unwrap();
         assert!(schema.status().is_success());
+        let _ = tx.send(());
+    }
+
+    /// The extra allowed hosts must reach rmcp's DNS-rebinding check:
+    /// an advertised name is served, everything else still gets 403.
+    /// The loopback defaults survive the extension (the request that
+    /// carries no explicit `Host` override addresses `127.0.0.1`).
+    #[tokio::test]
+    async fn mcp_serves_an_extra_allowed_host_and_rejects_an_unknown_one() {
+        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
+        let app = build_router(state, vec!["observatory.example".to_string()]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let initialize = |host: Option<&str>| {
+            let mut request = client
+                .post(format!("http://{addr}/mcp"))
+                .header("accept", "application/json, text/event-stream");
+            if let Some(host) = host {
+                request = request.header(header::HOST, host);
+            }
+            request
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "host-test", "version": "0"}
+                    }
+                }))
+                .send()
+        };
+
+        let advertised = initialize(Some("observatory.example")).await.unwrap();
+        assert_eq!(advertised.status(), reqwest::StatusCode::OK);
+
+        let loopback = initialize(None).await.unwrap();
+        assert_eq!(
+            loopback.status(),
+            reqwest::StatusCode::OK,
+            "extending the allowlist must not drop the loopback defaults"
+        );
+
+        let unknown = initialize(Some("attacker.example")).await.unwrap();
+        assert_eq!(unknown.status(), reqwest::StatusCode::FORBIDDEN);
         let _ = tx.send(());
     }
 

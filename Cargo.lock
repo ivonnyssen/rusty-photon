@@ -4347,6 +4347,7 @@ dependencies = [
  "hostname",
  "humantime",
  "humantime-serde",
+ "if-addrs",
  "libc",
  "mockall",
  "ndarray",

@@ -811,6 +811,31 @@ is derived as follows:
   with a warning — co-located orchestrators still connect, and
   loopback is a SAN on doctor-provisioned certificates.
 
+The MCP transport validates the inbound `Host` header — the standard
+defence against DNS rebinding a browser onto a locally bound server —
+and answers `403 Forbidden` to any authority not on its allowlist. The
+allowlist is derived from the same facts as the advertised URL above,
+so every URL `rp` hands out is one `rp` itself accepts:
+
+- `localhost`, `127.0.0.1` and `::1` — always.
+- The **system hostname**, whenever it can be determined. This is the
+  host a wildcard bind advertises.
+- The authority of `server.advertised_url` when configured, port
+  included when the URL names one.
+- The literal `server.bind_address` for an explicit (non-wildcard)
+  bind — the one address that listener answers on.
+- Every non-loopback address of a local network interface (IPv4 and
+  IPv6) for a wildcard bind — the addresses that listener actually
+  answers on, so an orchestrator holding only a LAN address connects.
+  Enumeration failure is logged and non-fatal; the entries above still
+  stand.
+
+Entries carry no port unless `server.advertised_url` supplied one, and
+a port-less entry matches its name on any port. A reachable name that
+is derivable from none of the above — an mDNS alias, a reverse-proxy
+hostname, an ACME DNS name — is admitted by pointing
+`server.advertised_url` at it, which both advertises and allows it.
+
 The endpoint sits behind the same server-wide `server.tls` /
 `server.auth` as every other route — there is no unauthenticated MCP
 carve-out. First-party MCP clients are built through the shared
@@ -4642,7 +4667,10 @@ The optional `server.advertised_url` (e.g.
 `rp` advertises to orchestrators; it must be an `http://` or
 `https://` URL and is rejected at load otherwise. Unset (the default),
 the URL is derived from the listener — a wildcard `bind_address`
-advertises the system hostname; see [MCP Server](#mcp-server). The
+advertises the system hostname; see [MCP Server](#mcp-server). Setting
+it also admits that host to the MCP endpoint's `Host` allowlist, which
+is how a name `rp` cannot derive (a reverse proxy, an mDNS alias) is
+made acceptable to the endpoint as well as advertised. The
 `server` block is otherwise the shared server-config shape, except
 that `rp` carries this extra field in its own config type
 (`services/rp/src/config/server.rs`) — rp is the only service that
