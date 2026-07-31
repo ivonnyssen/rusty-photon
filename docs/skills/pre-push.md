@@ -225,7 +225,12 @@ family-2 flake: `file=false symlink=true len=0` with a real parent directory),
 which no open-retry can outlast. The manifest's execroot target is a real file
 — `build:windows --remote_download_outputs=all` outranks `build:ci`'s
 `toplevel` because platform config appends last — so RF() substitutes it and
-sidesteps the tree.
+sidesteps the tree. That covers both spellings: `external/…/_bs.linksearchpaths`
+for a crates.io build script (#752), and bare workspace-relative
+`crates/…/build_script.linksearchpaths` for a first-party path dependency's
+(#781 — the qhyccd-rs real/sim doc-test pair shares that runfile and raced on
+it whenever both executed on the same runner, exactly one failing per
+attempt).
 
 Two things generalise. The job's "Enable long paths" step does **not** cover
 this: `LongPathsEnabled` is opt-in per binary via a `longPathAware` manifest, and
