@@ -270,6 +270,80 @@ impl OmniSimHandle {
         Self::set_safety_monitor_is_safe_at(&base_url, 0, is_safe).await
     }
 
+    /// Drive the cover-calibrator simulator's cover fully open or
+    /// closed via the standard Alpaca device API (`opencover` /
+    /// `closecover`, then `coverstate` polling; CoverState 1 = Closed,
+    /// 3 = Open). Connects the device first — the scenario's `Given`
+    /// runs before rp does. OmniSim's cover sweep takes a few seconds;
+    /// polls up to 30 s.
+    pub async fn set_cover_closed(closed: bool) -> Result<(), String> {
+        let base_url = Self::singleton_base_url().await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+
+        for (verb, form) in [
+            ("connected", ("Connected", "true")),
+            (
+                if closed { "closecover" } else { "opencover" },
+                ("ClientID", "77"),
+            ),
+        ] {
+            let url = format!("{base_url}/api/v1/covercalibrator/0/{verb}");
+            let resp = client
+                .put(&url)
+                .form(&[form])
+                .send()
+                .await
+                .map_err(|e| format!("PUT {url} failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+            }
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("PUT {url}: unparseable body: {e}"))?;
+            let error_number = body["ErrorNumber"].as_i64().unwrap_or(0);
+            if error_number != 0 {
+                return Err(format!(
+                    "PUT {url}: ASCOM error {error_number}: {}",
+                    body["ErrorMessage"]
+                ));
+            }
+        }
+
+        let target = if closed { 1 } else { 3 };
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if Self::cover_state().await? == target {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "cover did not reach state {target} within 30s of {}",
+            if closed { "closecover" } else { "opencover" }
+        ))
+    }
+
+    /// The cover-calibrator simulator's Alpaca `CoverState` (1 =
+    /// Closed, 2 = Moving, 3 = Open).
+    pub async fn cover_state() -> Result<i64, String> {
+        let base_url = Self::singleton_base_url().await;
+        let url = format!(
+            "{base_url}/api/v1/covercalibrator/0/coverstate?ClientID=77&ClientTransactionID=1"
+        );
+        let body: serde_json::Value = reqwest::get(&url)
+            .await
+            .map_err(|e| format!("GET {url} failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("GET {url}: unparseable body: {e}"))?;
+        body["Value"]
+            .as_i64()
+            .ok_or_else(|| format!("GET {url}: no integer Value in {body}"))
+    }
+
     /// `set_safety_monitor_is_safe` extracted to take an explicit
     /// `base_url` and device number so unit tests can drive the HTTP
     /// path against an axum stub without touching the global `OMNISIM`

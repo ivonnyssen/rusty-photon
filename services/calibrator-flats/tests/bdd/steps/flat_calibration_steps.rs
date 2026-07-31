@@ -47,6 +47,16 @@ async fn webhook_receiver_subscribed_to(world: &mut CalibratorFlatsWorld, event_
     add_event_plugin(world, vec![event_type]);
 }
 
+#[given(expr = "the cover starts {word}")]
+async fn cover_starts(world: &mut CalibratorFlatsWorld, state: String) {
+    if world.omnisim.is_none() {
+        world.omnisim = Some(OmniSimHandle::start().await);
+    }
+    OmniSimHandle::set_cover_closed(state == "closed")
+        .await
+        .unwrap_or_else(|e| panic!("failed to preset the cover {state}: {e}"));
+}
+
 #[given(
     expr = "the calibrator-flats service is configured for {int} {string} flats with no filter wheel"
 )]
@@ -159,6 +169,18 @@ async fn should_receive_at_least_n_events(
         "expected at least {} '{}' event(s) within timeout",
         count,
         event_type
+    );
+}
+
+#[then(expr = "the cover should be {word}")]
+async fn cover_should_be(_world: &mut CalibratorFlatsWorld, expected: String) {
+    let target = if expected == "closed" { 1 } else { 3 };
+    let state = OmniSimHandle::cover_state()
+        .await
+        .expect("failed to read the simulator's cover state");
+    assert_eq!(
+        state, target,
+        "expected the cover to be {expected} (CoverState {target}), got CoverState {state}"
     );
 }
 

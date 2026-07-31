@@ -30,6 +30,7 @@ Feature: Calibrator flats workflow document (end-to-end)
 
   Scenario: The calibrator flats document captures flats on a filterless rig
     Given a running Alpaca simulator
+    And the cover starts open
     And a test webhook receiver subscribed to "exposure_complete"
     And a flat plan of 3 "OSC" flats with no filter wheel
     And rp is running with a camera, cover calibrator, and the session-runner orchestrator
@@ -37,3 +38,14 @@ Feature: Calibrator flats workflow document (end-to-end)
     And the workflow document runs to completion
     Then the test webhook receiver should have received at least 3 "exposure_complete" events
     And the session status should be "idle"
+    And the cover should be open
+
+  Scenario: A cover that was closed at session start stays closed
+    Given a running Alpaca simulator
+    And the cover starts closed
+    And a flat plan of 2 "OSC" flats with no filter wheel
+    And rp is running with a camera, cover calibrator, and the session-runner orchestrator
+    When a session is started via the REST API
+    And the workflow document runs to completion
+    Then the session status should be "idle"
+    And the cover should be closed

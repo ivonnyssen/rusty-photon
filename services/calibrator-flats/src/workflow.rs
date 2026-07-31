@@ -9,14 +9,16 @@ use crate::config::FlatPlan;
 use crate::error::{CalibratorFlatsError, Result};
 use crate::mcp_client::{CameraInfo, McpClient};
 
-/// Single round-trip the proportional control loop needs: capture an
+/// What the proportional control loop needs from rp: capture an
 /// exposure of the requested duration and return the resulting median
-/// ADU. Wraps the rp `capture` + `compute_image_stats` pair so the
-/// loop can be tested in isolation with `mockall`.
+/// ADU (the `capture` + `compute_image_stats` pair), and re-light the
+/// panel at a lower level (the brightness ladder's step-down). Wrapped
+/// in a trait so the loop can be tested in isolation with `mockall`.
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 trait ExposureMeasure: Send + Sync {
     async fn measure(&self, camera_id: &str, duration: Duration) -> Result<u32>;
+    async fn set_panel_brightness(&self, calibrator_id: &str, brightness: u32) -> Result<()>;
 }
 
 #[async_trait]
@@ -27,6 +29,12 @@ impl ExposureMeasure for McpClient {
             .compute_image_stats(&cap.image_path, Some(&cap.document_id))
             .await?;
         Ok(stats.median_adu)
+    }
+
+    async fn set_panel_brightness(&self, calibrator_id: &str, brightness: u32) -> Result<()> {
+        self.calibrator_on(calibrator_id, Some(brightness))
+            .await
+            .map(|_| ())
     }
 }
 
@@ -50,10 +58,12 @@ pub struct FilterResult {
 
 /// Run the full flat calibration workflow.
 ///
-/// 1. Query camera capabilities
+/// 1. Query camera capabilities and record the cover's initial state
 /// 2. Close cover and turn on calibrator
-/// 3. For each filter: find optimal exposure, capture N frames
-/// 4. Turn off calibrator and open cover (always, even on error)
+/// 3. For each filter: find optimal exposure (stepping the panel
+///    brightness down while pinned over-bright), capture N frames
+/// 4. Turn off calibrator (always, even on error) and restore the
+///    cover to its initial state: reopen only what started open
 pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
     // 1. Get camera info
     let camera_info = mcp.get_camera_info(&plan.camera_id).await?;
@@ -66,20 +76,33 @@ pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
         "starting calibrator flats calibration"
     );
 
+    // Record the cover's initial state before any actuation, so cleanup
+    // can restore it. A failed read aborts here — nothing has moved yet.
+    let initial_cover = mcp.get_cover_state(&plan.calibrator_id).await?;
+    debug!(initial_cover = %initial_cover, "recorded initial cover state");
+
     // 2. Prepare flat panel
     mcp.close_cover(&plan.calibrator_id).await?;
-    mcp.calibrator_on(&plan.calibrator_id, plan.brightness)
+    let brightness = mcp
+        .calibrator_on(&plan.calibrator_id, plan.brightness)
         .await?;
 
     // 3. Capture flats (with cleanup guard)
-    let result = run_capture_loop(mcp, plan, target_adu, &camera_info).await;
+    let result = run_capture_loop(mcp, plan, target_adu, &camera_info, brightness).await;
 
-    // 4. Always clean up
+    // 4. Always clean up, ending with the cover as it started: reopen
+    // only a cover that was open; one that started closed — or whose
+    // initial reading was anomalous — stays closed, protecting the
+    // optics.
     if let Err(e) = mcp.calibrator_off(&plan.calibrator_id).await {
         warn!(error = %e, "failed to turn calibrator off during cleanup");
     }
-    if let Err(e) = mcp.open_cover(&plan.calibrator_id).await {
-        warn!(error = %e, "failed to open cover during cleanup");
+    if initial_cover == "Open" {
+        if let Err(e) = mcp.open_cover(&plan.calibrator_id).await {
+            warn!(error = %e, "failed to open cover during cleanup");
+        }
+    } else {
+        debug!(initial_cover = %initial_cover, "leaving cover closed");
     }
 
     result
@@ -90,6 +113,7 @@ async fn run_capture_loop(
     plan: &FlatPlan,
     target_adu: u32,
     camera_info: &crate::mcp_client::CameraInfo,
+    mut brightness: u32,
 ) -> Result<WorkflowResult> {
     let mut filters_completed = Vec::new();
     let mut total_frames = 0u32;
@@ -102,9 +126,10 @@ async fn run_capture_loop(
             debug!(group = %filter.name, count = filter.count, "filterless rig, capture group");
         }
 
-        // Find optimal exposure time
+        // Find optimal exposure time, stepping the panel brightness down
+        // whenever the search ends pinned over the target
         let (duration, median_adu, iterations, converged) =
-            find_optimal_duration(mcp, plan, target_adu, camera_info).await?;
+            find_duration_with_ladder(mcp, plan, target_adu, camera_info, &mut brightness).await?;
 
         if converged {
             info!(
@@ -173,7 +198,55 @@ fn deviation(target_adu: u32, last_median: u32) -> f64 {
     (last_median as f64 - target_adu as f64).abs() / target_adu as f64
 }
 
-/// Iteratively adjust exposure time to hit the target ADU.
+/// Find a converged exposure for one capture group, halving the panel
+/// brightness (floor 1) whenever the search exhausts its iterations
+/// still reading *over* the target — a saturated sensor gives the
+/// proportional step no gradient, so dimming the panel is the only way
+/// down. The duration carries across brightness levels (the search
+/// re-adapts within a pass or two at the dimmer level); `brightness` is
+/// updated in place so the level that worked persists to the next
+/// group. A search that ends *under* the target is not retried —
+/// dimming further cannot help.
+///
+/// Returns `(duration, last_median_adu, total_iterations, converged)`.
+async fn find_duration_with_ladder<M: ExposureMeasure + ?Sized>(
+    mcp: &M,
+    plan: &FlatPlan,
+    target_adu: u32,
+    camera_info: &CameraInfo,
+    brightness: &mut u32,
+) -> Result<(Duration, u32, u32, bool)> {
+    let mut start = plan.initial_duration;
+    let mut total_iterations = 0u32;
+
+    loop {
+        let (duration, median, iterations, converged) =
+            find_optimal_duration(mcp, plan, target_adu, camera_info, start).await?;
+        total_iterations += iterations;
+
+        if converged {
+            return Ok((duration, median, total_iterations, true));
+        }
+
+        let halved = *brightness / 2;
+        if median > target_adu && halved >= 1 {
+            *brightness = halved;
+            info!(
+                brightness = halved,
+                median_adu = median,
+                target_adu = target_adu,
+                "panel over-bright, stepping brightness down"
+            );
+            mcp.set_panel_brightness(&plan.calibrator_id, halved)
+                .await?;
+            start = duration;
+        } else {
+            return Ok((duration, median, total_iterations, false));
+        }
+    }
+}
+
+/// Iteratively adjust exposure time from `start` to hit the target ADU.
 ///
 /// Returns `(duration, last_median_adu, iterations, converged)`.
 async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
@@ -181,6 +254,7 @@ async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
     plan: &FlatPlan,
     target_adu: u32,
     camera_info: &CameraInfo,
+    start: Duration,
 ) -> Result<(Duration, u32, u32, bool)> {
     if target_adu == 0 {
         return Err(CalibratorFlatsError::Workflow(
@@ -188,7 +262,7 @@ async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
         ));
     }
 
-    let mut duration = plan.initial_duration;
+    let mut duration = start;
     let mut last_median = 0u32;
 
     for iteration in 1..=plan.max_iterations {
@@ -225,7 +299,10 @@ async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
-    use super::{deviation, find_optimal_duration, next_duration, MockExposureMeasure};
+    use super::{
+        deviation, find_duration_with_ladder, find_optimal_duration, next_duration,
+        MockExposureMeasure,
+    };
     use crate::config::{FilterPlan, FlatPlan};
     use crate::mcp_client::CameraInfo;
     use std::time::Duration;
@@ -334,6 +411,7 @@ mod tests {
             &plan(Duration::from_secs(1), 5, 0.05),
             0,
             &camera_info(),
+            Duration::from_secs(1),
         )
         .await
         .unwrap_err();
@@ -351,6 +429,7 @@ mod tests {
             &plan(Duration::from_secs(1), 5, 0.05),
             32_000,
             &camera_info(),
+            Duration::from_secs(1),
         )
         .await
         .unwrap();
@@ -390,6 +469,7 @@ mod tests {
             &plan(Duration::from_secs(1), 5, 0.05),
             32_000,
             &camera_info(),
+            Duration::from_secs(1),
         )
         .await
         .unwrap();
@@ -412,12 +492,111 @@ mod tests {
             &plan(Duration::from_secs(1), 3, 0.05),
             32_000,
             &camera_info(),
+            Duration::from_secs(1),
         )
         .await
         .unwrap();
         assert!(!converged);
         assert_eq!(iterations, 3);
         assert_eq!(median, 1_000);
+    }
+
+    #[tokio::test]
+    async fn ladder_steps_brightness_down_until_convergence() {
+        // The panel saturates the sensor at full brightness: every
+        // measurement in the first search reads over the target, so the
+        // ladder halves the brightness once, and the dimmer search
+        // converges immediately.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let mut mock = MockExposureMeasure::new();
+        let call = Arc::new(AtomicU32::new(0));
+        let call_for_mock = call.clone();
+        mock.expect_measure().times(3).returning(move |_, _| {
+            let n = call_for_mock.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(async move {
+                match n {
+                    1 | 2 => Ok(60_000), // saturated at brightness 255
+                    _ => Ok(32_000),     // converges at brightness 127
+                }
+            })
+        });
+        mock.expect_set_panel_brightness()
+            .times(1)
+            .withf(|calibrator_id, brightness| calibrator_id == "cc" && *brightness == 127)
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+
+        let mut brightness = 255u32;
+        let (_duration, median, iterations, converged) = find_duration_with_ladder(
+            &mock,
+            &plan(Duration::from_secs(1), 2, 0.05),
+            32_000,
+            &camera_info(),
+            &mut brightness,
+        )
+        .await
+        .unwrap();
+        assert!(converged);
+        assert_eq!(
+            brightness, 127,
+            "the working level persists for the next group"
+        );
+        assert_eq!(median, 32_000);
+        assert_eq!(iterations, 3, "2 saturated passes + 1 converging pass");
+    }
+
+    #[tokio::test]
+    async fn ladder_does_not_engage_when_under_bright() {
+        // A panel too dim even at exposure_max: the search ends under the
+        // target, where dimming further cannot help — no brightness step,
+        // best-effort result as before.
+        let mut mock = MockExposureMeasure::new();
+        mock.expect_measure()
+            .times(2)
+            .returning(|_, _| Box::pin(async { Ok(1_000) }));
+        mock.expect_set_panel_brightness().times(0);
+
+        let mut brightness = 255u32;
+        let (_duration, median, _iterations, converged) = find_duration_with_ladder(
+            &mock,
+            &plan(Duration::from_secs(1), 2, 0.05),
+            32_000,
+            &camera_info(),
+            &mut brightness,
+        )
+        .await
+        .unwrap();
+        assert!(!converged);
+        assert_eq!(
+            brightness, 255,
+            "an under-bright search must not dim the panel"
+        );
+        assert_eq!(median, 1_000);
+    }
+
+    #[tokio::test]
+    async fn ladder_stops_at_the_brightness_floor() {
+        // Still over-bright at brightness 1: halving would reach 0, so the
+        // ladder gives up rather than turning the panel off.
+        let mut mock = MockExposureMeasure::new();
+        mock.expect_measure()
+            .times(2)
+            .returning(|_, _| Box::pin(async { Ok(60_000) }));
+        mock.expect_set_panel_brightness().times(0);
+
+        let mut brightness = 1u32;
+        let (_duration, _median, _iterations, converged) = find_duration_with_ladder(
+            &mock,
+            &plan(Duration::from_secs(1), 2, 0.05),
+            32_000,
+            &camera_info(),
+            &mut brightness,
+        )
+        .await
+        .unwrap();
+        assert!(!converged);
+        assert_eq!(brightness, 1);
     }
 
     #[tokio::test]
@@ -432,6 +611,7 @@ mod tests {
             &plan(Duration::from_secs(1), 3, 0.05),
             32_000,
             &camera_info(),
+            Duration::from_secs(1),
         )
         .await
         .unwrap_err();

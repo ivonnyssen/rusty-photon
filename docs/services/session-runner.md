@@ -131,6 +131,12 @@ validation error — misspellings must not silently no-op.
   `$expr` key nested anywhere inside a literal value is a validation
   error — letting it pass as data would silently send the wrapper object
   to the tool, exactly the no-op misspelling the format forbids.
+  A `$expr` result that is a whole number within f64's exact-integer
+  range is serialized as a JSON **integer**: expression arithmetic
+  always produces f64, while tool parameters are commonly
+  integer-typed (a panel brightness, a camera gain), and a `127.0`
+  would fail their deserialization where `127` succeeds. Fractional
+  and out-of-range results pass through unchanged.
 - The tool's structured result becomes `result` for the instructions that
   follow (see [`result` scoping](#result-scoping)).
 - Optional `retry`: on tool error, retry up to `max_attempts` total attempts
@@ -1007,9 +1013,16 @@ Abridged to the load-bearing shape:
     // raises before any hardware moves)
     { "if": "session.target_adu <= 0",
       "then": [ { "fail": { "message": "'target_adu is not positive (max_adu * target_adu_fraction) — check get_camera_info and target_adu_fraction'" } } ] },
+    // record the cover's starting state (read-only) so the finally can
+    // restore it; the has() guard keeps the original across a resume
+    { "tool": "get_cover_state", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
+    { "set": { "session.initial_cover_state": "has(session.initial_cover_state) ? session.initial_cover_state : result.cover_state" } },
     { "try": [
         { "tool": "close_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
         { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
+        // the applied brightness (device max when unset) seeds the
+        // brightness ladder below
+        { "set": { "session.brightness": "has(session.brightness) ? session.brightness : result.brightness" } },
         { "id": "filter-plan",
           "repeat": { "while": "has(params.filters[session.filter_index])", "max_iterations": 64 },
           "body": [
@@ -1017,21 +1030,39 @@ Abridged to the load-bearing shape:
               "then": [
                 { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
                                                   "filter_name": { "$expr": "params.filters[session.filter_index].name" } } } ] },
-            { "set": { "session.duration": "seconds(params.initial_duration)" } },  // reset per filter
-            { "id": "find-exposure",
-              "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
-                          "max_iterations": { "$expr": "params.max_iterations" } },
+            { "set": { "session.duration": "seconds(params.initial_duration)",  // reset per filter
+                       "session.group_converged": "false",
+                       "session.ladder_done": "false" } },
+            // brightness ladder: re-run the search at half brightness while
+            // it ends pinned OVER the target (a saturated sensor gives the
+            // proportional step no gradient); an under-target miss is final
+            { "id": "brightness-ladder",
+              "repeat": { "until": "session.group_converged == true || session.ladder_done == true",
+                          "max_iterations": 32 },
               "body": [
-                { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                               "duration": { "$expr": "humantime(session.duration)" } } },
-                { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
-                { "set": { "session.median_adu": "result.median_adu" } },
-                // rescale only when another pass is coming, so the duration
-                // that converged is the one the flats reuse (the Rust loop's
-                // exact behavior)
-                { "if": "abs(session.median_adu - session.target_adu) / session.target_adu > params.tolerance",
-                  "then": [ { "set": { "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)" } } ] } ] },
-            { "if": "result.converged == false",
+                { "id": "find-exposure",
+                  "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
+                              "max_iterations": { "$expr": "params.max_iterations" } },
+                  "body": [
+                    { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
+                                                   "duration": { "$expr": "humantime(session.duration)" } } },
+                    { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
+                    { "set": { "session.median_adu": "result.median_adu" } },
+                    // rescale only when another pass is coming, so the duration
+                    // that converged is the one the flats reuse (the Rust loop's
+                    // exact behavior)
+                    { "if": "abs(session.median_adu - session.target_adu) / session.target_adu > params.tolerance",
+                      "then": [ { "set": { "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)" } } ] } ] },
+                { "set": { "session.group_converged": "result.converged" } },
+                { "if": "session.group_converged == false && session.median_adu > session.target_adu && floor(session.brightness / 2) >= 1",
+                  "then": [
+                    { "set": { "session.brightness": "floor(session.brightness / 2)" } },
+                    // integral expression results are serialized as JSON
+                    // integers in tool args — rp's brightness is a u32
+                    { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" },
+                                                         "brightness": { "$expr": "session.brightness" } } } ],
+                  "else": [ { "set": { "session.ladder_done": "true" } } ] } ] },
+            { "if": "session.group_converged == false",
               "then": [ { "log": { "level": "info", "message": "exposure did not converge, using best duration",
                                    "values": { "filter": "params.filters[session.filter_index].name" } } } ] },
             { "repeat": { "count": { "$expr": "params.filters[session.filter_index].count" } },
@@ -1048,7 +1079,10 @@ Abridged to the load-bearing shape:
       ],
       "finally": [
         { "tool": "calibrator_off", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-        { "tool": "open_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } } ] }
+        // restore, don't blindly open: a cover that started Closed (or
+        // read Moving/Unknown/Error) stays closed, protecting the optics
+        { "if": "session.initial_cover_state == 'Open'",
+          "then": [ { "tool": "open_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } } ] } ] }
   ] }
 }
 ```

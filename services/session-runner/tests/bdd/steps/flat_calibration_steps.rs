@@ -43,6 +43,14 @@ async fn webhook_receiver_subscribed_to(world: &mut SessionRunnerWorld, event_ty
     add_event_plugin(world, vec![event_type]);
 }
 
+#[given(expr = "the cover starts {word}")]
+async fn cover_starts(world: &mut SessionRunnerWorld, state: String) {
+    ensure_omnisim(world).await;
+    bdd_infra::rp_harness::OmniSimHandle::set_cover_closed(state == "closed")
+        .await
+        .unwrap_or_else(|e| panic!("failed to preset the cover {state}: {e}"));
+}
+
 #[given(expr = "a flat plan of {int} {string} flats with no filter wheel")]
 async fn flat_plan_filterless(world: &mut SessionRunnerWorld, count: u32, group: String) {
     world.flat_plan = vec![(group, count)];
@@ -139,6 +147,18 @@ async fn should_receive_at_least_n_events(
         "expected at least {} '{}' event(s) within timeout",
         count,
         event_type
+    );
+}
+
+#[then(expr = "the cover should be {word}")]
+async fn cover_should_be(_world: &mut SessionRunnerWorld, expected: String) {
+    let target = if expected == "closed" { 1 } else { 3 };
+    let state = bdd_infra::rp_harness::OmniSimHandle::cover_state()
+        .await
+        .expect("failed to read the simulator's cover state");
+    assert_eq!(
+        state, target,
+        "expected the cover to be {expected} (CoverState {target}), got CoverState {state}"
     );
 }
 

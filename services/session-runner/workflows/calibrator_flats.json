@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "calibrator-flats",
-  "description": "Flat-field capture against a cover calibrator: close the cover, light the panel, then per filter find the exposure that hits the target ADU and capture the requested flats. On a filterless (one-shot color) rig, leave filter_wheel_id at its '' default: set_filter is skipped and filters entries are plain capture groups. The document port of the calibrator-flats Rust orchestrator (docs/services/calibrator-flats.md), whose BDD suite is the behavioral oracle.",
+  "description": "Flat-field capture against a cover calibrator: close the cover, light the panel, then per filter find the exposure that hits the target ADU (halving the panel brightness whenever the search ends pinned over the target) and capture the requested flats; the cover ends in the state it started in — reopened only if it began open. On a filterless (one-shot color) rig, leave filter_wheel_id at its '' default: set_filter is skipped and filters entries are plain capture groups. The document port of the calibrator-flats Rust orchestrator (docs/services/calibrator-flats.md), whose BDD suite is the behavioral oracle.",
   "parameters": {
     "camera_id": { "type": "string", "required": true },
     "filter_wheel_id": { "type": "string", "default": "" },
@@ -39,6 +39,16 @@
         ]
       },
       {
+        "id": "initial-cover",
+        "tool": "get_cover_state",
+        "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
+      },
+      {
+        "set": {
+          "session.initial_cover_state": "has(session.initial_cover_state) ? session.initial_cover_state : result.cover_state"
+        }
+      },
+      {
         "try": [
           {
             "tool": "close_cover",
@@ -47,6 +57,11 @@
           {
             "tool": "calibrator_on",
             "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
+          },
+          {
+            "set": {
+              "session.brightness": "has(session.brightness) ? session.brightness : result.brightness"
+            }
           },
           {
             "id": "filter-plan",
@@ -68,43 +83,79 @@
                 ]
               },
               {
-                "set": { "session.duration": "seconds(params.initial_duration)" }
+                "set": {
+                  "session.duration": "seconds(params.initial_duration)",
+                  "session.group_converged": "false",
+                  "session.ladder_done": "false"
+                }
               },
               {
-                "id": "find-exposure",
+                "id": "brightness-ladder",
                 "repeat": {
-                  "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
-                  "max_iterations": { "$expr": "params.max_iterations" }
+                  "until": "session.group_converged == true || session.ladder_done == true",
+                  "max_iterations": 32
                 },
                 "body": [
                   {
-                    "tool": "capture",
-                    "args": {
-                      "camera_id": { "$expr": "params.camera_id" },
-                      "duration": { "$expr": "humantime(session.duration)" }
-                    }
+                    "id": "find-exposure",
+                    "repeat": {
+                      "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
+                      "max_iterations": { "$expr": "params.max_iterations" }
+                    },
+                    "body": [
+                      {
+                        "tool": "capture",
+                        "args": {
+                          "camera_id": { "$expr": "params.camera_id" },
+                          "duration": { "$expr": "humantime(session.duration)" }
+                        }
+                      },
+                      {
+                        "tool": "compute_image_stats",
+                        "args": { "document_id": { "$expr": "result.document_id" } }
+                      },
+                      {
+                        "set": { "session.median_adu": "result.median_adu" }
+                      },
+                      {
+                        "if": "abs(session.median_adu - session.target_adu) / session.target_adu > params.tolerance",
+                        "then": [
+                          {
+                            "set": {
+                              "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
+                            }
+                          }
+                        ]
+                      }
+                    ]
                   },
                   {
-                    "tool": "compute_image_stats",
-                    "args": { "document_id": { "$expr": "result.document_id" } }
+                    "set": { "session.group_converged": "result.converged" }
                   },
                   {
-                    "set": { "session.median_adu": "result.median_adu" }
-                  },
-                  {
-                    "if": "abs(session.median_adu - session.target_adu) / session.target_adu > params.tolerance",
+                    "if": "session.group_converged == false && session.median_adu > session.target_adu && floor(session.brightness / 2) >= 1",
                     "then": [
                       {
-                        "set": {
-                          "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
+                        "set": { "session.brightness": "floor(session.brightness / 2)" }
+                      },
+                      {
+                        "tool": "calibrator_on",
+                        "args": {
+                          "calibrator_id": { "$expr": "params.calibrator_id" },
+                          "brightness": { "$expr": "session.brightness" }
                         }
+                      }
+                    ],
+                    "else": [
+                      {
+                        "set": { "session.ladder_done": "true" }
                       }
                     ]
                   }
                 ]
               },
               {
-                "if": "result.converged == false",
+                "if": "session.group_converged == false",
                 "then": [
                   {
                     "log": {
@@ -153,8 +204,13 @@
             "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
           },
           {
-            "tool": "open_cover",
-            "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
+            "if": "session.initial_cover_state == 'Open'",
+            "then": [
+              {
+                "tool": "open_cover",
+                "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
+              }
+            ]
           }
         ]
       }

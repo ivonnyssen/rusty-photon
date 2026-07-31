@@ -2584,6 +2584,50 @@ async fn test_close_cover_success() {
     assert!(!call_result.is_error.unwrap_or(false));
 }
 
+#[tokio::test]
+async fn test_get_cover_state_reports_the_state_name() {
+    let cc = MockCoverCalibrator::default(); // cover_state returns Closed
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let result = handler
+        .get_cover_state(Parameters(CalibratorIdParams {
+            calibrator_id: "cc".into(),
+        }))
+        .await;
+    let body = ok_text(result.unwrap());
+    assert_eq!(body["cover_state"], "Closed");
+}
+
+#[tokio::test]
+async fn test_get_cover_state_reports_a_moving_cover() {
+    let cc = MockCoverCalibrator {
+        stuck_cover_moving: true,
+        ..Default::default()
+    };
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let result = handler
+        .get_cover_state(Parameters(CalibratorIdParams {
+            calibrator_id: "cc".into(),
+        }))
+        .await;
+    let body = ok_text(result.unwrap());
+    assert_eq!(body["cover_state"], "Moving");
+}
+
+#[tokio::test]
+async fn test_get_cover_state_read_error() {
+    let cc = MockCoverCalibrator {
+        fail_cover_state_poll: true,
+        ..Default::default()
+    };
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let result = handler
+        .get_cover_state(Parameters(CalibratorIdParams {
+            calibrator_id: "cc".into(),
+        }))
+        .await;
+    assert_tool_error(result, "failed to read cover state");
+}
+
 // -----------------------------------------------------------------------
 // Focuser tests
 // -----------------------------------------------------------------------
