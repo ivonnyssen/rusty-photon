@@ -686,6 +686,45 @@ mod tests {
         let _ = tx.send(());
     }
 
+    /// A wildcard bind contributes interface addresses as bare strings,
+    /// while a client addressing an IPv6 listener sends the bracketed
+    /// `[addr]:port` form. Pins that the two match — the entry format
+    /// `additional_allowed_hosts` emits is the one rmcp accepts.
+    #[tokio::test]
+    async fn mcp_serves_a_bare_ipv6_allowed_host_addressed_in_bracketed_form() {
+        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
+        let app = build_router(state, vec!["2001:db8::1".to_string()]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/mcp"))
+            .header("accept", "application/json, text/event-stream")
+            .header(header::HOST, "[2001:db8::1]:11115")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "host-test", "version": "0"}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let _ = tx.send(());
+    }
+
     fn cached_u16(arr: ndarray::Array2<u16>) -> CachedImage {
         let (w, h) = arr.dim();
         CachedImage::new(
