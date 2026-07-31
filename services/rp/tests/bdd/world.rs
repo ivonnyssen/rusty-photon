@@ -221,6 +221,11 @@ pub struct RpWorld {
     /// `target_naming_template.feature`, *(planned, P1)*). `None` after
     /// a successful start.
     pub rp_start_error: Option<String>,
+    /// `server.advertised_url` override (session-lifecycle advertised-URL
+    /// scenario), merged over [`RpConfigBuilder::build`]'s output the
+    /// same way `target_store_config` is. `None` ⇒ field omitted, so rp
+    /// derives the advertised URL from its listener.
+    pub advertised_url: Option<String>,
 
     // --- REST API state ---
     /// Last REST API response status code
@@ -450,6 +455,9 @@ impl RpWorld {
         }
         if let Some(pattern) = &self.directory_pattern {
             config["session"]["directory_pattern"] = Value::String(pattern.clone());
+        }
+        if let Some(url) = &self.advertised_url {
+            config["server"]["advertised_url"] = Value::String(url.clone());
         }
         config
     }

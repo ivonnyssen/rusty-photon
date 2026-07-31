@@ -36,6 +36,11 @@ async fn flat_calibration_orchestrator(
     add_orchestrator_plugin(world);
 }
 
+#[given(expr = "the server config advertises {string} as rp's URL")]
+fn server_config_advertises_url(world: &mut RpWorld, url: String) {
+    world.advertised_url = Some(url);
+}
+
 #[given(expr = "a plugin configured as orchestrator with invoke URL {string}")]
 fn plugin_configured_as_orchestrator(world: &mut RpWorld, invoke_url: String) {
     // Only add if not already present
@@ -266,6 +271,14 @@ async fn invocation_has_mcp_url(world: &mut RpWorld) {
         "expected mcp_server_url to contain '/mcp', got: {}",
         invocation.mcp_server_url
     );
+}
+
+#[then(expr = "the invocation payload's MCP server URL should be {string}")]
+async fn invocation_mcp_url_is(world: &mut RpWorld, expected: String) {
+    let invocations = world.orchestrator_invocations.read().await;
+    let invocation = invocations.last().expect("no orchestrator invocation");
+
+    assert_eq!(invocation.mcp_server_url, expected);
 }
 
 #[then("the invocation payload should carry the registered config verbatim")]

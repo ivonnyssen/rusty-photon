@@ -22,7 +22,7 @@ async-trait = { workspace = true }
 clap = { workspace = true }
 cloudflare = { workspace = true }
 derive_more = { workspace = true }
-hostname = "0.4"
+hostname = { workspace = true }
 humantime = { workspace = true }
 instant-acme = { workspace = true }
 rand = { workspace = true }

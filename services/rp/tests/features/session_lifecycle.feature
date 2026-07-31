@@ -24,6 +24,15 @@ Feature: Session lifecycle with flat calibration orchestrator
     Then the test orchestrator should have been invoked
     And the invocation payload should carry the registered config verbatim
 
+  Scenario: Session invocation carries the configured advertised URL verbatim
+    Given a running Alpaca simulator
+    And a test orchestrator that completes immediately
+    And the server config advertises "https://observatory.example:11115" as rp's URL
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    Then the test orchestrator should have been invoked
+    And the invocation payload's MCP server URL should be "https://observatory.example:11115/mcp"
+
   Scenario: Session emits started event
     Given a running Alpaca simulator
     And a test orchestrator that completes immediately
