@@ -17,7 +17,7 @@ pub mod safety;
 pub mod session;
 
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -358,7 +358,21 @@ impl ServerBuilder {
             config_path: Arc::new(config_path),
         };
 
-        let router = build_router(state);
+        // The system hostname is read once and feeds both the URL rp
+        // advertises (below) and the MCP transport's `Host` allowlist, so
+        // the endpoint accepts every URL rp hands out (rp.md § MCP Server).
+        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
+        let mcp_allowed_hosts = additional_allowed_hosts(
+            config.server.advertised_url.as_ref(),
+            bind_addr.ip(),
+            hostname.as_deref(),
+            &interface_addrs(bind_addr.ip()),
+        );
+        debug!(
+            ?mcp_allowed_hosts,
+            "MCP Host allowlist, in addition to the loopback defaults"
+        );
+        let router = build_router(state, mcp_allowed_hosts);
 
         // Layer authentication if configured
         let router = match &config.server.auth {
@@ -382,7 +396,6 @@ impl ServerBuilder {
 
         // Set the MCP base URL on the session manager
         let scheme = if tls.is_some() { "https" } else { "http" };
-        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
         let base_url = advertised_base_url(
             config.server.advertised_url.as_ref(),
             scheme,
@@ -449,6 +462,80 @@ fn advertised_base_url(
                  remote orchestrators cannot connect"
             );
             format!("{scheme}://127.0.0.1:{port}")
+        }
+    }
+}
+
+/// The `Host` authorities rp's MCP transport accepts *in addition to*
+/// rmcp's loopback defaults (rp.md § MCP Server). Derived from the same
+/// facts as [`advertised_base_url`], so the URL rp hands an orchestrator
+/// is never one its own DNS-rebinding protection rejects: the system
+/// hostname (what a wildcard bind advertises), the authority of a
+/// configured `advertised_url`, the literal bind address of an explicit
+/// bind, and — for a wildcard bind — the interface addresses that
+/// listener really answers on.
+///
+/// Entries carry no port (matching the name on any port) except the one
+/// from `advertised_url`, which is taken verbatim so a configured port
+/// is honoured.
+fn additional_allowed_hosts(
+    advertised: Option<&AdvertisedUrl>,
+    bind_ip: IpAddr,
+    hostname: Option<&str>,
+    interface_addrs: &[IpAddr],
+) -> Vec<String> {
+    let mut hosts: Vec<String> = Vec::new();
+    if let Some(host) = hostname {
+        hosts.push(host.to_string());
+    }
+    if let Some(url) = advertised {
+        hosts.push(advertised_authority(url.as_str()).to_string());
+    }
+    // A wildcard bind names no reachable address of its own; the
+    // interface addresses below stand in for it.
+    if !bind_ip.is_unspecified() {
+        hosts.push(bind_ip.to_string());
+    }
+    hosts.extend(interface_addrs.iter().map(IpAddr::to_string));
+
+    let mut seen = std::collections::HashSet::new();
+    hosts.retain(|host| !host.is_empty() && seen.insert(host.clone()));
+    hosts
+}
+
+/// The `host[:port]` authority of an advertised base URL — everything
+/// between `://` and the first path separator. [`AdvertisedUrl`] has
+/// already validated the scheme and a non-empty remainder at config load.
+fn advertised_authority(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme)
+}
+
+/// Every non-loopback address a local interface answers on, for a
+/// wildcard bind — an orchestrator holding only a LAN address dials one
+/// of these. Empty for an explicit bind (that single address is added on
+/// its own) and on enumeration failure, which is logged and non-fatal:
+/// the hostname and loopback entries still stand.
+fn interface_addrs(bind_ip: IpAddr) -> Vec<IpAddr> {
+    if !bind_ip.is_unspecified() {
+        return Vec::new();
+    }
+    match if_addrs::get_if_addrs() {
+        Ok(interfaces) => interfaces
+            .iter()
+            .filter(|interface| !interface.is_loopback())
+            .map(if_addrs::Interface::ip)
+            .collect(),
+        Err(e) => {
+            warn!(
+                error = %e,
+                "could not enumerate local interfaces; MCP requests addressed to a \
+                 LAN address of this host will be rejected"
+            );
+            Vec::new()
         }
     }
 }
@@ -592,6 +679,102 @@ mod tests {
     fn wildcard_bind_without_hostname_advertises_loopback() {
         let url = advertised_base_url(None, "https", addr("0.0.0.0:11115"), None);
         assert_eq!(url, "https://127.0.0.1:11115");
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn explicit_bind_allows_its_own_address_and_the_hostname() {
+        let hosts = additional_allowed_hosts(None, ip("192.168.1.10"), Some("rig"), &[]);
+        assert_eq!(hosts, vec!["rig", "192.168.1.10"]);
+    }
+
+    #[test]
+    fn wildcard_bind_allows_the_hostname_and_every_interface_address() {
+        // The wildcard address itself is dialable by nobody, so it is not
+        // an entry; the addresses that listener answers on are.
+        let hosts = additional_allowed_hosts(
+            None,
+            ip("0.0.0.0"),
+            Some("rig"),
+            &[ip("192.168.1.10"), ip("2001:db8::1")],
+        );
+        assert_eq!(hosts, vec!["rig", "192.168.1.10", "2001:db8::1"]);
+    }
+
+    #[test]
+    fn ipv6_wildcard_bind_allows_the_hostname_and_every_interface_address() {
+        let hosts = additional_allowed_hosts(None, ip("::"), Some("rig"), &[ip("2001:db8::1")]);
+        assert_eq!(hosts, vec!["rig", "2001:db8::1"]);
+    }
+
+    #[test]
+    fn the_advertised_host_is_allowed_with_its_port() {
+        // The URL rp hands out must be one rp accepts — the bug in #792.
+        let hosts = additional_allowed_hosts(
+            Some(&advertised("https://observatory.example:11115")),
+            ip("0.0.0.0"),
+            Some("rig"),
+            &[],
+        );
+        assert_eq!(hosts, vec!["rig", "observatory.example:11115"]);
+    }
+
+    #[test]
+    fn allowed_hosts_are_deduplicated() {
+        // A hostname-shaped interface address, or an advertised URL naming
+        // the bind address, must not produce a duplicate entry.
+        let hosts = additional_allowed_hosts(
+            Some(&advertised("http://192.168.1.10")),
+            ip("192.168.1.10"),
+            Some("rig"),
+            &[],
+        );
+        assert_eq!(hosts, vec!["rig", "192.168.1.10"]);
+    }
+
+    #[test]
+    fn without_a_hostname_only_the_derivable_addresses_are_allowed() {
+        // Loopback still answers: rmcp's defaults hold it, and this list
+        // only ever extends them.
+        let hosts = additional_allowed_hosts(None, ip("0.0.0.0"), None, &[]);
+        assert!(hosts.is_empty(), "{hosts:?}");
+    }
+
+    #[test]
+    fn advertised_authority_keeps_host_and_port_and_drops_scheme_and_path() {
+        assert_eq!(
+            advertised_authority("https://rig.example:11115"),
+            "rig.example:11115"
+        );
+        assert_eq!(advertised_authority("http://rig.example"), "rig.example");
+        assert_eq!(
+            advertised_authority("https://rig.example:11115/rp"),
+            "rig.example:11115"
+        );
+        // A bracketed IPv6 literal survives intact — rmcp trims the
+        // brackets on both the allowlist entry and the Host header.
+        assert_eq!(
+            advertised_authority("https://[2001:db8::1]:11115"),
+            "[2001:db8::1]:11115"
+        );
+    }
+
+    #[test]
+    fn an_explicit_bind_enumerates_no_interfaces() {
+        assert!(interface_addrs(ip("127.0.0.1")).is_empty());
+        assert!(interface_addrs(ip("192.168.1.10")).is_empty());
+    }
+
+    #[test]
+    fn a_wildcard_bind_enumerates_only_non_loopback_interfaces() {
+        // Whatever this host has, loopback is never in the list: rmcp's
+        // defaults already cover it, and a duplicate would be noise.
+        for addr in interface_addrs(ip("0.0.0.0")) {
+            assert!(!addr.is_loopback(), "loopback leaked into the list: {addr}");
+        }
     }
 
     #[test]
