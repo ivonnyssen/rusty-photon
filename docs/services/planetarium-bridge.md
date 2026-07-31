@@ -1,9 +1,9 @@
 # planetarium-bridge
 
-**Status: implemented (bridge service and the [rp-side
-contract](#rp-side-contract) — rp.md § Target Store → Import form is
-the landed rp-side text; doctor's fake-mount check is the remaining
-P3 slice).**
+**Status: implemented in full — bridge service, the [rp-side
+contract](#rp-side-contract) (rp.md § Target Store → Import form is
+the landed rp-side text), and the [doctor
+integration](#doctor-integration) including the fake-mount check.**
 This document is the design for the `planetarium-bridge` service —
 P3 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md).
@@ -601,18 +601,26 @@ latitude/floor ranges, positive `max_entries`, a well-formed
 
 ## Doctor integration
 
+**Landed** (with the fake-mount slice, which also registered the
+bridge in doctor's embedded catalog — the `pkg/doctor.toml` alone is
+not enough; `services/doctor/src/catalog.rs` must list it):
+
 - `pkg/doctor.toml`: `class = "alpaca"`, `port = 11126`. Sentinel's
   health supervision and doctor's port checks apply as to any Alpaca
   service.
 - **Client wiring**: doctor's `plan_client_wiring` provisions
   `rp.service_auth` + `rp.ca_cert` (absent-only), exactly as for
-  sentinel and session-runner (ADR-017).
-- **New check — the fake-mount hazard**: doctor **fails provisioning
-  when rp's `equipment.mount` points at the bridge's port or
-  `UniqueID`**. Wiring the virtual device in as rp's real mount would
-  defeat every motion safeguard rp believes it has (slews that "just
-  succeed", a mount that is never parked, never at limits). The check
-  is a hard failure, not a warning.
+  sentinel and session-runner (ADR-017) — via nested pointers, since
+  the bridge's client block lives under its `rp` key.
+- **The fake-mount hazard** (`joins.fake-mount`, doctor.md § The
+  fake-mount hazard): doctor **fails when rp's `equipment.mount`
+  points at the bridge** — statically when the URL loopback-joins to
+  the bridge's port, and by probing the configured mount's management
+  API for the bridge's `device.unique_id` otherwise (the leg that
+  catches host-name rig URLs). Wiring the virtual device in as rp's
+  real mount would defeat every motion safeguard rp believes it has
+  (slews that "just succeed", a mount that is never parked, never at
+  limits). The check is a hard failure, not a warning.
 
 ## Error handling summary
 

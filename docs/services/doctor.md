@@ -381,7 +381,8 @@ its credential is the shared `service_auth` pair, `auth.mismatch`'s
 territory already. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 and every `equipment.<kind>[].alpaca_url` entry — including the singular
 `equipment.mount.alpaca_url` (issue #663) — share rp's single top-level
-`ca_cert` field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
+`ca_cert` field (issue #609 / PR #612, the `wire_auth: false` row of
+`CLIENT_WIRING` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
 is fully fix-eligible for all of them: the scheme is rewritten in place and
 `/ca_cert` is written from the resolved pki tree, same as every other
@@ -412,6 +413,21 @@ a from-scratch install converges within the existing fix-round loop
 (§Repair) without any special-casing: round 0 turns the target's server
 side on, round 1 (the loop's next iteration re-diagnoses against the
 now-updated files) sees the mismatch and rewrites the client.
+
+### The fake-mount hazard (`joins.fake-mount`)
+
+planetarium-bridge serves a virtual ASCOM Telescope for planetarium
+apps — it never touches hardware, and slews against it "just succeed"
+without moving anything. Wiring it in as rp's real mount would defeat
+every motion safeguard rp believes it has (park, limits, slew
+completion), so this is graded a **hard failure**, never a warning
+([planetarium-bridge.md](planetarium-bridge.md) § Doctor integration).
+Never fix-eligible: doctor cannot know which URL the real mount lives
+at.
+
+| Check | Status | Trigger |
+|---|---|---|
+| `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential, doctor's CA for https) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a rig config addressing the bridge by host name (`<svc>.rig.<domain>`), where the loopback join is skipped by design. The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
 
 ### Platform defaults
 
@@ -685,10 +701,16 @@ against the rest of the fleet (issue
    `observatory` + the hash. Client blocks that are absent get the
    plaintext + CA path — except on an ACME install, where they get the
    plaintext and **no** `ca_cert`: the targets are publicly trusted and a
-   `ca_cert` would disable the platform roots the client needs. **Present
-   blocks are never overwritten** — a hand-set credential or hand-placed
-   cert path is operator intent; incoherence surfaces as
-   `auth.mismatch`/`tls.paths`, suggestion-only.
+   `ca_cert` would disable the platform roots the client needs. The
+   client set is the `CLIENT_WIRING` table (`provision/mod.rs`):
+   sentinel / session-runner / calibrator-flats carry the pair
+   top-level, planetarium-bridge nests it under its `rp` block
+   (`/rp/service_auth`, `/rp/ca_cert` — planned only while that parent
+   object exists, since fix ops never create intermediate structure),
+   and rp is CA-only. **Present blocks are never overwritten** — a
+   hand-set credential or hand-placed cert path is operator intent;
+   incoherence surfaces as `auth.mismatch`/`tls.paths`,
+   suggestion-only.
    **A missing config file has nothing to write into** — `tls.absent` /
    `auth.absent`'s `FileAbsent` case (§TLS and auth, #598) plans no fix,
    so `--fix` silently does nothing for that service; the diagnosis is the

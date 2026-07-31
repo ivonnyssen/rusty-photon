@@ -63,7 +63,8 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
             }
         })
         .collect();
-    if probes.is_empty() {
+    let fake_mount = fake_mount_probe_target(ctx);
+    if probes.is_empty() && fake_mount.is_none() {
         return Vec::new();
     }
 
@@ -91,8 +92,134 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
                 }
             }
         }
+        if let Some(fake_mount) = fake_mount {
+            checks.extend(probe_fake_mount(ctx, &fake_mount).await);
+        }
         checks
     })
+}
+
+/// What the fake-mount probe needs, gathered from the static scans.
+struct FakeMountProbe {
+    /// rp's `equipment.mount.alpaca_url`, probed as rp itself would
+    /// connect.
+    url: String,
+    /// The locally-scanned bridge config's `device.unique_id`.
+    bridge_unique_id: String,
+    /// rp's `equipment.mount.auth` client credential, if any.
+    auth: Option<crate::scan::ClientAuthView>,
+}
+
+/// The UniqueID leg of `joins.fake-mount` (planetarium-bridge.md §
+/// Doctor integration): the static port join (`crate::checks`) only
+/// resolves loopback URLs, but a rig config addresses services by host
+/// name (`<svc>.rig.rustyphoton.io`), where the port join is silently
+/// skipped by design. This leg asks the configured mount itself —
+/// `GET /management/v1/configureddevices` on rp's
+/// `equipment.mount.alpaca_url` — and fails when any reported device's
+/// `UniqueID` is the locally-installed bridge's minted `device.unique_id`.
+/// Skipped when the static leg already resolved the URL to the bridge
+/// (one check, not two) and silent when the mount does not answer —
+/// liveness is `service.devices`' story, not this hazard's.
+fn fake_mount_probe_target(ctx: &Context) -> Option<FakeMountProbe> {
+    let rp = ctx
+        .scans
+        .iter()
+        .find(|s| s.entry.name == "rp")
+        .and_then(|s| crate::scan::view::<crate::scan::RpView>(s)?.ok())?;
+    let url = rp.mount_alpaca_url()?;
+    let bridge_unique_id = ctx
+        .scans
+        .iter()
+        .find(|s| s.entry.name == "planetarium-bridge")
+        .and_then(|s| crate::scan::view::<crate::scan::BridgeView>(s)?.ok())
+        .and_then(|bridge| bridge.device?.unique_id)
+        .filter(|id| !id.is_empty())?;
+    let (_, host, port) = crate::checks::parse_target_url(&url)?;
+    if crate::checks::resolve_join_target(ctx, &host, port)
+        .is_some_and(|target| target.entry.name == "planetarium-bridge")
+    {
+        return None;
+    }
+    Some(FakeMountProbe {
+        url,
+        bridge_unique_id,
+        auth: rp.mount_auth(),
+    })
+}
+
+async fn probe_fake_mount(ctx: &Context, probe: &FakeMountProbe) -> Vec<Check> {
+    let origin = match reqwest::Url::parse(&probe.url) {
+        Ok(parsed) => match parsed.origin().ascii_serialization() {
+            origin if origin != "null" => origin,
+            _ => return Vec::new(),
+        },
+        Err(_) => return Vec::new(),
+    };
+    let url = format!("{origin}/management/v1/configureddevices");
+    debug!(
+        url,
+        "probing the configured mount for the fake-mount hazard"
+    );
+
+    // Trust doctor's own CA for an https mount, as every other probe
+    // does — the fleet's self-signed material is doctor-issued.
+    let ca_path = probe.url.starts_with("https").then(|| {
+        rusty_photon_tls::config::ca_cert_path(&crate::provision::pki_dir(&ctx.config_dir))
+    });
+    let Ok(client) = rusty_photon_tls::client::build_reqwest_client(ca_path.as_deref()) else {
+        return Vec::new();
+    };
+    let mut request = client.get(&url).timeout(HTTP_TIMEOUT);
+    // Present the credential rp itself would: its own equipment.mount.auth,
+    // falling back to the observatory credential. Every credential problem
+    // is joins.client-auth's story; an unanswerable or 401ing mount stays
+    // silent here.
+    let fallback = crate::provision::read_credential(&ctx.config_dir);
+    if let Some(auth) = &probe.auth {
+        if let (Some(username), Some(password)) = (&auth.username, &auth.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+    } else if let Some(password) = &fallback {
+        request = request.basic_auth(crate::provision::CREDENTIAL_USERNAME, Some(password));
+    }
+
+    let Ok(response) = request.send().await else {
+        return Vec::new();
+    };
+    if !response.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(management) = response.json::<ManagementResponse>().await else {
+        return Vec::new();
+    };
+    let Some(device) = management
+        .value
+        .iter()
+        .find(|d| d.unique_id == probe.bridge_unique_id)
+    else {
+        return Vec::new();
+    };
+    vec![Check::fail(
+        "joins.fake-mount",
+        Some("rp".to_string()),
+        format!(
+            "equipment.mount.alpaca_url ({url_cfg}) answers with UniqueID {unique_id} — that \
+             is the installed planetarium-bridge ({device_type} \"{name}\"), a virtual \
+             target-entry device, not a mount; slews against it \"just succeed\" without \
+             moving anything, so every motion safeguard rp relies on (park, limits, slew \
+             completion) is fiction",
+            url_cfg = probe.url,
+            unique_id = device.unique_id,
+            device_type = device.device_type,
+            name = device.name,
+        ),
+        Some(
+            "point equipment.mount.alpaca_url at the real mount driver; planetarium apps \
+             connect to the bridge, rp never does"
+                .to_string(),
+        ),
+    )]
 }
 
 /// The subset of an Alpaca management response the inventory reads.
@@ -110,6 +237,9 @@ struct ConfiguredDevice {
     device_type: String,
     #[serde(rename = "DeviceNumber", default)]
     number: u32,
+    /// Read by the fake-mount probe only; the inventory ignores it.
+    #[serde(rename = "UniqueID", default)]
+    unique_id: String,
 }
 
 /// Ask an active Alpaca service for its configured devices, following the
@@ -443,11 +573,13 @@ mod tests {
                 name: "QHY178M".to_string(),
                 device_type: "Camera".to_string(),
                 number: 0,
+                unique_id: "qhy-uid".to_string(),
             },
             ConfiguredDevice {
                 name: "EAF".to_string(),
                 device_type: "Focuser".to_string(),
                 number: 1,
+                unique_id: "eaf-uid".to_string(),
             },
         ];
         let text = describe_devices(&devices);

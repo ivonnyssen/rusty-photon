@@ -89,6 +89,7 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(url_conventions(ctx));
     checks.extend(tls_and_auth(ctx));
     checks.extend(client_target_joins(ctx));
+    checks.extend(fake_mount_join(ctx));
     checks.extend(rp_platform_defaults(ctx));
     checks.extend(crate::hardware::checks(ctx));
     checks
@@ -1069,7 +1070,11 @@ fn is_loopback_host(host: &str) -> bool {
 /// entirely (`ServerBlock::BlockAbsent`) is not guesswork, though — it is
 /// the documented "plain HTTP, no auth, catalog default port" state, so
 /// it still resolves.
-fn resolve_join_target<'a>(ctx: &'a Context, host: &str, port: u16) -> Option<&'a ServiceScan> {
+pub(crate) fn resolve_join_target<'a>(
+    ctx: &'a Context,
+    host: &str,
+    port: u16,
+) -> Option<&'a ServiceScan> {
     if !is_loopback_host(host) {
         return None;
     }
@@ -1113,7 +1118,7 @@ fn expected_scheme(target_tls_on: bool) -> &'static str {
 /// not parse or omits an explicit port (every rusty-photon service URL
 /// carries one; a bare default like `https://host/` names nothing in the
 /// catalog anyway).
-fn parse_target_url(url: &str) -> Option<(String, String, u16)> {
+pub(crate) fn parse_target_url(url: &str) -> Option<(String, String, u16)> {
     let parsed = reqwest::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_string();
     let port = parsed.port()?;
@@ -1593,6 +1598,49 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
         monitor.auth.as_ref(),
     ));
     checks
+}
+
+// ---- The fake-mount hazard (planetarium-bridge.md § Doctor integration) ----
+
+/// `joins.fake-mount`, the static leg: rp's `equipment.mount.alpaca_url`
+/// resolves — by the same loopback-host + port join every client-target
+/// check uses — to the installed planetarium-bridge. The bridge is a
+/// virtual target-entry device: wiring it in as rp's real mount would
+/// defeat every motion safeguard rp believes it has (slews that "just
+/// succeed", a mount that is never parked, never at limits), so this is
+/// a hard failure, not a warning. The non-loopback case is the
+/// aggregation probe's UniqueID leg (`crate::aggregate`).
+fn fake_mount_join(ctx: &Context) -> Vec<Check> {
+    let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
+        return Vec::new();
+    };
+    let Some(url) = rp.mount_alpaca_url() else {
+        return Vec::new();
+    };
+    let Some((_, host, port)) = parse_target_url(&url) else {
+        return Vec::new();
+    };
+    let Some(target) = resolve_join_target(ctx, &host, port) else {
+        return Vec::new();
+    };
+    if target.entry.name != "planetarium-bridge" {
+        return Vec::new();
+    }
+    vec![Check::fail(
+        "joins.fake-mount",
+        Some("rp".to_string()),
+        format!(
+            "equipment.mount.alpaca_url ({url}) points at planetarium-bridge — a virtual \
+             target-entry device, not a mount; slews against it \"just succeed\" without \
+             moving anything, so every motion safeguard rp relies on (park, limits, slew \
+             completion) is fiction"
+        ),
+        Some(
+            "point equipment.mount.alpaca_url at the real mount driver; planetarium apps \
+             connect to the bridge, rp never does"
+                .to_string(),
+        ),
+    )]
 }
 
 // ---- rp platform defaults ----
@@ -2960,5 +3008,86 @@ mod tests {
             checks.iter().all(|c| c.name != "joins.client-auth"),
             "{checks:?}"
         );
+    }
+
+    #[test]
+    fn test_fake_mount_static_join_is_a_hard_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "planetarium-bridge.json",
+            serde_json::json!({ "server": { "port": 11126 },
+                "device": { "unique_id": "bridge-uid" } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://127.0.0.1:11126" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = fake_mount_join(&ctx);
+        match &checks[..] {
+            [check] => {
+                assert_eq!(check.name, "joins.fake-mount");
+                assert_eq!(check.status, Status::Fail);
+                assert_eq!(check.service.as_deref(), Some("rp"));
+                assert!(
+                    check.detail.contains("planetarium-bridge"),
+                    "{}",
+                    check.detail
+                );
+                assert!(
+                    check.fixes.is_empty(),
+                    "not fixable by rewriting — {checks:?}"
+                );
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fake_mount_join_is_silent_for_a_real_mount_target() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "planetarium-bridge.json",
+            serde_json::json!({ "server": { "port": 11126 } }),
+        );
+        write_json(
+            dir.path(),
+            "gti-mount.json",
+            serde_json::json!({ "server": { "port": 11117 } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://127.0.0.1:11117" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(fake_mount_join(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_fake_mount_join_skips_a_non_loopback_mount_url() {
+        // The rig addresses services by host name — the static join is
+        // deliberately loopback-only (the UniqueID probe leg owns this
+        // case, crate::aggregate).
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "planetarium-bridge.json",
+            serde_json::json!({ "server": { "port": 11126 } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": {
+                    "alpaca_url": "https://planetarium-bridge.rig.example:11126" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(fake_mount_join(&ctx).is_empty());
     }
 }
