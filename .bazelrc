@@ -292,6 +292,17 @@ build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
 
+# The qhyccd-rs real/sim doc-test pair races on Windows (issue #781): both
+# targets carry `libqhyccd-sys/build_script.linksearchpaths` in their
+# runfiles, and when the two execute concurrently on a Windows runner,
+# rules_rust's process_wrapper intermittently finds one tree's copy as a
+# dangling symlink ("Access is denied (os error 5)", file=false
+# symlink=true len=0) — exactly one of the pair fails per affected run.
+# A Bazel retry re-executes the failed test after its sibling has already
+# finished, so the race window is gone on the second attempt; scoping the
+# retry to this pair keeps every other test's failure loud on attempt one.
+test:ci --flaky_test_attempts=//crates/qhyccd-rs.*doc_test@3
+
 # Tests draw from the same CPU pool as any local action (each test reserves
 # cpu:1), so left alone at most HOST_CPUS suites execute at once. The BDD
 # suites are sleep/IO-bound, not CPU-bound — each spawns a private OmniSim +
