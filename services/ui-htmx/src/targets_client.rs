@@ -195,3 +195,84 @@ impl TargetsClient for UnwiredTargets {
 /// Shared by the page handlers: an `Arc`'d client, cheap to clone into
 /// handler futures.
 pub(crate) type SharedTargetsClient = Arc<dyn TargetsClient>;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+    use crate::config::DriverAuth;
+
+    #[test]
+    fn the_client_shapes_the_mcp_url_and_maps_the_credential() {
+        let auth = DriverAuth {
+            username: "svc".to_string(),
+            password: "pw".to_string(),
+        };
+        let client = McpTargetsClient::new("https://rp.example:11115/", Some(&auth), None);
+        assert_eq!(client.mcp_url, "https://rp.example:11115/mcp");
+        let mapped = client.service_auth.unwrap();
+        assert_eq!(mapped.username, "svc");
+        assert_eq!(mapped.password, "pw");
+
+        let bare = McpTargetsClient::new("http://127.0.0.1:11115", None, None);
+        assert_eq!(bare.mcp_url, "http://127.0.0.1:11115/mcp");
+        assert!(bare.service_auth.is_none());
+    }
+
+    #[test]
+    fn call_errors_map_onto_the_three_page_states() {
+        assert!(matches!(
+            TargetsError::from(McpCallError::Request("gone".to_string())),
+            TargetsError::Unavailable(_)
+        ));
+        assert!(matches!(
+            TargetsError::from(McpCallError::Tool("rejected".to_string())),
+            TargetsError::Tool(_)
+        ));
+        assert!(matches!(
+            TargetsError::from(McpCallError::Malformed("two blocks".to_string())),
+            TargetsError::Malformed(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_unwired_default_reports_every_call_unavailable() {
+        // `with_rp_parts` installs this so a test state that never touches
+        // /targets needs no stub; each method must present as the honest
+        // unavailable card, never a panic.
+        let unwired = UnwiredTargets;
+        assert!(matches!(
+            unwired.list_targets().await,
+            Err(TargetsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            unwired.get_target("x").await,
+            Err(TargetsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            unwired.update_target("x", Map::new()).await,
+            Err(TargetsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            unwired.set_goals("x", Vec::new()).await,
+            Err(TargetsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            unwired.delete_target("x").await,
+            Err(TargetsError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_rp_maps_the_connect_failure_to_unavailable() {
+        // Port 1 refuses deterministically (the repo's unreachable-target
+        // convention) — the production connect path must surface it as the
+        // Unavailable page state, exercising `session()`'s error mapping.
+        let client = McpTargetsClient::new("http://127.0.0.1:1", None, None);
+        assert!(matches!(
+            client.list_targets().await,
+            Err(TargetsError::Unavailable(_))
+        ));
+    }
+}

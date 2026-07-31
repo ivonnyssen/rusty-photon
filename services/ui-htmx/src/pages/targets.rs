@@ -1193,4 +1193,257 @@ mod tests {
         assert!(html.contains("two content blocks"), "{html}");
         assert!(!html.contains("targets-unavailable"), "{html}");
     }
+
+    /// A `ConfigClient` returning a minimal effective config — the save-path
+    /// tests need the review re-render's config join to succeed.
+    struct EmptyConfig;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for EmptyConfig {
+        async fn get_config(
+            &self,
+        ) -> Result<rusty_photon_config::actions::ConfigGetResponse, ConfigClientError> {
+            Ok(rusty_photon_config::actions::ConfigGetResponse {
+                config: json!({}),
+                overrides: Vec::new(),
+            })
+        }
+
+        async fn get_schema(
+            &self,
+        ) -> Result<rusty_photon_config::actions::ConfigSchemaResponse, ConfigClientError> {
+            Err(ConfigClientError::Transport("unused".to_string()))
+        }
+
+        async fn apply_config(
+            &self,
+            _config: &Value,
+        ) -> Result<rusty_photon_config::actions::ConfigApplyResponse, ConfigClientError> {
+            Err(ConfigClientError::Transport("unused".to_string()))
+        }
+    }
+
+    fn state_with_targets_and_config(targets: MockTargetsClient) -> AppState {
+        AppState::with_rp_parts(
+            Arc::new(EmptyConfig),
+            Arc::new(crate::rp_client::MockRpApi::new()),
+            Arc::new(crate::probe::MockProbeHttp::new()),
+        )
+        .with_targets_client(Arc::new(targets))
+    }
+
+    /// The stored row the save-path mocks serve from `get_target`.
+    fn stored_target() -> Value {
+        json!({
+            "slug": "m-82",
+            "display_name": "M 82",
+            "active": false,
+            "coord": { "ra_hours": 5.5, "dec_degrees": 10.0 },
+            "priority": 0,
+            "goals": [],
+            "created_by": "operator",
+            "updated_by": "operator",
+            "updated_at": "2026-07-31T00:00:00Z"
+        })
+    }
+
+    fn base_form() -> Vec<(String, String)> {
+        vec![
+            ("display_name".to_string(), "M 82".to_string()),
+            ("priority".to_string(), "0".to_string()),
+            ("position_angle_degrees".to_string(), String::new()),
+            ("notes".to_string(), String::new()),
+        ]
+    }
+
+    async fn run_save(targets: MockTargetsClient, form: Vec<(String, String)>) -> String {
+        let response = save(
+            axum::extract::State(state_with_targets_and_config(targets)),
+            Path("m-82".to_string()),
+            HeaderMap::new(),
+            Form(form),
+        )
+        .await;
+        body_of(response).await
+    }
+
+    #[tokio::test]
+    async fn an_empty_display_name_is_a_field_error_and_nothing_is_written() {
+        // No expect_update_target / expect_set_goals: a write would panic
+        // the mock, proving BFF-side validation short-circuits the save.
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_get_target()
+            .returning(|_| Ok(stored_target()));
+        let mut form = base_form();
+        form[0].1 = String::new();
+        let html = run_save(targets, form).await;
+        assert!(html.contains("a display name is required"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_bad_frame_count_renders_the_problem_banner() {
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_get_target()
+            .returning(|_| Ok(stored_target()));
+        let mut form = base_form();
+        form.extend([
+            ("goal_filter".to_string(), "Ha".to_string()),
+            ("goal_binning".to_string(), "1x1".to_string()),
+            ("goal_exposure".to_string(), "5m".to_string()),
+            ("goal_count".to_string(), "a dozen".to_string()),
+        ]);
+        let html = run_save(targets, form).await;
+        assert!(html.contains("not a whole number"), "{html}");
+        // The submitted row survives the re-render for correction.
+        assert!(html.contains("a dozen"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_non_pa_tool_rejection_renders_as_the_banner() {
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_get_target()
+            .returning(|_| Ok(stored_target()));
+        targets
+            .expect_update_target()
+            .returning(|_, _| Err(TargetsError::Tool("display_name: too long".to_string())));
+        let html = run_save(targets, base_form()).await;
+        assert!(html.contains("display_name: too long"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_goals_rejection_after_a_saved_update_says_so_honestly() {
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_get_target()
+            .returning(|_| Ok(stored_target()));
+        targets.expect_update_target().returning(|_, _| Ok(()));
+        targets
+            .expect_set_goals()
+            .returning(|_, _| Err(TargetsError::Tool("unknown filter `Xx`".to_string())));
+        let html = run_save(targets, base_form()).await;
+        assert!(html.contains("Details saved; goals were not"), "{html}");
+        assert!(html.contains("unknown filter `Xx`"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_successful_save_sends_the_blank_angle_as_an_explicit_null() {
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_get_target()
+            .returning(|_| Ok(stored_target()));
+        targets
+            .expect_update_target()
+            .withf(|slug, fields| {
+                slug == "m-82"
+                    && fields.get("position_angle_degrees") == Some(&Value::Null)
+                    && fields.get("display_name") == Some(&json!("M 82"))
+            })
+            .returning(|_, _| Ok(()));
+        targets
+            .expect_set_goals()
+            .withf(|slug, goals| slug == "m-82" && goals.is_empty())
+            .returning(|_, _| Ok(()));
+        let html = run_save(targets, base_form()).await;
+        assert!(html.contains("Saved."), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_review_of_an_unavailable_store_renders_the_gate_card() {
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_get_target()
+            .returning(|_| Err(TargetsError::Unavailable("refused".to_string())));
+        let response = review(
+            axum::extract::State(state_with_targets_and_config(targets)),
+            Path("m-82".to_string()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("targets-unavailable"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn activate_and_delete_rejections_render_the_error_card() {
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_update_target()
+            .returning(|_, _| Err(TargetsError::Tool("unknown target".to_string())));
+        let response = set_active(
+            axum::extract::State(state_with_targets_and_config(targets)),
+            Path("m-82".to_string()),
+            Query(ActiveQuery { active: true }),
+            HeaderMap::new(),
+        )
+        .await;
+        assert!(body_of(response).await.contains("unknown target"));
+
+        let mut targets = MockTargetsClient::new();
+        targets
+            .expect_delete_target()
+            .returning(|_| Err(TargetsError::Tool("unknown target".to_string())));
+        let response = delete(
+            axum::extract::State(state_with_targets_and_config(targets)),
+            Path("m-82".to_string()),
+            HeaderMap::new(),
+        )
+        .await;
+        assert!(body_of(response).await.contains("unknown target"));
+    }
+
+    #[tokio::test]
+    async fn every_targets_handler_renders_the_no_rp_card_without_an_rp() {
+        // `AppState::with_client` carries no rp state — the shape the
+        // stubbed-driver unit states use.
+        let state = || {
+            axum::extract::State(AppState::with_client(
+                "stub",
+                Arc::new(UnusedConfig) as Arc<dyn ConfigClient>,
+            ))
+        };
+        let no_rp = "No rp orchestrator is configured";
+        let html = body_of(page(state(), HeaderMap::new()).await).await;
+        assert!(html.contains(no_rp), "{html}");
+        let html = body_of(review(state(), Path("x".to_string()), HeaderMap::new()).await).await;
+        assert!(html.contains(no_rp), "{html}");
+        let html = body_of(
+            save(
+                state(),
+                Path("x".to_string()),
+                HeaderMap::new(),
+                Form(Vec::new()),
+            )
+            .await,
+        )
+        .await;
+        assert!(html.contains(no_rp), "{html}");
+        let html = body_of(
+            set_active(
+                state(),
+                Path("x".to_string()),
+                Query(ActiveQuery { active: true }),
+                HeaderMap::new(),
+            )
+            .await,
+        )
+        .await;
+        assert!(html.contains(no_rp), "{html}");
+        let html = body_of(delete(state(), Path("x".to_string()), HeaderMap::new()).await).await;
+        assert!(html.contains(no_rp), "{html}");
+    }
+
+    #[tokio::test]
+    async fn the_goal_row_fragment_serves_a_blank_row_or_nothing() {
+        let added = goal_row_fragment(Query(GoalRowQuery::default())).await;
+        let html = body_of(added).await;
+        assert!(html.contains(r#"name="goal_filter""#), "{html}");
+        let removed = goal_row_fragment(Query(GoalRowQuery {
+            remove: Some("1".to_string()),
+        }))
+        .await;
+        assert_eq!(body_of(removed).await, "");
+    }
 }
