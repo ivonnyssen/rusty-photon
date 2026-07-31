@@ -4344,6 +4344,7 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
+ "hostname",
  "humantime",
  "humantime-serde",
  "libc",

@@ -21,13 +21,13 @@ use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rusty_photon_tls::config::TlsConfig;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
+use crate::config::{AdvertisedUrl, Config};
 use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
@@ -382,7 +382,14 @@ impl ServerBuilder {
 
         // Set the MCP base URL on the session manager
         let scheme = if tls.is_some() { "https" } else { "http" };
-        let base_url = format!("{scheme}://{local_addr}");
+        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
+        let base_url = advertised_base_url(
+            config.server.advertised_url.as_ref(),
+            scheme,
+            local_addr,
+            hostname.as_deref(),
+        );
+        debug!(%base_url, "advertising MCP base URL to orchestrators");
         session.set_mcp_base_url(base_url).await;
 
         // This println is parsed by BDD tests to discover the bound port.
@@ -411,6 +418,38 @@ impl ServerBuilder {
 impl Default for ServerBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The base URL advertised to orchestrators as `mcp_server_url`
+/// (rp.md § MCP Server): the configured `advertised_url` verbatim,
+/// else derived from the bound listener. A wildcard bind advertises
+/// the system hostname — a SAN on every doctor-provisioned
+/// certificate — because the literal wildcard address is dialable by
+/// nobody and covered by no certificate; without a hostname it falls
+/// back to loopback so co-located orchestrators still connect.
+fn advertised_base_url(
+    advertised: Option<&AdvertisedUrl>,
+    scheme: &str,
+    local_addr: SocketAddr,
+    hostname: Option<&str>,
+) -> String {
+    if let Some(url) = advertised {
+        return url.as_str().to_string();
+    }
+    if !local_addr.ip().is_unspecified() {
+        return format!("{scheme}://{local_addr}");
+    }
+    let port = local_addr.port();
+    match hostname {
+        Some(host) => format!("{scheme}://{host}:{port}"),
+        None => {
+            warn!(
+                "wildcard bind and no system hostname; advertising loopback — \
+                 remote orchestrators cannot connect"
+            );
+            format!("{scheme}://127.0.0.1:{port}")
+        }
     }
 }
 
@@ -522,6 +561,49 @@ impl BoundServer {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    fn advertised(url: &str) -> AdvertisedUrl {
+        serde_json::from_value(serde_json::json!(url)).unwrap()
+    }
+
+    #[test]
+    fn explicit_bind_advertises_the_literal_address() {
+        let url = advertised_base_url(None, "http", addr("127.0.0.1:11115"), Some("rig"));
+        assert_eq!(url, "http://127.0.0.1:11115");
+    }
+
+    #[test]
+    fn wildcard_bind_advertises_the_hostname() {
+        let url = advertised_base_url(None, "https", addr("0.0.0.0:11115"), Some("rig"));
+        assert_eq!(url, "https://rig:11115");
+    }
+
+    #[test]
+    fn ipv6_wildcard_bind_advertises_the_hostname() {
+        let url = advertised_base_url(None, "https", addr("[::]:11115"), Some("rig"));
+        assert_eq!(url, "https://rig:11115");
+    }
+
+    #[test]
+    fn wildcard_bind_without_hostname_advertises_loopback() {
+        let url = advertised_base_url(None, "https", addr("0.0.0.0:11115"), None);
+        assert_eq!(url, "https://127.0.0.1:11115");
+    }
+
+    #[test]
+    fn configured_advertised_url_wins_over_derivation() {
+        let url = advertised_base_url(
+            Some(&advertised("https://observatory.example:443")),
+            "http",
+            addr("0.0.0.0:11115"),
+            Some("rig"),
+        );
+        assert_eq!(url, "https://observatory.example:443");
+    }
 
     /// `ServerBuilder::build` aborts loud when the plate-solver client
     /// can't be built — here, an invalid `ca_cert` path makes

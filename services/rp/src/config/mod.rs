@@ -51,7 +51,7 @@ pub use plate_solver::PlateSolverConfig;
 pub use rotator::RotatorConfig;
 pub use safety::SafetyConfig;
 pub use safety_monitor::SafetyMonitorConfig;
-pub use server::ServerConfig;
+pub use server::{AdvertisedUrl, ServerConfig};
 pub use session::SessionConfig;
 pub use site::SiteConfig;
 pub use switch::SwitchConfig;

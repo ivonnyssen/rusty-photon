@@ -790,6 +790,27 @@ Workflow plugins connect to this endpoint as MCP clients during their
 active workflow. The orchestrator itself also uses the same tool
 implementations internally.
 
+The endpoint URL `rp` advertises to orchestrators (the invocation
+payload's `mcp_server_url`, see
+[Orchestrator Invocation Protocol](#orchestrator-invocation-protocol))
+is derived as follows:
+
+- `server.advertised_url` set: that URL verbatim, with `/mcp` appended.
+  Use it when the reachable name is not derivable — NAT, a reverse
+  proxy, or an ACME DNS name.
+- Otherwise the scheme is `https` when `server.tls` is set (else
+  `http`), the port is the actually-bound listener port, and the host
+  is the bind address — except a wildcard bind (`0.0.0.0` / `::`),
+  which advertises the **system hostname** instead. The hostname is
+  reachable from the machine itself and from any LAN host that
+  resolves it, and it is a DNS SAN on every doctor-provisioned
+  certificate, so TLS verification succeeds without extra SANs. A
+  literal wildcard host would be dialable by nobody and covered by no
+  certificate.
+- Wildcard bind and the hostname cannot be determined: `127.0.0.1`
+  with a warning — co-located orchestrators still connect, and
+  loopback is a SAN on doctor-provisioned certificates.
+
 The endpoint sits behind the same server-wide `server.tls` /
 `server.auth` as every other route — there is no unauthenticated MCP
 carve-out. First-party MCP clients are built through the shared
@@ -1832,6 +1853,10 @@ Content-Type: application/json
   "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" }
 }
 ```
+
+`mcp_server_url` is the advertised MCP endpoint — `server.advertised_url`
+when set, otherwise derived from the listener (wildcard binds advertise
+the system hostname); see [MCP Server](#mcp-server) for the exact rules.
 
 On recovery re-invocation `recovery` is a non-null object carrying the
 reason for the interruption (today `{"reason": "safety_interruption"}`,
@@ -4554,6 +4579,18 @@ the platform trust store applies, so an `https://` target signed by
 the observatory CA fails certificate verification regardless of the
 device's `auth` credentials — see
 [ASCOM Alpaca Devices](#ascom-alpaca-devices).
+
+The optional `server.advertised_url` (e.g.
+`"https://rp.rig.example.org:11115"`) overrides the MCP endpoint URL
+`rp` advertises to orchestrators; it must be an `http://` or
+`https://` URL and is rejected at load otherwise. Unset (the default),
+the URL is derived from the listener — a wildcard `bind_address`
+advertises the system hostname; see [MCP Server](#mcp-server). The
+`server` block is otherwise the shared server-config shape, except
+that `rp` carries this extra field in its own config type
+(`services/rp/src/config/server.rs`) — rp is the only service that
+advertises its own URL to another process, so the knob does not live
+in `rusty-photon-server-config`.
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
