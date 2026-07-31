@@ -3781,11 +3781,11 @@ carried over to the store:
   CRUD/goals MCP tools (`add_target` / `get_target` / `list_targets` /
   `update_target` / `set_goals` / `delete_target`) give list/edit/
   activate against the store, so a target that arrives with no UI (e.g.
-  a future planetarium-bridge import, P3) is never stranded — this
-  works before the P4 inbox exists. Reachable only through MCP, gated
-  the same as every other tool (rp.md § Safety); a browser-facing
-  target UI, if one is built, would need to be an MCP client like the
-  orchestrator, not a REST caller.
+  a planetarium-bridge import) is never stranded — this works with no
+  UI running. Reachable only through MCP, gated the same as every
+  other tool (§ Safety); the browser-facing target UI —
+  [ui-htmx's targets inbox](ui-htmx.md#targets-inbox-targets) — is
+  accordingly an MCP client like the orchestrator, not a REST caller.
 
 ### Slug allocation (add-time)
 
@@ -3830,7 +3830,9 @@ survives later edits. Rows written before these fields existed
 deserialize as operator-owned (serde defaults; no redb schema step).
 "Pending and unedited since import" is the first-class predicate
 `!active && updated_by == source.kind` — what the import dedup below
-keys on, and what the P4 inbox reads as "who touched this last".
+keys on, and what the [ui-htmx targets
+inbox](ui-htmx.md#targets-inbox-targets) reads as "who touched this
+last".
 
 ### Import form (`source`)
 
@@ -3842,7 +3844,8 @@ received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
 `position_angle_degrees` are all rejected alongside `source` — naming
 is rp's job here, imports always land paused (`active: false`) with no
 framing angle (no planetarium channel carries one; per-target angles
-are entered in the P4 inbox — [Position angle](#position-angle)), and
+are entered in the ui-htmx targets inbox —
+[Position angle](#position-angle)), and
 rp writes the human-readable provenance line (`"Imported via <kind>
 from <client> at <received_at>"`) into `notes` itself (display data,
 never parsed).
@@ -3929,7 +3932,8 @@ rejects it, and imports always land with no angle (inherit). On
 `update_target` an explicit `null` clears the field back to
 inherit-the-train-default — the only `update_target` field with
 explicit-null semantics, because "blank" (inherit) and "0.0"
-(explicit north-up) must stay distinguishable for the P4 inbox
+(explicit north-up) must stay distinguishable for the [ui-htmx targets
+inbox](ui-htmx.md#targets-inbox-targets)
 (plan § P4 note).
 
 ### Capture-time target linkage
@@ -3951,8 +3955,8 @@ Document).
 |------|-----------|---------|-------------|
 | `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`), `position_angle_degrees` (optional — degrees east of north, `0.0 ≤ angle < 360.0`, see [Position angle](#position-angle); rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session. **Not yet accepted:** `grading` (wait on the on-disk frame scan) |
 | `get_target` | slug | target, progress | Fetch one target with derived progress (below) |
-| `list_targets` | active_only (optional) | targets: [{...target fields, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the P4 inbox read. Each element is the flattened target plus a `progress` field (not the `{target, progress}` nesting `get_target` uses) |
-| `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the P4 inbox) accepts a pending target into the rotation. `scheduling`, when supplied, replaces the whole overrides object rather than merging field-wise. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (the only field with explicit-null semantics — see [Position angle](#position-angle)) |
+| `list_targets` | active_only (optional) | targets: [{...target fields, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the ui-htmx targets inbox read. Each element is the flattened target plus a `progress` field (not the `{target, progress}` nesting `get_target` uses) |
+| `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the ui-htmx targets inbox) accepts a pending target into the rotation. `scheduling`, when supplied, replaces the whole overrides object rather than merging field-wise. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (the only field with explicit-null semantics — see [Position angle](#position-angle)) |
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
 

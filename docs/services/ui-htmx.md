@@ -12,7 +12,7 @@ system that holds no UI logic inside `rp` (`rp.md` tenet 7). The service renders
 HTML on the server with [axum] + [Maud] and adds interactivity with [HTMX]; there
 is no npm, no WASM, no client-side framework.
 
-It serves three surfaces, one nav:
+It serves four surfaces, one nav:
 
 1. **Configuration** (`/`, deep pages at `/config/{service}`) — `/` *is*
    rp's settings page (the same schema-driven form `/config/rp` serves).
@@ -25,7 +25,16 @@ It serves three surfaces, one nav:
 2. **Equipment page** (`/equipment`) — `rp`'s equipment roster: live
    connection state, a managed/foreign capability tier per device, and
    add / edit / remove of roster entries by editing `rp`'s config over REST.
-3. **Activity stream** (`/stream`) — the live session narrative from the
+3. **Targets inbox** (`/targets`) — rp's [Target
+   Store](rp.md#target-store) as an operator surface: review pending
+   (paused) targets — typically planetarium imports
+   ([planetarium-bridge.md](planetarium-bridge.md)) — edit their
+   acquisition goals and framing position angle, and activate them into
+   the planner's rotation or discard them. The BFF's first **MCP**
+   surface: target CRUD is deliberately MCP-only on rp (rp.md Tenet 8),
+   so this page drives rp's target tools through
+   [`rp-mcp-client`](../decisions/017-standard-mcp-client-construction.md).
+4. **Activity stream** (`/stream`) — the live session narrative from the
    [`7-stream-fold.html`](../plans/ui-design/mocks/7-stream-fold.html) mock:
    `rp`'s real-time event stream rendered server-side and pushed to the
    browser over SSE.
@@ -200,6 +209,12 @@ rostered device.
 | `GET`  | `/equipment/{kind}/{id}/edit` | Edit form for one roster entry, prefilled from rp's config (the singular `mount` uses the fixed id `mount`). |
 | `POST` | `/equipment/{kind}/{id}/edit` | Replace that entry in rp's config and apply. |
 | `POST` | `/equipment/{kind}/{id}/delete` | Remove that entry from rp's config and apply. |
+| `GET`  | `/targets` | The [targets inbox](#targets-inbox-targets): pending targets awaiting review plus the active roster, from rp's `list_targets` MCP tool joined with the filter roster and train position-angle defaults from `GET /api/config`. |
+| `GET`  | `/targets/{slug}` | The per-target review form: editable display name, priority, position angle (blank = inherit), notes, and the acquisition-goals editor; coordinates and provenance are display-only. |
+| `POST` | `/targets/{slug}` | Save the review form: `update_target` (scalar fields, with the position angle's blank ⇒ explicit-`null` mapping) then `set_goals` (full replacement); rp-side validation errors re-render field-level with values preserved. |
+| `POST` | `/targets/{slug}/active` | Activate (`active=true` — accept a pending target into the rotation) or pause (`active=false`) via `update_target`. |
+| `POST` | `/targets/{slug}/delete` | Discard the target via `delete_target`. |
+| `GET`  | `/targets/goal-row` | Goal-editor fragment: a blank goal row for the "Add goal" affordance, or an empty body for the per-row "Remove" swap. |
 | `GET`  | `/stream` | The [activity stream](#activity-stream-stream) page. |
 | `GET`  | `/stream/events` | The SSE proxy: rp's event stream rendered as HTML fragments (see [SSE proxy](#the-sse-proxy-streamevents)). |
 | `GET`  | `/stream/equipment` | Fold-panel equipment-LED fragment; the panel re-fetches it on an htmx timer. |
@@ -208,11 +223,11 @@ rostered device.
 
 [htmx-ext-sse]: https://github.com/bigskysoftware/htmx-extensions/tree/main/src/sse
 
-Every page shares the [`layout`] shell, whose top nav carries the three
+Every page shares the [`layout`] shell, whose top nav carries the four
 surfaces — **Activity** (`/stream`), **Equipment** (`/equipment`),
-**Configuration** (`/`) — with the active tab highlighted, plus the mock's
-pure-CSS **night-vision toggle** (a page-level red filter preserving dark
-adaptation; no JavaScript).
+**Targets** (`/targets`), **Configuration** (`/`) — with the active tab
+highlighted, plus the mock's pure-CSS **night-vision toggle** (a
+page-level red filter preserving dark adaptation; no JavaScript).
 
 [`layout`]: ../../services/ui-htmx/src/pages/mod.rs
 
@@ -521,6 +536,192 @@ pre-fill remains low-priority per the plan.
 **rp unreachable:** the page renders the same error banner + retry as a config
 page whose driver is down; roster mutations are disabled with the banner shown.
 
+## Targets inbox (`/targets`)
+
+The operator surface for rp's [Target Store](rp.md#target-store) — P4 of
+[planetarium-target-import.md](../plans/planetarium-target-import.md).
+Imports land *paused* (`active: false`) with default goals and no framing
+angle; this page is where the operator reviews them: attach or adjust
+acquisition goals, set the position angle, then **activate** the target
+into the planner's rotation — or **discard** it. Operator-created targets
+appear too (the store is one list); the inbox is simply the pending
+subset.
+
+### Transport: the BFF's first MCP client
+
+Target CRUD is **MCP-only** on rp by design (rp.md Tenet 8 and
+§ Target Store: a browser-facing target UI "would need to be an MCP
+client like the orchestrator, not a REST caller"). The page drives rp's
+target tools — `list_targets`, `get_target`, `update_target`,
+`set_goals`, `delete_target` — through the standard
+[`rp-mcp-client`](../decisions/017-standard-mcp-client-construction.md)
+crate (ADR-017; the BFF is its fourth consumer), constructed from the
+**same required [`rp` block](#configuration)** the REST surfaces use:
+the MCP URL is `rp.base_url` + `/mcp`, the credential is `rp.auth`, and
+the CA is `rp.ca_cert_path`. No new config keys — one rp target, two
+transports, and doctor's existing client-target join over that block
+covers both.
+
+**Sessions are per-request.** Each page request connects, makes its
+burst of tool calls, and drops the session — the BFF never holds a
+standing MCP session. This is the planetarium-bridge's own lesson made
+policy: an idle rmcp session holds an open POST that stalls rp's
+graceful stop, and rp terminates MCP sessions on safety transitions
+anyway, so a cached session would routinely be dead. It is also the
+same philosophy as the config pages' `Connection: close` — target
+review is low-frequency; connection reuse buys nothing.
+
+The three-way `rp-mcp-client` error split maps onto page states:
+connect/`Request` failures render the *unavailable* card (below), `Tool`
+errors surface as form/field errors (rp is healthy and rejected the
+input), and `Malformed` renders a generic error banner.
+
+### The inbox page (`GET /targets`)
+
+Two data fetches back the page, both against the one configured rp: the
+MCP `list_targets` call (no `active_only` filter — the page shows both
+populations), and REST `GET /api/config` for two joins rp's target rows
+don't carry:
+
+- **The filter roster** — the union of every
+  `equipment.filter_wheels[].filters` entry, the same union rp validates
+  goals against at write time (rp.md § Target Store, Decision 10).
+- **Train position-angle defaults** —
+  `equipment.optical_trains[].default_position_angle_degrees`
+  (rp.md § Position angle), for the PA field's inherit hint.
+
+Behavioral contract:
+
+- **Happy path:** two sections. **Inbox** — rows with `active == false`,
+  newest `updated_at` first (review the freshest import first).
+  **Active roster** — `active == true`, ordered by display name. Each
+  row renders: display name + slug, RA/Dec, the catalog line when
+  present (`catalog_ref`, object type, magnitude), the provenance line
+  ("added by `created_by` · last touched by `updated_by` at
+  `updated_at`" — plus the target's `notes`, which for imports is rp's
+  human-readable "Imported via … from … at …" line), the position angle
+  (the explicit value, or "inherit"), and a per-goal summary
+  ("12 × 5m Ha 1x1"). Affordances: **Review** (→ `/targets/{slug}`),
+  **Activate** (pending rows) / **Pause** (active rows) as `hx-post`
+  buttons, and **Discard** (pending rows only, `hx-confirm`-guarded).
+  Discard is deliberately not offered on active rows — retiring a
+  target that may own captured frames should be a Pause
+  (`active: false`), per rp.md's `delete_target` guidance; deleting an
+  active target is still reachable from its review page, caveat shown.
+- **Stale-goal flag:** a goal whose `filter` is not in the roster union
+  renders a warning badge ("not in the rig's filter roster") on its
+  row, in both the summary and the editor. An empty union flags
+  nothing — rp's own permissive rule. The badge is a display-only early
+  warning: rp validates at write time, so a stale goal means the roster
+  *changed after the goal was written* (a filter wheel removed or its
+  filters edited since an import's `default_goals` were stamped); left
+  alone it would fail mid-session at capture time. Saving a goal set
+  that still carries the stale name fails with rp's own validation
+  error — the BFF never re-implements the check, it only surfaces it
+  early.
+- **Empty states:** no targets at all → an empty-state card pointing at
+  the import path (press Align in the planetarium — or `add_target`
+  over MCP); an empty pending section with active rows → a short
+  "inbox empty" note in that section.
+- **rp unavailable:** either fetch failing (the MCP connect/call or the
+  REST config read — one rp, one health state) renders an honest card
+  with a retry link, naming both possible causes: rp is down, **or its
+  `/mcp` surface is safety-gated** — rp rejects every MCP request with
+  `503` while conditions are unsafe (rp.md § Safety), and the gate
+  reads the same as an outage from out here. No stale data is rendered
+  beneath it.
+- **Progress is not rendered.** `list_targets` reports per-goal
+  `good`/`total`, but the values are hard-coded `0` until rp's on-disk
+  frame scan lands (rp.md § Progress derivation) — a permanent "0/12"
+  column would be false precision. The goals summary shows
+  `desired_count`; progress columns arrive when the derivation does.
+
+### The review page (`GET /targets/{slug}`)
+
+An unknown slug renders a "no such target" card. Otherwise the form:
+
+- **Editable:** `display_name` (must not be empty — it seeds slug
+  allocation on other paths and stays the operator's label),
+  `priority` (integer), `position_angle_degrees` (below), `notes`
+  (textarea; an emptied field persists as an empty note — the PA field
+  is deliberately the *only* one with explicit-null semantics), and the
+  goals editor.
+- **Display-only:** coordinates, `catalog_ref` and the denormalized
+  catalog fields, the slug, writer identity, and timestamps.
+  Coordinates are deliberately not editable here: for a framed import
+  they are exactly the center the operator composed in the planetarium,
+  and a fat-fingered edit would silently destroy the framing
+  (`update_target` accepts them for MCP callers; the inbox renders no
+  inputs).
+- **Editing claims the target.** Any save stamps
+  `updated_by: "operator"`, so a pending import edited here stops being
+  upsert-eligible for repeated Aligns of the same spot — a later
+  nearby import creates a new pending row instead of overwriting the
+  operator's work. That is Decision 3's protection working as designed,
+  not a bug to report.
+
+#### The position-angle field
+
+The field must keep "inherit the train default" and "explicit 0°
+north-up" distinguishable (the plan's P4 note; rp.md § Position angle):
+
+- **Rendered:** the target's explicit angle when set; **blank** when
+  inheriting. The hint line names what blank currently means, from the
+  config join: the imaging trains' configured defaults ("blank =
+  inherit — main: 254.0°") or "blank = inherit — north-up (0°)" when no
+  train carries a default.
+- **Submitted:** blank → `update_target` is sent an **explicit `null`**
+  (clear back to inherit — idempotent when already inheriting); a
+  parseable number → sent as that number, so `"0"` is an explicit
+  `0.0`, never collapsed with blank; a non-numeric value → a BFF-side
+  field error re-rendering the form with the input preserved. Domain
+  errors (out of `[0, 360)`, non-finite) come back from rp's validator
+  naming the field and re-render the same way — the BFF parses
+  numeric-ness only and never re-implements the domain rule.
+
+#### The goals editor
+
+One row per `AcquisitionGoal`, matching the tool wire shape
+(rp.md § Target MCP tools): `filter` (text input with a `<datalist>` of
+the roster union — free text stays possible, so a stale name remains
+visible and editable, badge attached), `binning` (`AxB` text, e.g.
+`1x1`), `exposure_duration` (humantime text, e.g. `5m` or `120s`),
+`desired_count` (number). **Add goal** appends a blank row
+(`hx-get /targets/goal-row`); each row's **Remove** button swaps the row
+away via the same route's empty-body response (`hx-target="closest
+…"`, `hx-swap="outerHTML"`) — core htmx, no bespoke JavaScript. Rows
+with every field empty are dropped on submit as belt-and-braces. The
+BFF passes the strings through — `binning`/`exposure_duration`
+validation is rp's (`GoalWire`'s per-field errors), surfaced
+field-level on the re-rendered form.
+
+### Saving (`POST /targets/{slug}`)
+
+One submit maps to two tool calls on one per-request session:
+`update_target` with the scalar subset (display name, priority, notes,
+and the PA per the tri-state mapping), then `set_goals` with the full
+goal list (atomic replacement per call). A `Tool` error on either
+re-renders the form with the error placed on its field and every
+submitted value preserved; when `update_target` succeeded and
+`set_goals` failed, the banner says so honestly ("details saved; goals
+were not") rather than pretending the whole save rolled back — the
+store has no cross-call transaction, and hiding the partial apply would
+misreport rp's actual state. Success re-renders the form from a fresh
+`get_target` with a "Saved" confirmation.
+
+### Activate / pause / discard
+
+- `POST /targets/{slug}/active` (`active=true|false`) →
+  `update_target {active}`. Activating is how a pending target enters
+  the planner's candidate set (rp.md § Target MCP tools); pausing
+  retires an active one without touching its frames. Success re-renders
+  the row (fragment) or the inbox (full page); a tool error renders the
+  error banner.
+- `POST /targets/{slug}/delete` → `delete_target`. The review page's
+  delete button carries rp.md's caveat as help text (frames on disk are
+  left orphaned; prefer Pause for targets that have captured frames)
+  and an `hx-confirm` guard. Success returns to the inbox.
+
 ## Activity stream (`/stream`)
 
 The narrative session view from the chosen mock
@@ -617,7 +818,9 @@ load instead of being silently ignored.
     "auth": null               // optional { "username": "...", "password_hash": "..." } — HTTP Basic on every route
   },
   // The rp roster is the source of truth; the block is REQUIRED (a config
-  // without it fails at load). All fields inside it have defaults.
+  // without it fails at load). All fields inside it have defaults. The same
+  // block backs every rp transport: REST (config/equipment/SSE), and the
+  // targets inbox's MCP client (base_url + /mcp, same auth + CA).
   "rp": {
     "base_url": "http://127.0.0.1:11115",    // rp's base URL
     "auth": null,                            // optional Basic credentials for rp
@@ -674,6 +877,12 @@ combined with the subcommand (the mixed form would silently ignore them).
   the plan's Security section). Roster-derived config targets are called
   without credentials (rp redacts per-device auth) — the doctor-minted
   service credential (D6) is the path to authenticated devices.
+- **The MCP leg follows ADR-017's credential policy.** The targets inbox's
+  `rp-mcp-client` presents `rp.auth` as HTTP Basic **only over verified
+  HTTPS** (a configured `ca_cert_path` and an `https` base URL); any other
+  combination connects unauthenticated with a loud warning — plaintext
+  credentials never travel over cleartext. On the single-box plain-HTTP
+  default this matches rp's own unauthenticated default.
 - **Secrets are already redacted** by `config.get` (`********`), so they never
   reach the browser; the round-trip sentinel keeps them unchanged on apply.
 - **BFF-side TLS/auth is the shared server shape.** `server.tls` serves the UI
@@ -712,6 +921,11 @@ combined with the subcommand (the mixed form would silently ignore them).
   chosen mock, live over the SSE proxy with cursor passthrough, `stream_gap`
   rendering, rp-unreachable self-healing, and the shared-nav night-vision
   toggle.
+- **The targets inbox**: pending/active listing with provenance and
+  stale-goal flags, the per-target review form (goals editor, tri-state
+  position-angle field, activate/pause/discard), all driven through
+  `rp-mcp-client` per-request sessions (see
+  [Targets inbox](#targets-inbox-targets)).
 - The **Restart via Sentinel** affordance (button per config card when a
   `sentinel` block is configured; device pages derive the target service by
   the `probe_port` match) and the restart callout's inline restart button,
@@ -750,6 +964,13 @@ combined with the subcommand (the mixed form would silently ignore them).
   deferred** — it renders as a checkbox group (see
   [Schema-driven rendering](#schema-driven-rendering-fieldmodel)); scalar
   `enum` leaves and `oneOf` forms remain follow-ups.
+- **Targets-inbox follow-ups**: per-goal progress columns (blocked on rp's
+  frame-scan progress derivation — today's derived `good`/`total` are
+  hard-coded `0`, so rendering them would be false precision); per-target
+  `scheduling` editing (a composite with replace-whole-object semantics —
+  edited over MCP when needed); `grading` overrides (rp does not accept
+  them yet); and distinguishing the safety-gated `503` from rp-down in the
+  unavailable card (one honest card covers both today).
 - The **LCARS theme** and **i18n**.
 
 ## Testing Strategy
@@ -994,6 +1215,45 @@ suites run everywhere the existing one does. Coverage:
   connection before stopping the BFF (testing.md §5.4). Browser-level SSE
   swap behaviour stays proven by the existing `@browser` `sse.feature` spike.
 
+### Targets-inbox BDD (`targets_page.feature`)
+
+Same real-binaries rule, no OmniSim: scenarios spawn the real `ui-htmx`
+and a real `rp` (`bdd_infra::rp_harness`), and seed the store through
+**rp's own MCP tools** (`bdd_infra`'s `McpTestClient` calling
+`add_target` — including the import form with a `source` block, so
+provenance rows are the real thing, not fixtures). Target CRUD needs no
+live devices; the filter roster and train PA defaults are config-level.
+Coverage:
+
+- A pending import renders in the inbox with its provenance line,
+  default goals, and "inherit" position angle; an operator-created
+  active target renders in the active roster.
+- The review form shows a blank PA field with the train-default hint
+  for an inheriting target; saving `0` stores an explicit `0.0` and
+  saving blank clears an explicit angle back to inherit (both verified
+  through `get_target` over MCP — the blank-vs-0 contract end to end);
+  a non-numeric PA re-renders with a field error and the input
+  preserved; an out-of-range PA surfaces rp's own domain error.
+- Editing goals replaces the goal set; a goal naming a filter outside
+  the configured roster is flagged in the inbox — seeded by
+  restarting rp over the same `data_directory`
+  (`RpConfigBuilder::with_data_directory`) with a shrunk
+  `filter_wheels[].filters` list, the only way a stale goal can arise
+  since rp validates at write time.
+- Activate moves a pending target to the active roster; pause moves it
+  back; discard removes it (verified in the store over MCP, not just
+  the DOM).
+- rp down → the unavailable card naming both causes, with a retry link.
+
+Assertions are DOM-based (`scraper`), like every other suite. Snapshot
+goldens cover the byte-stable empty-state page only — target rows carry
+run-varying store timestamps, so the dynamic pages rely on the DOM layer
+(the same reasoning that keeps the driver-unreachable banner out of the
+snapshot set). The safety-gated `503` presentation is a unit-level
+concern (a stubbed client error), not a BDD scenario — driving rp's real
+safety gate needs an OmniSim SafetyMonitor this suite deliberately
+avoids.
+
 ### Unit Tests
 
 - `driver_client.rs`: `AlpacaConfigClient` shapes the `PUT .../action` request
@@ -1043,6 +1303,17 @@ suites run everywhere the existing one does. Coverage:
   placement, gap + disconnect translation.
 - `probe.rs`: tier classification per probe outcome (mocked responses),
   timeout → Unreachable, 401 → Auth required.
+- `targets_client.rs`: form-to-tool-args mapping (the PA tri-state:
+  absent field vs explicit `null` vs number in the `update_target`
+  arguments), and the `McpCallError` → page-state mapping (`Request` →
+  unavailable, `Tool` → field error, `Malformed` → banner) — driven
+  through a stub `TargetsClient` for the states the end-to-end suite
+  can't produce (the gated/down card, `Malformed`).
+- `pages/targets.rs`: goal-row parsing (blank-row dropping, string
+  passthrough), the stale-goal flag (roster union membership; empty
+  union flags nothing), PA rendering (explicit vs inherit + the hint
+  from train defaults), provenance-line rendering, and inbox ordering
+  (pending by `updated_at` desc, active by name).
 - `pages/equipment.rs`: roster join (config ⨝ status by id, mount pairing),
   config surgery (insert/replace/remove per kind incl. the singular mount),
   and the per-kind subschema field generation.
@@ -1056,6 +1327,8 @@ suites run everywhere the existing one does. Coverage:
 | `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
 | `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing, and `GET /api/services` (the `probe_port` listing the restart match resolves against). |
 | `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
+| `targets_client.rs` | `TargetsClient` trait (mockable seam) + `McpTargetsClient`: per-request `rp-mcp-client` sessions driving rp's target tools (`list_targets` / `get_target` / `update_target` / `set_goals` / `delete_target`), the form→tool-args mapping incl. the PA tri-state, and the `McpCallError` → page-state mapping. |
+| `pages/targets.rs` | The targets inbox: pending/active listing (provenance, stale-goal flags, goal summaries), the review form (goals editor + goal-row fragment, PA field with inherit hint), and the roster/train-default join over rp's config value. |
 | `roster.rs` | The roster domain: `EquipKind` (kind ⇄ ASCOM-type mapping), `parse_roster` over rp's config value, the `rp:{kind}:{id}` key codec, and the insert/replace/remove config surgery with duplicate-id/singular-mount guards. |
 | `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the integer-enum-array checkbox group and the array-item subschema entry point), `config_card`/fragment templates, the schema-driven `merge_form` coercion over duplicate-key-preserving form pairs, and the shared `layout` shell (nav tabs + night-vision toggle). |
 | `pages/equipment.rs` | The equipment page: roster join, tier badges, add/edit/remove forms, roster mutation via config surgery. |
@@ -1069,6 +1342,7 @@ suites run everywhere the existing one does. Coverage:
 ## References
 
 - Design plan: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
+- Targets inbox (P4): [`docs/plans/planetarium-target-import.md`](../plans/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
 - Driver config-action protocol (Phase 1): [`dsd-fp2.md`](dsd-fp2.md) "Config Actions"
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)

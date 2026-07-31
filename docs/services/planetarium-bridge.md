@@ -412,7 +412,8 @@ pub updated_by: String,   // stamped on every write, same domain
   (serde defaults; no redb schema step needed).
 
 "Unedited since import" is now a first-class predicate:
-`updated_by == "planetarium-bridge"`. The P4 inbox gets "who touched
+`updated_by == "planetarium-bridge"`. The [ui-htmx targets
+inbox](ui-htmx.md#targets-inbox-targets) gets "who touched
 this last, and when" for free. Rich human-readable provenance (client
 address, receipt time) additionally goes into `notes` as a text line
 per Decision 3 — display data, never parsed.
@@ -654,9 +655,10 @@ cone-search naming, `rp-catalog::nearest`).
 - `position_angle_degrees` on imports — the field landed with P2
   (rp.md § Target Store → Position angle) but is **permanently
   operator-owned**: rp rejects it alongside `source`, imports always
-  land inheriting the train default, and the P4 inbox is where
-  per-target angles are entered — SkySafari cannot export its FOV
-  angle through any channel (P3a/Decision 5).
+  land inheriting the train default, and the [ui-htmx targets
+  inbox](ui-htmx.md#targets-inbox-targets) is where per-target angles
+  are entered — SkySafari cannot export its FOV angle through any
+  channel (P3a/Decision 5).
 - Stellarium/CdC enrichment (P5/P6 — both can use this device
   unenriched meanwhile).
 - Retroactive display-name disambiguation of earlier imports.
