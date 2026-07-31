@@ -1236,8 +1236,8 @@ Closed since, by the packaging work the validation itself triggered:
   `rusty-photon-svbony-sdk-install`, starts the unit and `ldd`-proves the
   binary resolves the operator-installed blob from
   `/usr/lib/rusty-photon`, on both the deb and rpm flavors, on every
-  nightly run. Only "on the rig, against the physical camera" remains,
-  and that rides the normal nightly-package deploy flow.
+  nightly run. The "on the rig, against the physical camera" half closed
+  2026-07-30 — see "Field rig" below.
 - **Dev-machine USB permissions** — closed by issue #710's fix: the
   helper installs a dev udev rule on hosts with no packaged one (see
   "udev / USB"), so the hand-written rule this validation needed is now
@@ -1261,6 +1261,21 @@ CWD, so the Linux CWD-writability note has no Windows analogue. Full
 environment details and the unmodified ConformU output:
 [docs/validation/2026-07-26-svbony-camera-sv605cc-windows/](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md).
 Operator setup: [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
+
+### Field rig (2026-07-30)
+
+The same physical SV605CC passed both ConformU suites on the Pi 5
+telescope field rig (aarch64, Raspberry Pi OS) — this time against the
+**packaged** binary: the arm64 nightly deb installed from the apt repo,
+the SDK provisioned by the shipped `rusty-photon-svbony-sdk-install`
+(the documented retry-until-SDK-lands startup observed live), and the
+packaged udev rule providing device access and the `usbfs_memory_mb`
+bump. ConformU 4.4.0 `alpacaprotocol` and `conformance` both clean over
+the LAN, with the identical four informational `PUT Gain` casing items
+as every prior platform, full-frame transfers at bins 1–4, and identical
+`UniqueID` minting. Full environment details and the unmodified ConformU
+output:
+[docs/validation/2026-07-30-svbony-camera-sv605cc-rig/](../validation/2026-07-30-svbony-camera-sv605cc-rig/README.md).
 
 ## Packaging
 

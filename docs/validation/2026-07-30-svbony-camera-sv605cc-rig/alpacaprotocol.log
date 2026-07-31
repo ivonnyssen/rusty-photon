@@ -1,0 +1,37 @@
+19:51:18.163 Check Alpaca Protocol - Conform Universal 4.4.0 (Build 52526.0ad7f21) 
+19:51:18.164                                     
+19:51:18.165 Test Camera device:  - 10.0.85.245:11125 through URL: http://10.0.85.245:11125 
+19:51:18.165                                     
+19:51:18.170 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+19:51:18.170                                     
+19:51:18.170 Connecting to device...             
+19:51:21.953                                     
+19:51:21.953 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+19:51:21.976                                     
+19:51:21.976 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+19:51:21.976                                     
+19:51:23.644 Successfully connected to device using re-ordered PUT parameters, testing device... 
+19:51:23.644                                     
+19:51:23.651 Device exposes interface version 4  
+19:51:25.956 PUT Gain                            INFO     Parameter Gain (Good casing) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+19:51:25.958 PUT Gain                            INFO     Parameter Gain (Good casing + extra parameter) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+19:51:25.961 PUT Gain                            INFO     Bad ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+19:51:25.963 PUT Gain                            INFO     Bad ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+19:51:52.607                                     
+19:51:52.613 Successfully disconnected from device. 
+19:51:52.613                                     
+19:51:52.613 Found 0 errors, 0 issues and 4 information messages. 
+19:51:52.613                                     
+19:51:52.613 Information Message Summary         
+19:51:52.613 PUT Gain ==> Parameter Gain (Good casing) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 197. Error message: failed to set gain: SVBony camera SDK error: general error (e.g. value out of valid range)
+ 
+19:51:52.613 PUT Gain ==> Parameter Gain (Good casing + extra parameter) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 198. Error message: failed to set gain: SVBony camera SDK error: general error (e.g. value out of valid range)
+ 
+19:51:52.613 PUT Gain ==> Bad ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 201. Error message: failed to set gain: SVBony camera SDK error: general error (e.g. value out of valid range)
+ 
+19:51:52.613 PUT Gain ==> Bad ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 0, server transaction: 202. Error message: failed to set gain: SVBony camera SDK error: general error (e.g. value out of valid range)
+ 
