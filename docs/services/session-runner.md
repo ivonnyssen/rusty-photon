@@ -1093,7 +1093,8 @@ The classic deep-sky session as a shipped first-party document: startup
 (unpark, tracking) → a dispatch loop (`get_next_target` → `set_filter`
 whenever the recommended filter differs from the wheel's current one →
 acquire on target change: stop guiding if active, slew → optional
-`center_on_target` → optional `auto_focus` → optional `start_guiding` →
+`center_on_target` → optional `move_rotator` to the pass's effective
+position angle → optional `auto_focus` → optional `start_guiding` →
 one `capture` per pass → `record_exposure` → optional `dither` on the
 `dither_every` cadence, re-asking the planner after every frame) →
 shutdown (stop guiding, optional `park`).
@@ -1113,6 +1114,23 @@ remain as parameters because they are **measurement policy**, not
 sweep geometry: the HFR-degradation trigger's `measure_basic` call
 requires them (rp.md § `measure_basic` Contract — callers own that
 policy).
+
+Rotation is adopted behind the `rotate` parameter (default `false`,
+for rigs with a rotator in the imaging train): the document passes its
+`train_id` to `get_next_target`, which resolves the effective position
+angle (target value → the train's `default_position_angle_degrees` →
+`0.0` north-up; rp.md § Target Store → Position angle) and returns it
+as `position_angle_degrees`. The dispatch loop threads that value
+through the blackboard (`session.pass_position_angle`, committed to
+`session.target_position_angle` on acquisition), and when `rotate` is
+enabled, acquisition — and the meridian-flip re-acquisition — issues a
+train-addressed `move_rotator` to that sky angle after
+slew/centering, before focus and guiding start (rotation changes
+every train's field, so it precedes anything that depends on the
+frame). A failed rotator move is logged, not fatal — framing degrades,
+the night continues (tenet: robustness); with `rotate` off nothing
+moves and the angle is display/config reality only (rotator-less
+rigs).
 
 Guiding is adopted behind the `guide` parameter (default `false`):
 when enabled, acquisition stops any active guiding before the slew
@@ -1143,17 +1161,20 @@ The full document lives in `workflows/deep_sky.json`; the shape:
     /* unpark, set_tracking — both idempotent */
     { "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
       "body": [
-        { "tool": "get_next_target" },
+        { "tool": "get_next_target",
+          "args": { "train_id": { "$expr": "params.train_id" } } },
         /* end_of_session → done; target == null → 5m
            wait-and-re-ask; otherwise: derive this pass's
            filter/duration from the plan's nested exposure object
            (result.exposure.filter / result.exposure.duration_secs,
            falling back to params.filter / params.exposure_duration when
-           result.exposure is null), set_filter
+           result.exposure is null) and its position angle from
+           result.position_angle_degrees, set_filter
            (train-addressed) when that differs from the wheel's
            current filter (the planner rotates the plan as goals
            complete, so this fires mid-target too); on target change
-           stop_guiding if active, slew, center, focus, start_guiding
+           stop_guiding if active, slew, center, move_rotator to the
+           pass angle when params.rotate, focus, start_guiding
            when params.guide, commit session.target_* and
            session.imaging = true; then one capture at the pass
            duration, record_exposure, counter updates, and a dither

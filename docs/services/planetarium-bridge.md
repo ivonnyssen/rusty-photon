@@ -651,10 +651,12 @@ cone-search naming, `rp-catalog::nearest`).
 
 - Sentinel scraping `/health` (follow-up once a second consumer wants
   it).
-- `position_angle_degrees` on imports — P2 owns the field; imports
-  carry no angle until then (and the P4 inbox is where per-target
-  angles are entered regardless — SkySafari cannot export its FOV
-  angle, P3a/Decision 5).
+- `position_angle_degrees` on imports — the field landed with P2
+  (rp.md § Target Store → Position angle) but is **permanently
+  operator-owned**: rp rejects it alongside `source`, imports always
+  land inheriting the train default, and the P4 inbox is where
+  per-target angles are entered — SkySafari cannot export its FOV
+  angle through any channel (P3a/Decision 5).
 - Stellarium/CdC enrichment (P5/P6 — both can use this device
   unenriched meanwhile).
 - Retroactive display-name disambiguation of earlier imports.
