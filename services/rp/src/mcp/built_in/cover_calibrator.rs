@@ -27,6 +27,29 @@ pub struct CalibratorOnParams {
 
 #[tool_router(router = tool_router_cover_calibrator, vis = "pub")]
 impl McpHandler {
+    #[tool(
+        description = "Read the cover state (NotPresent | Closed | Moving | Open | Unknown | Error) without actuating anything"
+    )]
+    pub(crate) async fn get_cover_state(
+        &self,
+        Parameters(params): Parameters<CalibratorIdParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let (_cc_entry, cc) = resolve_device!(
+            self,
+            find_cover_calibrator,
+            &params.calibrator_id,
+            "calibrator"
+        );
+
+        match cc.cover_state().await {
+            Ok(state) => {
+                debug!(calibrator_id = %params.calibrator_id, cover_state = ?state, "read cover state");
+                Ok(tool_success!({"cover_state": format!("{state:?}")}))
+            }
+            Err(e) => Ok(tool_error!("failed to read cover state: {}", e)),
+        }
+    }
+
     #[tool(description = "Close the dust cover (blocks until closed)")]
     pub(crate) async fn close_cover(
         &self,

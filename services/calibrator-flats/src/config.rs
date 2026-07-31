@@ -26,7 +26,14 @@ pub struct FlatPlan {
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     pub camera_id: String,
-    pub filter_wheel_id: String,
+    /// Filter wheel to drive between capture groups. Absent, `null`, or
+    /// `""` means the rig has no filter wheel (one-shot color): the
+    /// workflow never calls `set_filter` and `filters` entries are plain
+    /// capture groups whose `name` is only a label. (`""` matches the
+    /// document port's sentinel — its parameter grammar has no
+    /// optional-without-default.)
+    #[serde(default)]
+    pub filter_wheel_id: Option<String>,
     pub calibrator_id: String,
     /// Target median as fraction of max ADU (default 0.5 = 50%)
     #[serde(default = "default_target_adu_fraction")]
@@ -58,6 +65,12 @@ pub struct FlatPlan {
 }
 
 impl FlatPlan {
+    /// The filter wheel to drive, with the no-wheel spellings (absent,
+    /// `null`, `""`) normalized to `None`.
+    pub fn filter_wheel(&self) -> Option<&str> {
+        self.filter_wheel_id.as_deref().filter(|id| !id.is_empty())
+    }
+
     pub fn rp_auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
         self.service_auth.as_ref()
     }
@@ -158,6 +171,42 @@ mod tests {
         assert_eq!(plan.server.bind_address.to_string(), "0.0.0.0");
         assert!(plan.server.tls.is_none());
         assert!(plan.server.auth.is_none());
+    }
+
+    #[test]
+    fn filter_wheel_absent_null_and_empty_all_mean_no_wheel() {
+        for wheel_field in [
+            "",
+            r#""filter_wheel_id": null,"#,
+            r#""filter_wheel_id": "","#,
+        ] {
+            let json = format!(
+                r#"{{
+                    "camera_id": "osc-cam",
+                    {wheel_field}
+                    "calibrator_id": "flat-panel",
+                    "filters": [{{"name": "OSC", "count": 20}}]
+                }}"#
+            );
+            let plan: FlatPlan = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                plan.filter_wheel(),
+                None,
+                "spelling {wheel_field:?} must mean no filter wheel"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_wheel_present_resolves_to_the_id() {
+        let json = r#"{
+            "camera_id": "main-cam",
+            "filter_wheel_id": "main-fw",
+            "calibrator_id": "flat-panel",
+            "filters": [{"name": "Luminance", "count": 20}]
+        }"#;
+        let plan: FlatPlan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.filter_wheel(), Some("main-fw"));
     }
 
     #[test]

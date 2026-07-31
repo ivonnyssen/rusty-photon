@@ -805,7 +805,10 @@ fn guiding_block(g: &GuiderConfig) -> Value {
 /// Tolerance is `1.0` and `max_iterations = 1` so tests verify end-to-end
 /// plumbing (3-process coordination, cover lifecycle, session lifecycle)
 /// rather than convergence math — the latter is covered by unit tests.
-pub fn build_calibrator_flats_config(filters: &[(String, u32)]) -> Value {
+pub fn build_calibrator_flats_config(
+    filters: &[(String, u32)],
+    filter_wheel_id: Option<&str>,
+) -> Value {
     let filter_entries: Vec<Value> = filters
         .iter()
         .map(|(name, count)| {
@@ -816,16 +819,19 @@ pub fn build_calibrator_flats_config(filters: &[(String, u32)]) -> Value {
         })
         .collect();
 
-    serde_json::json!({
+    let mut config = serde_json::json!({
         "camera_id": "main-cam",
-        "filter_wheel_id": "main-fw",
         "calibrator_id": "flat-panel",
         "target_adu_fraction": 0.5,
         "tolerance": 1.0,
         "max_iterations": 1,
         "initial_duration": "100ms",
         "filters": filter_entries
-    })
+    });
+    if let Some(fw) = filter_wheel_id {
+        config["filter_wheel_id"] = serde_json::json!(fw);
+    }
+    config
 }
 
 #[cfg(test)]
@@ -1207,7 +1213,7 @@ mod tests {
     #[test]
     fn calibrator_flats_config_embeds_plan() {
         let plan = vec![("Luminance".to_string(), 2), ("Red".to_string(), 3)];
-        let cfg = build_calibrator_flats_config(&plan);
+        let cfg = build_calibrator_flats_config(&plan, Some("main-fw"));
         assert_eq!(cfg["camera_id"], "main-cam");
         assert_eq!(cfg["filter_wheel_id"], "main-fw");
         assert_eq!(cfg["calibrator_id"], "flat-panel");
@@ -1219,5 +1225,16 @@ mod tests {
         assert_eq!(filters[0]["count"], 2);
         assert_eq!(filters[1]["name"], "Red");
         assert_eq!(filters[1]["count"], 3);
+    }
+
+    #[test]
+    fn calibrator_flats_config_omits_absent_filter_wheel() {
+        let plan = vec![("OSC".to_string(), 3)];
+        let cfg = build_calibrator_flats_config(&plan, None);
+        assert!(
+            cfg.get("filter_wheel_id").is_none(),
+            "a filterless plan must omit filter_wheel_id entirely"
+        );
+        assert_eq!(cfg["filters"].as_array().unwrap().len(), 1);
     }
 }

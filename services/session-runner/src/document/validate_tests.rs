@@ -221,25 +221,27 @@ fn test_golden_document_builds_the_expected_tree() {
     let InstructionKind::Sequence(steps) = &doc.root.kind else {
         panic!("root is {:?}", doc.root.kind);
     };
-    assert_eq!(steps.len(), 4);
+    assert_eq!(steps.len(), 6);
 
-    // camera-info tool, set, the fail-fast target guard, then the try.
+    // camera-info tool, set, the fail-fast target guard, the initial
+    // cover-state read + set, then the try.
     assert_eq!(steps[2].id.as_deref(), Some("target-adu-guard"));
+    assert_eq!(steps[3].id.as_deref(), Some("initial-cover"));
     let InstructionKind::Try {
         body,
         catch,
         finally,
-    } = &steps[3].kind
+    } = &steps[5].kind
     else {
-        panic!("fourth step is {:?}", steps[3].kind);
+        panic!("sixth step is {:?}", steps[5].kind);
     };
     assert!(catch.is_none());
     assert_eq!(finally.as_ref().unwrap().len(), 2);
-    assert_eq!(body.len(), 4);
+    assert_eq!(body.len(), 5);
 
     // The filter-plan loop: a `while` mode over the array parameter with
     // a literal budget.
-    let filter_plan = &body[2];
+    let filter_plan = &body[3];
     assert_eq!(filter_plan.id.as_deref(), Some("filter-plan"));
     let InstructionKind::Repeat(outer) = &filter_plan.kind else {
         panic!("filter-plan is {:?}", filter_plan.kind);
@@ -258,8 +260,14 @@ fn test_golden_document_builds_the_expected_tree() {
     assert_eq!(max_iterations, &Bound::Literal(64));
     assert_eq!(outer.body.len(), 6);
 
-    // The find-exposure loop: an `until` mode with an `$expr` bound.
-    let find_exposure = &outer.body[2];
+    // The brightness ladder wraps the find-exposure loop; the inner
+    // find-exposure is an `until` mode with an `$expr` bound.
+    let ladder = &outer.body[2];
+    assert_eq!(ladder.id.as_deref(), Some("brightness-ladder"));
+    let InstructionKind::Repeat(ladder_repeat) = &ladder.kind else {
+        panic!("brightness-ladder is {:?}", ladder.kind);
+    };
+    let find_exposure = &ladder_repeat.body[0];
     assert_eq!(find_exposure.id.as_deref(), Some("find-exposure"));
     let InstructionKind::Repeat(repeat) = &find_exposure.kind else {
         panic!("find-exposure is {:?}", find_exposure.kind);

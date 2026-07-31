@@ -47,10 +47,40 @@ async fn webhook_receiver_subscribed_to(world: &mut CalibratorFlatsWorld, event_
     add_event_plugin(world, vec![event_type]);
 }
 
+#[given(expr = "the cover starts {word}")]
+async fn cover_starts(world: &mut CalibratorFlatsWorld, state: String) {
+    if world.omnisim.is_none() {
+        world.omnisim = Some(OmniSimHandle::start().await);
+    }
+    OmniSimHandle::set_cover_closed(state == "closed")
+        .await
+        .unwrap_or_else(|e| panic!("failed to preset the cover {state}: {e}"));
+}
+
+#[given(
+    expr = "the calibrator-flats service is configured for {int} {string} flats with no filter wheel"
+)]
+async fn configure_calibrator_flats_filterless(
+    world: &mut CalibratorFlatsWorld,
+    count: u32,
+    group: String,
+) {
+    world.flat_plan = vec![(group, count)];
+    world.no_filter_wheel = true;
+}
+
 #[given(
     "rp is running with a camera, filter wheel, cover calibrator, and the calibrator-flats orchestrator"
 )]
 async fn rp_running_with_equipment_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
+    configure_default_equipment(world).await;
+    start_calibrator_flats_service(world).await;
+    register_calibrator_flats_plugin(world);
+    start_rp_service(world).await;
+}
+
+#[given("rp is running with a camera, cover calibrator, and the calibrator-flats orchestrator")]
+async fn rp_running_filterless_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
     configure_default_equipment(world).await;
     start_calibrator_flats_service(world).await;
     register_calibrator_flats_plugin(world);
@@ -142,6 +172,18 @@ async fn should_receive_at_least_n_events(
     );
 }
 
+#[then(expr = "the cover should be {word}")]
+async fn cover_should_be(_world: &mut CalibratorFlatsWorld, expected: String) {
+    let target = if expected == "closed" { 1 } else { 3 };
+    let state = OmniSimHandle::cover_state()
+        .await
+        .expect("failed to read the simulator's cover state");
+    assert_eq!(
+        state, target,
+        "expected the cover to be {expected} (CoverState {target}), got CoverState {state}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -160,7 +202,7 @@ async fn configure_default_equipment(world: &mut CalibratorFlatsWorld) {
             cooler_targets_c: Vec::new(),
         });
     }
-    if world.filter_wheels.is_empty() {
+    if !world.no_filter_wheel && world.filter_wheels.is_empty() {
         world
             .filter_wheels
             .push(bdd_infra::rp_harness::FilterWheelConfig {
@@ -192,7 +234,8 @@ async fn start_calibrator_flats_service(world: &mut CalibratorFlatsWorld) {
         return;
     }
 
-    let config = build_calibrator_flats_config(&world.flat_plan);
+    let filter_wheel = (!world.no_filter_wheel).then_some("main-fw");
+    let config = build_calibrator_flats_config(&world.flat_plan, filter_wheel);
     let config_path = write_temp_config_file("calibrator-flats-config", &config).await;
 
     world.calibrator_flats = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);

@@ -240,7 +240,9 @@ where
         for (name, arg) in &call.args {
             let value = match arg {
                 ArgValue::Literal(v) => v.clone(),
-                ArgValue::Expr(expr) => self.eval(ins, expr, &format!("tool argument `{name}`"))?,
+                ArgValue::Expr(expr) => {
+                    integral_arg(self.eval(ins, expr, &format!("tool argument `{name}`"))?)
+                }
             };
             args.insert(name.clone(), value);
         }
@@ -810,7 +812,7 @@ where
             let value = match arg {
                 ArgValue::Literal(v) => v.clone(),
                 ArgValue::Expr(expr) => match expr.eval(&self.ctx()) {
-                    Ok(v) => v,
+                    Ok(v) => integral_arg(v),
                     Err(e) => {
                         debug!(trigger = %trigger.id, argument = %name, error = %e,
                                "poll argument failed to evaluate; skipping this cycle");
@@ -921,6 +923,26 @@ fn correction_event(result: &Value) -> Option<EngineEvent> {
         event: "correction_requested".to_owned(),
         payload: Value::Object(payload),
     })
+}
+
+/// An `$expr` tool argument that evaluates to a whole number within
+/// f64's exact-integer range is serialized as a JSON integer —
+/// expression arithmetic always produces f64, while tool parameters
+/// are commonly integer-typed (a panel brightness, a camera gain), and
+/// a `127.0` would fail their deserialization where `127` succeeds.
+fn integral_arg(value: Value) -> Value {
+    let Value::Number(ref n) = value else {
+        return value;
+    };
+    if n.is_i64() || n.is_u64() {
+        return value;
+    }
+    match n.as_f64() {
+        Some(f) if f.fract() == 0.0 && f.abs() <= (1i64 << 53) as f64 => {
+            Value::Number(serde_json::Number::from(f as i64))
+        }
+        _ => value,
+    }
 }
 
 /// A `Value` as a `u64` loop bound: any JSON number whose value is a

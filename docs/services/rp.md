@@ -839,6 +839,7 @@ the exact parameter types and return structure.
 | `abort_slew` | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
 | `set_filter` | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
 | `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
+| `get_cover_state` | calibrator_id | cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found |
 | `close_cover` | calibrator_id | — | Close the dust cover (blocks until closed) |
 | `open_cover` | calibrator_id | — | Open the dust cover (blocks until open) |
 | `calibrator_on` | calibrator_id, brightness (optional) | — | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
@@ -2590,7 +2591,7 @@ Different imaging types use different orchestrators:
 | Workflow | Shape | Ships as |
 |----------|-------|----------|
 | deep-sky | slew → center → focus → capture loop, with refocus triggers, meridian flips, planner-driven target switching | `session-runner` document `deep_sky.json` (guide/dither steps join it as the remaining slice of the guider integration, issue #464) |
-| calibrator-flats | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover | the Rust `calibrator-flats` service **and** its `session-runner` document port `calibrator_flats.json` (behavioral equivalence proven against the Rust suite; retiring the Rust service is a separate decision) |
+| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the Rust `calibrator-flats` service **and** its `session-runner` document port `calibrator_flats.json` (behavioral equivalence proven against the Rust suite; retiring the Rust service is a separate decision) |
 | sky-flat | point at the zenith → per-filter during twilight: capture with per-frame exposure adaptation against the changing sky | `session-runner` document `sky_flat.json` |
 | planetary | slew → focus → high-fps capture, no guiding or plate solving | not yet built |
 
@@ -4928,8 +4929,8 @@ services/rp/src/
       filter_wheel.rs   SetFilterParams, FilterWheelIdParams +
                           set_filter, get_filter.
       cover_calibrator.rs CalibratorIdParams, CalibratorOnParams +
-                          close_cover, open_cover, calibrator_on,
-                          calibrator_off.
+                          get_cover_state, close_cover, open_cover,
+                          calibrator_on, calibrator_off.
       focuser.rs        FocuserIdParams, MoveFocuserParams +
                           move_focuser, get_focuser_position,
                           get_focuser_temperature.

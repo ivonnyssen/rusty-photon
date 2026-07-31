@@ -314,6 +314,13 @@ fn test_golden_calibrator_flats_passes_against_a_matching_catalog() {
             object_schema(json!({ "camera_id": { "type": "string" } }), &["camera_id"]),
         ),
         spec(
+            "get_cover_state",
+            object_schema(
+                json!({ "calibrator_id": { "type": "string" } }),
+                &["calibrator_id"],
+            ),
+        ),
+        spec(
             "close_cover",
             object_schema(
                 json!({ "calibrator_id": { "type": "string" } }),

@@ -21,14 +21,34 @@ requested number of flat frames at that duration.
 1. **Target 50% well depth.** Flat frames must have a median pixel value
    close to 50% of the camera's maximum ADU for optimal calibration
    quality. The target fraction is configurable.
-2. **Automate the entire lifecycle.** The orchestrator manages the
-   CoverCalibrator (close cover, turn on light, turn off, open cover)
-   so the user only needs to start the session.
+2. **Automate the entire lifecycle, then put things back.** The
+   orchestrator manages the CoverCalibrator (close cover, turn on light,
+   turn off) so the user only needs to start the session — and it ends
+   with the cover in the state it found it: a cover that was open when
+   the session started is reopened at the end, one that was closed stays
+   closed. (An anomalous initial reading — `Moving`, `Unknown`, `Error` —
+   also ends closed: when the starting state cannot be known, covered is
+   the state that protects the optics.)
 3. **Safe cleanup on failure.** If the workflow fails at any point, the
    calibrator is turned off and the cover is opened before the
    orchestrator exits.
 4. **Per-filter optimization.** Each filter has different throughput. The
    exposure time is found independently for each filter in the plan.
+5. **Filterless rigs are first-class.** A one-shot-color camera has no
+   filter wheel; `filter_wheel_id` is optional, and without one the plan
+   entries are plain capture groups (no `set_filter` calls) — typically a
+   single `{ "name": "OSC", "count": N }` entry whose `name` is only a
+   label in logs and the completion report.
+6. **Step the panel down when it is too bright.** A panel at full
+   brightness can saturate the sensor even at the camera's shortest
+   usable exposure, leaving the exposure search no gradient to descend.
+   When the search exhausts its iterations still reading *over* the
+   target, the orchestrator halves the panel brightness
+   (`calibrator_on` at the new level) and searches again, down to a
+   floor of 1. A search that ends *under* the target (panel too dim
+   even at `exposure_max`) is not retried — dimming further cannot
+   help — and falls back to capturing at the best duration found, with
+   a warning, as before.
 
 ## Architecture
 
@@ -65,9 +85,10 @@ The plugin calls these `rp` built-in MCP tools:
 | `capture` | Take exposures (both test exposures for calibration and final flat frames) |
 | `compute_image_stats` | Measure median ADU of captured images for exposure time adjustment |
 | `set_filter` | Switch filter wheel to the current filter in the plan |
+| `get_cover_state` | Read the cover's state before any actuation, so cleanup can restore it |
 | `close_cover` | Close the dust cover before starting flat calibration |
-| `open_cover` | Open the dust cover after flat calibration completes |
-| `calibrator_on` | Turn on the flat panel at the configured brightness |
+| `open_cover` | Reopen the dust cover at the end — only when it started open |
+| `calibrator_on` | Turn on the flat panel at the configured brightness; re-light it at each halved level of the brightness ladder |
 | `calibrator_off` | Turn off the flat panel when done |
 
 ## Invocation Protocol
@@ -107,45 +128,63 @@ connect to rp MCP server at mcp_server_url
 info = get_camera_info(camera_id)
 target_adu = info.max_adu * target_adu_fraction
 
-# 2. Prepare flat panel
+# 2. Record the cover's initial state, then prepare the flat panel
+initial_cover = get_cover_state(calibrator_id)   # before any actuation;
+                                                 # a read failure aborts here
 close_cover(calibrator_id)
-calibrator_on(calibrator_id, brightness)
+brightness = calibrator_on(calibrator_id, brightness)  # the applied level
+                                                       # (device max when unset)
 
-# 3. Capture flats per filter
+# 3. Capture flats per filter (or per capture group on a filterless rig)
 for each filter in plan.filters:
-    set_filter(filter_wheel_id, filter.name)
+    if plan.filter_wheel_id is set:
+        set_filter(filter_wheel_id, filter.name)
 
-    # 3a. Find optimal exposure time for this filter
-    duration = initial_duration
-    converged = false
-    for iteration in 1..=max_iterations:
-        result = capture(camera_id, duration)
-        stats = compute_image_stats(result.image_path, result.document_id)
+    # 3a. Find the optimal exposure time for this filter, stepping the
+    #     panel down whenever the search ends pinned over the target
+    loop:
+        # inner search: up to max_iterations captures
+        duration = duration        # carried across brightness levels;
+                                   # initial_duration on the first pass
+        converged = false
+        for iteration in 1..=max_iterations:
+            result = capture(camera_id, duration)
+            stats = compute_image_stats(result.image_path, result.document_id)
 
-        deviation = |stats.median_adu - target_adu| / target_adu
-        if deviation <= tolerance:
-            converged = true
+            deviation = |stats.median_adu - target_adu| / target_adu
+            if deviation <= tolerance:
+                converged = true
+                break
+
+            # Adjust proportionally
+            if stats.median_adu == 0:
+                duration = duration * 2           # guard division by zero
+            else:
+                duration = duration * (target_adu / stats.median_adu)
+
+            # Clamp to camera limits
+            duration = clamp(duration, info.exposure_min, info.exposure_max)
+
+        if converged:
             break
-
-        # Adjust proportionally
-        if stats.median_adu == 0:
-            duration = duration * 2           # guard division by zero
+        if stats.median_adu > target_adu and floor(brightness / 2) >= 1:
+            # over-bright: dim the panel and search again (brightness ladder)
+            brightness = floor(brightness / 2)
+            calibrator_on(calibrator_id, brightness)
         else:
-            duration = duration * (target_adu / stats.median_adu)
-
-        # Clamp to camera limits
-        duration = clamp(duration, info.exposure_min, info.exposure_max)
-
-    if not converged:
-        log warning "exposure did not converge for filter {filter.name}"
+            # under-bright, or the ladder hit its floor — dimming cannot help
+            log warning "exposure did not converge for filter {filter.name}"
+            break
 
     # 3b. Capture the requested number of flat frames
     for i in 1..=filter.count:
         capture(camera_id, duration)
 
-# 4. Clean up
+# 4. Clean up — restore the cover to its initial state
 calibrator_off(calibrator_id)
-open_cover(calibrator_id)
+if initial_cover == Open:
+    open_cover(calibrator_id)
+# a cover that started Closed (or read Moving/Unknown/Error) stays closed
 
 # 5. Post completion
 POST /api/plugins/{workflow_id}/complete
@@ -178,26 +217,54 @@ iterations suffice. The algorithm handles edge cases:
 - **Already close**: if within tolerance on the first attempt, no
   iteration is needed.
 
+A saturated sensor breaks the proportional step: the median pins at
+max ADU no matter how short the exposure gets, so
+`target / median ≈ 0.5` and the search degenerates to halving —
+`max_iterations` passes cannot descend far from `initial_duration`,
+and the frames carry no gradient to converge on. The **brightness
+ladder** handles this: a search that exhausts its iterations still
+reading *over* the target halves the panel brightness
+(`calibrator_on` at `floor(brightness / 2)`) and runs again, carrying
+the last duration forward (at the dimmer level the proportional step
+re-adapts within a pass or two). The ladder starts from the applied
+brightness `calibrator_on` reports (the configured `brightness`, or
+the device maximum when unset), never re-brightens, persists across
+filters (the level that worked for one filter is the starting point
+for the next), and stops at a floor of 1 — at which point, or when
+the search ends *under* the target (a panel too dim even at
+`exposure_max`, where dimming further cannot help), the workflow
+falls back to its old behavior: warn and capture at the best duration
+found.
+
 ### Error Recovery
 
 The workflow wraps the capture loop in a guard that ensures cleanup:
 
 ```rust
 // Pseudocode
+let initial_cover = get_cover_state(calibrator_id)?; // before any actuation
+
 close_cover(calibrator_id);
 calibrator_on(calibrator_id, brightness);
 
 let result = run_capture_loop(...).await;
 
-// Always clean up, even on error
+// Always clean up, even on error — and restore the cover's initial state
 calibrator_off(calibrator_id);
-open_cover(calibrator_id);
+if initial_cover == Open {
+    open_cover(calibrator_id);
+}
 
 result?; // propagate error after cleanup
 ```
 
 If cleanup itself fails (e.g., device unreachable), the error is logged
-but does not mask the original error.
+but does not mask the original error. The initial-state read happens
+before anything moves, so a failure there aborts the workflow with
+nothing to clean up. A cover that started `Closed` — or whose initial
+reading was anomalous (`Moving`, `Unknown`, `Error`) — is left closed:
+when the starting state cannot be known, covered is the state that
+protects the optics.
 
 ## Configuration
 
@@ -207,9 +274,11 @@ explicitly; when omitted, the path resolves to the platform default
 (`~/.config/rusty-photon/calibrator-flats.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\calibrator-flats.json` on Windows) via
 `rusty-photon-config`. There is no built-in default plan —
-the file must exist (`camera_id`, `filter_wheel_id`, `calibrator_id`,
-`filters` are mandatory), so the packaged systemd unit gates on it with
-`ConditionPathExists` instead of crash-looping on a fresh install. Both
+the file must exist (`camera_id`, `calibrator_id`, `filters` are
+mandatory; `filter_wheel_id` is optional — absent, `null`, or `""` means
+the rig has no filter wheel and `set_filter` is never called), so the
+packaged systemd unit gates on it with `ConditionPathExists` instead of
+crash-looping on a fresh install. Both
 `FlatPlan` and `FilterPlan` reject unknown keys at deserialize
 (`deny_unknown_fields`), so a typo or a key removed by a schema change
 fails loudly at load instead of being silently ignored.
@@ -232,6 +301,19 @@ block for its HTTP endpoint (`/invoke`, `/health`):
   "calibrator_id": "flat-panel",
   "filters": [
     { "name": "Luminance", "count": 20 }
+  ]
+}
+```
+
+A one-shot-color rig omits `filter_wheel_id` and lists a single capture
+group (the `name` is a label, not a filter):
+
+```json
+{
+  "camera_id": "osc-cam",
+  "calibrator_id": "flat-panel",
+  "filters": [
+    { "name": "OSC", "count": 20 }
   ]
 }
 ```
@@ -269,7 +351,8 @@ The plan is part of `rp`'s plugin configuration:
   "invoke_url": "http://localhost:11170/invoke",
   "requires_tools": [
     "capture", "set_filter", "get_camera_info", "compute_image_stats",
-    "close_cover", "open_cover", "calibrator_on", "calibrator_off"
+    "get_cover_state", "close_cover", "open_cover",
+    "calibrator_on", "calibrator_off"
   ],
   "config": {
     "camera_id": "main-cam",
@@ -298,13 +381,13 @@ The plan is part of `rp`'s plugin configuration:
 | `service_auth` | object or null | null | HTTP Basic credentials presented to `rp`'s MCP server (own config file only) — the D6 observatory credential |
 | `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` (own config file only) |
 | `camera_id` | string | required | Camera to use for flat exposures |
-| `filter_wheel_id` | string | required | Filter wheel to use |
+| `filter_wheel_id` | string or null | null | Filter wheel to use; absent, `null`, or `""` = no filter wheel (OSC rig): `set_filter` is never called and plan entries are plain capture groups |
 | `calibrator_id` | string | required | CoverCalibrator device to control |
 | `target_adu_fraction` | float | 0.5 | Target median as fraction of max ADU |
 | `tolerance` | float | 0.05 | Acceptable deviation from target (5%) |
 | `max_iterations` | int | 10 | Max attempts to find correct exposure time per filter |
 | `initial_duration` | humantime string | `"1s"` | Starting exposure time (e.g. `"500ms"`, `"1s"`) |
-| `brightness` | int or null | null | Calibrator brightness (null = max_brightness) |
+| `brightness` | int or null | null | Initial calibrator brightness (null = max_brightness); the brightness ladder steps down from here when the exposure search is pinned over-bright |
 | `filters` | array | required | List of filters with frame counts |
 | `filters[].name` | string | required | Filter name (must match filter wheel config) |
 | `filters[].count` | int | required | Number of flat frames to capture for this filter |

@@ -41,6 +41,18 @@ pub struct ImageStats {
     pub mean_adu: f64,
 }
 
+/// Result from the `get_cover_state` tool.
+#[derive(Debug, Clone, Deserialize)]
+struct CoverStateResult {
+    cover_state: String,
+}
+
+/// Result from the `calibrator_on` tool.
+#[derive(Debug, Clone, Deserialize)]
+struct CalibratorOnResult {
+    brightness: u32,
+}
+
 impl McpClient {
     /// Connect to an MCP server at the given URL, presenting
     /// `service_auth` per the ADR-017 credential policy.
@@ -97,6 +109,19 @@ impl McpClient {
         Ok(())
     }
 
+    /// Read the cover's state without actuating anything. Returns the
+    /// state name as rp reports it (`NotPresent` | `Closed` | `Moving` |
+    /// `Open` | `Unknown` | `Error`).
+    pub async fn get_cover_state(&self, calibrator_id: &str) -> Result<String> {
+        let result: CoverStateResult = self
+            .call_tool(
+                "get_cover_state",
+                serde_json::json!({"calibrator_id": calibrator_id}),
+            )
+            .await?;
+        Ok(result.cover_state)
+    }
+
     pub async fn close_cover(&self, calibrator_id: &str) -> Result<()> {
         let _: Value = self
             .call_tool(
@@ -117,13 +142,16 @@ impl McpClient {
         Ok(())
     }
 
-    pub async fn calibrator_on(&self, calibrator_id: &str, brightness: Option<u32>) -> Result<()> {
+    /// Turn the panel on and return the brightness rp actually applied
+    /// (the device maximum when `brightness` is `None`) — the brightness
+    /// ladder's starting point.
+    pub async fn calibrator_on(&self, calibrator_id: &str, brightness: Option<u32>) -> Result<u32> {
         let mut args = serde_json::json!({"calibrator_id": calibrator_id});
         if let Some(b) = brightness {
             args["brightness"] = serde_json::json!(b);
         }
-        let _: Value = self.call_tool("calibrator_on", args).await?;
-        Ok(())
+        let result: CalibratorOnResult = self.call_tool("calibrator_on", args).await?;
+        Ok(result.brightness)
     }
 
     pub async fn calibrator_off(&self, calibrator_id: &str) -> Result<()> {

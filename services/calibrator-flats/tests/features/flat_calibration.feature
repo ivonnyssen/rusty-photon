@@ -25,3 +25,25 @@ Feature: Calibrator flat field workflow (end-to-end)
     And the calibrator-flats orchestrator runs to completion
     Then the test webhook receiver should have received at least 4 "exposure_complete" events
     And the session status should be "idle"
+
+  Scenario: Calibrator-flats orchestrator captures flats on a filterless rig
+    Given a running Alpaca simulator
+    And the cover starts open
+    And a test webhook receiver subscribed to "exposure_complete"
+    And the calibrator-flats service is configured for 3 "OSC" flats with no filter wheel
+    And rp is running with a camera, cover calibrator, and the calibrator-flats orchestrator
+    When a session is started via the REST API
+    And the calibrator-flats orchestrator runs to completion
+    Then the test webhook receiver should have received at least 3 "exposure_complete" events
+    And the session status should be "idle"
+    And the cover should be open
+
+  Scenario: A cover that was closed at session start stays closed
+    Given a running Alpaca simulator
+    And the cover starts closed
+    And the calibrator-flats service is configured for 2 "OSC" flats with no filter wheel
+    And rp is running with a camera, cover calibrator, and the calibrator-flats orchestrator
+    When a session is started via the REST API
+    And the calibrator-flats orchestrator runs to completion
+    Then the session status should be "idle"
+    And the cover should be closed
