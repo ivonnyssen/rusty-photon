@@ -1,7 +1,9 @@
 # planetarium-bridge
 
-**Status: implemented (bridge service; the [rp-side contract](#rp-side-contract)
-is the remaining P3 slice).**
+**Status: implemented (bridge service and the [rp-side
+contract](#rp-side-contract) — rp.md § Target Store → Import form is
+the landed rp-side text; doctor's fake-mount check is the remaining
+P3 slice).**
 This document is the design for the `planetarium-bridge` service —
 P3 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md).
@@ -14,7 +16,9 @@ The [Testing](#testing) section's four feature files run live in the
 default suite (65 scenarios), the device passes ConformU (see
 [ConformU](#conformu) for the harness specifics), and the throwaway
 P3a spike crate is deleted. What this service sends rp is final; the
-rp-side `source` semantics land in rp as their own P3 slice.
+rp-side `source` semantics landed in rp as their own P3 slice
+(authoritative text: rp.md § Target Store → Writer identity / Import
+form, exercised by rp's `target_store_import.feature`).
 
 ## Overview
 
@@ -383,11 +387,12 @@ alpaca-class services at the Alpaca `connected` endpoint only).
 
 ## rp-side contract
 
-Everything in this section lands in `rp` / `rp-targets` / `rp-catalog`
-(not the bridge) during P3 implementation, and is absorbed into
-`rp.md` § Target Store, `rp-targets.md`, and the `rp-catalog` docs in
-the matching Rule-2 update. It activates the `source` parameter
-`rp.md` already reserves on `add_target`.
+**Landed.** Everything in this section lives in `rp` / `rp-targets` /
+`rp-catalog` (not the bridge); it activated the `source` parameter
+`rp.md` had reserved on `add_target`. The absorbed, authoritative text
+is `rp.md` § Target Store (→ Writer identity, → Import form) and
+`rp-targets.md`; this section stays as the design record with its
+rationale.
 
 ### Writer identity: `created_by` / `updated_by`
 

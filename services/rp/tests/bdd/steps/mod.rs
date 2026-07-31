@@ -40,6 +40,7 @@ pub mod startup_recovery_steps;
 pub mod target_naming_template_steps;
 pub mod target_store_crud_steps;
 pub mod target_store_goals_steps;
+pub mod target_store_import_steps;
 pub mod target_store_planner_steps;
 pub mod target_store_progress_steps;
 pub mod tls_steps;

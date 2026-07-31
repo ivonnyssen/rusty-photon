@@ -58,6 +58,16 @@ pub fn resolve(name: &str) -> ResolveOutcome {
     ResolveOutcome::NotFound { suggestions }
 }
 
+/// Nearest catalog entry to `coord` under the class-tiered naming
+/// contract — `add_target`'s `source` form names imports through this
+/// (rp.md § Target Store → Import form).
+pub fn nearest(
+    coord: &rp_vocabulary::IcrsCoord,
+    tolerances: &rp_catalog::NearestTolerances,
+) -> Option<rp_catalog::NearestMatch> {
+    Catalog::embedded().nearest(coord, tolerances)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]

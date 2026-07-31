@@ -196,6 +196,38 @@ pub struct Target {
     pub created_at: String,
     /// RFC3339 last-update timestamp; set by rp at the call boundary.
     pub updated_at: String,
+    /// Writer identity of the surface that created this row —
+    /// [`OPERATOR_WRITER`] for the operator MCP tools, an import's
+    /// `source.kind` (e.g. `"planetarium-bridge"`) otherwise. Preserved
+    /// across `upsert_target` of an existing slug, like `created_at`.
+    /// Rows written before this field existed deserialize as
+    /// operator-created.
+    #[serde(default = "default_writer")]
+    pub created_by: String,
+    /// Writer identity of the last write, same domain as `created_by`.
+    /// `!active && updated_by == "<import kind>"` is the "pending and
+    /// unedited since import" predicate rp's import dedup keys on
+    /// (`docs/services/rp.md` § Target Store).
+    #[serde(default = "default_writer")]
+    pub updated_by: String,
+}
+
+/// The writer-identity value every operator-surface write stamps.
+pub const OPERATOR_WRITER: &str = "operator";
+
+fn default_writer() -> String {
+    OPERATOR_WRITER.to_string()
+}
+
+/// Last-write attribution for [`crate::TargetStore::set_goals`]: the store
+/// never reads the clock, so rp supplies both stamps at the call boundary,
+/// exactly as it does for the [`Target`] fields on `upsert_target`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteStamp {
+    /// RFC3339 timestamp for `Target::updated_at`.
+    pub updated_at: String,
+    /// Writer identity for `Target::updated_by`.
+    pub updated_by: String,
 }
 
 /// Validates a goal set for [`crate::TargetStore::upsert_target`] and
@@ -316,5 +348,24 @@ mod tests {
         let goals = vec![goal("Ha", 1, 1, 0, 20)];
         let err = validate_goals(&goals).unwrap_err();
         assert!(matches!(err, TargetStoreError::InvalidGoals { .. }));
+    }
+
+    // A row serialized before the writer-identity fields existed must
+    // deserialize as operator-owned — this is the whole redb migration
+    // story for the additive change (no schema-version step).
+    #[test]
+    fn pre_writer_identity_row_deserializes_as_operator_owned() {
+        let old_row = serde_json::json!({
+            "slug": "m31",
+            "display_name": "M 31",
+            "coord": { "ra_hours": 0.7123, "dec_degrees": 41.2688 },
+            "priority": 0,
+            "active": true,
+            "created_at": "2026-07-22T00:00:00Z",
+            "updated_at": "2026-07-22T00:00:00Z"
+        });
+        let target: Target = serde_json::from_value(old_row).unwrap();
+        assert_eq!(target.created_by, OPERATOR_WRITER);
+        assert_eq!(target.updated_by, OPERATOR_WRITER);
     }
 }

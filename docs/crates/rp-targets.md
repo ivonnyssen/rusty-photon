@@ -126,6 +126,16 @@ pub struct Target {
     /// timestamp as a parameter — it does not read the clock).
     pub created_at: String,
     pub updated_at: String,
+    /// Writer identity (P3 import provenance, rp.md § Target Store →
+    /// Writer identity): "operator" for the operator MCP tools, an
+    /// import's `source.kind` otherwise. `created_by` is preserved
+    /// across upserts like `created_at`; `updated_by` is stamped on
+    /// every write. Both `#[serde(default = "operator")]`, so rows
+    /// written before the fields existed deserialize as operator-owned
+    /// — the whole migration story for this additive change (see
+    /// Schema migration below; no version bump).
+    pub created_by: String,
+    pub updated_by: String,
 }
 
 /// Desired frame count for one acquisition sub-spec. The
@@ -228,8 +238,13 @@ upsert_target(target)            -> Result<(), TargetStoreError>
 get_target(slug)                 -> Result<Option<Target>, TargetStoreError>
 list_targets()                   -> Result<Vec<Target>, TargetStoreError>
 delete_target(slug)              -> Result<bool, TargetStoreError>   // false = absent
-set_goals(slug, Vec<AcquisitionGoal>) -> Result<(), TargetStoreError> // replace the set
+set_goals(slug, Vec<AcquisitionGoal>, WriteStamp) -> Result<(), TargetStoreError> // replace the set
 ```
+
+`WriteStamp {updated_at, updated_by}` carries the last-write
+attribution for `set_goals` — the store never reads the clock, so rp
+supplies both at the call boundary, exactly as it does for the
+`Target` fields on `upsert_target`.
 
 `list_targets` returns every row; the planner filters (`active`) and
 orders (`priority`, then least-progress) in Rust — the row count is tens,
@@ -250,11 +265,13 @@ rejects a goal set that contains duplicate
 
 **Upsert precedence.** `upsert_target` writes the whole value (including
 `goals`) atomically. On upsert of an existing slug the stored
-`created_at` is preserved (the impl reads the prior row and keeps its
-`created_at`); `updated_at`, `display_name`, coordinates, overrides, and
-`goals` take the supplied values. `set_goals` is the goals-only fast path
-(it leaves the rest of the row untouched); `upsert_target` and
-`set_goals` are the only writers of `goals`.
+`created_at` **and** `created_by` are preserved (the impl reads the
+prior row and keeps both, so creation attribution survives later
+edits); `updated_at`, `updated_by`, `display_name`, coordinates,
+overrides, and `goals` take the supplied values. `set_goals` is the
+goals-only fast path (it applies its `WriteStamp` to
+`updated_at`/`updated_by` and leaves the rest of the row untouched);
+`upsert_target` and `set_goals` are the only writers of `goals`.
 
 Errors are a `thiserror` enum:
 
@@ -375,6 +392,14 @@ Contract: adding NGC 7000 twice with different framing yields `ngc7000`
 and `ngc7000-2`; re-adding the same object updates it in place. This is
 rp policy — the crate only enforces that `upsert` of an existing slug is
 an in-place overwrite, never a duplicate row.
+
+`add_target`'s `source` import form (rp.md § Target Store → Import
+form) deviates deliberately: identity is proximity-only dedup against
+`target_store.import.dedup_arcsec` (the `catalog_ref`-match branch is
+never consulted — two framings of one object are two targets), an
+import only ever upserts a row that is still pending and import-owned
+(`!active && updated_by == source.kind`), and a base-slug collision
+always suffix-allocates.
 
 ### File-naming template (render + parse)
 
