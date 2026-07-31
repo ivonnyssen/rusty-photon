@@ -70,6 +70,13 @@ pub struct PlannerTarget {
     /// Per-target altitude floor. `None` falls back to the
     /// planner-wide minimum supplied by the caller.
     pub min_altitude_degrees: Option<f64>,
+    /// The target's own framing angle (degrees east of north), layer
+    /// one of the effective position angle. A decision input only,
+    /// skipped on the wire — the recommendation surfaces the resolved
+    /// *effective* angle instead (rp.md § Target Store → Position
+    /// angle).
+    #[serde(skip)]
+    pub position_angle_degrees: Option<f64>,
     /// The target's plan (store goals), in list order — a decision
     /// input only, skipped on the wire. `next_target` surfaces the
     /// first incomplete entry as the recommendation's `exposure`;
@@ -121,6 +128,12 @@ pub struct NextTargetRecommendation {
     /// target or its plan is empty (the orchestrator's own exposure
     /// parameters apply).
     pub exposure: Option<ExposureSpec>,
+    /// The recommended target's *effective* framing angle: its own
+    /// `position_angle_degrees`, else the caller-supplied train
+    /// default, else 0.0 north-up (rp.md § Target Store → Position
+    /// angle, plan Decision 5). `None` exactly when `target` is
+    /// `None`.
+    pub position_angle_degrees: Option<f64>,
 }
 
 /// Pick the next target to slew to. The decision is a pure function
@@ -133,6 +146,7 @@ pub fn next_target(
     now: DateTime<Utc>,
     targets: &[PlannerTarget],
     default_min_altitude_deg: f64,
+    train_default_position_angle_deg: Option<f64>,
     progress: &SessionProgress,
 ) -> NextTargetRecommendation {
     if targets.is_empty() {
@@ -140,6 +154,7 @@ pub fn next_target(
             target: None,
             reason: NextTargetReason::NoTargetsConfigured,
             exposure: None,
+            position_angle_degrees: None,
         };
     }
 
@@ -198,6 +213,7 @@ pub fn next_target(
                 target: None,
                 reason: NextTargetReason::EndOfSession,
                 exposure: None,
+                position_angle_degrees: None,
             };
         }
         // Distinguish "the sky is too bright to image" from "all
@@ -228,6 +244,7 @@ pub fn next_target(
             target: None,
             reason,
             exposure: None,
+            position_angle_degrees: None,
         };
     }
 
@@ -254,6 +271,7 @@ pub fn next_target(
             target: None,
             reason: NextTargetReason::AllBelowMinAltitude,
             exposure: None,
+            position_angle_degrees: None,
         };
     };
     let mut chosen: Option<(&PlannerTarget, (f64, bool, f64))> = None;
@@ -296,13 +314,23 @@ pub fn next_target(
             target: None,
             reason: NextTargetReason::AllBelowMinAltitude,
             exposure: None,
+            position_angle_degrees: None,
         };
     };
 
+    // The three-layer effective angle (rp.md § Target Store → Position
+    // angle): target value → the caller's train default → 0.0 north-up.
+    let position_angle_degrees = Some(
+        chosen
+            .position_angle_degrees
+            .or(train_default_position_angle_deg)
+            .unwrap_or(0.0),
+    );
     NextTargetRecommendation {
         target: Some(chosen.clone()),
         reason: NextTargetReason::BestTransitingCandidate,
         exposure: progress.next_incomplete_entry(chosen).cloned(),
+        position_angle_degrees,
     }
 }
 
@@ -334,6 +362,7 @@ impl From<&rp_targets::Target> for PlannerTarget {
             name: t.slug.as_str().to_string(),
             coord: t.coord,
             min_altitude_degrees: t.scheduling.and_then(|s| s.min_altitude_degrees),
+            position_angle_degrees: t.position_angle_degrees,
             exposures: t
                 .goals
                 .iter()
@@ -498,6 +527,7 @@ mod tests {
             now(),
             &[],
             20.0,
+            None,
             &SessionProgress::default(),
         );
         assert!(rec.target.is_none());
@@ -516,6 +546,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -524,6 +555,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert!(rec.target.is_none());
@@ -542,6 +574,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -550,6 +583,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert!(rec.target.is_none());
@@ -571,6 +605,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -579,6 +614,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
@@ -598,6 +634,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -606,6 +643,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
@@ -625,6 +663,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -633,6 +672,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert!(rec.target.is_none());
@@ -653,6 +693,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -661,6 +702,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
@@ -682,6 +724,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -690,6 +733,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
@@ -702,6 +746,7 @@ mod tests {
             name: "below floor".into(),
             coord: rp_targets::IcrsCoord::try_new(0.0, 0.0).unwrap(),
             min_altitude_degrees: Some(90.0),
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }]
     }
@@ -729,6 +774,7 @@ mod tests {
             t,
             &never_visible_target(),
             20.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
@@ -750,6 +796,7 @@ mod tests {
             t,
             &never_visible_target(),
             20.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
@@ -769,6 +816,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7123, 41.27).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         let rec = next_target(
@@ -777,6 +825,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
@@ -798,12 +847,14 @@ mod tests {
                 name: "M31".into(),
                 coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
                 min_altitude_degrees: None,
+                position_angle_degrees: None,
                 exposures: Vec::new(),
             },
             PlannerTarget {
                 name: "M42".into(),
                 coord: rp_targets::IcrsCoord::try_new(11.0, -5.0).unwrap(),
                 min_altitude_degrees: None,
+                position_angle_degrees: None,
                 exposures: Vec::new(),
             },
         ];
@@ -813,6 +864,7 @@ mod tests {
             now(),
             &targets,
             20.0,
+            None,
             &SessionProgress::default(),
         );
         let target = rec.target.expect("expected a target");
@@ -829,6 +881,7 @@ mod tests {
             name: name.into(),
             coord: rp_targets::IcrsCoord::try_new(ra_hours, 0.0).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures,
         }
     }
@@ -853,6 +906,63 @@ mod tests {
     }
 
     #[test]
+    fn effective_angle_prefers_the_targets_own_value_over_the_train_default() {
+        let eph = night_eph(&[12.0]);
+        let mut t = target_with_plan("M31", 12.0, Vec::new());
+        t.position_angle_degrees = Some(121.25);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &[t],
+            20.0,
+            Some(254.0),
+            &SessionProgress::default(),
+        );
+        assert_eq!(rec.position_angle_degrees, Some(121.25));
+    }
+
+    #[test]
+    fn effective_angle_falls_back_to_the_train_default_then_north_up() {
+        let eph = night_eph(&[12.0]);
+        let targets = vec![target_with_plan("M31", 12.0, Vec::new())];
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            20.0,
+            Some(254.0),
+            &SessionProgress::default(),
+        );
+        assert_eq!(rec.position_angle_degrees, Some(254.0));
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            20.0,
+            None,
+            &SessionProgress::default(),
+        );
+        assert_eq!(rec.position_angle_degrees, Some(0.0));
+    }
+
+    #[test]
+    fn no_recommendation_carries_no_effective_angle() {
+        let rec = next_target(
+            &MockEphemeris::default(),
+            &site(),
+            now(),
+            &[],
+            20.0,
+            Some(254.0),
+            &SessionProgress::default(),
+        );
+        assert_eq!(rec.position_angle_degrees, None);
+    }
+
+    #[test]
     fn an_exhausted_target_is_eliminated_and_the_backup_recommended() {
         // "M31" transits (HA 0) but its whole plan is complete; the
         // farther "M42" is the only live candidate.
@@ -863,7 +973,7 @@ mod tests {
         ];
         let mut p = SessionProgress::default();
         p.record("M31", Some("L"));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "M42");
     }
 
@@ -876,7 +986,7 @@ mod tests {
         let targets = vec![target_with_plan("M31", 12.0, vec![spec("L", 1)])];
         let mut p = SessionProgress::default();
         p.record("M31", Some("L"));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -899,7 +1009,7 @@ mod tests {
         ];
         let mut p = SessionProgress::default();
         p.record("done", Some("L"));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -913,13 +1023,13 @@ mod tests {
             vec![spec("L", 1), spec("R", 1)],
         )];
         let mut p = SessionProgress::default();
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(
             rec.exposure.expect("plan entry").filter.as_deref(),
             Some("L")
         );
         p.record("M31", Some("L"));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(
             rec.exposure.expect("plan entry").filter.as_deref(),
             Some("R"),
@@ -939,7 +1049,7 @@ mod tests {
         ];
         let mut p = SessionProgress::default();
         p.record("closer", Some("L"));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "fresh");
     }
 
@@ -956,7 +1066,7 @@ mod tests {
         ];
         let mut p = SessionProgress::default();
         p.record("somewhere else entirely", Some("Red"));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "red next");
     }
 
@@ -974,7 +1084,7 @@ mod tests {
         for _ in 0..9 {
             p.record("transiting", Some("L"));
         }
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "transiting");
     }
 
@@ -990,6 +1100,7 @@ mod tests {
             name: "T1".into(),
             coord: rp_targets::IcrsCoord::try_new(1.0, 0.0).unwrap(),
             min_altitude_degrees: Some(20.0),
+            position_angle_degrees: None,
             exposures: Vec::new(),
         }];
         // default 30 would eliminate; per-target 20 keeps it.
@@ -999,6 +1110,7 @@ mod tests {
             now(),
             &targets,
             30.0,
+            None,
             &SessionProgress::default(),
         );
         assert!(
@@ -1027,6 +1139,7 @@ mod tests {
             object_type: None,
             magnitude: None,
             size_arcmin: None,
+            position_angle_degrees: None,
             priority: 0,
             active: true,
             goals,
@@ -1095,6 +1208,7 @@ mod tests {
             target: None,
             reason: NextTargetReason::NoTargetsConfigured,
             exposure: None,
+            position_angle_degrees: None,
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["reason"], "no_targets_configured");
@@ -1109,6 +1223,7 @@ mod tests {
                 name: "M31".into(),
                 coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
                 min_altitude_degrees: Some(25.0),
+                position_angle_degrees: None,
                 exposures: vec![ExposureSpec {
                     filter: Some("Luminance".to_string()),
                     duration_secs: 300.0,
@@ -1121,6 +1236,7 @@ mod tests {
                 duration_secs: 120.0,
                 count: Some(2),
             }),
+            position_angle_degrees: Some(25.0),
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert_eq!(v["reason"], "best_transiting_candidate");
@@ -1134,6 +1250,13 @@ mod tests {
         assert!(
             v["target"].get("exposures").is_none(),
             "the wire target must not leak the plan: {v}"
+        );
+        // The effective angle is a top-level recommendation field; the
+        // target's raw layer-one value stays off the wire.
+        assert_eq!(v["position_angle_degrees"], 25.0);
+        assert!(
+            v["target"].get("position_angle_degrees").is_none(),
+            "the wire target must not leak the raw angle: {v}"
         );
         // The selected exposure nests; the goal `count` is not surfaced.
         assert_eq!(v["exposure"]["filter"], "Red");
@@ -1156,10 +1279,12 @@ mod tests {
                 name: "OSC Field".into(),
                 coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
                 min_altitude_degrees: None,
+                position_angle_degrees: None,
                 exposures: vec![entry.clone()],
             }),
             reason: NextTargetReason::BestTransitingCandidate,
             exposure: Some(entry),
+            position_angle_degrees: Some(0.0),
         };
         let v = serde_json::to_value(&rec).unwrap();
         assert!(v["exposure"]["filter"].is_null());

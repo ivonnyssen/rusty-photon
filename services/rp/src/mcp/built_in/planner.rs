@@ -92,6 +92,14 @@ pub struct GetTargetStatusParams {
 pub struct GetNextTargetParams {
     #[serde(default)]
     pub time: Option<String>,
+    /// The imaging train, for the effective-position-angle fallback
+    /// (rp.md § Target Store → Position angle): a recommended target
+    /// without its own angle inherits this train's
+    /// `default_position_angle_degrees`. Unknown ids are an error;
+    /// omitted, the train-default layer is skipped (target value →
+    /// 0.0 north-up).
+    #[serde(default)]
+    pub train_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -583,7 +591,12 @@ impl McpHandler {
                        astronomical dusk and not rising (evening — wait and \
                        re-ask); end_of_session = brighter and rising (dawn) or \
                        every target's integration goal is met — the session is \
-                       over. Requires `site`.")]
+                       over. position_angle_degrees is the recommended \
+                       target's effective framing angle (its own value, else \
+                       the train_id train's default_position_angle_degrees, \
+                       else 0.0 north-up; null when target is null) — pass \
+                       train_id (the imaging train) so the per-train layer \
+                       applies. Requires `site`.")]
     pub(crate) async fn get_next_target(
         &self,
         Parameters(params): Parameters<GetNextTargetParams>,
@@ -600,6 +613,22 @@ impl McpHandler {
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,
             Err(e) => return Ok(tool_error!("{}", e)),
+        };
+        // The named imaging train supplies layer two of the effective
+        // position angle (rp.md § Target Store → Position angle). An
+        // unknown id is a caller bug — fail loudly rather than
+        // silently recommending north-up framing all night.
+        let train_default_position_angle_deg = match params.train_id.as_deref() {
+            None => None,
+            Some(id) => match self.trains.train(id) {
+                Some(train) => train.default_position_angle_degrees,
+                None => {
+                    return Ok(tool_error!(
+                        "unknown train_id `{}`: not an equipment.optical_trains[] id",
+                        id
+                    ))
+                }
+            },
         };
         let eph = rp_ephemeris::ErfarsEphemeris::new();
         // Candidates are every active store row (Decision 9), projected
@@ -620,6 +649,7 @@ impl McpHandler {
                 time,
                 &candidates,
                 default_min_altitude_degrees,
+                train_default_position_angle_deg,
                 &progress,
             )
         };

@@ -169,6 +169,16 @@ pub struct Target {
     #[serde(default)]
     pub size_arcmin: Option<f64>,
 
+    /// Sky position angle to frame this target at, in degrees east of
+    /// north (`docs/services/rp.md` § Target Store → Position angle).
+    /// `None` ⇒ inherit the imaging train's configured default angle,
+    /// then 0.0 north-up — resolved by rp at read time, never written
+    /// back. Serde default, so pre-P2 rows deserialize as `None` (the
+    /// whole migration story, exactly like the writer-identity fields;
+    /// no schema-version bump).
+    #[serde(default)]
+    pub position_angle_degrees: Option<f64>,
+
     /// Scheduling priority; higher values are preferred by the planner.
     pub priority: i32,
     /// Whether the planner may select this target. Bridge-imported targets
@@ -367,5 +377,23 @@ mod tests {
         let target: Target = serde_json::from_value(old_row).unwrap();
         assert_eq!(target.created_by, OPERATOR_WRITER);
         assert_eq!(target.updated_by, OPERATOR_WRITER);
+    }
+
+    // Same migration story for the P2 framing field: a pre-P2 row has
+    // no `position_angle_degrees` and must deserialize as `None`
+    // (inherit the train default) — no schema-version step.
+    #[test]
+    fn pre_position_angle_row_deserializes_as_inheriting() {
+        let old_row = serde_json::json!({
+            "slug": "m31",
+            "display_name": "M 31",
+            "coord": { "ra_hours": 0.7123, "dec_degrees": 41.2688 },
+            "priority": 0,
+            "active": true,
+            "created_at": "2026-07-22T00:00:00Z",
+            "updated_at": "2026-07-22T00:00:00Z"
+        });
+        let target: Target = serde_json::from_value(old_row).unwrap();
+        assert_eq!(target.position_angle_degrees, None);
     }
 }

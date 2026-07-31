@@ -39,6 +39,7 @@ fn push_imaging_train_with_block(world: &mut RpWorld, id: &str, devices: Vec<Str
         id: id.to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices,
         auto_focus: Some(standard_auto_focus_block()),
     });
@@ -49,6 +50,7 @@ fn push_guiding_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
         id: id.to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices,
         auto_focus: None,
     });

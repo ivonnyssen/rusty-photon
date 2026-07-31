@@ -51,6 +51,43 @@ impl TryFrom<f64> for FocalLengthMm {
     }
 }
 
+/// A train's default framing angle in degrees east of north, sky frame
+/// (`optical_trains[].default_position_angle_degrees` — layer two of
+/// the effective position angle, rp.md § Target Store → Position
+/// angle). Same domain as `move_rotator`'s `angle`: `0.0 ≤ angle <
+/// 360.0`, finite, rejected at load otherwise (parse-don't-validate).
+/// Serializes transparently as the inner `f64`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct PositionAngleDegrees(f64);
+
+impl PositionAngleDegrees {
+    /// The single validating constructor, shared with the per-target
+    /// field's boundary check in the target MCP tools.
+    pub fn try_new(value: f64) -> Result<Self, String> {
+        if !value.is_finite() || !(0.0..360.0).contains(&value) {
+            return Err(format!(
+                "position angle must be a finite number of degrees at least 0.0 \
+                 and below 360.0, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The angle in degrees east of north.
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for PositionAngleDegrees {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
 /// A positive focuser-step count for the V-curve sweep grid
 /// (`auto_focus.step_size`). Parse-don't-validate: zero, negative,
 /// and i32-overflowing values are rejected at deserialize with the
@@ -197,6 +234,13 @@ pub struct OpticalTrainConfig {
     /// like a camera outside any train.
     #[serde(default)]
     pub focal_length_mm: Option<FocalLengthMm>,
+    /// Default framing angle for targets that don't carry their own —
+    /// layer two of the effective position angle (rp.md § Target
+    /// Store → Position angle). For a rotator-less train this
+    /// documents the camera's fixed mounting angle. Omitted → the
+    /// fallback skips to 0.0 north-up.
+    #[serde(default)]
+    pub default_position_angle_degrees: Option<PositionAngleDegrees>,
     /// Roster device ids, objective side first. The last entry must be
     /// a camera; the rest are focusers, rotators, and filter wheels.
     pub devices: Vec<String>,
@@ -327,6 +371,56 @@ mod tests {
         let err = load_config(&path).unwrap_err().to_string();
         assert!(
             err.contains("focal_length_mm must be a positive finite number"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn optical_train_accepts_a_default_position_angle_in_range() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {"id": "main-cam", "alpaca_url": "http://localhost:11120"}
+                    ],
+                    "optical_trains": [
+                        {"id": "main", "default_position_angle_degrees": 254.0,
+                         "devices": ["main-cam"]}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+
+        let config = load_config(&path).unwrap();
+        let train = &config.equipment.optical_trains[0];
+        assert_eq!(
+            train
+                .default_position_angle_degrees
+                .map(PositionAngleDegrees::value),
+            Some(254.0)
+        );
+    }
+
+    #[test]
+    fn optical_train_rejects_an_out_of_range_default_position_angle_at_parse() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "optical_trains": [
+                        {"id": "main", "default_position_angle_degrees": 360.0,
+                         "devices": ["main-cam"]}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("position angle must be a finite number of degrees"),
             "{err}"
         );
     }

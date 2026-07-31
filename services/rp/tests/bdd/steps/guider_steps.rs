@@ -146,6 +146,7 @@ async fn rp_with_guiding_train_and_two_imaging_trains(world: &mut RpWorld) {
             id: id.to_string(),
             purpose: Some("imaging".to_string()),
             focal_length_mm: Some(500.0),
+            default_position_angle_degrees: None,
             devices: vec![format!("{id}-cam")],
             auto_focus: None,
         });
@@ -473,6 +474,7 @@ fn push_guiding_train_for_camera(world: &mut RpWorld, focal_length_mm: Option<f6
         id: "guide".to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm,
+        default_position_angle_degrees: None,
         devices: vec!["main-cam".to_string()],
         auto_focus: None,
     });

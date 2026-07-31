@@ -190,6 +190,10 @@ pub struct OpticalTrainConfig {
     /// `None` ⇒ omit the field (captures through this train's camera
     /// carry no `optics` block).
     pub focal_length_mm: Option<f64>,
+    /// Default framing angle in degrees east of north (layer two of
+    /// the effective position angle, rp.md § Target Store → Position
+    /// angle). `None` ⇒ omit the field.
+    pub default_position_angle_degrees: Option<f64>,
     pub devices: Vec<String>,
     /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`).
     /// `None` ⇒ omit the block.
@@ -653,6 +657,9 @@ impl RpConfigBuilder {
                 if let Some(f) = t.focal_length_mm {
                     obj["focal_length_mm"] = serde_json::json!(f);
                 }
+                if let Some(a) = t.default_position_angle_degrees {
+                    obj["default_position_angle_degrees"] = serde_json::json!(a);
+                }
                 if let Some(af) = &t.auto_focus {
                     let mut block = serde_json::json!({
                         "step_size": af.step_size,
@@ -895,6 +902,7 @@ mod tests {
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),
             focal_length_mm: Some(1000.0),
+            default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
             auto_focus: Some(TrainAutoFocusConfig {
                 duration: Some("100ms".to_string()),
@@ -909,6 +917,7 @@ mod tests {
             id: "guide".to_string(),
             purpose: None,
             focal_length_mm: None,
+            default_position_angle_degrees: None,
             devices: vec!["guide-cam".to_string()],
             auto_focus: None,
         });

@@ -70,6 +70,12 @@ pub struct AddTargetParams {
     /// `notes` itself for imports.
     #[serde(default)]
     pub notes: Option<String>,
+    /// Framing angle in degrees east of north, `0.0 ≤ angle < 360.0`
+    /// (rp.md § Target Store → Position angle). Omitted → inherit the
+    /// imaging train's configured default at read time. Not accepted
+    /// with `source` — imports never carry an angle.
+    #[serde(default)]
+    pub position_angle_degrees: Option<f64>,
     /// Selects the import form (rp.md § Target Store → Import form):
     /// bare `ra_hours` + `dec_degrees` plus this typed provenance.
     #[serde(default)]
@@ -150,6 +156,26 @@ pub struct UpdateTargetParams {
     pub scheduling: Option<SchedulingWire>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// Framing angle in degrees east of north, `0.0 ≤ angle < 360.0`.
+    /// The one field with explicit-null semantics (rp.md § Target
+    /// Store → Position angle): omitted → untouched; a number → set;
+    /// an explicit `null` → cleared back to inherit-the-train-default
+    /// — "blank" and "0.0 north-up" must stay distinguishable for the
+    /// P4 inbox.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schemars(with = "Option<f64>")]
+    pub position_angle_degrees: Option<Option<f64>>,
+}
+
+/// Distinguishes an absent field (`None` — leave untouched) from an
+/// explicit JSON `null` (`Some(None)` — clear): serde only invokes the
+/// deserializer when the key is present, so a present key maps to
+/// `Some(inner)` and `#[serde(default)]` covers absence.
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<f64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<f64>::deserialize(deserializer)?))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -180,9 +206,14 @@ impl McpHandler {
                        scheduling overrides fall back field-wise to \
                        targets.default_scheduling from config when \
                        omitted (Decision 9 — altitude-gating parity). \
+                       position_angle_degrees is the framing angle in \
+                       degrees east of north (at least 0.0, below 360.0); \
+                       omitted, the imaging train's configured default \
+                       applies at read time. \
                        A third form for importers: bare ra_hours + \
                        dec_degrees + source {kind, client, received_at} — \
-                       catalog_ref, display_name, active, and notes are \
+                       catalog_ref, display_name, active, notes, and \
+                       position_angle_degrees are \
                        all rejected with source; the import lands paused \
                        (active: false), rp names it by reverse cone-search \
                        against the catalog, dedup is proximity-only \
@@ -306,6 +337,10 @@ impl McpHandler {
         if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
             return Ok(tool_error!("{}", e));
         }
+        let position_angle_degrees = match validate_position_angle(params.position_angle_degrees) {
+            Ok(v) => v,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
 
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let target = Target {
@@ -316,6 +351,7 @@ impl McpHandler {
             object_type,
             magnitude,
             size_arcmin,
+            position_angle_degrees,
             priority: 0,
             active: params.active.unwrap_or(true),
             goals,
@@ -394,7 +430,10 @@ impl McpHandler {
                        the slug or on-disk frames. Setting active: true is \
                        how a pending target is accepted into rotation. \
                        scheduling, when supplied, replaces the whole \
-                       overrides object (not a field-wise merge).")]
+                       overrides object (not a field-wise merge). \
+                       position_angle_degrees set to an explicit null \
+                       clears the framing angle back to \
+                       inherit-the-train-default; omitted it is untouched.")]
     pub(crate) async fn update_target(
         &self,
         Parameters(params): Parameters<UpdateTargetParams>,
@@ -437,6 +476,15 @@ impl McpHandler {
         }
         if params.notes.is_some() {
             target.notes = params.notes;
+        }
+        // Double-option: absent → untouched, explicit null → cleared
+        // back to inherit, a number → validated and set (rp.md §
+        // Target Store → Position angle).
+        if let Some(v) = params.position_angle_degrees {
+            match validate_position_angle(v) {
+                Ok(v) => target.position_angle_degrees = v,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
         }
         target.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         target.updated_by = OPERATOR_WRITER.to_string();
@@ -526,6 +574,12 @@ impl McpHandler {
         if params.active.is_some() {
             return Ok(tool_error!(
                 "active is not accepted with source — imports always land paused (active: false)"
+            ));
+        }
+        if params.position_angle_degrees.is_some() {
+            return Ok(tool_error!(
+                "position_angle_degrees is not accepted with source — imports \
+                 never carry a framing angle (it is entered by the operator)"
             ));
         }
         if params.notes.is_some() {
@@ -670,6 +724,9 @@ impl McpHandler {
             object_type,
             magnitude,
             size_arcmin,
+            // Imports never carry a framing angle — the operator enters
+            // one in the P4 inbox; until then the train default applies.
+            position_angle_degrees: None,
             priority: 0,
             active: false,
             goals,
@@ -699,6 +756,19 @@ impl McpHandler {
 /// `"ngc7000"`, per `rp-targets.md` § Identity) — an operator-typed name
 /// reads better hyphenated. Catalog adds bypass this and go straight to
 /// `TargetSlug::new`.
+/// Boundary validation for the per-target framing angle, sharing the
+/// domain (and validator) of the per-train config default
+/// ([`crate::config::PositionAngleDegrees`]), with the error naming
+/// the tool parameter.
+fn validate_position_angle(value: Option<f64>) -> Result<Option<f64>, String> {
+    match value {
+        None => Ok(None),
+        Some(v) => crate::config::PositionAngleDegrees::try_new(v)
+            .map(|a| Some(a.value()))
+            .map_err(|e| format!("position_angle_degrees: {e}")),
+    }
+}
+
 fn kebab_slug_candidate(display_name: &str) -> String {
     display_name
         .split_whitespace()
@@ -965,5 +1035,38 @@ mod tests {
             star_arcmin: 2.0,
         };
         assert_eq!(crate::planner::catalog::nearest(&coord, &tolerances), None);
+    }
+
+    // The double-option contract of update_target's
+    // position_angle_degrees (rp.md § Target Store → Position angle):
+    // absent → untouched, explicit null → clear, number → set.
+    #[test]
+    fn update_params_distinguish_absent_null_and_value_position_angles() {
+        let absent: UpdateTargetParams = serde_json::from_value(json!({ "slug": "m31" })).unwrap();
+        assert_eq!(absent.position_angle_degrees, None);
+
+        let cleared: UpdateTargetParams =
+            serde_json::from_value(json!({ "slug": "m31", "position_angle_degrees": null }))
+                .unwrap();
+        assert_eq!(cleared.position_angle_degrees, Some(None));
+
+        let set: UpdateTargetParams =
+            serde_json::from_value(json!({ "slug": "m31", "position_angle_degrees": 254.5 }))
+                .unwrap();
+        assert_eq!(set.position_angle_degrees, Some(Some(254.5)));
+    }
+
+    #[test]
+    fn position_angle_validation_bounds_the_move_rotator_domain() {
+        assert_eq!(validate_position_angle(None).unwrap(), None);
+        assert_eq!(validate_position_angle(Some(0.0)).unwrap(), Some(0.0));
+        assert_eq!(
+            validate_position_angle(Some(359.999)).unwrap(),
+            Some(359.999)
+        );
+        for bad in [360.0, -0.001, f64::NAN, f64::INFINITY] {
+            let err = validate_position_angle(Some(bad)).unwrap_err();
+            assert!(err.contains("position_angle_degrees"), "{err}");
+        }
     }
 }

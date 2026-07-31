@@ -216,6 +216,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: vec![
                 ExposureSpec {
                     filter: Some("L".to_string()),
@@ -252,6 +253,7 @@ mod tests {
             name: "M31".into(),
             coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: vec![ExposureSpec {
                 filter: None,
                 duration_secs: 60.0,
@@ -262,6 +264,7 @@ mod tests {
             name: "M42".into(),
             coord: rp_targets::IcrsCoord::try_new(5.5, -5.4).unwrap(),
             min_altitude_degrees: None,
+            position_angle_degrees: None,
             exposures: Vec::new(),
         };
         let mut progress = SessionProgress::default();

@@ -226,6 +226,7 @@ pub(crate) fn push_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
         id: id.to_string(),
         purpose: None,
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices,
         auto_focus: None,
     });

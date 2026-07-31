@@ -4700,6 +4700,7 @@ return a structured "site not configured" error.
         "id": "main",
         "purpose": "imaging",
         "focal_length_mm": 1000.0,
+        "default_position_angle_degrees": 254.0,
         "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
         "auto_focus": {
           "duration": "3s",

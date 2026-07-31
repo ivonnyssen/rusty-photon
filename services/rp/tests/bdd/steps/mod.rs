@@ -38,6 +38,7 @@ pub mod sky_survey_camera_steps;
 pub mod sse_steps;
 pub mod startup_recovery_steps;
 pub mod target_naming_template_steps;
+pub mod target_position_angle_steps;
 pub mod target_store_crud_steps;
 pub mod target_store_goals_steps;
 pub mod target_store_import_steps;

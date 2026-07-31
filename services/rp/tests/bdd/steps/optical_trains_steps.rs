@@ -78,6 +78,7 @@ async fn rp_with_camera_in_train(world: &mut RpWorld, focal_length_mm: f64) {
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(focal_length_mm),
+        default_position_angle_degrees: None,
         devices: vec!["main-cam".to_string()],
         auto_focus: None,
     });
@@ -93,6 +94,7 @@ async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
+        default_position_angle_degrees: None,
         devices: vec!["main-fw".to_string(), "main-cam".to_string()],
         auto_focus: None,
     });
