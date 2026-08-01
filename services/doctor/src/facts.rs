@@ -234,13 +234,21 @@ fn list_systemd_units() -> Vec<UnitFacts> {
 
 /// The unit stems in `systemctl list-units --state=failed --no-legend
 /// --plain` output (`<unit> <load> <active> <sub> <description>`).
+///
+/// The unit is found by shape rather than by column: a line whose leading
+/// token is not the unit name (systemd puts a bullet glyph there, which
+/// `--plain` omits) must not cost a failed unit its row — a dropped line
+/// reads as "this unit is fine", which is the silence this check exists to
+/// break. Timers are ignored: the inventory this joins against is
+/// services only.
 pub fn parse_failed_unit_listing(listing: &str) -> Vec<String> {
     listing
         .lines()
         .filter_map(|line| {
-            let unit = line.split_whitespace().next()?;
-            let stem = unit.strip_suffix(".service").unwrap_or(unit);
-            stem.starts_with("rusty-photon-").then(|| stem.to_string())
+            let unit = line
+                .split_whitespace()
+                .find(|token| token.starts_with("rusty-photon-") && token.ends_with(".service"))?;
+            Some(unit.strip_suffix(".service").unwrap_or(unit).to_string())
         })
         .collect()
 }
@@ -531,7 +539,6 @@ mod tests {
 
     #[test]
     fn test_failed_unit_listing_names_the_stems_systemd_holds_failed() {
-        // `--plain` drops the leading bullet systemd puts on failed units.
         let listing = "rusty-photon-renew.service loaded failed failed Rusty Photon TLS renewal\n\
                        rusty-photon-rp.service loaded failed failed Rusty Photon rp\n\
                        nginx.service loaded failed failed nginx\n";
@@ -544,6 +551,22 @@ mod tests {
             "foreign units are not this install's business"
         );
         assert!(parse_failed_unit_listing("").is_empty());
+    }
+
+    /// `--plain` omits systemd's bullet glyph, but a line whose unit name
+    /// is not the leading token must still be read: dropping it would
+    /// report a failed unit as healthy, the exact silence `units.failed`
+    /// exists to break.
+    #[test]
+    fn test_a_marked_failed_line_still_names_its_unit() {
+        let marked = "● rusty-photon-renew.service loaded failed failed Rusty Photon TLS renewal\n";
+        assert_eq!(
+            parse_failed_unit_listing(marked),
+            vec!["rusty-photon-renew".to_string()]
+        );
+        // Prose in the description column is not a unit name.
+        let prose = "nginx.service loaded failed failed restarts rusty-photon-rp nightly\n";
+        assert!(parse_failed_unit_listing(prose).is_empty(), "{prose}");
     }
 
     #[test]
