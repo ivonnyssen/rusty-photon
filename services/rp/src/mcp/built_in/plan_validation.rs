@@ -488,6 +488,120 @@ mod tests {
         assert!(validate_naming_patterns(None, None).is_empty());
     }
 
+    /// `validate_add_target` is the whole-payload entry point both
+    /// `add_target` and `validate_plan` call, and its form-selection
+    /// matrix is the branchiest thing in this module. BDD exercises the
+    /// happy paths through the real tools; these pin the rejections
+    /// directly, where each branch is one line to state.
+    fn params(value: serde_json::Value) -> AddTargetParams {
+        serde_json::from_value(value).expect("test payload must deserialize")
+    }
+
+    fn add_target_paths(value: serde_json::Value) -> Vec<String> {
+        let errors = validate_add_target(&params(value), &[], &EquipmentRegistry::default());
+        errors.into_iter().map(|e| e.path).collect()
+    }
+
+    #[test]
+    fn a_minimal_display_name_payload_validates_clean() {
+        assert_eq!(
+            add_target_paths(serde_json::json!({
+                "display_name": "Field", "ra_hours": 5.0, "dec_degrees": 10.0
+            })),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn exactly_one_naming_form_is_required() {
+        for value in [
+            serde_json::json!({"ra_hours": 5.0, "dec_degrees": 10.0}),
+            serde_json::json!({
+                "catalog_ref": "M 31", "display_name": "Field",
+                "ra_hours": 5.0, "dec_degrees": 10.0
+            }),
+        ] {
+            assert_eq!(add_target_paths(value), vec!["display_name".to_string()]);
+        }
+    }
+
+    #[test]
+    fn the_display_name_form_requires_both_coordinates() {
+        assert_eq!(
+            add_target_paths(serde_json::json!({"display_name": "Field", "ra_hours": 5.0})),
+            vec!["ra_hours".to_string()]
+        );
+    }
+
+    /// A catalog add may omit coordinates entirely (the centroid is
+    /// used) but may not supply half of a framing override.
+    #[test]
+    fn the_catalog_form_takes_coordinates_together_or_not_at_all() {
+        assert_eq!(
+            add_target_paths(serde_json::json!({"catalog_ref": "M 31"})),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            add_target_paths(serde_json::json!({"catalog_ref": "M 31", "ra_hours": 5.0})),
+            vec!["ra_hours".to_string()]
+        );
+    }
+
+    /// rp names, activates, annotates and frames an import itself, so
+    /// every operator-surface field is refused rather than silently
+    /// dropped.
+    #[test]
+    fn the_import_form_refuses_every_operator_field() {
+        let source = serde_json::json!({
+            "kind": "planetarium-bridge", "client": "192.0.2.10:52441",
+            "received_at": "2026-08-01T00:00:00Z"
+        });
+        for (field, value) in [
+            ("catalog_ref", serde_json::json!("M 31")),
+            ("display_name", serde_json::json!("Field")),
+            ("active", serde_json::json!(true)),
+            ("notes", serde_json::json!("hi")),
+            ("position_angle_degrees", serde_json::json!(10.0)),
+            ("grading", serde_json::json!({"max_hfr_pixels": 3.0})),
+        ] {
+            let payload = serde_json::json!({
+                "ra_hours": 5.0, "dec_degrees": 10.0, "source": source, field: value
+            });
+            let paths = add_target_paths(payload);
+            assert!(
+                paths.contains(&field.to_string()),
+                "import form must refuse {field:?}, got {paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_import_form_requires_coordinates() {
+        let paths = add_target_paths(serde_json::json!({
+            "source": {
+                "kind": "planetarium-bridge", "client": "192.0.2.10:52441",
+                "received_at": "2026-08-01T00:00:00Z"
+            }
+        }));
+        assert_eq!(paths, vec!["ra_hours".to_string()]);
+    }
+
+    /// Payload rules compose: a bad coordinate and a bad angle are both
+    /// reported, which is what lets a form be filled in once rather
+    /// than one round trip per field.
+    #[test]
+    fn every_payload_violation_is_reported_in_one_pass() {
+        let paths = add_target_paths(serde_json::json!({
+            "display_name": "Field", "ra_hours": 25.0, "dec_degrees": 10.0,
+            "position_angle_degrees": 400.0
+        }));
+        assert!(paths.contains(&"ra_hours".to_string()), "{paths:?}");
+        assert!(
+            paths.contains(&"position_angle_degrees".to_string()),
+            "{paths:?}"
+        );
+    }
+
     #[test]
     fn a_position_angle_outside_its_domain_is_reported_at_its_path() {
         assert!(validate_position_angle(None, "position_angle_degrees").is_empty());
