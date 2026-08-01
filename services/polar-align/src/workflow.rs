@@ -497,7 +497,14 @@ fn measurement_attitude(
     match solved_frame(solve) {
         Some(frame) => match attitude_from_wcs(&frame) {
             Ok(attitude) => Ok(Some(attitude)),
-            Err(e) if mode == MeasurementMode::CurrentPosition => Err(e),
+            Err(e) if mode == MeasurementMode::CurrentPosition => {
+                Err(PolarAlignError::Workflow(format!(
+                    "measurement point {} solve has an unusable wcs_matrix ({}); measuring \
+                     from the current position needs full camera attitudes",
+                    point_index + 1,
+                    e
+                )))
+            }
             Err(e) => {
                 debug!(
                     point = point_index + 1,
@@ -759,6 +766,28 @@ mod tests {
         let err = measurement_attitude(MeasurementMode::CurrentPosition, 2, &solve).unwrap_err();
         assert!(err.to_string().contains("point 3"), "{err}");
         assert!(err.to_string().contains("full camera attitudes"), "{err}");
+    }
+
+    /// A matrix that exists but is degenerate must fail the same way
+    /// as a missing one: naming the point, current-position only.
+    #[test]
+    fn test_measurement_attitude_degenerate_matrix_names_the_point() {
+        let solve: SolveResult = serde_json::from_str(
+            r#"{
+                "ra_center": 52.1, "dec_center": 85.2,
+                "pixel_scale_arcsec": 1.05, "rotation_deg": 0.0,
+                "wcs_matrix": {
+                    "crpix1": 512.0, "crpix2": 384.0,
+                    "cd1_1": 0.0, "cd1_2": 0.0, "cd2_1": 0.0, "cd2_2": 0.0
+                }
+            }"#,
+        )
+        .unwrap();
+        let near_pole = measurement_attitude(MeasurementMode::NearPole, 1, &solve).unwrap();
+        assert!(near_pole.is_none(), "near-pole degrades to no cross-check");
+        let err = measurement_attitude(MeasurementMode::CurrentPosition, 1, &solve).unwrap_err();
+        assert!(err.to_string().contains("point 2"), "{err}");
+        assert!(err.to_string().contains("unusable wcs_matrix"), "{err}");
     }
 
     #[test]
