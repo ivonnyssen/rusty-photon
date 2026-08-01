@@ -86,6 +86,7 @@ Accessibility"); `/status` carries their paths, never pixels.
 | `slew` | Move to each measurement point (equal-dec, one pier side) |
 | `abort_slew` | Cleanup only: stop an in-flight slew on failure |
 | `capture` | Take the measurement and adjustment exposures |
+| `get_camera_info` | Read the sensor bounds the overlay's `in_frame` flag is computed against (preflight) |
 | `plate_solve` | Solve each capture (hinted with the commanded pointing) |
 | `detect_stars` | Locate the brightest stars in each adjustment frame for the target-circle overlay |
 
