@@ -4460,8 +4460,14 @@ async fn plate_solve_happy_path_image_path() {
     assert_eq!(json["rotation_deg"], 12.3);
     assert_eq!(json["solver"], "stub");
     // The wrapper returned no matrix; the output carries an explicit
-    // null rather than omitting the key.
-    assert!(json["wcs_matrix"].is_null());
+    // null rather than omitting the key. Index-style access yields
+    // Null for a missing key too, so check presence first.
+    let wcs = json
+        .as_object()
+        .unwrap()
+        .get("wcs_matrix")
+        .expect("wcs_matrix key must be present");
+    assert!(wcs.is_null());
 }
 
 #[tokio::test]

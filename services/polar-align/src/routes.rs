@@ -36,9 +36,18 @@ async fn health() -> &'static str {
     "polar-align healthy"
 }
 
-async fn status_handler(State(state): State<AppState>) -> Json<Value> {
+async fn status_handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     let status = state.shared.status.read().await;
-    Json(serde_json::to_value(&*status).unwrap_or_else(|_| serde_json::json!({})))
+    match serde_json::to_value(&*status) {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(e) => {
+            warn!(error = %e, "status serialization failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "status serialization failed" })),
+            )
+        }
+    }
 }
 
 async fn finish_handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
