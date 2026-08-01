@@ -354,7 +354,16 @@ Windows: a config that loads on Linux has to mean the same thing on
 Windows, where `\` separates paths (the scan would count one component
 and walk the wrong depth) and `C:` is drive-absolute (`PathBuf::join`
 discards the base, so frames escape `data_directory`). Neither
-character is legal in a Windows filename regardless. Each is
+character is legal in a Windows filename regardless.
+
+Those are instances of one rule rather than a list: **`capture` must be
+able to create exactly the name the scan will look for, on every
+supported platform.** So the rest of Windows' illegal filename set
+(`<>"|?*` and control characters) is rejected too, as is a component
+with a trailing `.` or space — Windows strips those, so `capture` would
+create `night.` as `night` while the scan kept looking for `night.`. No
+token's shape can introduce any of them, so checking the pattern text is
+exact: every occurrence came from a literal someone typed. Each is
 rejected at load rather than quietly canonicalized — rewriting what the
 operator wrote is how the writer and the scanner drift apart in the
 first place, and the symptom otherwise is a night of frames that

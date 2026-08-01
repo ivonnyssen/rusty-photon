@@ -260,6 +260,20 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
 ///
 /// Neither character is legal in a Windows filename anyway, so rejecting
 /// them also stops a pattern that simply could not be written there.
+///
+/// The check generalizes past those two, because they are instances of
+/// one rule rather than a list: **`capture` must be able to create
+/// exactly the name the scan will look for, on every supported
+/// platform.** Anything the OS would silently rewrite or refuse breaks
+/// that, so this also rejects the rest of Windows' illegal filename set
+/// (`<>"|?*` and control characters) and a component with a trailing
+/// `.` or space — which Windows strips, so `capture` would create
+/// `night.` as `night` while the scan kept looking for `night.`.
+///
+/// A rendered token can never introduce these: no token's shape admits
+/// them, and none can end in `.` or a space. So checking the pattern
+/// text is exact, not an approximation — every occurrence came from a
+/// literal the operator typed.
 fn check_no_platform_separators(pattern: &str, field: &str) -> Result<(), String> {
     if pattern.contains('\\') {
         return Err(format!(
@@ -273,6 +287,24 @@ fn check_no_platform_separators(pattern: &str, field: &str) -> Result<(), String
             "{field} {pattern:?} contains ':' — a Windows drive prefix (and illegal in a Windows \
              filename); a pattern must stay relative to data_directory"
         ));
+    }
+    if let Some(bad) = pattern
+        .chars()
+        .find(|c| matches!(c, '<' | '>' | '"' | '|' | '?' | '*') || c.is_control())
+    {
+        return Err(format!(
+            "{field} {pattern:?} contains {bad:?}, which is not legal in a Windows filename — \
+             capture could not create the path the progress scan expects"
+        ));
+    }
+    for component in pattern.split('/') {
+        if component.ends_with('.') || component.ends_with(' ') {
+            return Err(format!(
+                "{field} {pattern:?} has a path component ending in '.' or a space — Windows \
+                 strips those when creating the path, so capture and the progress scan would \
+                 disagree about the name"
+            ));
+        }
     }
     Ok(())
 }
@@ -322,7 +354,6 @@ fn check_relative_path_shape(pattern: &str) -> Result<(), String> {
     if pattern.is_empty() {
         return Ok(());
     }
-    check_no_platform_separators(pattern, "directory_pattern")?;
     if pattern.starts_with('/') {
         return Err(format!(
             "directory_pattern must be relative to data_directory, but {pattern:?} starts with \
@@ -349,7 +380,9 @@ fn check_relative_path_shape(pattern: &str) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    // Last, so a `..` component is diagnosed as traversal rather than by
+    // the trailing-`.` rule it also happens to trip.
+    check_no_platform_separators(pattern, "directory_pattern")
 }
 
 /// The body of [`validate_pattern`], operating on already-parsed
@@ -1171,6 +1204,30 @@ mod tests {
 
         let err = validate_pattern(&format!(r"sub\{DEFAULT_PATTERN}")).unwrap_err();
         assert!(err.contains('\\') || err.contains("Windows"), "{err}");
+    }
+
+    /// The general rule behind the `\` and `:` cases: `capture` must be
+    /// able to create exactly the name the scan looks for, on every
+    /// supported platform. A character Windows refuses, or one it
+    /// silently strips, breaks that the same way a stray separator
+    /// does.
+    #[test]
+    fn patterns_reject_names_windows_would_refuse_or_rewrite() {
+        for pattern in [
+            "{target}/{night_date}?/{frame_type}",
+            "{target}/night<{night_date}>/{frame_type}",
+            r#"{target}/"{night_date}"/{frame_type}"#,
+            "{target}/{night_date}./{frame_type}",
+            "{target}/{night_date} /{frame_type}",
+        ] {
+            validate_directory_pattern(pattern)
+                .expect_err(&format!("directory_pattern {pattern:?} must be rejected"));
+        }
+        // A trailing space on the whole file pattern is the same fault.
+        validate_pattern(&format!("{DEFAULT_PATTERN} ")).unwrap_err();
+        // ...but the documented defaults must still pass unchanged.
+        validate_pattern(DEFAULT_PATTERN).unwrap();
+        validate_directory_pattern("{target}/{night_date}/{frame_type}").unwrap();
     }
 
     /// `""` is how the config UI round-trips an unset pattern, so it
