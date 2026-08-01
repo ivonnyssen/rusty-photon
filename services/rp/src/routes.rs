@@ -528,7 +528,7 @@ mod tests {
         config: crate::config::Config,
         config_path: PathBuf,
     ) -> AppState {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let equipment = Arc::new(crate::equipment::EquipmentRegistry {
             safety_monitors: vec![],
             cameras: vec![],

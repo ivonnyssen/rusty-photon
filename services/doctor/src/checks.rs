@@ -1398,7 +1398,8 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
 }
 
 /// rp's plate-solver/guider clients, the generic equipment roster, and
-/// the orchestrator plugin's `invoke_url`:
+/// the callback URL of every plugin registration rp dials (the
+/// orchestrator's `invoke_url`, an event plugin's `webhook_url`):
 /// `docs/services/doctor.md §Client-target joins`. CA trust is `rp`'s
 /// single top-level `ca_cert` field (issue #609 / PR #612), shared by
 /// every target, so the transport check is fully fix-eligible once that
@@ -2923,13 +2924,13 @@ mod tests {
         }
     }
 
-    // ---- rp's orchestrator plugin registration (issue #800) ----
+    // ---- rp's plugin registrations (issue #800) ----
     //
-    // The `plugins[].invoke_url` join: until rp's invoke client gained CA
-    // trust and a credential, TLS- or auth-enabling an orchestrator plugin
-    // silently broke every session start, and no check said so. These pin
-    // that the registration now joins its target the way every other rp
-    // client target does.
+    // The callback-URL joins: until rp's invoke and webhook clients gained
+    // CA trust and a credential, TLS- or auth-enabling a plugin silently
+    // broke every session start (orchestrator) or every event delivery
+    // (event), and no check said so. These pin that both registrations now
+    // join their target the way every other rp client target does.
 
     #[test]
     fn test_rp_orchestrator_plugin_scheme_and_auth_are_flagged_and_fixed() {
@@ -3018,12 +3019,13 @@ mod tests {
         assert!(rp_client_joins(&ctx).is_empty());
     }
 
-    // Only the orchestrator registration is walked: rp interprets
-    // `invoke_url`/`auth` on no other entry, so joining one would file a
-    // transport verdict on a URL rp never calls and offer to write a
-    // credential rp never reads.
+    // Only the registrations rp dials are walked: a tool provider is
+    // reached over MCP and authenticates however its author chose, so
+    // joining its `invoke_url`-shaped key would file a transport verdict
+    // on a URL rp never calls and offer to write a credential rp never
+    // reads.
     #[test]
-    fn test_rp_non_orchestrator_plugin_with_an_invoke_url_is_not_joined() {
+    fn test_an_undialed_plugin_with_an_invoke_url_is_not_joined() {
         let dir = tempfile::tempdir().unwrap();
         stage_pki(dir.path(), "s3cret-pw");
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
@@ -3045,17 +3047,20 @@ mod tests {
         assert!(rp_client_joins(&ctx).is_empty());
     }
 
-    // An event plugin's `webhook_url` is out for the stronger reason: rp's
-    // event-delivery path carries no CA-trust or credential field at all,
-    // so a verdict there would point at a fix that does not exist.
+    // An event plugin's `webhook_url` is the other registration rp dials,
+    // so it joins on the same terms as the orchestrator's `invoke_url` —
+    // both the scheme and the credential are fix-eligible.
     #[test]
-    fn test_rp_event_plugin_webhook_url_is_not_joined() {
+    fn test_rp_event_plugin_webhook_url_is_joined() {
         let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
             "calibrator-flats.json",
             serde_json::json!({ "server": { "port": 11170,
-                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
             dir.path(),
@@ -3066,7 +3071,49 @@ mod tests {
                                "subscribes_to": ["exposure_complete"] } ] }),
         );
         let ctx = config_only_ctx(dir.path());
-        assert!(rp_client_joins(&ctx).is_empty());
+        let checks = rp_client_joins(&ctx);
+
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a scheme mismatch against a TLS-on plugin must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("plugins.0.webhook_url"),
+            "{}",
+            transport.detail
+        );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plugins/0/webhook_url");
+                assert_eq!(value, "https://localhost:11170/webhook");
+            }
+            other => unreachable!("{other:?}"),
+        }
+
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing plugin credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plugins/0/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
     }
 
     #[test]

@@ -893,7 +893,7 @@ mod tests {
     }
 
     fn manager_for(invoke_url: &str) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -979,7 +979,7 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_start_clears_the_planner_progress_counters() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1137,7 +1137,7 @@ mod tests {
         Arc<SessionManager>,
         Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     ) {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1161,7 +1161,7 @@ mod tests {
         path: std::path::PathBuf,
         cooling: Arc<crate::cooling::CoolingController>,
     ) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1605,7 +1605,7 @@ mod tests {
     }
 
     fn manager_with_auth(invoke_url: &str, auth: Option<Value>) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let mut entry = json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1694,7 +1694,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_orchestrator_auth_block_fails_startup() {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "calibrator-flats",
             "type": "orchestrator",
@@ -1713,7 +1713,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreadable_ca_cert_fails_startup() {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "calibrator-flats",
             "type": "orchestrator",
@@ -1799,7 +1799,7 @@ mod tests {
 
         let trusting = Arc::new(
             SessionManager::new(
-                Arc::new(EventBus::from_config(&[])),
+                Arc::new(EventBus::from_config(&[], None).unwrap()),
                 &plugins,
                 Some(&ca_path),
             )
@@ -1817,7 +1817,12 @@ mod tests {
         );
 
         let untrusting = Arc::new(
-            SessionManager::new(Arc::new(EventBus::from_config(&[])), &plugins, None).unwrap(),
+            SessionManager::new(
+                Arc::new(EventBus::from_config(&[], None).unwrap()),
+                &plugins,
+                None,
+            )
+            .unwrap(),
         );
         untrusting.start().await.unwrap();
         assert!(

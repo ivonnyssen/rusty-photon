@@ -261,35 +261,36 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     {
         errors.extend(train_errors);
     }
-    errors.extend(orchestrator_registration_errors(&config.plugins));
+    errors.extend(plugin_registration_errors(&config.plugins));
     errors
 }
 
 /// A plugin registration stays an opaque `Value` — it is a plugin-author
 /// surface, so unknown keys are legal there in a way they are nowhere else
-/// in this config. The **orchestrator** registration is the one exception,
-/// because rp reads two of its fields: `invoke_url`, the endpoint it POSTs
-/// a session start to, and `auth`, the credential it presents there
-/// (rp.md § Orchestrator Registration). Both are permanent configuration
-/// faults when malformed — a half-written credential would be read as "no
-/// credential" and 401 every session start; a bad URL would fail every
-/// attempt — so both fail at load rather than at first use, which means
-/// `load_config`, `PUT /api/config`, and `rp doctor` all reject them
-/// identically instead of leaving the first session start of the night to
-/// discover it.
+/// in this config. The registrations rp itself *dials* are the exception,
+/// because on those rp reads two fields: the callback URL it POSTs to —
+/// the orchestrator's `invoke_url` (a session start) or an event plugin's
+/// `webhook_url` (an emitted event) — and `auth`, the credential it
+/// presents there (rp.md § Orchestrator Registration, § Delivery:
+/// Webhooks). Both are permanent configuration faults when malformed — a
+/// half-written credential would be read as "no credential" and 401 every
+/// delivery; a bad URL would fail every attempt — so both fail at load
+/// rather than at first use, which means `load_config`,
+/// `PUT /api/config`, and `rp doctor` all reject them identically instead
+/// of leaving the first session of the night to discover it.
 ///
-/// Scoped to `type == "orchestrator"` exactly because the surface is
-/// otherwise opaque: rp interprets `auth` on no other registration, so an
-/// event or tool-provider plugin carrying its own differently-shaped
-/// `auth` key (a bearer token, say) is that author's business and must
-/// not fail rp's config load. The same scope decides which registration
-/// doctor offers to wire a credential into (`RpView::plugin_targets`).
-fn orchestrator_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
+/// Scoped to those two types exactly because the surface is otherwise
+/// opaque: rp dials no other registration, so a tool-provider plugin
+/// carrying its own differently-shaped `auth` key (a bearer token, say)
+/// is that author's business and must not fail rp's config load. The same
+/// scope decides which registration doctor offers to wire a credential
+/// into (`RpView::plugin_targets`).
+fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
     plugins
         .iter()
         .enumerate()
-        .filter(|(_, plugin)| is_orchestrator(plugin))
-        .flat_map(|(index, plugin)| {
+        .filter_map(|(index, plugin)| Some((index, plugin, dialed_url_field(plugin)?)))
+        .flat_map(|(index, plugin, url_field)| {
             let mut errors = Vec::new();
             if let Some(auth) = plugin.get("auth").filter(|v| !v.is_null()) {
                 if let Err(e) =
@@ -301,10 +302,10 @@ fn orchestrator_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
                     });
                 }
             }
-            if let Some(url) = plugin.get("invoke_url").filter(|v| !v.is_null()) {
-                if let Err(msg) = validate_invoke_url(url) {
+            if let Some(url) = plugin.get(url_field).filter(|v| !v.is_null()) {
+                if let Err(msg) = validate_callback_url(url) {
                     errors.push(FieldError {
-                        path: format!("plugins.{index}.invoke_url"),
+                        path: format!("plugins.{index}.{url_field}"),
                         msg,
                     });
                 }
@@ -314,13 +315,29 @@ fn orchestrator_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
         .collect()
 }
 
-/// `invoke_url` must be an `http://` or `https://` URL rp can actually
+/// The registration field naming the endpoint rp POSTs to, for the two
+/// plugin types rp dials; `None` for every other type, whose keys rp never
+/// reads. The single place that mapping is written — shared with
+/// [`crate::session::SessionManager`]'s and [`crate::events::EventBus`]'s
+/// registration lookups, which must interpret `auth` on exactly the
+/// registrations validated here.
+fn dialed_url_field(plugin: &Value) -> Option<&'static str> {
+    if is_orchestrator(plugin) {
+        Some("invoke_url")
+    } else if is_event_plugin(plugin) {
+        Some("webhook_url")
+    } else {
+        None
+    }
+}
+
+/// A callback URL must be an `http://` or `https://` URL rp can actually
 /// POST to. Rejected at load for the same reason `server.advertised_url`
 /// is: a bad scheme or a non-URL is a permanent configuration fault, and
-/// left to first use it would only surface as three retried failures at
-/// the first session start of the night. Mirrors [`server::AdvertisedUrl`]'s
-/// rule rather than inventing a second one.
-fn validate_invoke_url(value: &Value) -> std::result::Result<(), String> {
+/// left to first use it would only surface as a failed delivery in the
+/// middle of the night. Mirrors [`server::AdvertisedUrl`]'s rule rather
+/// than inventing a second one.
+fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
     let Some(url) = value.as_str() else {
         return Err(format!("must be a string, got {value}"));
     };
@@ -337,11 +354,17 @@ fn validate_invoke_url(value: &Value) -> std::result::Result<(), String> {
 }
 
 /// Whether a plugin registration is the orchestrator kind — the single
-/// place that rule is written, shared by
-/// [`orchestrator_registration_errors`] and
-/// [`crate::session::SessionManager`]'s registration lookup.
+/// place that rule is written, shared by [`plugin_registration_errors`]
+/// and [`crate::session::SessionManager`]'s registration lookup.
 pub fn is_orchestrator(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
+}
+
+/// Whether a plugin registration is the event-webhook kind — the single
+/// place that rule is written, shared by [`plugin_registration_errors`]
+/// and [`crate::events::EventBus`]'s registration lookup.
+pub fn is_event_plugin(plugin: &Value) -> bool {
+    plugin.get("type").and_then(Value::as_str) == Some("event")
 }
 
 pub fn load_config(path: &Path) -> Result<Config> {
@@ -747,47 +770,21 @@ mod tests {
         }
     }
 
-    /// A plugin registration is otherwise opaque, but its `auth` block is
-    /// read as rp's client credential — a half-written one must fail at
-    /// load (and so at `PUT /api/config` and `rp doctor`) rather than be
-    /// silently read as "no credential" and 401 every session start.
+    /// A plugin registration is otherwise opaque, but on a registration rp
+    /// dials the `auth` block is read as rp's client credential — a
+    /// half-written one must fail at load (and so at `PUT /api/config` and
+    /// `rp doctor`) rather than be silently read as "no credential" and
+    /// 401 every delivery. Both dialed types are pinned: the two paths
+    /// parse the same block through different call sites.
     #[test]
     fn a_malformed_plugin_auth_block_fails_to_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "session": {"data_directory": "/tmp/rp-test"},
-                "equipment": {},
-                "plugins": [{
-                    "name": "calibrator-flats",
-                    "type": "orchestrator",
-                    "invoke_url": "http://127.0.0.1:11170/invoke",
-                    "auth": {"username": "observatory"}
-                }],
-                "server": { "port": 0 }
-            }"#,
-        )
-        .unwrap();
-
-        let error = load_config(&path).unwrap_err().to_string();
-        assert!(
-            error.contains("plugins.0.auth") && error.contains("password"),
-            "unexpected error: {error}"
-        );
-    }
-
-    /// `invoke_url` is the registration's primary field, so it fails at
-    /// load on the same terms as `auth` beside it — a bad scheme is a
-    /// permanent fault, and left to first use it would only surface as
-    /// three retried failures at the first session start of the night.
-    #[test]
-    fn a_non_http_invoke_url_fails_to_load() {
-        for (url, expected) in [
-            ("ftp://127.0.0.1:11170/invoke", "http://"),
-            ("127.0.0.1:11170/invoke", "http://"),
-            ("http://", "empty host"),
+        for (plugin_type, url_field, url) in [
+            (
+                "orchestrator",
+                "invoke_url",
+                "http://127.0.0.1:11170/invoke",
+            ),
+            ("event", "webhook_url", "http://127.0.0.1:11140/webhook"),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
@@ -798,9 +795,11 @@ mod tests {
                         "session": {{"data_directory": "/tmp/rp-test"}},
                         "equipment": {{}},
                         "plugins": [{{
-                            "name": "calibrator-flats",
-                            "type": "orchestrator",
-                            "invoke_url": "{url}"
+                            "name": "a-plugin",
+                            "type": "{plugin_type}",
+                            "{url_field}": "{url}",
+                            "subscribes_to": ["exposure_complete"],
+                            "auth": {{"username": "observatory"}}
                         }}],
                         "server": {{ "port": 0 }}
                     }}"#
@@ -810,16 +809,57 @@ mod tests {
 
             let error = load_config(&path).unwrap_err().to_string();
             assert!(
-                error.contains("plugins.0.invoke_url") && error.contains(expected),
-                "unexpected error for {url:?}: {error}"
+                error.contains("plugins.0.auth") && error.contains("password"),
+                "unexpected error for {plugin_type}: {error}"
             );
         }
     }
 
-    /// A non-orchestrator registration's own `invoke_url`-shaped key is
-    /// its author's business, same as its `auth`.
+    /// The callback URL is the registration's primary field, so it fails
+    /// at load on the same terms as `auth` beside it — a bad scheme is a
+    /// permanent fault, and left to first use it would only surface as a
+    /// failed delivery in the middle of the night.
     #[test]
-    fn a_non_orchestrator_plugins_invoke_url_is_left_alone() {
+    fn a_non_http_callback_url_fails_to_load() {
+        for (plugin_type, url_field) in [("orchestrator", "invoke_url"), ("event", "webhook_url")] {
+            for (url, expected) in [
+                ("ftp://127.0.0.1:11170/invoke", "http://"),
+                ("127.0.0.1:11170/invoke", "http://"),
+                ("http://", "empty host"),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("config.json");
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"{{
+                            "session": {{"data_directory": "/tmp/rp-test"}},
+                            "equipment": {{}},
+                            "plugins": [{{
+                                "name": "a-plugin",
+                                "type": "{plugin_type}",
+                                "subscribes_to": ["exposure_complete"],
+                                "{url_field}": "{url}"
+                            }}],
+                            "server": {{ "port": 0 }}
+                        }}"#
+                    ),
+                )
+                .unwrap();
+
+                let error = load_config(&path).unwrap_err().to_string();
+                assert!(
+                    error.contains(&format!("plugins.0.{url_field}")) && error.contains(expected),
+                    "unexpected error for {plugin_type} {url:?}: {error}"
+                );
+            }
+        }
+    }
+
+    /// A registration rp never dials keeps its own `invoke_url`-shaped
+    /// key, same as its `auth`.
+    #[test]
+    fn an_undialed_plugins_invoke_url_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
@@ -842,11 +882,11 @@ mod tests {
     }
 
     /// The opaque half of the same rule: rp interprets `auth` on the
-    /// orchestrator registration alone, so another plugin type's
-    /// differently-shaped `auth` key is its author's business and must
-    /// not fail rp's load.
+    /// registrations it dials alone, so a tool provider's
+    /// differently-shaped `auth` key — it authenticates rp's MCP client
+    /// its own way — is its author's business and must not fail rp's load.
     #[test]
-    fn a_non_orchestrator_plugins_own_auth_shape_is_left_alone() {
+    fn an_undialed_plugins_own_auth_shape_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
@@ -855,10 +895,9 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "plugins": [{
-                    "name": "image-analyzer",
-                    "type": "event",
-                    "webhook_url": "http://127.0.0.1:11140/webhook",
-                    "subscribes_to": ["exposure_complete"],
+                    "name": "ml-quality-classifier",
+                    "type": "tool_provider",
+                    "mcp_server_url": "http://127.0.0.1:11150/mcp",
                     "auth": {"bearer_token": "the-plugin-authors-own-shape"}
                 }],
                 "server": { "port": 0 }

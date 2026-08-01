@@ -502,6 +502,30 @@ Plugins register a callback URL and subscribed events in the configuration.
 `rp` POSTs events to each registered URL. All plugins use the same
 asynchronous request-response pattern.
 
+**A subscriber may serve TLS and require authentication.** A
+`webhook_url` may be `https://` when the plugin's own service is
+TLS-enabled; `rp` verifies that certificate against the top-level
+`ca_cert`, the same single observatory-CA setting every other `rp` client
+uses (see [Configuration](#configuration)). The optional `auth` block is
+the plaintext credential `rp` presents as HTTP Basic on every delivery;
+omit it for a plugin that does not challenge. Both fields follow the
+[Orchestrator Registration](#orchestrator-registration) rules exactly —
+same shapes, same load-time validation naming the offending entry
+(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. Getting
+this wrong is quieter here than on the orchestrator path: delivery is
+fire-and-forget, so a rejected POST is logged at `debug!` and the night
+continues, and nothing surfaces until someone notices the plugin did no
+work. `rp` reads a callback URL and `auth` only on the registrations it
+dials — the orchestrator and event kinds — so a tool provider's own
+differently-shaped `auth` key is left alone. One client, built once at
+startup, serves every subscriber; a `ca_cert` it cannot be built from
+fails startup, and with no subscriber registered no client is built at
+all. Doctor reports the join between `plugins[].webhook_url` and the
+plugin service's own `server.tls`/`server.auth` as
+`joins.client-transport` / `joins.client-auth`, and `doctor --fix` wires
+both (see
+[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
+
 #### Request
 
 ```
@@ -1871,8 +1895,11 @@ plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
 it for a plugin that does not challenge. A registration is otherwise
 opaque to `rp` — unknown keys are the plugin author's business — and the
-**orchestrator** registration is the single exception, because `rp` reads
-two of its fields. `invoke_url` must be an `http://` or `https://` URL
+registrations `rp` **dials** are the exception, because on those `rp`
+reads two fields: the callback URL and `auth`. (The other dialed kind is
+the event plugin, whose `webhook_url` follows these rules identically —
+see [Delivery: Webhooks](#delivery-webhooks).)
+`invoke_url` must be an `http://` or `https://` URL
 (the same rule `server.advertised_url` follows) and `auth`, when present,
 must be a complete `{username, password}` pair; either one malformed is
 rejected at config load with the offending entry named
@@ -1881,7 +1908,7 @@ rejected at config load with the offending entry named
 bad credential would be read as "no credential" and 401 every session
 start, and a bad URL would fail every attempt — both at the first session
 start of the night rather than at diagnosis time. `rp` reads neither
-field on any other registration, so an event or tool-provider plugin
+field on a registration it does not dial, so a tool-provider plugin
 carrying its own differently-shaped `auth` or `invoke_url` key is left
 alone. A `ca_cert` the invoke client cannot be built from fails startup
 the same way. Doctor

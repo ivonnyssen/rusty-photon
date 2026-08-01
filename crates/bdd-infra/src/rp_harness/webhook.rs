@@ -13,6 +13,8 @@ use axum::Router;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use super::basic_auth::basic_auth_header;
+
 /// A single event captured by [`WebhookReceiver`].
 ///
 /// The historical fields (`event_id`, `event_type`, `timestamp`,
@@ -54,6 +56,9 @@ struct WebhookReceiverState {
     events: Arc<RwLock<Vec<ReceivedEvent>>>,
     ack_estimated: Duration,
     ack_max: Duration,
+    /// The exact `Authorization` header value `/webhook` demands, for an
+    /// auth-enabled plugin. `None` accepts every request.
+    required_auth: Option<Arc<String>>,
 }
 
 /// In-process HTTP server that acts as an event plugin.
@@ -75,10 +80,36 @@ impl WebhookReceiver {
         ack_estimated: Duration,
         ack_max: Duration,
     ) -> Self {
+        Self::start_inner(events, ack_estimated, ack_max, None).await
+    }
+
+    /// Start the receiver with HTTP Basic Auth on `/webhook`: anything but
+    /// `username`/`password` is answered `401`, the way a plugin serving
+    /// behind `rp_auth`'s middleware does. rp reaches it only when its
+    /// registration carries a matching `auth` block (rp.md § Delivery:
+    /// Webhooks).
+    pub async fn start_requiring_auth(
+        events: Arc<RwLock<Vec<ReceivedEvent>>>,
+        ack_estimated: Duration,
+        ack_max: Duration,
+        username: &str,
+        password: &str,
+    ) -> Self {
+        let expected = basic_auth_header(username, password);
+        Self::start_inner(events, ack_estimated, ack_max, Some(Arc::new(expected))).await
+    }
+
+    async fn start_inner(
+        events: Arc<RwLock<Vec<ReceivedEvent>>>,
+        ack_estimated: Duration,
+        ack_max: Duration,
+        required_auth: Option<Arc<String>>,
+    ) -> Self {
         let state = WebhookReceiverState {
             events: events.clone(),
             ack_estimated,
             ack_max,
+            required_auth,
         };
 
         let app = Router::new()
@@ -125,8 +156,21 @@ impl Drop for WebhookReceiver {
 
 async fn webhook_handler(
     State(state): State<WebhookReceiverState>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> (StatusCode, axum::Json<Value>) {
+    if let Some(expected) = &state.required_auth {
+        let presented = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if presented != expected.as_str() {
+            // Nothing recorded: an unauthenticated caller never got in, so
+            // `events` stays empty for the test to assert on.
+            return (StatusCode::UNAUTHORIZED, axum::Json(Value::Null));
+        }
+    }
+
     let str_field = |key: &str| {
         body.get(key)
             .and_then(|v| v.as_str())

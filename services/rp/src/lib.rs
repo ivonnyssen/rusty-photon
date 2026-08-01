@@ -99,7 +99,10 @@ impl ServerBuilder {
         equipment.validate_site(config.site.as_ref()).await?;
 
         debug!("initializing event bus");
-        let event_bus = Arc::new(EventBus::from_config(&config.plugins));
+        let event_bus = Arc::new(
+            EventBus::from_config(&config.plugins, config.ca_cert_path())
+                .map_err(crate::error::RpError::Config)?,
+        );
 
         debug!("initializing session manager");
         // The planner's record_exposure counters, shared between the

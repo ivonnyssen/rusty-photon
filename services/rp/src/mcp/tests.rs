@@ -814,7 +814,7 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
 fn test_handler(registry: crate::equipment::EquipmentRegistry) -> McpHandler {
     McpHandler::new(
         Arc::new(registry),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: std::env::temp_dir()
                 .join("rp-unit-test")
@@ -1507,7 +1507,7 @@ async fn test_capture_write_fits_fails() {
     let blocker = tempfile::NamedTempFile::new().unwrap();
     let handler = McpHandler::new(
         Arc::new(registry),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: blocker.path().to_string_lossy().to_string(),
         },
@@ -1558,7 +1558,7 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
     let handler = McpHandler::new(
         Arc::new(registry),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: temp.path().to_string_lossy().to_string(),
         },
@@ -1614,7 +1614,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
     let handler = McpHandler::new(
         Arc::new(camera_registry(Arc::new(cam))),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: temp.path().to_string_lossy().to_string(),
         },
@@ -1958,7 +1958,7 @@ async fn capture_and_read_sidecar(
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
     let handler = McpHandler::new(
         Arc::new(registry),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: temp.path().to_string_lossy().to_string(),
         },
@@ -2132,7 +2132,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
             mount: None,
             ..Default::default()
         }),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: temp.path().to_string_lossy().to_string(),
         },
@@ -2479,7 +2479,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
             mount: None,
             ..Default::default()
         }),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: temp.path().to_string_lossy().to_string(),
         },
@@ -3605,7 +3605,7 @@ async fn test_abort_slew_alpaca_error() {
 fn test_handler_with_site(site: rp_ephemeris::Site) -> McpHandler {
     McpHandler::new(
         Arc::new(empty_registry()),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: std::env::temp_dir()
                 .join("rp-planner-unit-test")
@@ -4199,7 +4199,7 @@ fn handler_with_site_and_mount() -> McpHandler {
     };
     McpHandler::new(
         Arc::new(registry),
-        Arc::new(crate::events::EventBus::from_config(&[])),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
             data_directory: std::env::temp_dir()
                 .join("rp-planner-happy-test")
