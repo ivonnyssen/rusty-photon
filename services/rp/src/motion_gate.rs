@@ -73,7 +73,7 @@ mod tests {
     use super::*;
 
     fn bus_and_gate() -> (Arc<EventBus>, Arc<MotionGate>) {
-        let bus = Arc::new(EventBus::from_config(&[]));
+        let bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let gate = Arc::new(MotionGate::new(bus.clone()));
         (bus, gate)
     }

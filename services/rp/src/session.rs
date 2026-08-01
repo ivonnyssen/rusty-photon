@@ -163,14 +163,27 @@ impl Orchestrator {
     /// Pick the orchestrator registration out of `plugins` and build its
     /// client. `Ok(None)` when no orchestrator is registered, or when its
     /// entry carries no `invoke_url` — there is nothing to POST to.
+    ///
+    /// Errors name the registration by its `plugins[]` index, the same
+    /// path `validate_config` and doctor use (`plugins.<index>.auth`),
+    /// with the plugin's own name beside it: nothing stops two
+    /// registrations sharing a `name`, and the index is what an operator
+    /// can act on.
     fn from_plugins(
         plugins: &[Value],
         ca_cert_path: Option<&Path>,
     ) -> Result<Option<Self>, String> {
-        let Some(entry) = plugins.iter().find(|p| crate::config::is_orchestrator(p)) else {
+        let Some((index, entry)) = plugins
+            .iter()
+            .enumerate()
+            .find(|(_, p)| crate::config::is_orchestrator(p))
+        else {
             return Ok(None);
         };
-        let Some(invoke_url) = entry.get("invoke_url").and_then(|v| v.as_str()) else {
+        let Some(invoke_url) = entry
+            .get(crate::config::ORCHESTRATOR_URL_FIELD)
+            .and_then(|v| v.as_str())
+        else {
             return Ok(None);
         };
         let name = entry
@@ -182,11 +195,12 @@ impl Orchestrator {
             None | Some(Value::Null) => None,
             Some(value) => Some(
                 serde_json::from_value::<ClientAuthConfig>(value.clone())
-                    .map_err(|e| format!("plugins[{name}].auth: {e}"))?,
+                    .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
             ),
         };
-        let client = build_invoke_client(ca_cert_path)
-            .map_err(|e| format!("plugins[{name}]: failed to build the invoke HTTP client: {e}"))?;
+        let client = build_invoke_client(ca_cert_path).map_err(|e| {
+            format!("plugins.{index} ({name}): failed to build the invoke HTTP client: {e}")
+        })?;
 
         Ok(Some(Self {
             invoke_url: invoke_url.to_string(),
@@ -893,7 +907,7 @@ mod tests {
     }
 
     fn manager_for(invoke_url: &str) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -979,7 +993,7 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_start_clears_the_planner_progress_counters() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1137,7 +1151,7 @@ mod tests {
         Arc<SessionManager>,
         Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     ) {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1161,7 +1175,7 @@ mod tests {
         path: std::path::PathBuf,
         cooling: Arc<crate::cooling::CoolingController>,
     ) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1605,7 +1619,7 @@ mod tests {
     }
 
     fn manager_with_auth(invoke_url: &str, auth: Option<Value>) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let mut entry = json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1694,7 +1708,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_orchestrator_auth_block_fails_startup() {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "calibrator-flats",
             "type": "orchestrator",
@@ -1706,14 +1720,14 @@ mod tests {
             .err()
             .expect("a half-written credential must fail startup");
         assert!(
-            error.contains("plugins[calibrator-flats].auth") && error.contains("password"),
+            error.contains("plugins.0.auth (calibrator-flats)") && error.contains("password"),
             "a half-written credential must name the field it broke: {error}"
         );
     }
 
     #[tokio::test]
     async fn an_unreadable_ca_cert_fails_startup() {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "calibrator-flats",
             "type": "orchestrator",
@@ -1725,7 +1739,7 @@ mod tests {
                 .err()
                 .expect("an unreadable ca_cert must fail startup");
         assert!(
-            error.contains("plugins[calibrator-flats]") && error.contains("invoke HTTP client"),
+            error.contains("plugins.0 (calibrator-flats)") && error.contains("invoke HTTP client"),
             "unexpected error: {error}"
         );
     }
@@ -1799,7 +1813,7 @@ mod tests {
 
         let trusting = Arc::new(
             SessionManager::new(
-                Arc::new(EventBus::from_config(&[])),
+                Arc::new(EventBus::from_config(&[], None).unwrap()),
                 &plugins,
                 Some(&ca_path),
             )
@@ -1817,7 +1831,12 @@ mod tests {
         );
 
         let untrusting = Arc::new(
-            SessionManager::new(Arc::new(EventBus::from_config(&[])), &plugins, None).unwrap(),
+            SessionManager::new(
+                Arc::new(EventBus::from_config(&[], None).unwrap()),
+                &plugins,
+                None,
+            )
+            .unwrap(),
         );
         untrusting.start().await.unwrap();
         assert!(

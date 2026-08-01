@@ -88,3 +88,20 @@ Feature: Event delivery to webhook subscribers
     And the test orchestrator posts completion to rp
     Then the test webhook receiver should receive a "session_stopped" event
     And the "session_stopped" event payload should contain a "reason"
+
+  Scenario: Delivery reaches a subscriber that requires authentication
+    Given a running Alpaca simulator
+    And a test webhook receiver requiring the credential "observatory" with password "flat-secret" subscribed to "filter_switch"
+    And the event plugin registration carries the credential "observatory" with password "flat-secret"
+    And rp is running with a filter wheel on the simulator and the test plugin
+    And an MCP client connected to rp
+    When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Red"
+    Then the test webhook receiver should receive a "filter_switch" event
+
+  Scenario: A challenging subscriber receives nothing when the registration omits its credential
+    Given a running Alpaca simulator
+    And a test webhook receiver requiring the credential "observatory" with password "flat-secret" subscribed to "filter_switch"
+    And rp is running with a filter wheel on the simulator and the test plugin
+    And an MCP client connected to rp
+    When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Red"
+    Then the test webhook receiver should not have received any events

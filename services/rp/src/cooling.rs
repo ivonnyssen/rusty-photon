@@ -739,7 +739,7 @@ pub(crate) mod test_support {
             registry.cameras[0].connected,
             "stub camera must connect for the test to be meaningful"
         );
-        let bus = Arc::new(EventBus::from_config(&[]));
+        let bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let rx = bus.subscribe();
         let ctrl = Arc::new(CoolingController::new(Arc::new(registry), bus, config));
         (ctrl, rx)
@@ -1080,7 +1080,7 @@ mod tests {
         }))
         .unwrap();
         let registry = EquipmentRegistry::new(&equipment_config, None).await;
-        let bus = Arc::new(EventBus::from_config(&[]));
+        let bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let mut rx = bus.subscribe();
         let ctrl = Arc::new(CoolingController::new(
             Arc::new(registry),

@@ -339,8 +339,9 @@ config. This family is the join the rest missed: a service's config
 points a URL at *another* catalog service — ui-htmx's `rp`/`sentinel`
 targets, rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry including the singular
-`equipment.mount.alpaca_url` (issue #663), and the orchestrator plugin's
-`plugins[].invoke_url` (issue #800), sentinel's
+`equipment.mount.alpaca_url` (issue #663), the callback URL of each
+plugin registration rp dials (`plugins[].invoke_url` /
+`plugins[].webhook_url`, issue #800), sentinel's
 `operation_watchdog.rp_url` and each Alpaca `monitors[]` entry —
 and nothing checked whether that URL's scheme and credential still match
 the *target's* `server.tls`/`server.auth` after the provisioning pass
@@ -388,8 +389,9 @@ inside `--fix`; reporting it here is what makes a **plain, read-only
 provisioned and the next `--fix`, instead of leaving it to surface at
 night as monitor errors. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry — including the singular
-`equipment.mount.alpaca_url` (issue #663) — and the orchestrator
-plugin's `plugins[].invoke_url` (issue #800) share rp's single top-level
+`equipment.mount.alpaca_url` (issue #663) — and each dialed plugin
+registration's `plugins[].invoke_url` / `plugins[].webhook_url`
+(issue #800) share rp's single top-level
 `ca_cert` field (issue #609 / PR #612, the `wire_auth: false` row of
 `CLIENT_WIRING` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
@@ -411,14 +413,16 @@ it, present is operator intent" contract as every other client target.
 under `equipment` carrying an `alpaca_url`, whether nested in an array
 (`cameras`, `focusers`, …) or standalone like `mount` — so a future
 equipment kind is covered without new doctor code. `RpView::plugin_targets`
-is deliberately narrower — the **orchestrator** registration only, not
-any entry carrying an `invoke_url`: a registration is an opaque
-plugin-author surface, and rp interprets `invoke_url`/`auth` on that one
-entry alone, so walking by field would file a transport verdict on a URL
-rp never calls and offer to write a credential rp never reads. An event
-plugin's `webhook_url` is out for the stronger reason that rp's
-event-delivery path carries no CA-trust or credential field at all, so
-there is no fix to point at. A CA-trust gap is
+is deliberately narrower — the registrations rp actually **dials**
+(the orchestrator's `invoke_url`, an event plugin's `webhook_url`), not
+any entry carrying a URL-shaped key: a registration is an opaque
+plugin-author surface, and rp interprets a callback URL and `auth` on
+those two entry types alone, so walking by field would file a transport
+verdict on a URL rp never calls and offer to write a credential rp never
+reads. A tool provider, for one, is reached over MCP and authenticates
+however its author chose. That scope mirrors rp's own
+`config::dialed_url_field`; the two must agree, or doctor advises a fix
+rp ignores. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
