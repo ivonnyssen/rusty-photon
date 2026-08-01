@@ -243,6 +243,22 @@ the runfiles — `<output_base>/external/<repo>` versus
 resolved to the source directory, which contains no rlib. If you ever need to
 resolve a directory here, prove which tree it lands in first.
 
+**To see what the runner actually handed rustdoc**, run the doc tests with the
+trace on:
+
+```bash
+bazel test --test_env=RUSTDOC_TEST_TRACE_ARGV=1 //crates/qhyccd-rs:all
+```
+
+Each resolved argv element is written to stderr as `RUSTDOC-ARGV <value>`,
+which Bazel prints only for a failing test. That trace is what identified the
+`-L` bug above; nothing else shows it, because resolution happens at test time
+inside the generated script and rustdoc reports an argument it could not use
+exactly like one it never received. It is off by default on purpose:
+`--test_env` is part of every test's action key, so enabling it in `.bazelrc`
+re-executes the entire suite on every platform, and that load surfaces
+unrelated timing flakes.
+
 **Reading a doc-test dependency failure on Windows.** rustdoc reports a lost
 rlib two different ways, and which one you get says *where* the loss happened,
 not what was lost:

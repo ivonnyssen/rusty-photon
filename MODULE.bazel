@@ -170,7 +170,7 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    `<output_base>/execroot/.../bazel-out/<cfg>/bin/external/<repo>` the
 #    rlibs. Rewriting them picked the source directory for whichever repos
 #    enumerated that way, which holds no rlib at all — CI-proven, via the
-#    runner's own argv trace (see .bazelrc RUSTDOC_TEST_TRACE_ARGV):
+#    runner's own argv trace (RUSTDOC_TEST_TRACE_ARGV; see .bazelrc):
 #    `-Ldependency=C:/b/external/rules_rust++crate+cr__owo-colors-4.3.0`.
 #    `--extern=` values carry no such ambiguity: they name a FILE, which has
 #    exactly one manifest entry. `--sysroot=` keeps using RFD because the
