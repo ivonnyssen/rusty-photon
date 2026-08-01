@@ -33,7 +33,7 @@
          optional_output_params_file,
          action_argv,
      }
-@@ -204,17 +216,40 @@
+@@ -204,19 +216,42 @@
  }
  
  /// Write a windows compatible test runner
@@ -77,13 +77,18 @@
 +        format!("'{}'", s.replace('\'', "''"))
 +    }
  
-     let argv_str = argv
+-    let argv_str = argv
++    let argv_terms = argv
          .iter()
-@@ -226,20 +261,178 @@
+         // Remove any substrings found in the argument
+         .map(|arg| {
+@@ -226,20 +261,250 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
 -        .map(|arg| format!("'{arg}'"))
+-        .collect::<Vec<String>>()
+-        .join(" ");
 +        // Every argument is routed through the RF() resolver defined in the
 +        // script template below. Bazel hands cross-repo runfiles to this argv
 +        // as `..`-relative short_paths (e.g.
@@ -106,27 +111,43 @@
 +        // naming the exact gap — except main-repo lookups, where a bare
 +        // element may simply not be a path, so a miss stays silent.
 +        //
-+        // RF also rewrites `--sysroot=<dir>` (via RFD). rustc expands that
-+        // directory into the std rlib paths it hands the linker, and spelled
-+        // relative to the runfiles tree those exceed MAX_PATH: the tree prefix
-+        // alone costs ~123 chars, putting `libpanic_unwind-<hash>.rlib` at 261
-+        // and failing `LNK1181: cannot open input file` while `libstd-<hash>`
-+        // at 252 in the same directory resolves. link.exe carries no
-+        // `longPathAware` manifest, so a host's LongPathsEnabled opt-in does
-+        // not reach it. Resolving the directory through the manifest yields
-+        // the execroot target (~155 chars), which puts every std rlib
++        // The bulk of the argv is not bare paths but paths carried INSIDE a
++        // flag: `--extern=<name>=<rlib>` per direct dependency,
++        // `-L[<kind>]=<dir>` per transitive one, and `--sysroot=<dir>`. Those
++        // are the rlibs and search directories rustdoc itself opens, and they
++        // outnumber the bare elements by roughly five to one, so RF splits the
++        // flag off and resolves the value the same way. Leaving them
++        // tree-relative left every dependency of a doctest riding the tree,
++        // where rustdoc reports a lost rlib in one of two ways depending on
++        // which of its two stats of the path failed: `extern location for X
++        // does not exist` when the first one did, and a bare
++        // `E0463: can't find crate for X` when the first succeeded and the
++        // second did not — the metadata loader treats a file that vanished
++        // between the two as simply absent and falls back, silently, to the
++        // search directories.
++        //
++        // Resolving them also buys MAX_PATH headroom, the same win the
++        // `--sysroot=` rewrite was added for. rustc expands that directory
++        // into the std rlib paths it hands the linker, and spelled relative to
++        // the runfiles tree those exceed MAX_PATH: the tree prefix alone costs
++        // ~123 chars, putting `libpanic_unwind-<hash>.rlib` at 261 and failing
++        // `LNK1181: cannot open input file` while `libstd-<hash>` at 252 in
++        // the same directory resolves. link.exe carries no `longPathAware`
++        // manifest, so a host's LongPathsEnabled opt-in does not reach it.
++        // Dependency rlibs sit in the same budget — the longest measured on CI
++        // reached exactly 260 through the tree against 150 through the
++        // manifest — so the execroot target keeps both them and every std rlib
 +        // comfortably under the limit.
 +        //
 +        // CRT() wraps every resolved value because PowerShell 5.1's native
 +        // marshalling passes embedded `"` into the child's command line
 +        // unescaped (see the function-level docs above).
 +        .map(|arg| format!("(CRT (RF {}))", ps_quote(&arg)))
-         .collect::<Vec<String>>()
-         .join(" ");
- 
--    let content = [
--        "@ECHO OFF".to_owned(),
--        "".to_owned(),
++        .collect::<Vec<String>>();
++
++    let argv_arr = argv_terms.join(", ");
++    let argv_str = argv_terms.join(" ");
++
 +    let resolver = r#"# Parse the runfiles MANIFEST into $script:RFM once (key -> absolute target).
 +function RFI {
 +    if ($null -ne $script:RFM) { return }
@@ -140,7 +161,10 @@
 +        }
 +    }
 +}
-+
+ 
+-    let content = [
+-        "@ECHO OFF".to_owned(),
+-        "".to_owned(),
 +# Resolve a runfiles-relative FILE key to its absolute manifest target, or
 +# $null when the manifest has no live entry for it.
 +function RFF($rel) {
@@ -155,7 +179,13 @@
 +
 +# Resolve a runfiles-relative DIRECTORY to its absolute target. The manifest
 +# maps files only, so match any entry beneath the directory and trim the
-+# shared suffix off its target.
++# shared suffix off its target. Used for --sysroot= alone: a directory key is
++# genuinely ambiguous when a repo contributes both source files and generated
++# outputs to the runfiles, since both walk up to the same repo directory while
++# their targets live in different trees (`<output_base>/external/<repo>` vs
++# `<output_base>/execroot/.../bazel-out/<cfg>/bin/external/<repo>`). The
++# toolchain repo this is called for contributes only one, so the match is
++# unambiguous there; do not reuse it for dependency search paths.
 +function RFD($d) {
 +    $rel = $d -replace '\\','/'
 +    if ($rel.StartsWith('../')) { $rel = $rel.Substring(3) }
@@ -174,6 +204,29 @@
 +    return $d
 +}
 +
++# Strip the runfiles spelling off a path and return its MANIFEST key. Bazel
++# uses three: `../` (cross-repo short_path), `external/` (a generated
++# cross-repo file after root-stripping) and bare workspace-relative (main
++# repo, under `_main` with Bzlmod). $null for an absolute path, which is not a
++# runfiles path at all.
++function RFK($p) {
++    $rel = $p -replace '\\','/'
++    if ($rel.StartsWith('../')) { return $rel.Substring(3) }
++    if ($rel.StartsWith('external/')) { return $rel.Substring(9) }
++    if ($rel -match '^([A-Za-z]:|/)') { return $null }
++    $ws = $env:TEST_WORKSPACE
++    if (-not $ws) { $ws = '_main' }
++    return $ws + '/' + $rel
++}
++
++# Resolve a runfiles-relative FILE path, in any of the three spellings, to its
++# absolute execroot target. $null when the manifest has no live entry.
++function RFR($p) {
++    $k = RFK $p
++    if (-not $k) { return $null }
++    return RFF $k
++}
++
 +# Windows PowerShell 5.1 marshals arguments to native commands by pasting the
 +# string into the child's command line without escaping embedded quotes, so
 +# the child's CRT parser would strip them. Encode per MSVCRT reverse-parsing
@@ -187,34 +240,47 @@
 +    return $s
 +}
 +
-+# Resolve one argv element: --sysroot= via RFD, runfiles-relative paths via
-+# the manifest, anything else untouched.
++# Resolve one argv element: --sysroot= via RFD, the rlib carried by an
++# --extern, and bare runfiles-relative paths; anything else untouched.
 +function RF($p) {
 +    if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) }
++    # `--extern=<name>=<rlib>`, one per direct dependency: the rlibs rustdoc
++    # opens itself. An exact FILE key, so unlike a search directory there is
++    # exactly one manifest entry and no ambiguity.
++    if ($p -match '^(--extern=[^=]+=)(.+)$') {
++        $v = $matches[1]
++        $t = RFR $matches[2]
++        if ($t) { return $v + $t }
++        if (-not ($matches[2] -match '^([A-Za-z]:|[\\/])')) { Write-Warning ('runfile not found via manifest: ' + $matches[2]) }
++        return $p
++    }
++    # The documented crate's own rlib arrives as the VALUE of a bare `--extern`
++    # flag, spelled `<name>=<path>`. A miss stays silent: a `<name>=<value>`
++    # element need not be a path (`--cfg` takes `feature="simulation"`).
++    if ($p -match '^([A-Za-z_][A-Za-z0-9_]*=)(.+[\\/].+)$') {
++        $v = $matches[1]
++        $t = RFR $matches[2]
++        if ($t) { return $v + $t }
++    }
 +    if ($p -match '^\.\.[\\/]') {
-+        $rel = $p.Substring(3) -replace '\\','/'
-+        $t = RFF $rel
++        $t = RFR $p
 +        if ($t) { return $t }
-+        $fb = 'external/' + $rel
-+        if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $rel) }
++        $fb = 'external/' + ($p.Substring(3) -replace '\\','/')
++        if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $p) }
 +        return $fb
 +    }
 +    if ($p -match '^external[\\/]') {
-+        $rel = $p.Substring(9) -replace '\\','/'
-+        $t = RFF $rel
++        $t = RFR $p
 +        if ($t) { return $t }
-+        if (-not (Test-Path $p)) { Write-Warning ('runfile not found via manifest or tree: ' + $rel) }
++        if (-not (Test-Path $p)) { Write-Warning ('runfile not found via manifest or tree: ' + $p) }
 +        return $p
 +    }
-+    # Main-repo files arrive as bare workspace-relative paths; their manifest
-+    # keys sit under the workspace runfiles directory (`_main` under Bzlmod).
-+    # The match skips flags and name=path pairs, and a bare element may still
-+    # not be a path at all, so a manifest miss falls through untouched and
-+    # silent.
++    # Main-repo files arrive as bare workspace-relative paths, which RFK maps
++    # under the workspace runfiles directory. The match skips flags, and a bare
++    # element may still not be a path at all, so a miss falls through untouched
++    # and silent.
 +    if ($p -match '^[^-][^=]*[\\/]') {
-+        $ws = $env:TEST_WORKSPACE
-+        if (-not $ws) { $ws = '_main' }
-+        $t = RFF ($ws + '/' + ($p -replace '\\','/'))
++        $t = RFR $p
 +        if ($t) { return $t }
 +    }
 +    return $p
@@ -240,6 +306,17 @@
 -            .to_owned(),
 +        "if (!(Test-Path .\\external)) { New-Item -Path .\\external -ItemType SymbolicLink -Value ..\\ | Out-Null }".to_owned(),
 +        resolver.to_owned(),
++        // Opt-in argv trace. What RF() actually produced is otherwise
++        // unobservable: the resolution happens at test time, inside the
++        // generated script, so neither the script on disk nor rustdoc's
++        // diagnostics show it — and rustdoc reports an argument it could not
++        // use identically to one it never received. Emitted on the warning
++        // stream so it lands in the test log, which Bazel prints only for a
++        // FAILING test, and evaluated separately from the invocation below so
++        // the proven quoting path is untouched when the trace is off.
++        format!(
++            "if ($env:RUSTDOC_TEST_TRACE_ARGV) {{ @({argv_arr}) | ForEach-Object {{ [Console]::Error.WriteLine('RUSTDOC-ARGV ' + $_) }} }}"
++        ),
 +        format!("& {argv_str}"),
 +        // `powershell -File` exits 0 unless the script exits explicitly, and
 +        // $LASTEXITCODE stays $null when the resolved command never launched —
@@ -265,7 +342,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +459,29 @@
+@@ -266,14 +531,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -296,7 +373,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +495,11 @@
+@@ -287,5 +567,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  

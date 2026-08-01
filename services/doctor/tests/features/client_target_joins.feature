@@ -6,7 +6,8 @@ Feature: Client-target joins (#607)
   sentinel's operation-watchdog rp_url. These checks join that URL
   against the *named* service's own
   server.tls/server.auth: a scheme mismatch, or a self-signed target the
-  client has no ca_cert_path for, breaks every request
+  client has no CA-trust field for — ui-htmx's per-target ca_cert_path,
+  rp's and sentinel's single top-level ca_cert — breaks every request
   (joins.client-transport, fail); a target that requires auth while the
   client carries no working credential 401s every request
   (joins.client-auth, warn). The join only resolves for a loopback host —
@@ -155,6 +156,49 @@ Feature: Client-target joins (#607)
     When I run doctor with --fix and --json
     Then the config file "sentinel.json" has the string "https" at "/monitors/0/scheme"
     And the config file "sentinel.json" has the string "observatory" at "/monitors/0/auth/username"
+
+  Scenario: A self-signed monitor target sentinel has no ca_cert for is flagged read-only
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112, "tls": { "cert": "/pki/ppba-driver.pem", "key": "/pki/ppba-driver-key.pem" } } }
+      """
+    And a config file "sentinel.json" containing:
+      """
+      { "server": { "port": 11114 },
+        "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                         "host": "localhost", "port": 11112, "scheme": "https" } ] }
+      """
+    When I run doctor with --json
+    Then the report contains a "fail" check named "joins.client-transport" for service "sentinel"
+    And that check's detail mentions "self-signed"
+
+  Scenario: A self-signed rp the watchdog has no ca_cert for is flagged read-only
+    Given a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" } } }
+      """
+    And a config file "sentinel.json" containing:
+      """
+      { "server": { "port": 11114 },
+        "operation_watchdog": { "rp_url": "https://localhost:11115" } }
+      """
+    When I run doctor with --json
+    Then the report contains a "fail" check named "joins.client-transport" for service "sentinel"
+    And that check's detail mentions "no ca_cert to trust it"
+
+  Scenario: sentinel's own ca_cert satisfies a self-signed monitor target
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112, "tls": { "cert": "/pki/ppba-driver.pem", "key": "/pki/ppba-driver-key.pem" } } }
+      """
+    And a config file "sentinel.json" containing:
+      """
+      { "server": { "port": 11114 }, "ca_cert": "/pki/ca.pem",
+        "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                         "host": "localhost", "port": 11112, "scheme": "https" } ] }
+      """
+    When I run doctor with --json
+    Then the report has no checks named "joins.client-transport"
 
   Scenario: sentinel's watchdog rp_url scheme is fixed, without duplicating auth.mismatch
     Given a config file "rp.json" containing:

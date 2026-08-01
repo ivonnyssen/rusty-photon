@@ -47,6 +47,9 @@ struct TestOrchestratorState {
     invocations: Arc<RwLock<Vec<OrchestratorInvocation>>>,
     cancelled: Arc<RwLock<bool>>,
     behavior: OrchestratorBehavior,
+    /// The exact `Authorization` header value `/invoke` demands, for an
+    /// auth-enabled plugin. `None` accepts every request.
+    required_auth: Option<Arc<String>>,
 }
 
 /// In-process HTTP server that acts as an orchestrator plugin.
@@ -66,10 +69,36 @@ impl TestOrchestrator {
         cancelled: Arc<RwLock<bool>>,
         behavior: OrchestratorBehavior,
     ) -> Self {
+        Self::start_inner(invocations, cancelled, behavior, None).await
+    }
+
+    /// Start the test orchestrator with HTTP Basic Auth on `/invoke`:
+    /// anything but `username`/`password` is answered `401`, the way a
+    /// plugin serving behind `rp_auth`'s middleware does. rp reaches it
+    /// only when its registration carries a matching `auth` block
+    /// (rp.md § Orchestrator Registration).
+    pub async fn start_requiring_auth(
+        invocations: Arc<RwLock<Vec<OrchestratorInvocation>>>,
+        cancelled: Arc<RwLock<bool>>,
+        behavior: OrchestratorBehavior,
+        username: &str,
+        password: &str,
+    ) -> Self {
+        let expected = basic_auth_header(username, password);
+        Self::start_inner(invocations, cancelled, behavior, Some(Arc::new(expected))).await
+    }
+
+    async fn start_inner(
+        invocations: Arc<RwLock<Vec<OrchestratorInvocation>>>,
+        cancelled: Arc<RwLock<bool>>,
+        behavior: OrchestratorBehavior,
+        required_auth: Option<Arc<String>>,
+    ) -> Self {
         let state = TestOrchestratorState {
             invocations: invocations.clone(),
             cancelled: cancelled.clone(),
             behavior,
+            required_auth,
         };
 
         let app = Router::new()
@@ -114,10 +143,41 @@ impl Drop for TestOrchestrator {
     }
 }
 
+/// The `Authorization` value an HTTP Basic client sends for this pair.
+/// Built with reqwest's own encoder rather than a base64 dependency of
+/// bdd-infra's own — the exact wire bytes are rp's contract to keep, and
+/// its unit tests pin them; this stub only has to recognize them.
+fn basic_auth_header(username: &str, password: &str) -> String {
+    let request = reqwest::Client::new()
+        .get("http://127.0.0.1/")
+        .basic_auth(username, Some(password))
+        .build()
+        .expect("building a Basic-Auth request must not fail");
+    request
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .expect("reqwest must set an Authorization header for basic_auth")
+        .to_string()
+}
+
 async fn orchestrator_invoke_handler(
     State(state): State<TestOrchestratorState>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> (StatusCode, axum::Json<Value>) {
+    if let Some(expected) = &state.required_auth {
+        let presented = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if presented != expected.as_str() {
+            // Nothing recorded: an unauthenticated caller never got in,
+            // so `invocations` stays empty for the test to assert on.
+            return (StatusCode::UNAUTHORIZED, axum::Json(Value::Null));
+        }
+    }
+
     let invocation = OrchestratorInvocation {
         workflow_id: body
             .get("workflow_id")

@@ -13,6 +13,14 @@
 //! with `reason: "orchestrator_invoke_failed"` is emitted — a session
 //! never sits active with an orchestrator that was never reached.
 //!
+//! The invoke POST is an ordinary rp-as-client call, so it carries the
+//! same transport wiring every other one does: rp's top-level `ca_cert`
+//! trust, so an orchestrator serving TLS with the observatory's
+//! self-signed certificate is reachable, and the registration's own
+//! `auth` credential, so one that 401-challenges is too (issue #800).
+//! Without both, a plugin was pinned to plain HTTP forever — TLS-
+//! enabling it broke every session start.
+//!
 //! The registry is persisted (rp.md § Session Persistence): every
 //! transition — and, via [`SessionManager::persist_progress`], every
 //! recorded exposure — rewrites the session state file atomically, and
@@ -23,10 +31,11 @@
 //! failures are logged at `warn!`, never raised — bookkeeping must not
 //! end an otherwise healthy night.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use rp_auth::config::ClientAuthConfig;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -92,13 +101,108 @@ struct PersistedSession {
     progress: Value,
 }
 
+/// Connect-phase timeout for the `/invoke` POST. A loopback or LAN plugin
+/// completes the TCP connect far inside this; the bound keeps a
+/// black-holed host from stalling the connect indefinitely. Mirrors
+/// `equipment::alpaca::ALPACA_CONNECT_TIMEOUT`.
+const INVOKE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Read timeout for the `/invoke` POST. The protocol's acknowledgement is
+/// prompt by contract — an orchestrator spawns the workflow and answers
+/// with timing estimates (rp.md § Orchestrator Invocation Protocol) — so
+/// 10 s is far above any healthy ack. Without it a silently stalled
+/// plugin would hang inside a single attempt forever, which is not a
+/// transport error and so never reaches [`INVOKE_ATTEMPTS`]' retry: the
+/// session would sit `active` behind a workflow that was never
+/// acknowledged. Same failure class as the #319 Alpaca hang.
+const INVOKE_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// rp's client for the orchestrator `/invoke` POST: `ca_cert_path` is
+/// the observatory CA (`Config::ca_cert_path`, rp.md §Configuration),
+/// without which an `https://` `invoke_url` signed by that CA fails
+/// certificate verification — the same wiring `build_alpaca_client` and
+/// the solver/guider clients carry, timeouts included.
+fn build_invoke_client(
+    ca_cert_path: Option<&Path>,
+) -> Result<reqwest::Client, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(rusty_photon_tls::client::client_builder(ca_cert_path)?
+        .user_agent("rusty-photon-rp")
+        .connect_timeout(INVOKE_CONNECT_TIMEOUT)
+        .read_timeout(INVOKE_READ_TIMEOUT)
+        .build()?)
+}
+
+/// The registered orchestrator plugin and the client rp invokes it
+/// with (rp.md § Orchestrator Registration). Built once at startup:
+/// a registration whose `auth` block does not parse, or whose client
+/// cannot be built (an unreadable `ca_cert`), fails startup loud rather
+/// than surfacing as a dead `/invoke` on the first session of the night.
+///
+/// Held behind an `Arc` (rather than derived `Clone`): every
+/// [`SessionManager::spawn_invoke`] hands one to a background task, and
+/// the registration's `config` is an arbitrarily large opaque object —
+/// a workflow plan for `session-runner`, a full flat plan for
+/// `calibrator-flats`. Sharing it keeps that off the per-invocation path,
+/// leaving exactly one deep clone: the one the POST body needs.
+struct Orchestrator {
+    invoke_url: String,
+    /// The registration's `config` object — opaque to rp, passed
+    /// through verbatim in the `/invoke` POST.
+    config: Option<Value>,
+    /// Carries rp's top-level `ca_cert` trust, so an `invoke_url`
+    /// served with the observatory's self-signed certificate verifies
+    /// (issue #800 — the same gap #612 closed for the solver/guider).
+    client: reqwest::Client,
+    /// The registration's `auth` credential, presented as HTTP Basic on
+    /// every `/invoke` POST. `None` for a plugin that does not
+    /// challenge — every request to one that does would 401.
+    auth: Option<ClientAuthConfig>,
+}
+
+impl Orchestrator {
+    /// Pick the orchestrator registration out of `plugins` and build its
+    /// client. `Ok(None)` when no orchestrator is registered, or when its
+    /// entry carries no `invoke_url` — there is nothing to POST to.
+    fn from_plugins(
+        plugins: &[Value],
+        ca_cert_path: Option<&Path>,
+    ) -> Result<Option<Self>, String> {
+        let Some(entry) = plugins.iter().find(|p| crate::config::is_orchestrator(p)) else {
+            return Ok(None);
+        };
+        let Some(invoke_url) = entry.get("invoke_url").and_then(|v| v.as_str()) else {
+            return Ok(None);
+        };
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("orchestrator");
+
+        let auth = match entry.get("auth") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value::<ClientAuthConfig>(value.clone())
+                    .map_err(|e| format!("plugins[{name}].auth: {e}"))?,
+            ),
+        };
+        let client = build_invoke_client(ca_cert_path)
+            .map_err(|e| format!("plugins[{name}]: failed to build the invoke HTTP client: {e}"))?;
+
+        Ok(Some(Self {
+            invoke_url: invoke_url.to_string(),
+            config: entry.get("config").cloned(),
+            client,
+            auth,
+        }))
+    }
+}
+
 pub struct SessionManager {
     state: RwLock<SessionState>,
     event_bus: Arc<EventBus>,
-    orchestrator_invoke_url: Option<String>,
-    /// The orchestrator registration's `config` object — opaque to rp,
-    /// passed through verbatim in the `/invoke` POST.
-    orchestrator_config: Option<Value>,
+    /// The orchestrator plugin a session start invokes; `None` when none
+    /// is registered, which makes every start a no-op invocation.
+    orchestrator: Option<Arc<Orchestrator>>,
     mcp_base_url: RwLock<String>,
     /// The planner's `record_exposure` counters, shared with
     /// `McpHandler` (see `lib.rs`). A fresh `start()` clears them — a
@@ -122,28 +226,33 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(event_bus: Arc<EventBus>, plugins: &[Value]) -> Self {
-        let orchestrator = plugins
-            .iter()
-            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"));
-        let orchestrator_invoke_url = orchestrator
-            .and_then(|p| p.get("invoke_url"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let orchestrator_config = orchestrator.and_then(|p| p.get("config")).cloned();
+    /// `ca_cert_path` is rp's top-level `ca_cert` (`Config::ca_cert_path`):
+    /// the trust the `/invoke` client needs to reach an orchestrator
+    /// serving TLS. Fails when the registration's `auth` block does not
+    /// parse or its client cannot be built — startup aborts loud rather
+    /// than leaving the first session start of the night to discover it.
+    pub fn new(
+        event_bus: Arc<EventBus>,
+        plugins: &[Value],
+        ca_cert_path: Option<&Path>,
+    ) -> Result<Self, String> {
+        let orchestrator = Orchestrator::from_plugins(plugins, ca_cert_path)?.map(Arc::new);
 
-        debug!(orchestrator_url = ?orchestrator_invoke_url, "session manager initialized");
+        debug!(
+            orchestrator_url = ?orchestrator.as_ref().map(|o| &o.invoke_url),
+            authenticated = orchestrator.as_ref().is_some_and(|o| o.auth.is_some()),
+            "session manager initialized"
+        );
 
-        Self {
+        Ok(Self {
             state: RwLock::new(SessionState::Idle),
             event_bus,
-            orchestrator_invoke_url,
-            orchestrator_config,
+            orchestrator,
             mcp_base_url: RwLock::new(String::new()),
             planner_progress: None,
             state_path: None,
             cooling: None,
-        }
+        })
     }
 
     /// Share the planner's `record_exposure` counters so `start()`
@@ -318,7 +427,7 @@ impl SessionManager {
         session_id: String,
         recovery: Option<Value>,
     ) {
-        let Some(invoke_url) = self.orchestrator_invoke_url.clone() else {
+        let Some(orchestrator) = self.orchestrator.clone() else {
             return;
         };
         let mcp_url = self.mcp_base_url.read().await.clone();
@@ -327,12 +436,12 @@ impl SessionManager {
             "session_id": session_id,
             "mcp_server_url": format!("{}/mcp", mcp_url),
             "recovery": recovery,
-            "config": self.orchestrator_config.clone(),
+            "config": orchestrator.config.clone(),
         });
 
         let manager = Arc::clone(self);
         tokio::spawn(async move {
-            if !invoke_with_retry(&invoke_url, &body).await {
+            if !invoke_with_retry(&orchestrator, &body).await {
                 manager.fail_invoke(&workflow_id).await;
             }
         });
@@ -667,11 +776,19 @@ impl SessionManager {
 /// [`INVOKE_RETRY_DELAY`] between attempts. A 4xx response is permanent —
 /// the same request will fail the same way. Returns whether an attempt
 /// was acknowledged with a success status.
-async fn invoke_with_retry(invoke_url: &str, body: &Value) -> bool {
-    let client = reqwest::Client::new();
+///
+/// The credential rides on the request rather than the client's default
+/// headers so it never lands in a `Client`-level `Debug` render;
+/// `basic_auth` marks the header sensitive on top of that.
+async fn invoke_with_retry(orchestrator: &Orchestrator, body: &Value) -> bool {
+    let invoke_url = &orchestrator.invoke_url;
     for attempt in 1..=INVOKE_ATTEMPTS {
         debug!(url = %invoke_url, attempt, "invoking orchestrator");
-        match client.post(invoke_url).json(body).send().await {
+        let mut request = orchestrator.client.post(invoke_url).json(body);
+        if let Some(auth) = &orchestrator.auth {
+            request = request.basic_auth(&auth.username, Some(&auth.password));
+        }
+        match request.send().await {
             Ok(resp) if resp.status().is_success() => {
                 debug!(status = %resp.status(), attempt, "orchestrator invoked");
                 return true;
@@ -783,7 +900,7 @@ mod tests {
             "invoke_url": invoke_url,
             "config": {"workflow": "w"},
         })];
-        Arc::new(SessionManager::new(event_bus, &plugins))
+        Arc::new(SessionManager::new(event_bus, &plugins, None).unwrap())
     }
 
     // 300 × 50ms = 15s. Generous because the unreachable-orchestrator test
@@ -802,8 +919,14 @@ mod tests {
     }
 
     async fn wait_for_hits(stub: &InvokeStub, expected: u32) -> bool {
+        wait_for_count(&stub.hits, expected).await
+    }
+
+    /// Polls a hit counter up to 5s — the shape `wait_for_hits` uses for
+    /// stubs that own one, for the tests whose stub is a bare counter.
+    async fn wait_for_count(hits: &AtomicU32, expected: u32) -> bool {
         for _ in 0..100 {
-            if stub.hits.load(Ordering::SeqCst) >= expected {
+            if hits.load(Ordering::SeqCst) >= expected {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -867,7 +990,9 @@ mod tests {
         ));
         progress.lock().unwrap().record(Some("Red"));
         let manager = Arc::new(
-            SessionManager::new(event_bus, &plugins).with_progress_store(progress.clone()),
+            SessionManager::new(event_bus, &plugins, None)
+                .unwrap()
+                .with_progress_store(progress.clone()),
         );
 
         manager.start().await.unwrap();
@@ -1023,7 +1148,8 @@ mod tests {
             crate::planner::progress::SessionProgress::default(),
         ));
         let manager = Arc::new(
-            SessionManager::new(event_bus, &plugins)
+            SessionManager::new(event_bus, &plugins, None)
+                .unwrap()
                 .with_progress_store(progress.clone())
                 .with_state_path(path),
         );
@@ -1043,7 +1169,8 @@ mod tests {
             "config": {"workflow": "w"},
         })];
         Arc::new(
-            SessionManager::new(event_bus, &plugins)
+            SessionManager::new(event_bus, &plugins, None)
+                .unwrap()
                 .with_state_path(path)
                 .with_cooling(cooling),
         )
@@ -1392,5 +1519,314 @@ mod tests {
         manager.stop().await.unwrap();
         manager.fail_invoke(&workflow_id).await;
         assert_eq!(manager.status().await, "idle");
+    }
+
+    // ----- Plugin TLS / credential wiring (issue #800) -----------------
+    //
+    // The invoke client is rp's only client that had neither CA trust nor
+    // a credential, which pinned every orchestrator plugin to plain HTTP:
+    // the moment one served TLS or 401-challenged, `POST
+    // /api/session/start` died with `orchestrator_invoke_failed`. These
+    // tests pin both halves end-to-end — a stub that actually challenges,
+    // and a stub that actually serves a CA-signed certificate — because
+    // the config fields alone prove nothing about the client they feed.
+
+    /// Orchestrator stub that 401s unless the request carries exactly
+    /// `Basic <base64(user:pass)>`, mirroring `rp_auth`'s middleware.
+    async fn spawn_challenging_invoke_stub(username: &str, password: &str) -> InvokeStub {
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine as _;
+
+        #[derive(Clone)]
+        struct StubState {
+            bodies: Arc<RwLock<Vec<Value>>>,
+            hits: Arc<AtomicU32>,
+            expected: Arc<String>,
+        }
+        let state = StubState {
+            bodies: Arc::new(RwLock::new(Vec::new())),
+            hits: Arc::new(AtomicU32::new(0)),
+            expected: Arc::new(format!(
+                "Basic {}",
+                BASE64.encode(format!("{username}:{password}"))
+            )),
+        };
+        let app = Router::new()
+            .route(
+                "/invoke",
+                post(
+                    |State(state): State<StubState>,
+                     headers: axum::http::HeaderMap,
+                     Json(body): Json<Value>| async move {
+                        let presented = headers
+                            .get("authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        let accepted = presented == state.expected.as_str();
+                        if accepted {
+                            state.bodies.write().await.push(body);
+                        }
+                        // Counted last, so an observer that sees the hit
+                        // also sees the recorded body — no test race.
+                        state.hits.fetch_add(1, Ordering::SeqCst);
+                        if accepted {
+                            (
+                                StatusCode::OK,
+                                Json(json!({"estimated_duration": "1s", "max_duration": "0s"})),
+                            )
+                        } else {
+                            (StatusCode::UNAUTHORIZED, Json(json!({})))
+                        }
+                    },
+                ),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        InvokeStub {
+            url: format!("http://127.0.0.1:{port}/invoke"),
+            bodies: state.bodies,
+            hits: state.hits,
+            _shutdown: tx,
+        }
+    }
+
+    fn manager_with_auth(invoke_url: &str, auth: Option<Value>) -> Arc<SessionManager> {
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let mut entry = json!({
+            "name": "test-orchestrator",
+            "type": "orchestrator",
+            "invoke_url": invoke_url,
+        });
+        if let Some(auth) = auth {
+            entry
+                .as_object_mut()
+                .unwrap()
+                .insert("auth".to_string(), auth);
+        }
+        Arc::new(SessionManager::new(event_bus, &[entry], None).unwrap())
+    }
+
+    #[tokio::test]
+    async fn invoke_presents_the_registration_credential() {
+        let stub = spawn_challenging_invoke_stub("observatory", "secret").await;
+        let manager = manager_with_auth(
+            &stub.url,
+            Some(json!({"username": "observatory", "password": "secret"})),
+        );
+
+        manager.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await, "orchestrator never invoked");
+        assert!(
+            wait_for_status(&manager, "active").await,
+            "an accepted invocation must leave the session active"
+        );
+        assert_eq!(
+            stub.bodies.read().await.len(),
+            1,
+            "the challenging orchestrator never accepted the credential"
+        );
+    }
+
+    // The negative half of the test above: without the registration's
+    // `auth`, the same stub 401s and the session falls back to idle —
+    // proving the credential, not the stub's leniency, is what makes the
+    // invocation land.
+    #[tokio::test]
+    async fn an_uncredentialed_invoke_is_rejected_by_a_challenging_orchestrator() {
+        let stub = spawn_challenging_invoke_stub("observatory", "secret").await;
+        let manager = manager_with_auth(&stub.url, None);
+
+        manager.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await, "orchestrator never invoked");
+        assert!(
+            wait_for_status(&manager, "idle").await,
+            "a 401'd invocation must return the session to idle"
+        );
+        assert!(
+            stub.bodies.read().await.is_empty(),
+            "the stub must not have accepted an uncredentialed invocation"
+        );
+    }
+
+    /// A plugin that accepts the connection but never answers must
+    /// surface as a transport error the retry can act on, not hang inside
+    /// one attempt — the session would otherwise sit `active` behind a
+    /// workflow that was never acknowledged. `start_paused` advances
+    /// virtual time so the read timeout and the retry backoff fire in
+    /// real-time milliseconds; the outer `timeout` only trips if the
+    /// client-level timeout regresses, turning a silent hang into a loud
+    /// failure.
+    #[tokio::test(start_paused = true)]
+    async fn invoke_times_out_on_a_silently_stalled_orchestrator() {
+        let app = Router::new().route(
+            "/invoke",
+            post(|| async { std::future::pending::<Json<Value>>().await }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let manager = manager_with_auth(&format!("http://127.0.0.1:{port}/invoke"), None);
+        manager.start().await.unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(600), async {
+            while manager.status().await != "idle" {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        outcome.expect("a stalled orchestrator must time out, not hang the invocation");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_orchestrator_auth_block_fails_startup() {
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let plugins = vec![json!({
+            "name": "calibrator-flats",
+            "type": "orchestrator",
+            "invoke_url": "http://127.0.0.1:11170/invoke",
+            "auth": {"username": "observatory"},
+        })];
+
+        let error = SessionManager::new(event_bus, &plugins, None)
+            .err()
+            .expect("a half-written credential must fail startup");
+        assert!(
+            error.contains("plugins[calibrator-flats].auth") && error.contains("password"),
+            "a half-written credential must name the field it broke: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_ca_cert_fails_startup() {
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let plugins = vec![json!({
+            "name": "calibrator-flats",
+            "type": "orchestrator",
+            "invoke_url": "https://127.0.0.1:11170/invoke",
+        })];
+
+        let error =
+            SessionManager::new(event_bus, &plugins, Some(Path::new("/nonexistent/ca.pem")))
+                .err()
+                .expect("an unreadable ca_cert must fail startup");
+        assert!(
+            error.contains("plugins[calibrator-flats]") && error.contains("invoke HTTP client"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Proves the invoke client actually plumbs `ca_cert_path` into
+    /// reqwest: a manager carrying the observatory CA invokes an
+    /// orchestrator serving a CA-signed certificate and stays active;
+    /// the same manager without that trust fails the handshake and falls
+    /// back to idle. The end-to-end analogue of
+    /// `ca_trusting_client_connects_to_ca_signed_alpaca_server`.
+    #[tokio::test]
+    async fn a_ca_trusting_manager_invokes_a_tls_orchestrator() {
+        let pki_dir = tempfile::tempdir().unwrap();
+        rusty_photon_tls::test_cert::generate_ca(pki_dir.path()).unwrap();
+        let ca_cert_pem = std::fs::read_to_string(pki_dir.path().join("ca.pem")).unwrap();
+        let ca_key_pem = std::fs::read_to_string(pki_dir.path().join("ca-key.pem")).unwrap();
+        let certs_dir = pki_dir.path().join("certs");
+        rusty_photon_tls::test_cert::generate_service_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            "test-orchestrator",
+            &certs_dir,
+        )
+        .unwrap();
+        let tls_config = rusty_photon_tls::config::TlsConfig {
+            cert: certs_dir
+                .join("test-orchestrator.pem")
+                .to_string_lossy()
+                .into_owned(),
+            key: certs_dir
+                .join("test-orchestrator-key.pem")
+                .to_string_lossy()
+                .into_owned(),
+        };
+
+        let hits = Arc::new(AtomicU32::new(0));
+        let handler_hits = hits.clone();
+        let router = Router::new().route(
+            "/invoke",
+            post(move |Json(_body): Json<Value>| {
+                let hits = handler_hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"estimated_duration": "1s", "max_duration": "0s"}))
+                }
+            }),
+        );
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+            .await
+            .unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
+                shutdown_rx.await.ok();
+            })
+            .await
+            .unwrap();
+        });
+
+        // The bound IPv4 loopback, not "localhost": the listener is
+        // IPv4-only and the generated cert's SANs include 127.0.0.1.
+        let invoke_url = format!("https://{bound_addr}/invoke");
+        let plugins = vec![json!({
+            "name": "test-orchestrator",
+            "type": "orchestrator",
+            "invoke_url": invoke_url,
+        })];
+        let ca_path = pki_dir.path().join("ca.pem");
+
+        let trusting = Arc::new(
+            SessionManager::new(
+                Arc::new(EventBus::from_config(&[])),
+                &plugins,
+                Some(&ca_path),
+            )
+            .unwrap(),
+        );
+        trusting.start().await.unwrap();
+        assert!(
+            wait_for_count(&hits, 1).await,
+            "a manager trusting the CA must reach the TLS orchestrator"
+        );
+        assert_eq!(
+            trusting.status().await,
+            "active",
+            "an acknowledged invocation must leave the session active"
+        );
+
+        let untrusting = Arc::new(
+            SessionManager::new(Arc::new(EventBus::from_config(&[])), &plugins, None).unwrap(),
+        );
+        untrusting.start().await.unwrap();
+        assert!(
+            wait_for_status(&untrusting, "idle").await,
+            "a manager without the CA must fail the handshake and go idle"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "no untrusted request may reach the orchestrator's handler"
+        );
+
+        shutdown_tx.send(()).ok();
+        server.await.ok();
     }
 }

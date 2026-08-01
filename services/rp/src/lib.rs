@@ -120,7 +120,8 @@ impl ServerBuilder {
         ));
 
         let session = Arc::new(
-            SessionManager::new(event_bus.clone(), &config.plugins)
+            SessionManager::new(event_bus.clone(), &config.plugins, config.ca_cert_path())
+                .map_err(crate::error::RpError::Config)?
                 .with_progress_store(planner_progress.clone())
                 .with_state_path(config.session.session_state_path())
                 .with_cooling(cooling.clone()),
@@ -851,6 +852,40 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("guider: failed to build HTTP client"),
+            "{err}"
+        );
+    }
+
+    /// Same as above for the orchestrator plugin's `/invoke` client
+    /// (issue #800): a registration whose credential is half-written
+    /// aborts startup instead of surfacing as a 401 on the first session
+    /// start of the night.
+    #[tokio::test]
+    async fn build_fails_loud_when_the_orchestrator_registration_is_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "session": {"data_directory": dir.path().join("data").to_string_lossy()},
+            "equipment": {},
+            "plugins": [{
+                "name": "calibrator-flats",
+                "type": "orchestrator",
+                "invoke_url": "http://127.0.0.1:11170/invoke",
+                "auth": {"username": "observatory"}
+            }],
+            "server": {"port": 0}
+        }))
+        .unwrap();
+
+        // `BoundServer` isn't `Debug`, so `unwrap_err()` doesn't apply.
+        let err = ServerBuilder::new()
+            .with_config(config)
+            .with_config_path(dir.path().join("config.json"))
+            .build()
+            .await
+            .err()
+            .expect("build must fail when the registration can't be read");
+        assert!(
+            err.to_string().contains("plugins[calibrator-flats].auth"),
             "{err}"
         );
     }

@@ -538,7 +538,8 @@ mod tests {
             mount: None,
             ..Default::default()
         });
-        let session = Arc::new(crate::session::SessionManager::new(event_bus.clone(), &[]));
+        let session =
+            Arc::new(crate::session::SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),

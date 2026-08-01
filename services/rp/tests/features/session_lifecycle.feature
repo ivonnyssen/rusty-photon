@@ -112,6 +112,25 @@ Feature: Session lifecycle with flat calibration orchestrator
     And a workflow completion is posted with an unknown workflow id
     Then the session status should be "active"
 
+  Scenario: A session start reaches an orchestrator that requires authentication
+    Given a running Alpaca simulator
+    And a test orchestrator that requires the credential "observatory" with password "flat-secret"
+    And the orchestrator registration carries the credential "observatory" with password "flat-secret"
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    Then the test orchestrator should have been invoked
+    And the session status should be "active"
+
+  Scenario: A session start fails loud when the registration omits the orchestrator's credential
+    Given a running Alpaca simulator
+    And a test orchestrator that requires the credential "observatory" with password "flat-secret"
+    And a test webhook receiver subscribed to "session_stopped"
+    And rp is running with equipment and both plugins configured
+    When a session is started via the REST API
+    Then the session status should become "idle"
+    And the test orchestrator should have recorded no invocation
+    And the "session_stopped" event payload field "reason" should be "orchestrator_invoke_failed"
+
   Scenario: A session whose orchestrator is unreachable fails loud and returns to idle
     Given a running Alpaca simulator
     And a plugin configured as orchestrator with invoke URL "http://localhost:1/invoke"
