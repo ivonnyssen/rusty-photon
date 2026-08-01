@@ -498,27 +498,18 @@ impl RpView {
 /// The callback field rp POSTs to for this registration, or `None` when
 /// rp would not dial it at all.
 ///
-/// Mirrors rp's `config::dialed_url_field` *and* the skip conditions its
-/// two runtime lookups apply, which are stricter for the event kind:
-/// `EventBus` drops a registration that names no plugin or carries no
-/// `subscribes_to` array, so such an entry receives nothing no matter
-/// what its `webhook_url` says. Joining it would report a transport
-/// mismatch and offer to write a credential for deliveries that will
-/// never happen — the same "advise a fix rp ignores" failure that keeps
-/// this walk off tool providers. doctor cannot share rp's code here (it
-/// reads the config as opaque JSON from another crate), so the two are
-/// held together by their tests.
+/// Mirrors rp's `config::dialed_url_field`. doctor cannot share rp's
+/// code here (it reads the config as opaque JSON from another crate), so
+/// the two are held together by their tests.
+///
+/// Every registration of a dialed type is joined, with no second guess at
+/// whether rp would actually deliver to it: rp refuses to start on an
+/// event registration it cannot deliver to (rp.md § Delivery: Webhooks),
+/// so an entry that reaches a running rig is one rp dials.
 fn dialed_url_field(entry: &Value) -> Option<&'static str> {
     match entry.get("type").and_then(Value::as_str)? {
         "orchestrator" => Some("invoke_url"),
-        "event" => {
-            let deliverable = entry.get("name").and_then(Value::as_str).is_some()
-                && entry
-                    .get("subscribes_to")
-                    .and_then(Value::as_array)
-                    .is_some();
-            deliverable.then_some("webhook_url")
-        }
+        "event" => Some("webhook_url"),
         _ => None,
     }
 }

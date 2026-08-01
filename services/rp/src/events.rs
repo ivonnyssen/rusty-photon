@@ -38,6 +38,8 @@ use tokio::sync::broadcast;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::config::EventSubscription;
+
 /// Capacity of the in-process broadcast channel. A consumer that falls
 /// further behind than this many events sees a
 /// [`broadcast::error::RecvError::Lagged`] and resumes from the channel's
@@ -91,6 +93,19 @@ pub struct EventPlugin {
     /// plaintext password from being copied on that path, which is the
     /// busiest one rp has.
     pub auth: Option<Arc<ClientAuthConfig>>,
+}
+
+impl From<EventSubscription> for EventPlugin {
+    /// The parsed registration, ready to deliver to. The only thing the
+    /// bus adds is the `Arc` around the credential — see [`EventPlugin::auth`].
+    fn from(subscription: EventSubscription) -> Self {
+        Self {
+            name: subscription.name,
+            webhook_url: subscription.webhook_url,
+            subscribes_to: subscription.subscribes_to,
+            auth: subscription.auth.map(Arc::new),
+        }
+    }
 }
 
 /// The uniform wire shape for every emitted event.
@@ -297,11 +312,14 @@ pub struct EventBus {
 
 impl EventBus {
     /// Build the bus from rp's `plugins` registrations. Fails when an
-    /// event registration's `auth` block does not parse, or when the
-    /// webhook client cannot be built (an unreadable `ca_cert`) — both
-    /// are permanent configuration faults, and startup is the only place
-    /// an operator is watching. Delivery itself never raises: it is
-    /// fire-and-forget by design.
+    /// event registration is not deliverable — a missing or malformed
+    /// `name`, `webhook_url`, `subscribes_to`, or `auth`
+    /// ([`EventSubscription::parse`]) — or when the webhook client cannot
+    /// be built (an unreadable `ca_cert`). All are permanent
+    /// configuration faults, and startup is the only place an operator is
+    /// watching. Delivery itself never raises: it is fire-and-forget by
+    /// design, which is precisely why an undeliverable registration must
+    /// not survive to run — nothing downstream of here would ever report it.
     pub fn from_config(
         plugin_configs: &[Value],
         ca_cert_path: Option<&Path>,
@@ -310,7 +328,14 @@ impl EventBus {
             .iter()
             .enumerate()
             .filter(|(_, p)| crate::config::is_event_plugin(p))
-            .filter_map(|(index, p)| Self::subscriber_from_registration(index, p).transpose())
+            .map(|(index, p)| {
+                EventSubscription::parse(index, p)
+                    .map(EventPlugin::from)
+                    // The same rendering `load_config` gives a
+                    // `FieldError`, so the message an operator sees does
+                    // not depend on which of the two rejected the config.
+                    .map_err(|e| format!("{} {}", e.path, e.msg))
+            })
             .collect::<Result<Vec<_>, String>>()?;
 
         let client = if plugins.is_empty() {
@@ -332,48 +357,6 @@ impl EventBus {
             next_seq: AtomicU64::new(1),
             history: Mutex::new(VecDeque::with_capacity(HISTORY_CAPACITY)),
         })
-    }
-
-    /// `Ok(None)` for a registration carrying no deliverable subscription —
-    /// no name, no `webhook_url`, or no `subscribes_to` list. A malformed
-    /// `auth` is the one hard error: read as "no credential" it would 401
-    /// every event of the night, silently, on a fire-and-forget path.
-    ///
-    /// `index` is the registration's position in `plugins[]`, so the error
-    /// names the same path `validate_config` and doctor use
-    /// (`plugins.<index>.auth`) — nothing stops two registrations sharing
-    /// a `name`, and the index is what an operator can act on.
-    fn subscriber_from_registration(
-        index: usize,
-        entry: &Value,
-    ) -> Result<Option<EventPlugin>, String> {
-        let (Some(name), Some(webhook_url), Some(subscribes_to)) = (
-            entry.get("name").and_then(Value::as_str),
-            entry
-                .get(crate::config::EVENT_URL_FIELD)
-                .and_then(Value::as_str),
-            entry.get("subscribes_to").and_then(Value::as_array),
-        ) else {
-            return Ok(None);
-        };
-
-        let auth = match entry.get("auth") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(Arc::new(
-                serde_json::from_value::<ClientAuthConfig>(value.clone())
-                    .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
-            )),
-        };
-
-        Ok(Some(EventPlugin {
-            name: name.to_string(),
-            webhook_url: webhook_url.to_string(),
-            subscribes_to: subscribes_to
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect(),
-            auth,
-        }))
     }
 
     /// Subscribe to the in-process event stream. Each subscriber receives
@@ -997,9 +980,101 @@ mod tests {
             panic!("a half-written credential must fail startup");
         };
         assert!(
-            error.contains("plugins.0.auth (image-analyzer)") && error.contains("password"),
+            error.contains("plugins.0.auth") && error.contains("password"),
             "a half-written credential must name the field it broke: {error}"
         );
+    }
+
+    /// An event registration that can receive nothing is a fault, not an
+    /// inert entry: the bus refuses to build rather than start a night
+    /// with a plugin that looks registered and is silently never
+    /// delivered to. Each case names the field an operator must fix.
+    #[test]
+    fn an_undeliverable_registration_fails_startup() {
+        for (case, entry, expected_field) in [
+            (
+                "no name",
+                json!({
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribes_to": ["exposure_complete"],
+                }),
+                "plugins.0.name",
+            ),
+            (
+                "no webhook_url",
+                json!({
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "subscribes_to": ["exposure_complete"],
+                }),
+                "plugins.0.webhook_url",
+            ),
+            (
+                "no subscribes_to",
+                json!({
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                }),
+                "plugins.0.subscribes_to",
+            ),
+            (
+                // The typo this whole rule exists for: a plugin that
+                // looks subscribed and receives nothing until dawn.
+                "subscribes_to misspelled",
+                json!({
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribe_to": ["exposure_complete"],
+                }),
+                "plugins.0.subscribes_to",
+            ),
+            (
+                "subscribes_to empty",
+                json!({
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribes_to": [],
+                }),
+                "plugins.0.subscribes_to",
+            ),
+            (
+                "subscribes_to holding a non-string",
+                json!({
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribes_to": ["exposure_complete", 42],
+                }),
+                "plugins.0.subscribes_to",
+            ),
+        ] {
+            let Err(error) = EventBus::from_config(&[entry], None) else {
+                panic!("{case}: an undeliverable registration must fail startup");
+            };
+            assert!(
+                error.contains(expected_field),
+                "{case}: must name {expected_field}, got {error}"
+            );
+        }
+    }
+
+    /// The bus reads only the registrations it delivers to, so a plugin
+    /// of another kind keeps its own shape — a tool provider carrying
+    /// neither `webhook_url` nor `subscribes_to` is not an undeliverable
+    /// subscriber, it is simply not a subscriber.
+    #[test]
+    fn an_undialed_registration_is_not_held_to_the_subscriber_rules() {
+        let plugins = vec![json!({
+            "name": "ml-quality-classifier",
+            "type": "tool_provider",
+            "mcp_server_url": "http://127.0.0.1:11150/mcp",
+        })];
+
+        EventBus::from_config(&plugins, None).unwrap();
     }
 
     #[tokio::test]

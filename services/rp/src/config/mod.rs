@@ -330,6 +330,13 @@ fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
         .enumerate()
         .filter_map(|(index, plugin)| Some((index, plugin, dialed_url_field(plugin)?)))
         .flat_map(|(index, plugin, url_field)| {
+            // An event registration is checked by running the very parse
+            // `EventBus` builds its subscribers with, so a config that
+            // loads is a config that delivers — there is no second
+            // implementation here to drift from the runtime's.
+            if is_event_plugin(plugin) {
+                return Vec::from_iter(EventSubscription::parse(index, plugin).err());
+            }
             let mut errors = Vec::new();
             if let Some(auth) = plugin.get("auth").filter(|v| !v.is_null()) {
                 if let Err(e) =
@@ -352,6 +359,114 @@ fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
             errors
         })
         .collect()
+}
+
+/// One `type: "event"` registration, parsed into everything a delivery
+/// needs: who to POST to, which events, and the credential to present.
+///
+/// [`Self::parse`] is the single implementation of what an event
+/// registration must carry. [`plugin_registration_errors`] runs it to
+/// reject a faulty registration at config load, and
+/// [`crate::events::EventBus`] runs it to build the subscribers it
+/// delivers to, so the config rp accepts and the config rp acts on are
+/// the same set by construction.
+#[derive(Debug)]
+pub struct EventSubscription {
+    pub name: String,
+    pub webhook_url: String,
+    pub subscribes_to: Vec<String>,
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
+}
+
+impl EventSubscription {
+    /// Parse `plugins[index]`, which the caller has already established is
+    /// an event registration ([`is_event_plugin`]).
+    ///
+    /// Every field is required, and the error names the offending one.
+    /// An event registration exists to receive deliveries, so one that can
+    /// receive none — no name, no `webhook_url`, a `subscribes_to` that is
+    /// absent, empty, or not a list of event-name strings — is a
+    /// configuration fault rather than an inert entry. Read as inert, a
+    /// `subscribe_to` typo would leave a plugin that looks registered,
+    /// logs nothing, and is fed nothing until dawn: delivery is
+    /// fire-and-forget, so a subscriber rp never even attempts to reach
+    /// produces no failure to notice (rp.md § Delivery: Webhooks).
+    ///
+    /// `index` is the registration's position in `plugins[]`, because that
+    /// is the path an operator can act on — nothing stops two
+    /// registrations sharing a `name`.
+    pub fn parse(index: usize, entry: &Value) -> std::result::Result<Self, FieldError> {
+        let at = |name: &str, msg: &str| FieldError {
+            path: format!("plugins.{index}.{name}"),
+            msg: msg.to_string(),
+        };
+
+        let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {
+            at(
+                "name",
+                "is required and must be a string naming the subscriber",
+            )
+        })?;
+
+        let url_value = entry
+            .get(EVENT_URL_FIELD)
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| {
+                at(
+                    EVENT_URL_FIELD,
+                    "is required: an event registration carries the URL rp POSTs each subscribed event to",
+                )
+            })?;
+        let webhook_url =
+            validate_callback_url(url_value).map_err(|msg| at(EVENT_URL_FIELD, &msg))?;
+
+        let subscribed = entry
+            .get("subscribes_to")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                at(
+                    "subscribes_to",
+                    "is required and must be an array of the event names rp should deliver",
+                )
+            })?;
+        let subscribes_to = subscribed
+            .iter()
+            .enumerate()
+            .map(|(position, v)| {
+                // Names the position rather than echoing the entry: an
+                // error message is rendered by the UI and by `rp doctor`,
+                // and the position is what an operator edits anyway.
+                v.as_str().map(String::from).ok_or_else(|| {
+                    at(
+                        "subscribes_to",
+                        &format!("entry {position} must be an event-name string"),
+                    )
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if subscribes_to.is_empty() {
+            return Err(at(
+                "subscribes_to",
+                "must name at least one event; a registration subscribed to nothing is never \
+                 delivered to, so remove it instead",
+            ));
+        }
+
+        let auth = match entry.get("auth") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value::<rp_auth::config::ClientAuthConfig>(value.clone())
+                    .map_err(|e| at("auth", &e.to_string()))?,
+            ),
+        };
+
+        Ok(Self {
+            name: name.to_string(),
+            webhook_url: webhook_url.to_string(),
+            subscribes_to,
+            auth,
+        })
+    }
 }
 
 /// The registration field naming the endpoint rp POSTs a session start
@@ -390,7 +505,12 @@ fn dialed_url_field(plugin: &Value) -> Option<&'static str> {
 /// middle of the night. Mirrors [`server::AdvertisedUrl`]'s rule rather
 /// than inventing a second one, plus one rule of its own — see the
 /// userinfo branch.
-fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
+///
+/// Returns the accepted URL so a caller that needs the string — the
+/// [`EventSubscription`] parse — takes it from the check rather than
+/// re-reading the `Value` and having to handle a "not a string" case
+/// this function has already ruled out.
+fn validate_callback_url(value: &Value) -> std::result::Result<&str, String> {
     let Some(url) = value.as_str() else {
         return Err(format!("must be a string, got {value}"));
     };
@@ -423,7 +543,7 @@ fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
                 .to_string(),
         );
     }
-    Ok(())
+    Ok(url)
 }
 
 /// `url` with any embedded userinfo replaced by `***`, for the messages
@@ -861,7 +981,12 @@ mod tests {
                     "auth": { "username": "observatory", "password": "secret" }
                 }]
             },
-            "plugins": [{ "name": "image-analyzer", "type": "event" }],
+            "plugins": [{
+                "name": "image-analyzer",
+                "type": "event",
+                "webhook_url": "http://127.0.0.1:11140/webhook",
+                "subscribes_to": ["exposure_complete"]
+            }],
             "target_store": {
                 "db_path": "/data/targets.redb",
                 "default_goals": [{ "filter": "L", "binning": "1x1", "exposure_duration": "5m", "desired_count": 20 }],
@@ -965,6 +1090,42 @@ mod tests {
                 "unexpected error for {plugin_type}: {error}"
             );
         }
+    }
+
+    /// Validation runs the same [`EventSubscription::parse`] the bus
+    /// builds subscribers with, so an undeliverable registration is
+    /// refused by `PUT /api/config` and `rp doctor` exactly as it is by
+    /// startup. What the parse rejects is pinned case-by-case where it
+    /// runs (`events::tests::an_undeliverable_registration_fails_startup`);
+    /// what this pins is that the load path runs it at all — a
+    /// `subscribe_to` typo must not reach a running rp, where it would
+    /// leave a plugin that looks registered and is fed nothing until dawn.
+    #[test]
+    fn an_undeliverable_event_registration_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": [{
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribe_to": ["exposure_complete"],
+                }],
+                "server": {"port": 0},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("plugins.0.subscribes_to"),
+            "must name the field to fix: {error}"
+        );
     }
 
     /// The callback URL is the registration's primary field, so it fails
