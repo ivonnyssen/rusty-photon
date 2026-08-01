@@ -781,6 +781,8 @@ pub(crate) mod mock {
             let roi = *self.roi.lock();
             Ok((roi.width * roi.height * 2) as usize)
         }
+        // Panicking mid-readout is the behaviour under test, not a defect.
+        #[allow(clippy::panic_in_result_fn)]
         fn get_single_frame(&self, _buffer_size: usize) -> BackendResult<ImageData> {
             // The real `GetQHYCCDSingleFrame` is NOT cancellable: once the readout
             // starts it runs to completion, which is why the driver must never
@@ -919,7 +921,7 @@ pub(crate) mod mock {
 /// camera — so they are correctly compiled out there.
 #[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::expect_used)]
 mod conn_tests {
     use super::*;
 

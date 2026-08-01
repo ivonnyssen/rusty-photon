@@ -355,7 +355,7 @@ impl CameraHandle for ZwoCameraHandle {
 /// SDK wrapper that the BDD suite otherwise reaches only via the spawned binary).
 #[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::expect_used)]
 mod handle_tests {
     use super::*;
     use std::time::Duration;

@@ -522,8 +522,6 @@ mod tests {
     // Test code opts out of the workspace restriction lints (see root
     // Cargo.toml `[workspace.lints.clippy]`); per AGENTS rule 7 tests
     // prefer `unwrap()` so a failure shows what the error was.
-    #![allow(clippy::unwrap_used)]
-    #![allow(clippy::indexing_slicing)]
 
     use std::sync::atomic::AtomicU32;
     use std::sync::Arc;

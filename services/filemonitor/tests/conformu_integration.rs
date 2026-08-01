@@ -1,5 +1,5 @@
 #![cfg(feature = "conformu")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use bdd_infra::{ConformuRun, ServiceHandle};
 use tracing_subscriber::{fmt, EnvFilter};

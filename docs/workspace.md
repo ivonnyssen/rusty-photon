@@ -389,6 +389,38 @@ The hook is installed automatically the first time any test build pulls
 
 ## Coding Conventions
 
+### Lints
+
+`[workspace.lints.clippy]` in the root `Cargo.toml` denies the routes by which
+an otherwise-recoverable situation aborts the process — `unwrap_used`,
+`expect_used`, `unreachable`, `todo`, `unimplemented`, `panic_in_result_fn`,
+`unchecked_time_subtraction`. A driver that panics at 2am ends the night's
+imaging (tenet 2). Members opt in with `[lints] workspace = true`; the
+dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`, `svbony-rs` and their `-sys`
+shims) deliberately do not, since their lint policy travels with them to
+crates.io.
+
+Test code is exempt where the panic is the point, and that exemption lives in
+`clippy.toml` at the repo root rather than in per-module attributes. It turns
+`unwrap_used`, `expect_used`, `panic` and `indexing_slicing` off **in test
+scope only**, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its
+own and production code in the same file still gets the full deny.
+
+You still need a scoped `#[allow]` in two cases:
+
+- **`unreachable`** — clippy has no `allow-*-in-tests` knob for it.
+- **Cucumber step definitions.** Clippy treats `#[cfg(test)]` modules and
+  `#[test]` functions as test code, but `#[given]`/`#[when]`/`#[then]` are
+  plain functions in a test crate. `tests/bdd/` entry files therefore keep a
+  file-level `#![allow(...)]`, which submodules pulled in via `#[path] mod`
+  inherit.
+
+Before deleting an `#[allow]`, resolve its **scope** — a per-file assumption is
+wrong. An inner `#![allow]` in a file's header region covers the whole package,
+and an outer `#[allow]` on a `mod name;` declaration covers that module's file
+subtree. [docs/plans/workspace-lints.md](plans/workspace-lints.md) tracks the
+ladder that widens this set.
+
 ### Duration Units
 
 **Durations are `std::time::Duration` system-wide.** Any field, parameter,

@@ -482,7 +482,7 @@ impl CameraHandle for SvbonyCameraHandle {
 
 #[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::expect_used)]
 mod handle_tests {
     use super::*;
 
@@ -975,7 +975,7 @@ pub(crate) mod mock {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::expect_used)]
 mod pure_fn_tests {
     use super::*;
 

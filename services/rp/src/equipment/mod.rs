@@ -32,7 +32,6 @@ pub mod switch;
 pub mod trains;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 pub(crate) mod test_support;
 
 pub use camera::CameraEntry;

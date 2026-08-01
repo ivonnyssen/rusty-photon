@@ -234,7 +234,6 @@ pub async fn try_cache_store(cache_dir: PathBuf, key: String, bytes: Vec<u8>) {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

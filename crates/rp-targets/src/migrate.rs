@@ -40,7 +40,6 @@ pub fn check_schema_version(found: u32) -> Result<(), TargetStoreError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

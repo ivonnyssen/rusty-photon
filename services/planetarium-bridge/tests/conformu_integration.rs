@@ -19,7 +19,7 @@
 // limit once the full TelescopeTests dictionary is spelled out.
 #![recursion_limit = "256"]
 #![allow(clippy::await_holding_lock)]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use bdd_infra::ServiceHandle;
 use bdd_infra::{run_conformu_from_settings, ConformuRun};

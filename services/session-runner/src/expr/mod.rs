@@ -32,15 +32,12 @@ mod print;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod conformance_tests;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod eval_tests;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod prop_tests;
 
 use std::collections::BTreeMap;

@@ -230,7 +230,6 @@ pub fn load_effective_config(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 
@@ -452,7 +451,6 @@ mod tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod doctor_toml_parity {
     use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
 

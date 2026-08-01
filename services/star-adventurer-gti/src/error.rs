@@ -67,7 +67,6 @@ rusty_photon_driver::driver_error! {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use ascom_alpaca::{ASCOMError, ASCOMErrorCode};

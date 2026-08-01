@@ -575,7 +575,6 @@ pub async fn run_server_loop(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod device_config_action_tests {
     use super::*;
 
@@ -793,7 +792,6 @@ mod device_config_action_tests {
 #[cfg(test)]
 #[cfg(not(miri))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
@@ -1047,7 +1045,6 @@ mod property_tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod default_config_tests {
     use super::*;
 
@@ -1144,7 +1141,6 @@ mod default_config_tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod doctor_toml_parity {
     use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
 

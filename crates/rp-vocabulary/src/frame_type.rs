@@ -62,7 +62,6 @@ impl FromStr for FrameType {
 pub struct FrameTypeParseError(String);
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

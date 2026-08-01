@@ -9,7 +9,7 @@
 //! in these configs, so there is no shared discovery port to contend for).
 #![allow(clippy::await_holding_lock)]
 #![cfg(feature = "mock")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -10,7 +10,7 @@
 //! `AstapCliRunner::with_env` builder, not via `std::env::set_var`,
 //! so concurrent tests in the same process don't race.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use plate_solver::runner::wcs::read_wcs_sidecar;
 use plate_solver::{AstapCliRunner, AstapRunner, RunnerError, SolveRequest};

@@ -297,7 +297,6 @@ async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::{
         deviation, find_duration_with_ladder, find_optimal_duration, next_duration,

@@ -5,7 +5,7 @@
 //! degree field is generated as integer hundredths so the `{:.2}` write
 //! format and the `f64` parse can compare exactly without epsilon.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use pa_falcon_rotator::protocol::{parse_full_status, FalconStatus};
 use pa_falcon_rotator::{MechanicalDegrees, Steps};

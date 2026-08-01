@@ -16,7 +16,6 @@ pub(crate) fn default_server() -> ServerConfig {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use crate::config::load_config;
 
@@ -94,7 +93,6 @@ mod tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod doctor_toml_parity {
     use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
     use rusty_photon_server_config::AdvertisingServerConfig;

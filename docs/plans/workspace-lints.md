@@ -1,0 +1,226 @@
+# Workspace Lints Plan — deny the panic classes, on a measured ladder
+
+## Goal
+
+The workspace denies three ways to panic today (`unwrap_used`, `expect_used`,
+`unreachable`). The target set is wider — the remaining panic/abort routes
+(`indexing_slicing`, `arithmetic_side_effects`, `panic`, `todo`,
+`unimplemented`, `panic_in_result_fn`, `string_slice`,
+`unchecked_time_subtraction`, `exit`), plus `as_conversions` and the
+`pedantic` / `nursery` groups:
+
+```toml
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery  = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
+```
+
+This matters for [tenet 2 (robustness)](workspace.md#project-tenets): a panic
+in a driver at 2am ends the night's imaging. The lints that close panic routes
+are the point; the `pedantic` / `nursery` groups are a separate, much larger
+style question that this plan deliberately sequences last.
+
+## Measured baseline
+
+Census taken with clippy 0.1.96 on `--workspace --all-targets --all-features`,
+driving the full proposed set as `-W` flags so every crate still completes its
+check pass. **The tree is warning-clean today (0 diagnostics)**, so every number
+below is new debt. Nothing fails to *build* — at `deny` these become errors, but
+each is a lint, not a compile failure.
+
+For the 42 crates that inherit `[workspace.lints]`:
+
+| Bucket | Sites | `--fix` can do | Hand-fix |
+|---|---:|---:|---:|
+| Production (lib/bin) | 4,853 | 2,234 | 2,619 |
+| Test-side | 6,703 | 1,287 | 5,416 |
+| **Total** | **11,556** | **3,521** | **8,035** |
+
+**The named lints are the cheap part.** Only 1,054 of the 4,853 production
+sites come from the thirteen named lints; the other 3,799 are `pedantic` /
+`nursery` fallout.
+
+| Named lint | Prod | Named lint | Prod |
+|---|---:|---|---:|
+| `arithmetic_side_effects` | 387 | `string_slice` | 25 |
+| `as_conversions` | 368 | `panic` | 19 |
+| `indexing_slicing` | 214 | `unchecked_time_subtraction` | 2 |
+| `exit` | 39 | `unwrap`/`expect`/`unreachable`/`todo` | **0** |
+
+### `clippy.toml` changes the test-side picture
+
+Clippy lints test code by default — 3,891 of the test-side sites are in
+`tests/` directories and 2,812 are in `#[cfg(test)] mod` blocks inside `src/`.
+A repo-root `clippy.toml` suppresses four of them at source, in test scope
+only, leaving production untouched:
+
+```toml
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+```
+
+| | Without | With knobs |
+|---|---:|---:|
+| Production | 4,853 | 4,853 |
+| Test-side | 6,703 | **5,020** |
+| **Total** | **11,556** | **9,873** |
+
+Three measured limits:
+
+1. **Only eight knobs exist** — `dbg`, `expect`, `indexing-slicing`,
+   `large-stack-frames`, `panic`, `print`, `unwrap`, `useless-vec`. There is
+   none for `as_conversions`, `arithmetic_side_effects`, `string_slice`,
+   `unreachable`, `todo`, `unimplemented`, or `exit`.
+2. **Nothing in `pedantic` / `nursery` is covered.** All 3,844 test-side group
+   sites survive, including `needless_pass_by_ref_mut`'s 1,171.
+3. **The knobs only recognise `#[cfg(test)]` mods and `#[test]` fns.** All 682
+   surviving `panic` / `indexing_slicing` test sites are in `tests/bdd/steps/*.rs`
+   and `tests/bdd/world.rs` — cucumber's `#[given]`/`#[when]`/`#[then]` are not
+   `#[test]` functions, so clippy does not classify them as test code.
+
+### The knobs make most existing `#[allow]`s dead
+
+Measured with `--force-warn` (which overrides `#[allow]` but *cannot*
+resurrect a lint the knob suppressed at source, so it isolates exactly the
+load-bearing attributes). Of 461 clippy allow attributes, 408 touch the trio:
+
+| Lint | Files with allow | Still fire | **Dead** |
+|---|---:|---:|---:|
+| `unwrap_used` | 365 | 18 | **347** |
+| `expect_used` | 363 | 25 | **338** |
+| `unreachable` | 348 | 11 | **337** |
+| `indexing_slicing` | 1 | 0 | **1** |
+
+Applied in L1: **329 attributes deleted outright, 67 trimmed** to only the lint
+that still fires — 470 clippy allow attributes down to 144.
+Separately, 335 of the 348 files declaring `allow(clippy::unreachable)` contain
+no `unreachable!()` at all: the lint was carried along by copy-paste from the
+canonical snippet.
+
+**Scope, not file, decides whether an allow is dead.** A per-file model is
+wrong and fails loudly — `crates/bdd-infra/src/lib.rs` carries a crate-root
+`#![allow(...)]` that covers every module in the package, and `bdd-infra` is
+ordinary lib code rather than `#[cfg(test)]`, so the knobs never applied to it.
+Three scopes have to be resolved before a removal is safe:
+
+| Attribute | Scope |
+|---|---|
+| inner `#![allow]` in a file's header region | the whole package |
+| outer `#[allow]` on a `mod name;` declaration | that module's file subtree, honouring `#[path = "..."]` |
+| anything else | the file it sits in |
+
+### Blast radius
+
+Cargo only. Bazel never runs clippy (`.bazelrc` mentions it once, in a
+comment), and `[lints.clippy]` is a Cargo feature that rules_rust does not
+read. Affected: the pre-commit hook, the required `stable / clippy` PR gate,
+and the nightly `beta / clippy` early-warning job.
+
+### Crates this does not reach
+
+`qhyccd-rs`, `zwo-rs`, `svbony-rs` and their three `-sys` shims have no
+`[lints] workspace = true` — they are dual-homed to crates.io per
+[ADR-009](../decisions/009-vendor-qhyccd-rs.md) /
+[ADR-010](../decisions/010-vendor-zwo-rs.md). They carry 1,038 sites even with
+the knobs, including **every** `unwrap_used` (664) and `expect_used` (57) site
+in the workspace. Phase 7.
+
+## Implementation Status
+
+| Phase | Description | Status | Branch / PR |
+|-------|-------------|--------|-------------|
+| L0 | This plan | Complete | `worktree-clippy-warnings` |
+| L1 | `clippy.toml` + dead-allow sweep + the four free lints | Complete | `worktree-clippy-warnings` |
+| L2 | Mechanical `cargo clippy --fix` sweep (~3,521 sites) | Not started | |
+| L3 | BDD file-level allows (682 sites) | Not started | |
+| L4 | `string_slice` (41) and `exit` (39) policy | Not started | |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Not started | |
+| L6 | `pedantic` / `nursery` decision | Not started | |
+| L7 | Dual-homed FFI crates | Not started | |
+
+---
+
+## L1 — `clippy.toml` + dead-allow sweep + the four free lints
+
+One PR, mechanical, no per-site judgment.
+
+- Add the four-key `clippy.toml` at the repo root.
+- Delete the 360 dead attributes; trim the other 48 to the lints that still
+  fire. **Same commit as the `clippy.toml`** — removing allows first would
+  break the existing deny.
+- Deny `todo`, `unimplemented`, `panic_in_result_fn`,
+  `unchecked_time_subtraction`. Four lints for five fixes:
+  - `services/session-runner/src/engine/exec.rs:547,575` — both auto-fixable
+  - `services/pa-falcon-rotator/src/rotator_device.rs:355`
+  - `services/pa-falcon-rotator/src/switch_device.rs:408`
+  - `services/qhy-camera/src/backend.rs:784`
+- Rewrite the `[workspace.lints.clippy]` comment block in `Cargo.toml`: it
+  documents the per-test-module attribute pattern that this phase largely
+  deletes. Cross-check `docs/workspace.md` and `docs/skills/testing.md`
+  (rules 2 and 11).
+
+**Verification.** Re-run the `--force-warn` census; the surviving set must
+match the 48 kept attributes exactly, with no new diagnostics.
+
+## L2 — mechanical sweep
+
+`cargo clippy --fix` per crate, ~3,521 sites, zero judgment. Validated on four
+crates: 141 → 67 warnings with all tests still green. Merge per crate so review
+stays tractable. This phase does not flip any lint to `deny`; it only removes
+debt so later phases are smaller.
+
+## L3 — BDD file-level allows
+
+The 682 `panic` / `indexing_slicing` sites the knobs cannot reach are all in
+BDD step and world files. Add `#![allow(clippy::panic, clippy::indexing_slicing)]`
+at the `tests/bdd/` entry files, matching the convention already used there for
+the trio. This is the one phase where allows *grow*.
+
+## L4 — bounded policy calls
+
+- **`string_slice` (41 sites)** — real, fixable; `get(..)` or a checked split.
+- **`exit` (39 sites)** — recommend **not** denying. All 39 are
+  `services/*/src/doctor.rs`, where `pub fn run(...) -> !` exits on doctor's
+  documented 0/1/2 contract (see [doctor](../services/doctor.md)). Denying it
+  buys 19 `#[allow]`s or a refactor of a deliberate signature.
+
+## L5 — the expensive three
+
+Real per-site judgment: `checked_*` / `TryFrom` / `get()`.
+
+| Lint | Prod | Where it concentrates |
+|---|---:|---|
+| `as_conversions` | 368 | camera FFI boundaries (`qhy`/`svbony`/`zwo`/`sky-survey` `camera.rs`), `rp/src/mcp/internals.rs` |
+| `arithmetic_side_effects` | 387 | `rp-catalog`, `rp/src/imaging/analysis/stars.rs`, `rp-fits/src/writer.rs`, `rp-ephemeris` |
+| `indexing_slicing` | 214 | `ppba-driver/src/protocol.rs`, `skywatcher-motor-protocol`, `bdd-infra/src/rp_harness/config.rs` |
+
+Crate by crate, `rp` last — it carries 2,077 of the hand-fix residue on its own.
+
+## L6 — `pedantic` / `nursery`
+
+Still 7,643 sites, wholly untouched by the knobs. Recommend `pedantic = "warn"`
+and leaving `nursery` off rather than both at `deny`: `nursery` is explicitly
+unstable, `needless_pass_by_ref_mut` alone is 1,172 mostly-test sites, and both
+groups gain lints on the beta channel — which the nightly `beta / clippy` job
+would then surface as recurring red.
+
+## L7 — dual-homed FFI crates
+
+Adding `[lints] workspace = true` to `qhyccd-rs`, `zwo-rs`, `svbony-rs` and
+their `-sys` shims affects what is published to crates.io, not just this repo.
+Decide separately; 1,038 sites with the knobs applied.

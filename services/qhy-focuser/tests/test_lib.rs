@@ -10,7 +10,7 @@
 //! binds to a fixed address, so only one server can run at a time.
 #![allow(clippy::await_holding_lock)]
 #![cfg(feature = "mock")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

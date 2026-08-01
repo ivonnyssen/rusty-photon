@@ -544,7 +544,7 @@ where
                             ),
                         ));
                     }
-                    elapsed += self.wait_segment(*timeout - elapsed).await;
+                    elapsed += self.wait_segment(timeout.saturating_sub(elapsed)).await;
                 }
             }
             Wait::Until {
@@ -572,7 +572,7 @@ where
                             ),
                         ));
                     }
-                    let segment = (*poll_interval).min(*timeout - elapsed);
+                    let segment = (*poll_interval).min(timeout.saturating_sub(elapsed));
                     elapsed += self.wait_segment(segment).await;
                 }
             }

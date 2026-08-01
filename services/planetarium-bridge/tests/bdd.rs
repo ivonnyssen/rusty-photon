@@ -4,7 +4,7 @@
 //! specifies. Every feature is `@wip` until the device implementation lands
 //! (development-workflow.md Phase 2).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "bdd/world.rs"]
 mod world;

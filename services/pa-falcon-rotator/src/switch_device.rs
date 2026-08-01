@@ -391,7 +391,7 @@ impl Switch for FalconStatusSwitchDevice {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
@@ -404,6 +404,7 @@ mod tests {
 
     #[async_trait]
     impl TransportFactory for NoopFactory {
+        #[allow(clippy::unimplemented)]
         async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
             unimplemented!("test factory should never open a transport")
         }
@@ -564,7 +565,7 @@ mod tests {
 /// can stand in for the real Falcon.
 #[cfg(all(test, feature = "mock"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#[allow(clippy::unwrap_used)]
 mod mock_tests {
     use super::*;
     use crate::mock::MockFalconTransportFactory;

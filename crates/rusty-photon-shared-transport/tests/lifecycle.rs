@@ -14,8 +14,6 @@
 //!
 //! Reconnect-supervisor tests land in Phase 0b alongside that machinery.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-
 mod common;
 
 use std::sync::atomic::Ordering;

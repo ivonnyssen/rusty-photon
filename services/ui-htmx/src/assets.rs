@@ -41,7 +41,6 @@ pub async fn htmx_sse_js() -> impl IntoResponse {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use axum::response::IntoResponse;
 

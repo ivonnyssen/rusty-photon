@@ -3,8 +3,6 @@
 //! `alpacadiscovery1` datagram with the serving Alpaca port, and the
 //! default `None` binds nothing.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-
 use std::net::SocketAddr;
 use std::time::Duration;
 

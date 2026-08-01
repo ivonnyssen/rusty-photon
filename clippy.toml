@@ -1,0 +1,16 @@
+# Test code is allowed to panic where the panic is the point: a failed `Given`
+# means the fixture is broken, and failing fast with a clear message beats
+# threading a `Result` through the assertion (docs/skills/testing.md, rule 7).
+#
+# These four switch the corresponding lints off *in test scope only* --
+# production code in the same file still gets the full deny. That is what makes
+# a `#[cfg(test)] mod tests { ... }` need no `#[allow]` of its own.
+#
+# Clippy recognises `#[cfg(test)]` modules and `#[test]` functions. It does NOT
+# recognise cucumber step definitions (`#[given]`/`#[when]`/`#[then]`), which
+# are plain functions in a test crate -- those files still carry a file-level
+# `#![allow(...)]`. There is no knob for `unreachable`.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

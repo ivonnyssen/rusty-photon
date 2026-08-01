@@ -7,7 +7,7 @@
 //! Gated behind the `conformu` feature. When `CONFORMU_PATH` is unset the run
 //! is `Skipped` (so the test passes without ConformU installed); CI sets it.
 #![cfg(feature = "conformu")]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 // The serialization mutex is intentionally held across the ConformU awaits.
 #![allow(clippy::await_holding_lock)]
 

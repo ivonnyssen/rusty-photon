@@ -351,7 +351,6 @@ fn open_download_page() {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;

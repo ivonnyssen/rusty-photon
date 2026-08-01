@@ -1,6 +1,6 @@
 //! Integration test: verify HTTPS roundtrip with generated certs.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used)]
 
 use std::net::SocketAddr;
 use std::time::Duration;
