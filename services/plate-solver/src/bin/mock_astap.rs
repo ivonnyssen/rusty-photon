@@ -34,28 +34,31 @@ use std::path::PathBuf;
 /// Shape mirrors ASTAP's real `.wcs` output: a header-only FITS primary
 /// HDU (`NAXIS = 0`, so no data block follows), padded to one 2880-byte
 /// FITS block. Includes `CTYPE1`/`CTYPE2` so `wcs::WCSParams`'s
-/// mandatory fields deserialize cleanly.
+/// mandatory fields deserialize cleanly, plus a complete CRPIX + CD
+/// set (consistent with the CDELT/CROTA2 cards: scale 2.91667e-4
+/// deg/px rotated 12.3°, RA-flipped parity) so the response's
+/// `wcs_matrix` is populated end-to-end.
 const CANNED_WCS: &str = concat!(
     "SIMPLE  =                    T                                                  ",
     "BITPIX  =                    8                                                  ",
     "NAXIS   =                    0                                                  ",
     "CTYPE1  = 'RA---TAN'                                                            ",
     "CTYPE2  = 'DEC--TAN'                                                            ",
+    "CRPIX1  =                512.0                                                  ",
+    "CRPIX2  =                384.0                                                  ",
     "CRVAL1  =              10.6848                                                  ",
     "CRVAL2  =              41.2690                                                  ",
     "CDELT1  =         -0.000291667                                                  ",
     "CDELT2  =          0.000291667                                                  ",
     "CROTA2  =                 12.3                                                  ",
+    "CD1_1   =         -0.000284972                                                  ",
+    "CD1_2   =         -0.000062134                                                  ",
+    "CD2_1   =         -0.000062134                                                  ",
+    "CD2_2   =          0.000284972                                                  ",
     "COMMENT ASTAP-CLI mock_astap test double                                        ",
     "END                                                                             ",
-    // 2880-byte FITS block padding: 12 cards × 80 = 960 bytes; pad
-    // 1920 bytes (24 × 80) of spaces to reach the next block.
-    "                                                                                ",
-    "                                                                                ",
-    "                                                                                ",
-    "                                                                                ",
-    "                                                                                ",
-    "                                                                                ",
+    // 2880-byte FITS block padding: 18 cards × 80 = 1440 bytes; pad
+    // 1440 bytes (18 × 80) of spaces to reach the next block.
     "                                                                                ",
     "                                                                                ",
     "                                                                                ",

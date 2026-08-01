@@ -18,7 +18,7 @@
 //! a complete FITS primary HDU header (`SIMPLE`, `BITPIX`, `NAXIS`,
 //! `CTYPE1`/`CTYPE2`, plus the WCS solution).
 
-use super::SolveOutcome;
+use super::{SolveOutcome, WcsMatrix};
 use fitsrs::card::{Card, Value};
 use fitsrs::hdu::header::{Header, Xtension};
 use fitsrs::hdu::HDU;
@@ -47,9 +47,10 @@ pub enum WcsParseError {
     Malformed(String),
 }
 
-/// Parse a `.wcs` sidecar file and return the four fields the HTTP
-/// contract surfaces, plus a solver banner string read from the file's
-/// HISTORY / COMMENT cards.
+/// Parse a `.wcs` sidecar file and return the scalar fields the HTTP
+/// contract surfaces, a solver banner string read from the file's
+/// HISTORY / COMMENT cards, and — when the sidecar carries a complete
+/// CRPIX + CD set — the full WCS linear mapping.
 pub fn read_wcs_sidecar(path: &Path) -> Result<SolveOutcome, WcsParseError> {
     let bytes = std::fs::read(path)?;
     parse_wcs_bytes(&bytes)
@@ -90,6 +91,9 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     let pixel_scale_arcsec = derive_pixel_scale_arcsec(header)?;
     let rotation_deg = derive_rotation_deg(header)?;
 
+    // Full CRPIX + CD matrix, surfaced verbatim when complete.
+    let wcs_matrix = read_wcs_matrix(header)?;
+
     // Run `WCSParams::deserialize` as the canonical structural validator
     // — catches missing CTYPE1, missing NAXIS, type errors on any other
     // WCS keyword (SIP, etc.) before we hand the wrapper a `SolveOutcome`
@@ -105,8 +109,41 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
         dec_center: crval2,
         pixel_scale_arcsec,
         rotation_deg,
+        wcs_matrix,
         solver,
     })
+}
+
+/// Full WCS linear mapping, all-or-nothing: `Some` only when the
+/// header carries CRPIX1, CRPIX2 and the complete 2×2 CD matrix.
+/// Never synthesized from CDELT/CROTA2 — a synthesized matrix would
+/// fabricate parity (the CD determinant's sign). A present-but-
+/// non-numeric key is still a named [`WcsParseError::NonNumeric`].
+fn read_wcs_matrix<X>(header: &Header<X>) -> Result<Option<WcsMatrix>, WcsParseError>
+where
+    X: Xtension + std::fmt::Debug,
+{
+    let keys = [
+        read_optional_float(header, "CRPIX1")?,
+        read_optional_float(header, "CRPIX2")?,
+        read_optional_float(header, "CD1_1")?,
+        read_optional_float(header, "CD1_2")?,
+        read_optional_float(header, "CD2_1")?,
+        read_optional_float(header, "CD2_2")?,
+    ];
+    match keys {
+        [Some(crpix1), Some(crpix2), Some(cd1_1), Some(cd1_2), Some(cd2_1), Some(cd2_2)] => {
+            Ok(Some(WcsMatrix {
+                crpix1,
+                crpix2,
+                cd1_1,
+                cd1_2,
+                cd2_1,
+                cd2_2,
+            }))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Pixel scale in arcsec. Prefers `|CDELT1| × 3600`; if `CDELT1` is
@@ -304,6 +341,94 @@ mod tests {
         // |CDELT1| * 3600 = pixel scale in arcsec
         assert!((out.pixel_scale_arcsec - 1.05).abs() < 1e-3);
         assert!((out.rotation_deg - 12.3).abs() < 1e-6);
+        // CDELT/CROTA alone must never synthesize a matrix — a
+        // synthesized one would fabricate parity.
+        assert_eq!(out.wcs_matrix, None);
+    }
+
+    #[test]
+    fn complete_crpix_and_cd_set_populates_wcs_matrix() {
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CRPIX1", "512.0"),
+            ("CRPIX2", "384.0"),
+            ("CD1_1", "-0.000291"),
+            ("CD1_2", "0.0000012"),
+            ("CD2_1", "0.0000011"),
+            ("CD2_2", "0.000291"),
+        ]);
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        let matrix = out.wcs_matrix.unwrap();
+        assert_eq!(matrix.crpix1, 512.0);
+        assert_eq!(matrix.crpix2, 384.0);
+        assert_eq!(matrix.cd1_1, -0.000291);
+        assert_eq!(matrix.cd1_2, 0.0000012);
+        assert_eq!(matrix.cd2_1, 0.0000011);
+        assert_eq!(matrix.cd2_2, 0.000291);
+    }
+
+    #[test]
+    fn cd_without_crpix_leaves_wcs_matrix_none() {
+        // Complete CD matrix, no CRPIX: scalar fields derive from the
+        // CD matrix as before, but the all-or-nothing matrix stays
+        // absent.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CD1_1", "-0.000291667"),
+            ("CD1_2", "0.0"),
+            ("CD2_1", "0.0"),
+            ("CD2_2", "0.000291667"),
+        ]);
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        assert_eq!(out.wcs_matrix, None);
+        assert!((out.pixel_scale_arcsec - 1.05).abs() < 1e-3);
+    }
+
+    #[test]
+    fn partial_cd_with_crpix_leaves_wcs_matrix_none() {
+        // CRPIX present but only half the CD matrix (the same partial
+        // set the scalar fallbacks accept): pixel scale and rotation
+        // still derive, the matrix stays absent.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CRPIX1", "512.0"),
+            ("CRPIX2", "384.0"),
+            ("CD1_1", "-0.000291667"),
+            ("CD2_1", "0.0"),
+        ]);
+        let out = parse_wcs_bytes(&bytes).unwrap();
+        assert_eq!(out.wcs_matrix, None);
+        assert!((out.pixel_scale_arcsec - 1.05).abs() < 1e-3);
+        assert!(
+            (out.rotation_deg.abs() - 180.0).abs() < 1e-6,
+            "got rotation_deg={}",
+            out.rotation_deg
+        );
+    }
+
+    #[test]
+    fn non_numeric_cd_key_returns_named_error() {
+        // A present-but-broken matrix key must surface as NonNumeric,
+        // not silently degrade to wcs_matrix = None.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "10.6848"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+            ("CRPIX1", "512.0"),
+            ("CRPIX2", "384.0"),
+            ("CD1_1", "'oops'"),
+            ("CD1_2", "0.0"),
+            ("CD2_1", "0.0"),
+            ("CD2_2", "0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, .. } => assert_eq!(key, "CD1_1"),
+            other => panic!("expected NonNumeric for string CD1_1, got {other:?}"),
+        }
     }
 
     #[test]

@@ -4411,6 +4411,7 @@ fn ok_outcome() -> SolveOutcome {
         pixel_scale_arcsec: 1.05,
         rotation_deg: 12.3,
         solver: "stub".to_string(),
+        wcs_matrix: None,
     }
 }
 
@@ -4458,6 +4459,51 @@ async fn plate_solve_happy_path_image_path() {
     assert_eq!(json["pixel_scale_arcsec"], 1.05);
     assert_eq!(json["rotation_deg"], 12.3);
     assert_eq!(json["solver"], "stub");
+    // The wrapper returned no matrix; the output carries an explicit
+    // null rather than omitting the key.
+    assert!(json["wcs_matrix"].is_null());
+}
+
+#[tokio::test]
+async fn plate_solve_forwards_populated_wcs_matrix() {
+    let handler = handler_with_plate_solver(
+        empty_registry(),
+        |mock| {
+            mock.expect_solve().returning(|_| {
+                Ok(SolveOutcome {
+                    wcs_matrix: Some(rp_plate_solver::WcsMatrix {
+                        crpix1: 512.0,
+                        crpix2: 384.0,
+                        cd1_1: -2.91e-4,
+                        cd1_2: 1.2e-6,
+                        cd2_1: 1.1e-6,
+                        cd2_2: 2.91e-4,
+                    }),
+                    ..ok_outcome()
+                })
+            });
+        },
+        None,
+    );
+    let result = handler
+        .plate_solve(Parameters(PlateSolveParams {
+            document_id: None,
+            image_path: Some("/tmp/x.fits".to_string()),
+            pointing_hint: None,
+            use_mount_hints: None,
+            fov_hint_deg: None,
+            search_radius_deg: None,
+            timeout: None,
+        }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["wcs_matrix"]["crpix1"], 512.0);
+    assert_eq!(json["wcs_matrix"]["crpix2"], 384.0);
+    assert_eq!(json["wcs_matrix"]["cd1_1"], -2.91e-4);
+    assert_eq!(json["wcs_matrix"]["cd1_2"], 1.2e-6);
+    assert_eq!(json["wcs_matrix"]["cd2_1"], 1.1e-6);
+    assert_eq!(json["wcs_matrix"]["cd2_2"], 2.91e-4);
 }
 
 #[tokio::test]

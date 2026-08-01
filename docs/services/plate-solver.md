@@ -47,8 +47,9 @@ ASTAP child via per-request deadlines. See
   service share a filesystem per `docs/services/rp.md` §"File
   Accessibility"), plus optional pointing and FOV hints.
 - **Output:** a WCS solution (RA/Dec at image center, pixel scale,
-  rotation) parsed from the `.wcs` sidecar ASTAP writes alongside
-  the FITS, or a structured error.
+  rotation, and — when the sidecar carries a complete CRPIX + CD
+  set — the full WCS linear mapping) parsed from the `.wcs` sidecar
+  ASTAP writes alongside the FITS, or a structured error.
 
 No pixel bytes traverse HTTP. `rp` and the service trust each other
 to read from a shared filesystem; this is the same trust assumption
@@ -106,7 +107,15 @@ states the behavior, not the wire format details.
    falling back to `atan2(CD2_1, CD1_1)` and defaulting to 0 when
    neither representation is present), plus a `solver` banner string
    read from the file's HISTORY / COMMENT cards (falls back to
-   `"astap-cli"` when no banner is found). A defensive 2880-byte
+   `"astap-cli"` when no banner is found). The response additionally
+   carries `wcs_matrix` — a nested object with `crpix1`/`crpix2`
+   (FITS 1-based pixel convention) and `cd1_1`/`cd1_2`/`cd2_1`/
+   `cd2_2` (degrees per pixel), read verbatim from the sidecar.
+   `wcs_matrix` is **all-or-nothing**: it is `null` unless all six
+   keys are present, and is never synthesized from CDELT/CROTA2 — a
+   synthesized matrix would fabricate image parity, which is exactly
+   what the CD determinant's sign encodes. The scalar fields above
+   are unchanged by its presence or absence. A defensive 2880-byte
    block padder in `runner/wcs.rs` accepts test fixtures whose card
    stream stops exactly at the END card without trailing FITS-block
    padding; it does **not** lower the WCS-keyword bar — the parser

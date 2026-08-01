@@ -27,12 +27,12 @@ the GitHub Releases page. The installer presents a feature tree:
 - **Drivers** (optional, off by default): one sub-feature per device
   driver.
 - **Automation** (optional): `rp`, `session-runner`, `plate-solver`,
-  `phd2-guider`, `calibrator-flats`.
+  `phd2-guider`, `calibrator-flats`, `polar-align`.
 
 Every selected service installs
 `%ProgramFiles%\rusty-photon\rusty-photon-<svc>.exe` and registers a
 Windows service named `rusty-photon-<svc>` (LocalSystem; auto-start,
-except the config-gated four, which install as *Manual* — see below)
+except the config-gated five, which install as *Manual* — see below)
 with restart-after-5s failure actions — the systemd
 `Restart=on-failure`/`RestartSec=5` parity the serial drivers' eager
 hardware validation depends on — plus an inbound firewall exception on
@@ -58,6 +58,7 @@ its port:
 | plate-solver | 11131 | `PlateSolver` | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | `CalibratorFlats` | config-gated |
 | session-runner | 11171 | `SessionRunner` | config-gated |
+| polar-align | 11172 | `PolarAlign` | config-gated |
 
 Alpaca UDP discovery is deliberately not served (as on Linux): point
 clients (N.I.N.A. etc.) at `host:port` directly using the table above.
@@ -87,8 +88,8 @@ finding (the moral equivalent of the Linux packages' accepted lintian
 list). Azure Trusted Signing is the noted post-1.0 path.
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
-`calibrator-flats`, `session-runner`) have no sensible default config, so
-they install with start type *Manual* — the Windows translation of the
+`calibrator-flats`, `session-runner`, `polar-align`) have no sensible
+default config, so they install with start type *Manual* — the Windows translation of the
 Linux units' `ConditionPathExists=` gating. Write
 `%ProgramData%\rusty-photon\<svc>.json` by hand, then:
 
@@ -178,7 +179,7 @@ match it, the build refuses a mismatch.)
 
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
-the Linux `/etc/rusty-photon` path). Exceptions: the config-gated four
+the Linux `/etc/rusty-photon` path). Exceptions: the config-gated five
 (above) never write one; the two cameras, `zwo-focuser`, and
 `phd2-guider` run on built-in defaults without writing a file until
 settings are saved (via ui-htmx `config.apply`) or one is created by

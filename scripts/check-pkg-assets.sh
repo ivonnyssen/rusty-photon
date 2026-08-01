@@ -61,7 +61,7 @@ for pkgdir in services/*/pkg; do
         # Services with no defaultable config gate on the config file existing
         # instead of crash-looping on a fresh install.
         case "$svc" in
-            sky-survey-camera|plate-solver|calibrator-flats|session-runner)
+            sky-survey-camera|plate-solver|calibrator-flats|session-runner|polar-align)
                 grep -q "^ConditionPathExists=/var/lib/rusty-photon/\.config/rusty-photon/$svc\.json\$" "$unit" \
                     || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
                 ;;
@@ -425,6 +425,7 @@ win_port_of() {
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
         session-runner) echo 11171 ;;
+        polar-align) echo 11172 ;;
         *) echo "" ;;
     esac
 }
@@ -468,11 +469,11 @@ if [ -f "$pkg_wxs" ]; then
             || err "$svc: firewall exception port must be $port"
         # Demand-start on exactly the no-defaultable-config services (the
         # ConditionPathExists= translation); everything else auto-starts on
-        # install. session-runner is one of the four gated services:
+        # install. session-runner is one of the five gated services:
         # workflows_dir/state_dir are required config fields with no usable
         # defaults, mirroring its Linux ConditionPathExists= unit.
         case "$svc" in
-            sky-survey-camera | plate-solver | calibrator-flats | session-runner)
+            sky-survey-camera | plate-solver | calibrator-flats | session-runner | polar-align)
                 grep -q 'Start="demand"' "$frag" \
                     || err "$svc: gated service must install with Start=\"demand\""
                 grep -q 'Start="install"' "$frag" \

@@ -68,6 +68,31 @@ pub struct SolveOutcome {
     /// Solver banner returned by the wrapper (e.g.
     /// `"astap-2026.05.03"`).
     pub solver: String,
+    /// Full CRPIX + CD-matrix mapping. `None` when the wrapper's
+    /// `.wcs` sidecar lacked a complete six-key set (the wrapper
+    /// never synthesizes one from CDELT/CROTA2). `#[serde(default)]`
+    /// tolerates wrappers that predate the field.
+    #[serde(default)]
+    pub wcs_matrix: Option<WcsMatrix>,
+}
+
+/// Full WCS linear mapping. Matches the wrapper's `WcsMatrix` in
+/// `services/plate-solver/src/api.rs` (nested under `wcs_matrix` in
+/// `SolveResponseBody`).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+pub struct WcsMatrix {
+    /// Reference pixel x in the FITS 1-based pixel convention.
+    pub crpix1: f64,
+    /// Reference pixel y in the FITS 1-based pixel convention.
+    pub crpix2: f64,
+    /// CD matrix element (1,1) in degrees per pixel.
+    pub cd1_1: f64,
+    /// CD matrix element (1,2) in degrees per pixel.
+    pub cd1_2: f64,
+    /// CD matrix element (2,1) in degrees per pixel.
+    pub cd2_1: f64,
+    /// CD matrix element (2,2) in degrees per pixel.
+    pub cd2_2: f64,
 }
 
 /// Structured error envelope returned by the wrapper (matches
@@ -307,6 +332,7 @@ mod tests {
             pixel_scale_arcsec: 1.05,
             rotation_deg: 12.3,
             solver: "stub-astap".to_string(),
+            wcs_matrix: None,
         }
     }
 
@@ -329,6 +355,58 @@ mod tests {
         assert_eq!(outcome.pixel_scale_arcsec, 1.05);
         assert_eq!(outcome.rotation_deg, 12.3);
         assert_eq!(outcome.solver, "stub-astap");
+        assert_eq!(outcome.wcs_matrix, None);
+    }
+
+    #[tokio::test]
+    async fn solve_parses_populated_wcs_matrix() {
+        let stub = spawn_stub(StubBehavior::Success(SolveOutcome {
+            wcs_matrix: Some(WcsMatrix {
+                crpix1: 512.0,
+                crpix2: 384.0,
+                cd1_1: -2.91e-4,
+                cd1_2: 1.2e-6,
+                cd2_1: 1.1e-6,
+                cd2_2: 2.91e-4,
+            }),
+            ..ok_outcome()
+        }))
+        .await;
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
+
+        let outcome = client
+            .solve(SolveRequest {
+                fits_path: "/tmp/x.fits".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let matrix = outcome.wcs_matrix.unwrap();
+        assert_eq!(matrix.crpix1, 512.0);
+        assert_eq!(matrix.crpix2, 384.0);
+        assert_eq!(matrix.cd1_1, -2.91e-4);
+        assert_eq!(matrix.cd1_2, 1.2e-6);
+        assert_eq!(matrix.cd2_1, 1.1e-6);
+        assert_eq!(matrix.cd2_2, 2.91e-4);
+    }
+
+    #[test]
+    fn outcome_without_wcs_matrix_key_deserializes_as_none() {
+        // A wrapper predating the field omits the key entirely; the
+        // `#[serde(default)]` keeps the client compatible.
+        let outcome: SolveOutcome = serde_json::from_str(
+            r#"{
+                "ra_center": 10.6848,
+                "dec_center": 41.269,
+                "pixel_scale_arcsec": 1.05,
+                "rotation_deg": 12.3,
+                "solver": "astap-cli"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(outcome.wcs_matrix, None);
     }
 
     #[tokio::test]

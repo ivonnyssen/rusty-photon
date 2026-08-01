@@ -94,6 +94,7 @@ impl McpHandler {
                 "pixel_scale_arcsec": out.pixel_scale_arcsec,
                 "rotation_deg": out.rotation_deg,
                 "solver": out.solver,
+                "wcs_matrix": out.wcs_matrix,
             })),
             Err(e) => Ok(tool_error!("{}", e)),
         }

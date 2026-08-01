@@ -102,7 +102,7 @@ Three guards keep the catalog honest:
    embeds (`AlpacaServerConfig` vs `ServerConfig`). Services declaring serial
    metadata extend the same test: the pointer resolves in their own default
    config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
-   constants. The four config-gated services (below) assert `config_gated`
+   constants. The five config-gated services (below) assert `config_gated`
    is `true` in the same test. A drifted copy fails that service's tests,
    not doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
@@ -112,7 +112,7 @@ Three guards keep the catalog honest:
    declared `usb_vendor` equals the `ATTRS{idVendor}` its own rule matches —
    one source of truth for the USB checks, drift-guarded against the rule.
    A third doctor unit test pins `config_gated` against the known set
-   (`calibrator-flats`, `plate-solver`, `session-runner`,
+   (`calibrator-flats`, `plate-solver`, `polar-align`, `session-runner`,
    `sky-survey-camera`) — unlike `usb_vendor`, this one is not measured
    from hardware, so a plain assertion is enough.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
@@ -127,7 +127,7 @@ identities get declared the day the hardware is measured on a USB port —
 so the USB-presence check simply does not run for them; their device-node
 checks work regardless.
 
-The catalog today (20 packaged services):
+The catalog today (21 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -151,6 +151,7 @@ The catalog today (20 packaged services):
 | plate-solver | core | 11131 |
 | calibrator-flats | core | 11170 |
 | session-runner | core | 11171 |
+| polar-align | core | 11172 |
 
 Doctor itself never appears in the catalog: it is a one-shot binary with no
 unit and no port. It also has no `pkg/` directory — the packaging rides
@@ -296,7 +297,7 @@ the typed shape — validates its own file and doctor aggregates.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and session-runner — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same four services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
+| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, session-runner, and polar-align — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same five services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
 | `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins
@@ -670,7 +671,7 @@ can write **both forms everywhere they belong**:
 - the **plaintext** into each client auth block — rp's `equipment[].auth`
   entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`sentinel`
   targets, and the MCP clients' `service_auth` (session-runner,
-  calibrator-flats — see
+  calibrator-flats, polar-align — see
   [ADR-017](../decisions/017-standard-mcp-client-construction.md)) —
   alongside the CA path each client trusts.
 
@@ -722,8 +723,8 @@ against the rest of the fleet (issue
    plaintext and **no** `ca_cert`: the targets are publicly trusted and a
    `ca_cert` would disable the platform roots the client needs. The
    client set is the `CLIENT_WIRING` table (`provision/mod.rs`):
-   sentinel / session-runner / calibrator-flats carry the pair
-   top-level, planetarium-bridge nests it under its `rp` block
+   sentinel / session-runner / calibrator-flats / polar-align carry the
+   pair top-level, planetarium-bridge nests it under its `rp` block
    (`/rp/service_auth`, `/rp/ca_cert` — planned only while that parent
    object exists, since fix ops never create intermediate structure),
    and rp is CA-only. **Present blocks are never overwritten** — a

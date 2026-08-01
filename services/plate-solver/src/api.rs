@@ -6,7 +6,7 @@
 //! behavior contract is in `docs/services/plate-solver.md`.
 
 use crate::error::AppError;
-use crate::runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest};
+use crate::runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest, WcsMatrix};
 use axum::{extract::State, response::IntoResponse, routing::get, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -58,6 +58,9 @@ struct SolveResponseBody {
     pixel_scale_arcsec: f64,
     rotation_deg: f64,
     solver: String,
+    /// Serialized as a plain `Option` — an incomplete CRPIX + CD set
+    /// is an explicit `null` on the wire, not an absent key.
+    wcs_matrix: Option<WcsMatrix>,
 }
 
 impl From<SolveOutcome> for SolveResponseBody {
@@ -68,6 +71,7 @@ impl From<SolveOutcome> for SolveResponseBody {
             pixel_scale_arcsec: o.pixel_scale_arcsec,
             rotation_deg: o.rotation_deg,
             solver: o.solver,
+            wcs_matrix: o.wcs_matrix,
         }
     }
 }

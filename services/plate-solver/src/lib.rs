@@ -15,7 +15,7 @@ pub use api::AppState;
 pub use config::{load_config, Config, ConfigError};
 pub use error::{AppError, ErrorCode, ErrorResponse};
 pub use runner::astap::AstapCliRunner;
-pub use runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest};
+pub use runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest, WcsMatrix};
 
 use std::future::Future;
 use std::net::SocketAddr;

@@ -446,5 +446,6 @@ pub fn target_canned_wcs() -> StubBehavior {
         pixel_scale_arcsec: 1.05,
         rotation_deg: 0.0,
         solver: "stub-e2e-1.0".to_string(),
+        wcs_matrix: None,
     })
 }

@@ -323,6 +323,7 @@ async fn stub_plate_solver_echoing_first_target(world: &mut SessionRunnerWorld) 
         pixel_scale_arcsec: 1.05,
         rotation_deg: 0.0,
         solver: "stub-astap-1.0".to_string(),
+        wcs_matrix: None,
     }))
     .await;
     world.plate_solver = Some(PlateSolverConfig {

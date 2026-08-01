@@ -1,0 +1,49 @@
+//! BDD test entry point for the polar-align service.
+//!
+//! These tests spawn OmniSim, rp, and polar-align (plus an in-process
+//! plate-solver stub) and drive the polar-alignment workflow
+//! end-to-end via rp's REST API and the plugin's /status endpoint.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+
+#[path = "bdd/world.rs"]
+mod world;
+
+#[path = "bdd/steps/mod.rs"]
+mod steps;
+
+bdd_infra::bdd_main! {
+    use cucumber::World as _;
+    use world::PolarAlignWorld;
+
+    PolarAlignWorld::cucumber()
+        .before(|_feature, _rule, _scenario, _world| {
+            Box::pin(async move {
+                // Reset every OmniSim device class before each
+                // scenario. OmniSim is a per-process singleton;
+                // without this, telescope state (park, tracking,
+                // pointing) leaks between scenarios. Failures before
+                // the suite's OmniSim exists are non-fatal inside the
+                // helper; anything after is a loud panic.
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
+            })
+        })
+        .after(|_feature, _rule, _scenario, _finished, maybe_world| {
+            Box::pin(async move {
+                if let Some(world) = maybe_world {
+                    if let Some(pa) = world.polar_align.as_mut() {
+                        pa.stop().await;
+                    }
+                    if let Some(rp) = world.rp.as_mut() {
+                        rp.stop().await;
+                    }
+                }
+            })
+        })
+        .run_and_exit("tests/features")
+        .await;
+}

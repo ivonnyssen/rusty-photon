@@ -38,6 +38,14 @@ Feature: Plate solve MCP tool
     And the plate_solve result should contain "pixel_scale_arcsec" with value 1.05
     And the plate_solve result should contain "rotation_deg" with value 12.3
     And the plate_solve result should contain "solver" with value "stub-astap-1.0"
+    And the plate_solve result wcs_matrix should match these values:
+      | field  | value       |
+      | crpix1 | 512.0       |
+      | crpix2 | 384.0       |
+      | cd1_1  | -0.00029167 |
+      | cd1_2  | 0.0         |
+      | cd2_1  | 0.0         |
+      | cd2_2  | 0.00029167  |
 
   Scenario: Returns contract fields when called with document_id
     Given a running Alpaca simulator
@@ -63,6 +71,7 @@ Feature: Plate solve MCP tool
     And the "wcs" section should contain "pixel_scale_arcsec"
     And the "wcs" section should contain "rotation_deg"
     And the "wcs" section should contain "solver"
+    And the "wcs" section should contain "wcs_matrix"
 
   Scenario: image_path mode against rp-produced FITS persists wcs to the matching sidecar
     Given a running Alpaca simulator
