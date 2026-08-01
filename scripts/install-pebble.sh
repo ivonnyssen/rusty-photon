@@ -38,8 +38,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Pebble publishes no darwin-x64 build past v2.8, and the CI table carries
-# the same five platforms; anything else has to build from source.
+# The four Unix rows of .github/actions/install-pebble's five-platform table.
+# Its fifth, windows-amd64, stays with the action: this is a POSIX sh script,
+# and a Windows dev box wanting the scenarios can lift the URL and SHA from
+# there. Anything else has to build Pebble from source.
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
         PLATFORM="linux-amd64"

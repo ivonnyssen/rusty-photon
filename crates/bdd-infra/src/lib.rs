@@ -157,9 +157,11 @@ macro_rules! bdd_main {
 /// is unchanged.
 const DEFAULT_BDD_LOG: &str = "warn,rusty_photon_tls=debug";
 
-/// Install the suite's `tracing` subscriber — called for you by
-/// [`bdd_main!`], and safe to call again (a suite that installs its own
-/// subscriber first keeps it).
+/// Install the suite's `tracing` subscriber — called by [`bdd_main!`] before
+/// the suite body runs, so this is the subscriber a `bdd_main!` suite gets.
+/// The `try_init` below makes a second call anywhere in the process a no-op
+/// rather than a panic, which also means a suite cannot swap in its own
+/// afterwards: change what it logs through `RUST_LOG`.
 ///
 /// `RUST_LOG` overrides [`DEFAULT_BDD_LOG`] as usual, which is how you turn a
 /// suite up while reproducing a failure locally; an unset *or unparseable*
