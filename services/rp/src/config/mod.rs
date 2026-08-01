@@ -438,16 +438,24 @@ impl OrchestratorRegistration {
     /// it, and the entry that loses is invoked never — with no error, no
     /// warning, and an operator watching a session that simply does not
     /// start.
+    /// Every orchestrator entry is parsed before the count is judged, and
+    /// in `plugins[]` order — the order [`plugin_registration_errors`]
+    /// reports in — so the runtime and the load path name the same field
+    /// on the same file. It is also the more useful of the two errors: a
+    /// stub with no `invoke_url` sitting beside a working registration
+    /// has to be named as the malformed entry, or "remove one" points an
+    /// operator at whichever of the two the message happens to name.
     pub fn sole(plugins: &[Value]) -> std::result::Result<Option<Self>, FieldError> {
+        let registered = plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, plugin)| is_orchestrator(plugin))
+            .map(|(index, entry)| Self::parse(index, entry))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         if let Some(error) = second_orchestrator_error(plugins) {
             return Err(error);
         }
-        plugins
-            .iter()
-            .enumerate()
-            .find(|(_, plugin)| is_orchestrator(plugin))
-            .map(|(index, entry)| Self::parse(index, entry))
-            .transpose()
+        Ok(registered.into_iter().next())
     }
 }
 

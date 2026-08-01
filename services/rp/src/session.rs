@@ -1773,6 +1773,34 @@ mod tests {
         );
     }
 
+    /// Which error a config with *both* faults reports matters, because
+    /// it is the instruction an operator follows: naming the multiplicity
+    /// first would read as "remove one" while pointing at the working
+    /// registration, leaving the stub. The malformed entry is named
+    /// first, in the same `plugins[]` order `validate_config` reports in,
+    /// so the runtime and the load path never disagree about which field
+    /// to fix.
+    #[tokio::test]
+    async fn a_malformed_orchestrator_is_named_before_the_second_one() {
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
+        let plugins = vec![
+            json!({"name": "stub", "type": "orchestrator"}),
+            json!({
+                "name": "session-runner",
+                "type": "orchestrator",
+                "invoke_url": "http://127.0.0.1:11171/invoke",
+            }),
+        ];
+
+        let error = SessionManager::new(event_bus, &plugins, None)
+            .err()
+            .expect("a stub beside a complete registration must fail startup");
+        assert!(
+            error.contains("plugins.0.invoke_url") && error.contains("stub"),
+            "the malformed entry must be named, not the one that works: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn an_unreadable_ca_cert_fails_startup() {
         let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
