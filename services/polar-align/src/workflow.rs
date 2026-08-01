@@ -17,7 +17,7 @@ use crate::math::{
     rotation_between, unit_from_radec, wcs_pixel_to_sky, wcs_sky_to_pixel, AlignmentErrors, Mat3,
     SolvedFrame, Vec3,
 };
-use crate::mcp_client::{McpClient, SolveResult};
+use crate::mcp_client::{DetectedStar, McpClient, SolveResult};
 
 /// Workflow lifecycle, serialized verbatim into `/status.phase`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -45,7 +45,8 @@ pub struct MeasurementStatus {
 }
 
 /// A detected star paired with the pixel it will occupy once the
-/// axis sits on the pole.
+/// axis sits on the pole. Both pairs are 0-based pixel indices into
+/// the adjustment capture — the convention `detect_stars` reports.
 #[derive(Debug, Clone, Serialize)]
 pub struct StarTarget {
     pub x: f64,
@@ -89,10 +90,32 @@ impl Default for StatusState {
 }
 
 /// Handles shared between the HTTP layer and the running workflow.
+///
+/// The finish signal is per-invocation: `Notify` stores a permit, so
+/// a `/adjust/finish` that races the end of one run must not end the
+/// next run's adjustment the instant it starts. Re-arming installs a
+/// fresh `Notify`, and any stale permit dies with the old one.
 #[derive(Clone, Default)]
 pub struct WorkflowShared {
     pub status: Arc<RwLock<StatusState>>,
-    pub finish: Arc<Notify>,
+    finish: Arc<RwLock<Arc<Notify>>>,
+}
+
+impl WorkflowShared {
+    /// Installs a fresh finish signal for a new invocation.
+    pub async fn arm_finish(&self) {
+        *self.finish.write().await = Arc::new(Notify::new());
+    }
+
+    /// The finish signal of the current invocation.
+    pub async fn finish_signal(&self) -> Arc<Notify> {
+        self.finish.read().await.clone()
+    }
+
+    /// Signals the current invocation's adjustment loop to end.
+    pub async fn signal_finish(&self) {
+        self.finish.read().await.notify_one();
+    }
 }
 
 /// What the completion report carries.
@@ -286,9 +309,10 @@ async fn run_inner(
         now,
     );
 
+    let finish = shared.finish_signal().await;
     loop {
         tokio::select! {
-            _ = shared.finish.notified() => {
+            _ = finish.notified() => {
                 info!("adjustment finished by operator");
                 break;
             }
@@ -430,27 +454,7 @@ async fn adjustment_iteration(
     brightest.sort_by(|a, b| b.flux.total_cmp(&a.flux));
     brightest.truncate(config.adjustment.star_count);
 
-    let mut stars = Vec::with_capacity(brightest.len());
-    let mut in_frame = !brightest.is_empty();
-    for star in brightest {
-        let sky = wcs_pixel_to_sky(&frame, star.x, star.y)?;
-        match wcs_sky_to_pixel(&frame, correction_t.mul_vec(sky))? {
-            Some((target_x, target_y)) => {
-                if !(1.0..=f64::from(sensor.0)).contains(&target_x)
-                    || !(1.0..=f64::from(sensor.1)).contains(&target_y)
-                {
-                    in_frame = false;
-                }
-                stars.push(StarTarget {
-                    x: star.x,
-                    y: star.y,
-                    target_x,
-                    target_y,
-                });
-            }
-            None => in_frame = false,
-        }
-    }
+    let (stars, in_frame) = star_overlay(&frame, correction_t, brightest, sensor)?;
 
     Ok((
         measurement_status(
@@ -469,6 +473,42 @@ async fn adjustment_iteration(
             iterations: 0,
         },
     ))
+}
+
+/// Pairs each detected star with the pixel it will occupy once the
+/// correction rotation is applied, and reports whether every target
+/// stays on the sensor. Detected centroids are 0-based array indices
+/// while the WCS math speaks FITS 1-based pixels, so coordinates
+/// shift by one on the way into the WCS and back on the way out;
+/// `/status` publishes both halves of each pair 0-based.
+fn star_overlay(
+    frame: &SolvedFrame,
+    correction_t: Mat3,
+    brightest: Vec<DetectedStar>,
+    sensor: (u32, u32),
+) -> Result<(Vec<StarTarget>, bool)> {
+    let mut stars = Vec::with_capacity(brightest.len());
+    let mut in_frame = !brightest.is_empty();
+    for star in brightest {
+        let sky = wcs_pixel_to_sky(frame, star.x + 1.0, star.y + 1.0)?;
+        match wcs_sky_to_pixel(frame, correction_t.mul_vec(sky))? {
+            Some((fits_x, fits_y)) => {
+                if !(1.0..=f64::from(sensor.0)).contains(&fits_x)
+                    || !(1.0..=f64::from(sensor.1)).contains(&fits_y)
+                {
+                    in_frame = false;
+                }
+                stars.push(StarTarget {
+                    x: star.x,
+                    y: star.y,
+                    target_x: fits_x - 1.0,
+                    target_y: fits_y - 1.0,
+                });
+            }
+            None => in_frame = false,
+        }
+    }
+    Ok((stars, in_frame))
 }
 
 #[cfg(test)]
@@ -518,5 +558,79 @@ mod tests {
         }"#;
         let solve: SolveResult = serde_json::from_str(json).unwrap();
         assert!(solved_frame(&solve).is_none());
+    }
+
+    #[test]
+    fn test_star_overlay_speaks_zero_based_outside_and_one_based_into_the_wcs() {
+        use crate::math::WcsMatrix;
+
+        // Square-pixel frame; a 90° rotation about the boresight is an
+        // exact pixel rotation about CRPIX, which turns any 0/1-based
+        // mixup into a full-pixel error instead of a second-order one.
+        let frame = SolvedFrame {
+            center_ra_deg: 100.0,
+            center_dec_deg: 40.0,
+            matrix: WcsMatrix {
+                crpix1: 512.0,
+                crpix2: 384.0,
+                cd1_1: -2.9167e-4,
+                cd1_2: 0.0,
+                cd2_1: 0.0,
+                cd2_2: 2.9167e-4,
+            },
+        };
+        let boresight = unit_from_radec(100.0, 40.0);
+        let correction_t = Mat3::from_axis_angle(boresight, std::f64::consts::FRAC_PI_2);
+        // 50 pixels right of the rotation center, in 0-based indices.
+        let star = DetectedStar {
+            x: 561.0,
+            y: 383.0,
+            flux: 1000.0,
+            saturated_pixel_count: 0,
+        };
+
+        let (stars, in_frame) =
+            star_overlay(&frame, correction_t, vec![star], (1024, 768)).unwrap();
+
+        assert!(in_frame);
+        assert_eq!(stars[0].x, 561.0);
+        assert_eq!(stars[0].y, 383.0);
+        // The rotation center in 0-based indices is CRPIX − 1.
+        let (dx, dy) = (stars[0].target_x - 511.0, stars[0].target_y - 383.0);
+        let radius = (dx * dx + dy * dy).sqrt();
+        assert!(
+            (radius - 50.0).abs() < 1e-6,
+            "target must stay 50 px from the rotation center, got {radius}"
+        );
+        assert!(
+            (50.0 * dx).abs() < 1e-3,
+            "a 90° rotation must land the target perpendicular to the star offset, got dot {}",
+            50.0 * dx
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stale_finish_permit_does_not_survive_re_arming() {
+        let shared = WorkflowShared::default();
+        // A finish that raced the previous run's end leaves a permit.
+        shared.signal_finish().await;
+        shared.arm_finish().await;
+        let armed = shared.finish_signal().await;
+        let woke = tokio::time::timeout(std::time::Duration::from_millis(50), armed.notified());
+        assert!(
+            woke.await.is_err(),
+            "a stale permit leaked into the new invocation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finish_signal_sent_before_the_loop_waits_still_ends_adjustment() {
+        let shared = WorkflowShared::default();
+        shared.arm_finish().await;
+        shared.signal_finish().await;
+        let signal = shared.finish_signal().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), signal.notified())
+            .await
+            .unwrap();
     }
 }

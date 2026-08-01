@@ -89,7 +89,9 @@ pub struct ParkState {
     pub can_unpark: bool,
 }
 
-/// One star from the `detect_stars` tool.
+/// One star from the `detect_stars` tool. `x`/`y` are the flux-
+/// weighted centroid as 0-based pixel indices (rp reports ndarray
+/// indices, not FITS 1-based pixels).
 #[derive(Debug, Clone, Deserialize)]
 pub struct DetectedStar {
     pub x: f64,

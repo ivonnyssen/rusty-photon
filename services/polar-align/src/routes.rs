@@ -51,7 +51,7 @@ async fn finish_handler(State(state): State<AppState>) -> (StatusCode, Json<Valu
             })),
         );
     }
-    state.shared.finish.notify_one();
+    state.shared.signal_finish().await;
     (StatusCode::ACCEPTED, Json(serde_json::json!({})))
 }
 
@@ -95,6 +95,9 @@ async fn invoke_handler(
             ..Default::default()
         };
     }
+    // A `/adjust/finish` that raced the previous run's end may have
+    // left a permit on the old signal; a fresh one discards it.
+    state.shared.arm_finish().await;
 
     let wf_id = workflow_id.clone();
     let mcp_url = mcp_server_url.clone();

@@ -215,7 +215,9 @@ reports `"phase": "idle"`.
   sensor can show (targets would fall outside the frame); UIs show an
   arrow from the numbers instead of circles.
 - `stars` pairs each detected star's current pixel with its aligned
-  target pixel, in image coordinates of `image_path`.
+  target pixel, in 0-based pixel indices of `image_path` (the
+  convention `detect_stars` reports; the WCS math is FITS 1-based
+  internally and the service converts at that boundary).
 - `error` carries the failure message when `phase` is `error`, null
   otherwise.
 
