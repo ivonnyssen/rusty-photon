@@ -217,6 +217,10 @@ Defense in depth around it:
   (`90 + dec`) before spawning.
 - `pixel_scale_arcsec`: arcseconds per pixel.
 - `rotation_deg`: degrees.
+- `wcs_matrix`: nested object with `crpix1`/`crpix2` (FITS 1-based
+  pixels) and `cd1_1`/`cd1_2`/`cd2_1`/`cd2_2` (degrees per pixel),
+  read verbatim from the `.wcs` sidecar. `null` unless the sidecar
+  carries all six keys — never synthesized from CDELT/CROTA2.
 
 Full HTTP contract in [`docs/plans/archive/plate-solver.md`](../../docs/plans/archive/plate-solver.md)
 §"HTTP contract".

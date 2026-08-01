@@ -275,7 +275,15 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
       "dec_center": 41.2690,
       "pixel_scale_arcsec": 1.05,
       "rotation_deg": 12.3,
-      "solver": "astap-0.9.1"
+      "solver": "astap-0.9.1",
+      "wcs_matrix": {
+        "crpix1": 512.0,
+        "crpix2": 384.0,
+        "cd1_1": -2.91e-4,
+        "cd1_2": 1.2e-6,
+        "cd2_1": 1.1e-6,
+        "cd2_2": 2.91e-4
+      }
     },
     "image_analysis": {
       "hfr": 2.3,
@@ -1033,7 +1041,7 @@ accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `plate_solve` | document_id or image_path; optional pointing_hint, use_mount_hints, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
+| `plate_solve` | document_id or image_path; optional pointing_hint, use_mount_hints, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver, wcs_matrix | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
 
 **Compound (built-in)**
 
@@ -3401,6 +3409,13 @@ wrapper falls back to a blind solve.
 - `rotation_deg` (f64) — field rotation from `.wcs` `CROTA2`.
 - `solver` (String) — solver banner from the wrapper (e.g.
   `"astap-2026.05.03"`).
+- `wcs_matrix` (object or null) — the full WCS linear mapping,
+  passed through from the wrapper verbatim: `crpix1`/`crpix2` in
+  FITS 1-based pixels, `cd1_1`/`cd1_2`/`cd2_1`/`cd2_2` in degrees
+  per pixel. `null` when the wrapper's `.wcs` sidecar lacked a
+  complete six-key set — the wrapper never synthesizes a matrix
+  from CDELT/CROTA2 (that would fabricate the image parity the CD
+  determinant's sign encodes).
 
 **Persistence**:
 - `document_id` mode: writes a `wcs` section to the exposure

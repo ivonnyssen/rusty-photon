@@ -17,6 +17,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
+| [polar-align](services/polar-align) | Orchestrator plugin | 11172 | [![coverage][cov-polar-align]][cov-polar-align-link] | Plate-solving polar alignment orchestrator for equatorial mounts |
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | [![coverage][cov-sky-survey-camera]][cov-sky-survey-camera-link] | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | [![coverage][cov-star-adventurer-gti]][cov-star-adventurer-gti-link] | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
 | [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | [![coverage][cov-pa-falcon-rotator]][cov-pa-falcon-rotator-link] | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
@@ -71,6 +72,12 @@ See [services/sentinel/README.md](services/sentinel/README.md) for usage and [do
 Orchestrator plugin for flat field calibration using a CoverCalibrator device (flat panel / light box). Connects to `rp` as an MCP client, iteratively determines the correct exposure time per filter to achieve 50% of the camera's well depth, then captures the requested number of flat frames. Manages the full CoverCalibrator lifecycle (close cover, turn on light, capture, turn off, open cover).
 
 See [docs/services/calibrator-flats.md](docs/services/calibrator-flats.md) for design documentation.
+
+### Polar Align
+
+Orchestrator plugin that measures how far an equatorial mount's RA axis is from the refracted celestial pole and guides the operator through correcting it. Connects to `rp` as an MCP client and slews the mount to three RA positions near the pole, capturing and plate-solving an image at each to compute the axis direction (the N.I.N.A. Three Point Polar Alignment method). It then enters a live adjustment phase: capturing and solving continuously while the operator turns the mount's azimuth/altitude adjusters, publishing the residual error after every solve.
+
+See [docs/services/polar-align.md](docs/services/polar-align.md) for design documentation.
 
 ### Sky Survey Camera
 
@@ -252,6 +259,7 @@ rusty-photon/
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
+    polar-align/           Plate-solving polar alignment orchestrator plugin
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web configuration UI (BFF)
     doctor/                Install diagnosis CLI (read-only in D2; ADR-016)
@@ -301,6 +309,8 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sentinel
 [cov-calibrator-flats]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=calibrator-flats
 [cov-calibrator-flats-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=calibrator-flats
+[cov-polar-align]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=polar-align
+[cov-polar-align-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=polar-align
 [cov-sky-survey-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=sky-survey-camera
 [cov-sky-survey-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sky-survey-camera
 [cov-star-adventurer-gti]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=star-adventurer-gti

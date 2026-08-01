@@ -69,6 +69,7 @@ async fn stub_plate_solver_sequence(world: &mut RpWorld, step: &Step) {
             pixel_scale_arcsec: 1.05,
             rotation_deg: 12.3,
             solver: "stub-astap-1.0".to_string(),
+            wcs_matrix: None,
         });
     }
     let stub = PlateSolverStub::start(StubBehavior::Sequence(responses)).await;

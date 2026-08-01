@@ -68,6 +68,30 @@ process boundary, and the trait wall makes service-extraction a
 mechanical follow-up if a real ERFA-related fault is ever observed
 in production.
 
+### Beyond the trait: condition-parameterized observed transforms
+
+Two inherent methods on `ErfarsEphemeris` (not trait methods — the
+trait's consumers never need them, and adding required methods would
+break every test double) serve callers that must control refraction,
+today `polar-align`:
+
+```
+alt_az_with_conditions(site, target_icrs, time, Option<RefractionConditions>)
+    -> Result<AltAz, EphemerisError>
+icrs_from_alt_az(site, observed_alt_az, time, Option<RefractionConditions>)
+    -> Result<IcrsCoord, EphemerisError>
+```
+
+`RefractionConditions { pressure_hpa, temperature_c }` defaults to
+the trait-documented amateur-rig values (1013.25 hPa, 10 °C; RH and
+wavelength stay fixed at 50 % / 0.55 µm). `None` disables refraction
+entirely — ERFA's `Refco` yields zero refraction constants for
+non-positive pressure, so the transform is the pure geometric one.
+The inverse rides ERFA's `Atoc13` with observed type `'A'`
+(azimuth / zenith distance) and round-trips the forward transform to
+sub-arcsecond accuracy (pinned by a unit test). The trait's `alt_az`
+is `alt_az_with_conditions` with the default conditions.
+
 ### Operations not in ERFA's surface
 
 Rise/set, twilight, transit, and meridian-flip ETA are small

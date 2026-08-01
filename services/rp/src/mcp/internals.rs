@@ -2004,6 +2004,7 @@ impl McpHandler {
             "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
             "rotation_deg": outcome.rotation_deg,
             "solver": outcome.solver,
+            "wcs_matrix": outcome.wcs_matrix,
         });
         let persist_doc_id = match target_doc_id {
             Some(id) => Some(id),
@@ -2034,6 +2035,7 @@ impl McpHandler {
             pixel_scale_arcsec: outcome.pixel_scale_arcsec,
             rotation_deg: outcome.rotation_deg,
             solver: outcome.solver,
+            wcs_matrix: outcome.wcs_matrix,
         })
     }
 }
@@ -2063,6 +2065,9 @@ pub(crate) struct DoPlateSolveOutput {
     pub pixel_scale_arcsec: f64,
     pub rotation_deg: f64,
     pub solver: String,
+    /// Full CRPIX + CD-matrix mapping from the wrapper; `None` when
+    /// its `.wcs` sidecar lacked a complete six-key set.
+    pub wcs_matrix: Option<rp_plate_solver::WcsMatrix>,
 }
 
 // ---------------------------------------------------------------------------

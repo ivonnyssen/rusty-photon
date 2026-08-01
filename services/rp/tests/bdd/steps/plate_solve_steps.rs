@@ -325,6 +325,35 @@ fn plate_solve_field_equals_string(world: &mut RpWorld, field: String, expected:
     assert_eq!(actual, expected);
 }
 
+#[then("the plate_solve result wcs_matrix should match these values:")]
+fn plate_solve_wcs_matrix_matches(world: &mut RpWorld, step: &cucumber::gherkin::Step) {
+    let result = world
+        .last_plate_solve_result
+        .as_ref()
+        .expect("no plate_solve result");
+    let matrix = result
+        .get("wcs_matrix")
+        .unwrap_or_else(|| panic!("expected 'wcs_matrix' in plate_solve result, got: {result:?}"));
+    let table = step.table.as_ref().expect("step requires a data table");
+    // Skip the header row (field | value).
+    for row in table.rows.iter().skip(1) {
+        assert_eq!(row.len(), 2, "table row must be field, value: {row:?}");
+        let field = row[0].trim();
+        let expected: f64 = row[1]
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("value must be f64 in row {row:?}"));
+        let actual = matrix
+            .get(field)
+            .and_then(|v| v.as_f64())
+            .unwrap_or_else(|| panic!("expected '{field}' as number in wcs_matrix: {matrix:?}"));
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "wcs_matrix.{field}: expected {expected}, got {actual}"
+        );
+    }
+}
+
 // --- Then steps: stub request-log inspection ------------------------
 
 #[then(

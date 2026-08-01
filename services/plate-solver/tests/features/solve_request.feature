@@ -11,7 +11,7 @@ Feature: POST /api/v1/solve — request handling and error surface
   Background:
     Given the wrapper is running with mock_astap as its solver
 
-  Scenario: Happy path returns the four WCS fields
+  Scenario: Happy path returns the scalar WCS fields and the full matrix
     Given mock_astap is configured for "normal" mode
     And a writable FITS path
     When I POST to /api/v1/solve with that fits_path
@@ -21,6 +21,12 @@ Feature: POST /api/v1/solve — request handling and error surface
     And the response field "pixel_scale_arcsec" is approximately 1.05
     And the response field "rotation_deg" is approximately 12.3
     And the response field "solver" contains "astap" case-insensitively
+    And the response field "wcs_matrix.crpix1" is approximately 512.0
+    And the response field "wcs_matrix.crpix2" is approximately 384.0
+    And the response field "wcs_matrix.cd1_1" is approximately -0.000284972 within 0.000000001 degrees
+    And the response field "wcs_matrix.cd1_2" is approximately -0.000062134 within 0.000000001 degrees
+    And the response field "wcs_matrix.cd2_1" is approximately -0.000062134 within 0.000000001 degrees
+    And the response field "wcs_matrix.cd2_2" is approximately 0.000284972 within 0.000000001 degrees
 
   Scenario: Non-existent fits_path returns fits_not_found
     Given a non-existent FITS path

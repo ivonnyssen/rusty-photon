@@ -3,7 +3,7 @@ use std::panic::{self, UnwindSafe};
 use std::sync::Once;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
-use erfars::astrometry::Atco13;
+use erfars::astrometry::{Atco13, Atoc13};
 use erfars::constants::{ERFA_DD2R, ERFA_DPI, ERFA_DR2D};
 use erfars::ephemerides::{Epv00, Moon98};
 use erfars::rotationtime::Gst06a;
@@ -13,8 +13,8 @@ use erfars::ERFAResult;
 use crate::derived;
 use crate::site::Site;
 use crate::types::{
-    AltAz, EphemerisError, IcrsCoord, LocalSiderealTime, MoonInfo, RiseSet, SideOfPier, SunInfo,
-    TwilightKind, TwilightWindow,
+    AltAz, EphemerisError, IcrsCoord, LocalSiderealTime, MoonInfo, RefractionConditions, RiseSet,
+    SideOfPier, SunInfo, TwilightKind, TwilightWindow,
 };
 use crate::Ephemeris;
 
@@ -26,6 +26,39 @@ pub struct ErfarsEphemeris;
 impl ErfarsEphemeris {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Topocentric alt/az for an ICRS target with caller-controlled
+    /// refraction: explicit atmospheric conditions, or `None` for the
+    /// pure geometric (unrefracted) transform. The trait's
+    /// [`Ephemeris::alt_az`] is this with the default conditions.
+    pub fn alt_az_with_conditions(
+        &self,
+        site: &Site,
+        target: IcrsCoord,
+        time: DateTime<Utc>,
+        refraction: Option<RefractionConditions>,
+    ) -> Result<AltAz, EphemerisError> {
+        run_with_guard("alt_az_with_conditions", Ok(nan_alt_az()), || {
+            let jds = time_jds(time);
+            alt_az_conditions_at(site, target, &jds, refraction)
+        })
+    }
+
+    /// The inverse of [`Self::alt_az_with_conditions`]: the ICRS
+    /// coordinates whose observed position at `site` and `time` is
+    /// the given alt/az under the given refraction conditions.
+    pub fn icrs_from_alt_az(
+        &self,
+        site: &Site,
+        observed: AltAz,
+        time: DateTime<Utc>,
+        refraction: Option<RefractionConditions>,
+    ) -> Result<IcrsCoord, EphemerisError> {
+        run_with_guard("icrs_from_alt_az", Ok(nan_icrs()), || {
+            let jds = time_jds(time);
+            icrs_conditions_at(site, observed, &jds, refraction)
+        })
     }
 }
 
@@ -235,21 +268,41 @@ pub(crate) fn lst_hours(site: &Site, jds: &TimeJds) -> f64 {
     (gast_hours + site.longitude_degrees / 15.0).rem_euclid(24.0)
 }
 
-/// Topocentric alt/az for an ICRS target at the given UTC time.
+/// Topocentric alt/az for an ICRS target at the given UTC time, under
+/// the default amateur-rig refraction conditions documented on the
+/// trait.
 pub(crate) fn alt_az_at(
     site: &Site,
     target: IcrsCoord,
     jds: &TimeJds,
 ) -> Result<AltAz, EphemerisError> {
+    alt_az_conditions_at(site, target, jds, Some(RefractionConditions::default()))
+}
+
+/// ERFA refraction inputs (phpa, tc, rh, wl) for the given conditions.
+/// `None` disables refraction entirely: ERFA's `Refco` yields zero
+/// refraction constants for non-positive pressure, so the transform
+/// degrades to the pure geometric (unrefracted) one.
+fn erfa_refraction_inputs(refraction: Option<RefractionConditions>) -> (f64, f64, f64, f64) {
+    match refraction {
+        Some(c) => (c.pressure_hpa, c.temperature_c, 0.5, 0.55),
+        None => (0.0, 10.0, 0.5, 0.55),
+    }
+}
+
+/// Topocentric alt/az for an ICRS target with explicit refraction
+/// conditions (`None` = unrefracted).
+pub(crate) fn alt_az_conditions_at(
+    site: &Site,
+    target: IcrsCoord,
+    jds: &TimeJds,
+    refraction: Option<RefractionConditions>,
+) -> Result<AltAz, EphemerisError> {
     let rc = target.ra_hours * 15.0 * ERFA_DD2R;
     let dc = target.dec_degrees * ERFA_DD2R;
     let elong = site.longitude_degrees * ERFA_DD2R;
     let phi = site.latitude_degrees * ERFA_DD2R;
-    // Default amateur-rig conditions, documented on the trait.
-    let phpa = 1013.25;
-    let tc = 10.0;
-    let rh = 0.5;
-    let wl = 0.55;
+    let (phpa, tc, rh, wl) = erfa_refraction_inputs(refraction);
     let result = Atco13(
         rc, dc, 0.0, 0.0, 0.0, 0.0, jds.utc1, jds.utc2, 0.0, elong, phi, 0.0, 0.0, 0.0, phpa, tc,
         rh, wl,
@@ -261,6 +314,31 @@ pub(crate) fn alt_az_at(
     Ok(AltAz {
         altitude_degrees,
         azimuth_degrees,
+    })
+}
+
+/// ICRS coordinates whose observed position at `site` is the given
+/// alt/az — the inverse of [`alt_az_conditions_at`], via ERFA's
+/// `Atoc13` with observed type `'A'` (azimuth / zenith distance).
+pub(crate) fn icrs_conditions_at(
+    site: &Site,
+    observed: AltAz,
+    jds: &TimeJds,
+    refraction: Option<RefractionConditions>,
+) -> Result<IcrsCoord, EphemerisError> {
+    let ob1 = observed.azimuth_degrees * ERFA_DD2R;
+    let ob2 = (90.0 - observed.altitude_degrees) * ERFA_DD2R;
+    let elong = site.longitude_degrees * ERFA_DD2R;
+    let phi = site.latitude_degrees * ERFA_DD2R;
+    let (phpa, tc, rh, wl) = erfa_refraction_inputs(refraction);
+    let result = Atoc13(
+        'A', ob1, ob2, jds.utc1, jds.utc2, 0.0, elong, phi, 0.0, 0.0, 0.0, phpa, tc, rh, wl,
+    )
+    .map_err(EphemerisError::InvalidAltAzInputs)?;
+    let (rc, dc) = result.0;
+    Ok(IcrsCoord {
+        ra_hours: (rc * ERFA_DR2D / 15.0).rem_euclid(24.0),
+        dec_degrees: dc * ERFA_DR2D,
     })
 }
 
@@ -495,6 +573,79 @@ mod tests {
             (alt.altitude_degrees - 47.6).abs() < 1.5,
             "polaris altitude {:.2}° not close to Seattle latitude",
             alt.altitude_degrees
+        );
+    }
+
+    /// The observed→ICRS inverse must undo the ICRS→observed forward
+    /// transform to sub-arcsecond accuracy, both refracted and not.
+    #[test]
+    fn icrs_from_alt_az_round_trips_the_forward_transform() {
+        let eph = ErfarsEphemeris::new();
+        let target = IcrsCoord {
+            ra_hours: 5.5,
+            dec_degrees: 38.0,
+        };
+        let t = Utc.with_ymd_and_hms(2026, 8, 1, 8, 0, 0).unwrap();
+        for refraction in [Some(RefractionConditions::default()), None] {
+            let observed = eph
+                .alt_az_with_conditions(&site_seattle(), target, t, refraction)
+                .unwrap();
+            let back = eph
+                .icrs_from_alt_az(&site_seattle(), observed, t, refraction)
+                .unwrap();
+            let dra_arcsec = (back.ra_hours - target.ra_hours) * 15.0 * 3600.0;
+            let ddec_arcsec = (back.dec_degrees - target.dec_degrees) * 3600.0;
+            assert!(
+                dra_arcsec.abs() < 1.0 && ddec_arcsec.abs() < 1.0,
+                "round trip (refraction {:?}) off by ({:.3}\", {:.3}\")",
+                refraction,
+                dra_arcsec,
+                ddec_arcsec
+            );
+        }
+    }
+
+    /// At ~45° altitude, refraction lifts the observed altitude by
+    /// roughly one arcminute; the unrefracted transform must not.
+    #[test]
+    fn refraction_lifts_altitude_by_about_an_arcminute_at_45_degrees() {
+        let eph = ErfarsEphemeris::new();
+        let t = Utc.with_ymd_and_hms(2026, 8, 1, 8, 0, 0).unwrap();
+        // A target at exactly 45° geometric altitude, minted via the
+        // unrefracted inverse so the test doesn't depend on the sky
+        // configuration at the chosen instant.
+        let target = eph
+            .icrs_from_alt_az(
+                &site_seattle(),
+                AltAz {
+                    altitude_degrees: 45.0,
+                    azimuth_degrees: 180.0,
+                },
+                t,
+                None,
+            )
+            .unwrap();
+        let refracted = eph
+            .alt_az_with_conditions(
+                &site_seattle(),
+                target,
+                t,
+                Some(RefractionConditions::default()),
+            )
+            .unwrap();
+        let geometric = eph
+            .alt_az_with_conditions(&site_seattle(), target, t, None)
+            .unwrap();
+        let lift_arcmin = (refracted.altitude_degrees - geometric.altitude_degrees) * 60.0;
+        assert!(
+            (0.4..3.0).contains(&lift_arcmin),
+            "refraction lift at alt {:.1}° was {:.2}′; expected arcminute scale",
+            geometric.altitude_degrees,
+            lift_arcmin
+        );
+        assert!(
+            (refracted.azimuth_degrees - geometric.azimuth_degrees).abs() < 0.01,
+            "refraction must not move azimuth"
         );
     }
 

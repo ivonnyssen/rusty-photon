@@ -34,6 +34,24 @@ pub struct CannedWcs {
     pub pixel_scale_arcsec: f64,
     pub rotation_deg: f64,
     pub solver: String,
+    /// Full CRPIX + CD-matrix mapping mirrored from the wrapper's
+    /// `wcs_matrix` response field. `None` serializes as an explicit
+    /// `null`, matching a wrapper whose `.wcs` sidecar lacked a
+    /// complete six-key set.
+    pub wcs_matrix: Option<CannedWcsMatrix>,
+}
+
+/// The wrapper's nested `wcs_matrix` object: CRPIX in FITS 1-based
+/// pixels, CD matrix in degrees per pixel. Mirrors `WcsMatrix` in
+/// `services/plate-solver/src/api.rs`.
+#[derive(Clone, Copy, Debug)]
+pub struct CannedWcsMatrix {
+    pub crpix1: f64,
+    pub crpix2: f64,
+    pub cd1_1: f64,
+    pub cd1_2: f64,
+    pub cd2_1: f64,
+    pub cd2_2: f64,
 }
 
 /// Canned response variants the stub can return for `POST /api/v1/solve`.
@@ -91,7 +109,9 @@ pub enum StubBehavior {
 
 impl StubBehavior {
     /// Default canned WCS used by happy-path scenarios: RA 10.6848°
-    /// (≈ M31), Dec 41.269°, 1.05"/px scale, 12.3° rotation.
+    /// (≈ M31), Dec 41.269°, 1.05"/px scale, 12.3° rotation, plus a
+    /// populated matrix consistent with that scale (2.9167e-4 deg/px,
+    /// unrotated axes, negative determinant = normal parity).
     pub fn default_canned_wcs() -> Self {
         Self::Canned(CannedWcs {
             ra_center: 10.6848,
@@ -99,6 +119,14 @@ impl StubBehavior {
             pixel_scale_arcsec: 1.05,
             rotation_deg: 12.3,
             solver: "stub-astap-1.0".to_string(),
+            wcs_matrix: Some(CannedWcsMatrix {
+                crpix1: 512.0,
+                crpix2: 384.0,
+                cd1_1: -2.9167e-4,
+                cd1_2: 0.0,
+                cd2_1: 0.0,
+                cd2_2: 2.9167e-4,
+            }),
         })
     }
 }
@@ -235,6 +263,7 @@ async fn solve_handler(
                     pixel_scale_arcsec: template.pixel_scale_arcsec,
                     rotation_deg: template.rotation_deg,
                     solver: template.solver.clone(),
+                    wcs_matrix: template.wcs_matrix,
                 }),
                 Err(reason) => {
                     let body = Json(serde_json::json!({
@@ -283,12 +312,26 @@ async fn solve_handler(
 }
 
 fn canned_response(wcs: &CannedWcs) -> axum::response::Response {
+    // Hand-built JSON: bdd-infra depends on serde_json only, so the
+    // matrix is mapped field-by-field instead of deriving Serialize.
+    let wcs_matrix = match &wcs.wcs_matrix {
+        Some(m) => serde_json::json!({
+            "crpix1": m.crpix1,
+            "crpix2": m.crpix2,
+            "cd1_1": m.cd1_1,
+            "cd1_2": m.cd1_2,
+            "cd2_1": m.cd2_1,
+            "cd2_2": m.cd2_2,
+        }),
+        None => serde_json::Value::Null,
+    };
     Json(serde_json::json!({
         "ra_center": wcs.ra_center,
         "dec_center": wcs.dec_center,
         "pixel_scale_arcsec": wcs.pixel_scale_arcsec,
         "rotation_deg": wcs.rotation_deg,
         "solver": wcs.solver,
+        "wcs_matrix": wcs_matrix,
     }))
     .into_response()
 }
@@ -335,6 +378,7 @@ mod tests {
             pixel_scale_arcsec: 1.05,
             rotation_deg: 0.0,
             solver: "stub".to_string(),
+            wcs_matrix: None,
         }
     }
 
