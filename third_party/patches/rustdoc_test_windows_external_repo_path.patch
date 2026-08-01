@@ -79,7 +79,7 @@
  
      let argv_str = argv
          .iter()
-@@ -226,20 +261,222 @@
+@@ -226,20 +261,225 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -193,18 +193,21 @@
 +}
 +
 +# Resolve a runfiles-relative path to its absolute execroot target, as a file
-+# first and then as a directory. $null when the manifest has no live entry.
++# first and then as a directory, and confirm the target is really there.
++# $null when the manifest has no live entry, so the caller keeps the original
++# spelling; a mapped-but-missing target warns on the way out, because a
++# manifest whose target does not exist is the one failure this resolver cannot
++# route around and the least visible from rustdoc's own diagnostics.
 +function RFR($p) {
 +    $k = RFK $p
 +    if (-not $k) { return $null }
 +    RFI
 +    $t = $script:RFM[$k]
-+    if ($t) {
-+        if (Test-Path $t) { return $t }
-+        Write-Warning ('runfiles manifest maps ' + $k + ' to missing ' + $t)
-+        return $null
-+    }
-+    return $script:RFMD[$k]
++    if (-not $t) { $t = $script:RFMD[$k] }
++    if (-not $t) { return $null }
++    if (Test-Path $t) { return $t }
++    Write-Warning ('runfiles manifest maps ' + $k + ' to missing ' + $t)
++    return $null
 +}
 +
 +# Windows PowerShell 5.1 marshals arguments to native commands by pasting the
@@ -309,7 +312,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +503,29 @@
+@@ -266,14 +506,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -340,7 +343,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +539,11 @@
+@@ -287,5 +542,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  
