@@ -1900,7 +1900,11 @@ reads two fields: the callback URL and `auth`. (The other dialed kind is
 the event plugin, whose `webhook_url` follows these rules identically —
 see [Delivery: Webhooks](#delivery-webhooks).)
 `invoke_url` must be an `http://` or `https://` URL
-(the same rule `server.advertised_url` follows) and `auth`, when present,
+(the same rule `server.advertised_url` follows) carrying no embedded
+credentials — `https://user:pass@host/…` is rejected, because `rp` logs
+the callback URL on every attempt and the `auth` block beside it, applied
+per request and marked sensitive, is the supported way to authenticate.
+`auth`, when present,
 must be a complete `{username, password}` pair; either one malformed is
 rejected at config load with the offending entry named
 (`plugins.0.invoke_url`, `plugins.0.auth`), so `rp doctor` and

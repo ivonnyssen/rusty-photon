@@ -335,7 +335,9 @@ impl EventBus {
     fn subscriber_from_registration(entry: &Value) -> Result<Option<EventPlugin>, String> {
         let (Some(name), Some(webhook_url), Some(subscribes_to)) = (
             entry.get("name").and_then(Value::as_str),
-            entry.get("webhook_url").and_then(Value::as_str),
+            entry
+                .get(crate::config::EVENT_URL_FIELD)
+                .and_then(Value::as_str),
             entry.get("subscribes_to").and_then(Value::as_array),
         ) else {
             return Ok(None);

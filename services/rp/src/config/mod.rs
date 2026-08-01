@@ -315,17 +315,30 @@ fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
         .collect()
 }
 
-/// The registration field naming the endpoint rp POSTs to, for the two
-/// plugin types rp dials; `None` for every other type, whose keys rp never
-/// reads. The single place that mapping is written — shared with
-/// [`crate::session::SessionManager`]'s and [`crate::events::EventBus`]'s
-/// registration lookups, which must interpret `auth` on exactly the
-/// registrations validated here.
+/// The registration field naming the endpoint rp POSTs a session start
+/// to (rp.md § Orchestrator Registration). Read by
+/// [`crate::session::SessionManager`]'s registration lookup and validated
+/// by [`plugin_registration_errors`] through this one name, so the two
+/// cannot drift.
+pub const ORCHESTRATOR_URL_FIELD: &str = "invoke_url";
+
+/// The registration field naming the endpoint rp POSTs each subscribed
+/// event to (rp.md § Delivery: Webhooks). Read by
+/// [`crate::events::EventBus`]'s registration lookup and validated by
+/// [`plugin_registration_errors`] through this one name.
+pub const EVENT_URL_FIELD: &str = "webhook_url";
+
+/// The callback field rp POSTs to, for the two plugin types rp dials;
+/// `None` for every other type, whose keys rp never reads. The single
+/// place that mapping is written. doctor's `RpView::plugin_targets` has
+/// to restate it — it reads rp's config as opaque JSON from another
+/// crate — so the two are kept in step by their tests, not by the
+/// compiler.
 fn dialed_url_field(plugin: &Value) -> Option<&'static str> {
     if is_orchestrator(plugin) {
-        Some("invoke_url")
+        Some(ORCHESTRATOR_URL_FIELD)
     } else if is_event_plugin(plugin) {
-        Some("webhook_url")
+        Some(EVENT_URL_FIELD)
     } else {
         None
     }
@@ -336,7 +349,8 @@ fn dialed_url_field(plugin: &Value) -> Option<&'static str> {
 /// is: a bad scheme or a non-URL is a permanent configuration fault, and
 /// left to first use it would only surface as a failed delivery in the
 /// middle of the night. Mirrors [`server::AdvertisedUrl`]'s rule rather
-/// than inventing a second one.
+/// than inventing a second one, plus one rule of its own — see the
+/// userinfo branch.
 fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
     let Some(url) = value.as_str() else {
         return Err(format!("must be a string, got {value}"));
@@ -348,9 +362,21 @@ fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
     // grammar requires a host — so a successful parse here is a URL rp
     // can post to, and the host-less case arrives as a parse error
     // ("empty host") rather than needing a branch of its own.
-    reqwest::Url::parse(url)
-        .map(|_| ())
-        .map_err(|e| format!("is not a valid URL ({e}): {url:?}"))
+    let parsed =
+        reqwest::Url::parse(url).map_err(|e| format!("is not a valid URL ({e}): {url:?}"))?;
+    // Embedded credentials are rejected rather than honored: rp logs this
+    // URL on every delivery attempt, so a password in it is a password in
+    // the night's logs, and the sibling `auth` block — which rp applies
+    // per-request, marked sensitive — would silently win over it anyway.
+    // The URL is deliberately absent from this message for the same
+    // reason: a `FieldError` is rendered by the UI and `rp doctor`.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(
+            "must not embed credentials in the URL; put them in the sibling `auth` block"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Whether a plugin registration is the orchestrator kind — the single
@@ -826,6 +852,13 @@ mod tests {
                 ("ftp://127.0.0.1:11170/invoke", "http://"),
                 ("127.0.0.1:11170/invoke", "http://"),
                 ("http://", "empty host"),
+                // Embedded credentials: rp logs the callback URL on every
+                // attempt, and the sibling `auth` block would win anyway.
+                (
+                    "https://observatory:s3cret@127.0.0.1:11170/invoke",
+                    "must not embed credentials",
+                ),
+                ("https://observatory@127.0.0.1:11170/invoke", "credentials"),
             ] {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("config.json");
@@ -851,6 +884,14 @@ mod tests {
                 assert!(
                     error.contains(&format!("plugins.0.{url_field}")) && error.contains(expected),
                     "unexpected error for {plugin_type} {url:?}: {error}"
+                );
+                // The whole point of rejecting embedded credentials is to
+                // keep them out of logs, so the rejection itself must not
+                // echo one back: a `FieldError` is rendered by the UI and
+                // by `rp doctor`.
+                assert!(
+                    !error.contains("s3cret"),
+                    "the rejection leaked the embedded password: {error}"
                 );
             }
         }

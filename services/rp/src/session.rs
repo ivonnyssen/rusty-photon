@@ -170,7 +170,10 @@ impl Orchestrator {
         let Some(entry) = plugins.iter().find(|p| crate::config::is_orchestrator(p)) else {
             return Ok(None);
         };
-        let Some(invoke_url) = entry.get("invoke_url").and_then(|v| v.as_str()) else {
+        let Some(invoke_url) = entry
+            .get(crate::config::ORCHESTRATOR_URL_FIELD)
+            .and_then(|v| v.as_str())
+        else {
             return Ok(None);
         };
         let name = entry
