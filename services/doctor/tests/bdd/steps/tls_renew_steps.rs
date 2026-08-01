@@ -157,7 +157,11 @@ pub async fn https_get_capturing_peer(
                     "attempt {attempt} after {:?}: {e}",
                     started.elapsed()
                 ));
-                tokio::time::sleep(PROBE_BACKOFF).await;
+                // Nothing follows the last attempt, so backing off there
+                // would only delay the panic and pad its elapsed time.
+                if attempt < PROBE_ATTEMPTS {
+                    tokio::time::sleep(PROBE_BACKOFF).await;
+                }
             }
             // A TLS alert, an untrusted certificate, a refused connect: the
             // server is answering, just not the way the scenario expects.

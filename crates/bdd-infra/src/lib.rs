@@ -162,12 +162,16 @@ const DEFAULT_BDD_LOG: &str = "warn,rusty_photon_tls=debug";
 /// subscriber first keeps it).
 ///
 /// `RUST_LOG` overrides [`DEFAULT_BDD_LOG`] as usual, which is how you turn a
-/// suite up while reproducing a failure locally. ANSI is off: this writes into
-/// a Bazel test log, not a terminal.
+/// suite up while reproducing a failure locally; an unset *or unparseable*
+/// one falls back to the default rather than taking the suite down over an
+/// environment variable (the convention `rusty-photon-service-lifecycle`'s
+/// `build_env_filter` set). ANSI is off: this writes into a Bazel test log,
+/// not a terminal.
 pub fn init_test_tracing() {
-    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_BDD_LOG.to_string());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_BDD_LOG));
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .try_init();
