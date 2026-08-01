@@ -146,6 +146,15 @@ impl Mat3 {
         Vec3::new(self.rows[0][j], self.rows[1][j], self.rows[2][j])
     }
 
+    /// The determinant: +1 for a proper rotation, −1 for an improper
+    /// (mirrored) orthogonal matrix.
+    pub fn determinant(self) -> f64 {
+        let r = self.rows;
+        r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+    }
+
     /// Rodrigues rotation about a unit axis by `angle_rad`.
     pub fn from_axis_angle(axis: Vec3, angle_rad: f64) -> Self {
         let (s, c) = angle_rad.sin_cos();
@@ -299,8 +308,12 @@ pub fn rotation_axis_angle(r: Mat3) -> Result<(Vec3, f64)> {
 /// rotation about that axis. Each consecutive segment must rotate by
 /// at least ~1°, and the sign-aligned segment axes must agree within
 /// 1° — a disagreement means something other than the RA axis moved
-/// (a meridian flip, a bumped mount). `toward` picks the hemisphere,
-/// exactly as for [`axis_from_three_points`].
+/// (a meridian flip, a bumped mount). Consecutive attitudes must
+/// share parity: a rigid optical train cannot change its mirror
+/// state, so an improper relative transform means a solve lied about
+/// parity and is rejected rather than yielding a meaningless axis.
+/// `toward` picks the hemisphere, exactly as for
+/// [`axis_from_three_points`].
 pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
     if attitudes.len() < 2 {
         return Err(PolarAlignError::Geometry(
@@ -309,15 +322,23 @@ pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
     }
     let mut segments: Vec<Vec3> = Vec::with_capacity(attitudes.len() - 1);
     for (i, pair) in attitudes.windows(2).enumerate() {
-        let (axis, angle) =
-            rotation_axis_angle(relative_rotation(pair[0], pair[1])).map_err(|e| {
-                PolarAlignError::Geometry(format!(
-                    "between measurement points {} and {}: {}",
-                    i + 1,
-                    i + 2,
-                    e
-                ))
-            })?;
+        let relative = relative_rotation(pair[0], pair[1]);
+        if relative.determinant() < 0.0 {
+            return Err(PolarAlignError::Geometry(format!(
+                "the camera parity flipped between measurement points {} and {}; the solves \
+                 disagree on the optical train's mirror state",
+                i + 1,
+                i + 2
+            )));
+        }
+        let (axis, angle) = rotation_axis_angle(relative).map_err(|e| {
+            PolarAlignError::Geometry(format!(
+                "between measurement points {} and {}: {}",
+                i + 1,
+                i + 2,
+                e
+            ))
+        })?;
         if angle < MIN_ATTITUDE_ROTATION_RAD {
             return Err(PolarAlignError::Geometry(format!(
                 "the mount rotated only {:.2}° between measurement points {} and {}; at least \
@@ -757,6 +778,26 @@ mod tests {
             .mul_mat(a0);
         let err = axis_from_attitudes(&[a0, a1, a2], unit_from_radec(0.0, 90.0)).unwrap_err();
         assert!(err.to_string().contains("disagree"), "{err}");
+    }
+
+    /// A solve that flips parity mid-measurement makes the relative
+    /// transform improper; the extraction must reject it instead of
+    /// producing a meaningless axis.
+    #[test]
+    fn test_axis_from_attitudes_rejects_a_parity_flip() {
+        let axis = unit_from_radec(15.0, 88.9);
+        let a0 = attitude_with_boresight(unit_from_radec(20.0, 84.0));
+        assert!(a0.determinant() > 0.0, "test attitude starts proper");
+        let rotated = Mat3::from_axis_angle(axis, 45.0_f64.to_radians()).mul_mat(a0);
+        let flipped = Mat3::from_columns(
+            rotated.column(0).scale(-1.0),
+            rotated.column(1),
+            rotated.column(2),
+        );
+        assert!(flipped.determinant() < 0.0, "flipped attitude is improper");
+        let err = axis_from_attitudes(&[a0, flipped], unit_from_radec(0.0, 90.0)).unwrap_err();
+        assert!(err.to_string().contains("parity flipped"), "{err}");
+        assert!(err.to_string().contains("points 1 and 2"), "{err}");
     }
 
     #[test]

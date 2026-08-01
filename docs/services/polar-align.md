@@ -381,8 +381,12 @@ tests are the executable spec):
   disagreement means something other than the RA axis moved (a
   meridian flip, a bumped mount) and is an error. A rotation within
   numerical noise of 180° is rejected too: its axis is ambiguous,
-  and a real near-180° relative rotation is itself flip-shaped. The
-  surviving segment axes are averaged, sign toward the visible pole.
+  and a real near-180° relative rotation is itself flip-shaped.
+  Consecutive attitudes must share parity — a rigid optical train
+  cannot change its mirror state, so an improper relative transform
+  (a solve lying about parity) is rejected rather than silently
+  yielding a meaningless axis. The surviving segment axes are
+  averaged, sign toward the visible pole.
   This works at any pointing, including ones where the solved
   centers barely separate — the camera *frame* still rotates by the
   full sweep even when the boresight barely moves.
