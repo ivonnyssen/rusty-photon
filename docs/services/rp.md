@@ -369,6 +369,18 @@ operator wrote is how the writer and the scanner drift apart in the
 first place, and the symptom otherwise is a night of frames that
 silently count for nothing.
 
+**An empty pattern is malformed, not unset**, and both fields say so
+alike. Absent (or `null`) is how each is turned off — `directory_pattern`
+falls back to its documented default, `file_naming_pattern` falls back to
+flat `<uuid8>.fits` capture — while `""` is a pattern with nothing in it,
+which for a directory means a path with no components the progress scan
+could never match. The two are different states, so only the spelling
+that means "unset" is read that way, and the load error names it. This
+matters most through the config UI, where clearing a text box is the
+natural gesture for turning a field off: the BFF sends `null` for a
+cleared optional field precisely so that gesture reaches rp as the state
+the operator intended (ui-htmx.md § Schema-driven config form).
+
 **Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
 (§ Capture Tool Details) feed `render`, and rendering replaces the flat
 `<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
@@ -379,11 +391,10 @@ prefixed before the UUID-8 suffix, e.g.
 resolver regardless of the surrounding path. `directory_pattern`
 defaults to `"{target}/{night_date}/{frame_type}"` when unset but
 `file_naming_pattern` is configured — only the file pattern needs
-explicit configuration to opt in. **Not yet landed:** the on-disk frame
-scan behind full target *progress* derivation (`get_target`,
-`list_targets`, `get_session_progress`) doesn't call `parse` yet —
-`capture` calls `parse` today only to compute each new frame's
-`{frame_number}`, a narrower reuse of the same primitive.
+explicit configuration to opt in. The same `parse` runs on both sides of
+the round trip: `capture` calls it to compute each new frame's
+`{frame_number}`, and the progress scan calls it to attribute frames on
+disk back to a target and goal (§ Progress derivation).
 
 The full UUID is the canonical document identifier — used by the API,
 the FITS header, and the sidecar's `id` field. The 8-char suffix

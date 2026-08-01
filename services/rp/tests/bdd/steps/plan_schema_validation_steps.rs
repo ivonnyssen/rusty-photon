@@ -139,3 +139,18 @@ fn validation_includes_path(world: &mut RpWorld, expected: String) {
         "expected an error at path {expected:?}, got paths {paths:?}"
     );
 }
+
+#[then(expr = "the validation error at path {string} should mention {string}")]
+fn validation_message_mentions(world: &mut RpWorld, path: String, needle: String) {
+    let payload = validation_payload(world);
+    let errors = payload["errors"].as_array().expect("errors must be a list");
+    let msg = errors
+        .iter()
+        .find(|e| e["path"].as_str() == Some(path.as_str()))
+        .and_then(|e| e["msg"].as_str())
+        .unwrap_or_else(|| panic!("no error at path {path:?}: {errors:?}"));
+    assert!(
+        msg.contains(&needle),
+        "error at {path:?} does not mention {needle:?}: {msg:?}"
+    );
+}

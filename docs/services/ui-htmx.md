@@ -281,6 +281,14 @@ for:
   producing a non-field driver parse error. An empty *required* number keeps the
   prior value (clearing a port can't silently become OS-assigned); an empty
   *optional* number (`discovery_port`) persists `null`.
+- **Clearing an optional field unsets it, in the spelling that means it.**
+  A cleared *optional* text box persists `null`, exactly as a cleared optional
+  number does — `""` and absent are different states, and only `null` is the
+  one that means "unset". Drivers are entitled to distinguish them: rp reads an
+  absent `session.file_naming_pattern` as "no templated naming" but an empty
+  one as malformed, so sending `""` would turn a clear into a config rp
+  refuses to load. A cleared *required* text box still sends `""`, leaving the
+  driver to reject its own empty required field.
 - **Read-only fields come from the driver, not a BFF list.** The hard-read-only
   tier is whatever the driver reports in `config.schema`'s `read_only_fields`
   (e.g. `server.port` — a rebind the BFF can't follow — and a device `enabled`

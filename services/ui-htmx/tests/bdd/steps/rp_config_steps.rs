@@ -69,6 +69,16 @@ fn rp_config_contains(world: &mut UiWorld, needle: String) {
     );
 }
 
+#[then(regex = r#"^rp's config file on disk has "([\w.]+)" set to null$"#)]
+fn rp_config_null_at(world: &mut UiWorld, path: String) {
+    let on_disk = world.rp_config_on_disk();
+    let pointer = format!("/{}", path.replace('.', "/"));
+    let value = on_disk
+        .pointer(&pointer)
+        .unwrap_or_else(|| panic!("no {path} in rp's config on disk: {on_disk}"));
+    assert!(value.is_null(), "{path} is {value}, not null");
+}
+
 #[then(regex = r#"^rp's config file on disk does not contain the string "([^"]+)"$"#)]
 fn rp_config_lacks(world: &mut UiWorld, needle: String) {
     let on_disk = world.rp_config_on_disk().to_string();
