@@ -303,8 +303,9 @@ impl EventBus {
     ) -> Result<Self, String> {
         let plugins = plugin_configs
             .iter()
-            .filter(|p| crate::config::is_event_plugin(p))
-            .filter_map(|p| Self::subscriber_from_registration(p).transpose())
+            .enumerate()
+            .filter(|(_, p)| crate::config::is_event_plugin(p))
+            .filter_map(|(index, p)| Self::subscriber_from_registration(index, p).transpose())
             .collect::<Result<Vec<_>, String>>()?;
 
         let client = if plugins.is_empty() {
@@ -332,7 +333,15 @@ impl EventBus {
     /// no name, no `webhook_url`, or no `subscribes_to` list. A malformed
     /// `auth` is the one hard error: read as "no credential" it would 401
     /// every event of the night, silently, on a fire-and-forget path.
-    fn subscriber_from_registration(entry: &Value) -> Result<Option<EventPlugin>, String> {
+    ///
+    /// `index` is the registration's position in `plugins[]`, so the error
+    /// names the same path `validate_config` and doctor use
+    /// (`plugins.<index>.auth`) — nothing stops two registrations sharing
+    /// a `name`, and the index is what an operator can act on.
+    fn subscriber_from_registration(
+        index: usize,
+        entry: &Value,
+    ) -> Result<Option<EventPlugin>, String> {
         let (Some(name), Some(webhook_url), Some(subscribes_to)) = (
             entry.get("name").and_then(Value::as_str),
             entry
@@ -347,7 +356,7 @@ impl EventBus {
             None | Some(Value::Null) => None,
             Some(value) => Some(
                 serde_json::from_value::<ClientAuthConfig>(value.clone())
-                    .map_err(|e| format!("plugins[{name}].auth: {e}"))?,
+                    .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
             ),
         };
 
@@ -966,7 +975,7 @@ mod tests {
             panic!("a half-written credential must fail startup");
         };
         assert!(
-            error.contains("plugins[image-analyzer].auth") && error.contains("password"),
+            error.contains("plugins.0.auth (image-analyzer)") && error.contains("password"),
             "a half-written credential must name the field it broke: {error}"
         );
     }
@@ -1075,9 +1084,10 @@ mod tests {
 
         let untrusting = EventBus::from_config(&plugins, None).unwrap();
         untrusting.emit("filter_switch", json!({"filter_name": "Ha"}));
-        // Nothing to wait for on the failing side, so give the delivery
-        // task the same budget the succeeding one needed before pinning
-        // that the handler count did not move.
+        // Absence has nothing to poll for, so this one pays its whole
+        // budget every run: a short grace period for the spawned task to
+        // reach the handshake and fail it, deliberately not
+        // DELIVERY_BUDGET, which is sized for a delivery that *arrives*.
         assert!(
             !wait_for_count(&hits, 2, Duration::from_millis(500)).await,
             "a bus without the CA must fail the handshake"

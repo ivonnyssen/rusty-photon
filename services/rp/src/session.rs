@@ -163,11 +163,21 @@ impl Orchestrator {
     /// Pick the orchestrator registration out of `plugins` and build its
     /// client. `Ok(None)` when no orchestrator is registered, or when its
     /// entry carries no `invoke_url` — there is nothing to POST to.
+    ///
+    /// Errors name the registration by its `plugins[]` index, the same
+    /// path `validate_config` and doctor use (`plugins.<index>.auth`),
+    /// with the plugin's own name beside it: nothing stops two
+    /// registrations sharing a `name`, and the index is what an operator
+    /// can act on.
     fn from_plugins(
         plugins: &[Value],
         ca_cert_path: Option<&Path>,
     ) -> Result<Option<Self>, String> {
-        let Some(entry) = plugins.iter().find(|p| crate::config::is_orchestrator(p)) else {
+        let Some((index, entry)) = plugins
+            .iter()
+            .enumerate()
+            .find(|(_, p)| crate::config::is_orchestrator(p))
+        else {
             return Ok(None);
         };
         let Some(invoke_url) = entry
@@ -185,11 +195,12 @@ impl Orchestrator {
             None | Some(Value::Null) => None,
             Some(value) => Some(
                 serde_json::from_value::<ClientAuthConfig>(value.clone())
-                    .map_err(|e| format!("plugins[{name}].auth: {e}"))?,
+                    .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
             ),
         };
-        let client = build_invoke_client(ca_cert_path)
-            .map_err(|e| format!("plugins[{name}]: failed to build the invoke HTTP client: {e}"))?;
+        let client = build_invoke_client(ca_cert_path).map_err(|e| {
+            format!("plugins.{index} ({name}): failed to build the invoke HTTP client: {e}")
+        })?;
 
         Ok(Some(Self {
             invoke_url: invoke_url.to_string(),
@@ -1709,7 +1720,7 @@ mod tests {
             .err()
             .expect("a half-written credential must fail startup");
         assert!(
-            error.contains("plugins[calibrator-flats].auth") && error.contains("password"),
+            error.contains("plugins.0.auth (calibrator-flats)") && error.contains("password"),
             "a half-written credential must name the field it broke: {error}"
         );
     }
@@ -1728,7 +1739,7 @@ mod tests {
                 .err()
                 .expect("an unreadable ca_cert must fail startup");
         assert!(
-            error.contains("plugins[calibrator-flats]") && error.contains("invoke HTTP client"),
+            error.contains("plugins.0 (calibrator-flats)") && error.contains("invoke HTTP client"),
             "unexpected error: {error}"
         );
     }

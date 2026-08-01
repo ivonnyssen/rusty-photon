@@ -885,7 +885,8 @@ mod tests {
             .err()
             .expect("build must fail when the registration can't be read");
         assert!(
-            err.to_string().contains("plugins[calibrator-flats].auth"),
+            err.to_string()
+                .contains("plugins.0.auth (calibrator-flats)"),
             "{err}"
         );
     }
