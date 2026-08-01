@@ -458,7 +458,7 @@ at.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential, doctor's CA for https) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a rig config addressing the bridge by host name (`<svc>.rig.<domain>`), where the loopback join is skipped by design. The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
+| `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential; for https, doctor's CA on a self-signed install and the platform store on an ACME one) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a rig config addressing the bridge by host name (`<svc>.rig.<domain>`), where the loopback join is skipped by design. The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
 
 ### Platform defaults
 
@@ -542,9 +542,17 @@ installed service, and the two paths are naturally exclusive:
   /management/v1/configureddevices` against the service's effective port
   (Alpaca-class services only — core services expose no management API and
   are fully covered by the config-side checks). The connection follows the
-  service's own config: HTTPS when its `server.tls` is set (doctor's
-  root-of-trust from the D6 lifecycle), credentials from the D6 machinery
-  when `server.auth` is on. `service.devices` reports the inventory; an
+  service's own config: HTTPS when its `server.tls` is set, credentials
+  from the D6 machinery when `server.auth` is on. The dialled host and
+  the root of trust come as a pair from the install's TLS story: a
+  self-signed install is probed at `localhost` (a SAN of every
+  doctor-issued cert) verified by doctor's own CA, while an ACME install
+  (`acme.json` present) is probed at the service's public name —
+  `<service>.<domain>` from `acme.json`'s `domain`, the same shape
+  sentinel's `probe_domain` dials — verified by the platform trust store,
+  since the wildcard's only SAN is `*.<domain>` and can never match
+  `localhost`. An unreadable `acme.json` keeps the self-signed shape
+  rather than guess at names. `service.devices` reports the inventory; an
   active unit that does not answer its own port is a `fail` (that is
   tomorrow's 2am failure); an authenticated endpoint doctor holds no
   credential for is a `warn` — the answer proves liveness but not

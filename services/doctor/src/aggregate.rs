@@ -82,21 +82,54 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
             )];
         }
     };
+    let acme_domain = acme_probe_domain(&ctx.config_dir);
     runtime.block_on(async {
         let mut checks = Vec::new();
         for probe in probes {
             match probe {
-                Probe::Devices(scan) => checks.push(probe_devices(ctx, scan).await),
+                Probe::Devices(scan) => {
+                    checks.push(probe_devices(ctx, scan, acme_domain.as_deref()).await);
+                }
                 Probe::ShellOut(scan, unit) => {
                     checks.extend(probe_shell_out(ctx, scan, unit).await);
                 }
             }
         }
         if let Some(fake_mount) = fake_mount {
-            checks.extend(probe_fake_mount(ctx, &fake_mount).await);
+            checks.extend(probe_fake_mount(ctx, &fake_mount, acme_domain.as_deref()).await);
         }
         checks
     })
+}
+
+/// The domain under which every service's public name lives on an ACME
+/// install: `acme.json`'s `domain`, the base of the wildcard the fleet
+/// serves. `None` on a self-signed install, and when `acme.json` is
+/// present but unreadable — the probes then keep the self-signed shape
+/// rather than guess at names.
+fn acme_probe_domain(config_dir: &std::path::Path) -> Option<String> {
+    if !crate::provision::acme_active(config_dir) {
+        return None;
+    }
+    match crate::provision::acme_config::load_acme_config(&config_dir.join("acme.json")) {
+        Ok(acme) => Some(acme.domain),
+        Err(e) => {
+            debug!("acme.json is present but unreadable ({e}); probing localhost");
+            None
+        }
+    }
+}
+
+/// The host the active-service probe dials: on an ACME install the
+/// service's public name — the wildcard's only SAN is `*.<domain>`, which
+/// can never match `localhost` — and on a self-signed install
+/// `localhost`, a SAN of every doctor-issued certificate. The same split
+/// sentinel's `probe_domain` config key answers for its service probes.
+fn probe_host(acme_domain: Option<&str>, service: &str) -> String {
+    match acme_domain {
+        Some(domain) => format!("{service}.{domain}"),
+        None => "localhost".to_string(),
+    }
 }
 
 /// What the fake-mount probe needs, gathered from the static scans.
@@ -148,7 +181,11 @@ fn fake_mount_probe_target(ctx: &Context) -> Option<FakeMountProbe> {
     })
 }
 
-async fn probe_fake_mount(ctx: &Context, probe: &FakeMountProbe) -> Vec<Check> {
+async fn probe_fake_mount(
+    ctx: &Context,
+    probe: &FakeMountProbe,
+    acme_domain: Option<&str>,
+) -> Vec<Check> {
     let origin = match reqwest::Url::parse(&probe.url) {
         Ok(parsed) => match parsed.origin().ascii_serialization() {
             origin if origin != "null" => origin,
@@ -162,9 +199,11 @@ async fn probe_fake_mount(ctx: &Context, probe: &FakeMountProbe) -> Vec<Check> {
         "probing the configured mount for the fake-mount hazard"
     );
 
-    // Trust doctor's own CA for an https mount, as every other probe
-    // does — the fleet's self-signed material is doctor-issued.
-    let ca_path = probe.url.starts_with("https").then(|| {
+    // Trust for an https mount follows the install's TLS story, as the
+    // devices probe does: doctor's own CA on a self-signed install (the
+    // fleet's material is doctor-issued), the platform store on an ACME
+    // one (the wildcard is publicly trusted; doctor's CA would reject it).
+    let ca_path = (probe.url.starts_with("https") && acme_domain.is_none()).then(|| {
         rusty_photon_tls::config::ca_cert_path(&crate::provision::pki_dir(&ctx.config_dir))
     });
     let Ok(client) = rusty_photon_tls::client::build_reqwest_client(ca_path.as_deref()) else {
@@ -242,34 +281,53 @@ struct ConfiguredDevice {
     unique_id: String,
 }
 
+/// The warn for a probe client that could not be built. With a CA to
+/// load, the failure is the missing-trust-root story and the pki fix
+/// applies; with none to load (ACME install, plain-HTTP probe) it is not
+/// a pki problem, and the pki suggestion would mislead.
+fn client_build_warn(service: Option<String>, had_ca: bool, e: &impl std::fmt::Display) -> Check {
+    if had_ca {
+        Check::warn(
+            "service.devices",
+            service,
+            format!(
+                "the service serves TLS but doctor could not load its trust root: {e} \
+                 — the probe was skipped"
+            ),
+            Some("run `rusty-photon-doctor tls issue` to (re)create the pki tree".to_string()),
+        )
+    } else {
+        Check::warn(
+            "service.devices",
+            service,
+            format!("doctor could not build its probe client: {e} — the probe was skipped"),
+            None,
+        )
+    }
+}
+
 /// Ask an active Alpaca service for its configured devices, following the
-/// service's own config: HTTPS when its `server.tls` is set (trusting
-/// doctor's CA), the observatory credential when its `server.auth` is on.
-async fn probe_devices(ctx: &Context, scan: &ServiceScan) -> Check {
+/// service's own config: HTTPS when its `server.tls` is set, the
+/// observatory credential when its `server.auth` is on. The dialled host
+/// and the root of trust come as a pair from the install's TLS story:
+/// `<service>.<domain>` verified by the platform store on an ACME
+/// install, `localhost` verified by doctor's own CA on a self-signed one.
+async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&str>) -> Check {
     let service = Some(scan.entry.name.to_string());
     let port = scan.effective_port();
     let tls_on = scan.server().is_some_and(|s| s.tls.is_some());
     let auth_on = scan.server().is_some_and(|s| s.auth.is_some());
     let scheme = if tls_on { "https" } else { "http" };
-    let url = format!("{scheme}://localhost:{port}/management/v1/configureddevices");
+    let host = probe_host(acme_domain, scan.entry.name);
+    let url = format!("{scheme}://{host}:{port}/management/v1/configureddevices");
     debug!(service = scan.entry.name, url, "probing the active service");
 
-    let ca_path = tls_on.then(|| {
+    let ca_path = (tls_on && acme_domain.is_none()).then(|| {
         rusty_photon_tls::config::ca_cert_path(&crate::provision::pki_dir(&ctx.config_dir))
     });
     let client = match rusty_photon_tls::client::build_reqwest_client(ca_path.as_deref()) {
         Ok(client) => client,
-        Err(e) => {
-            return Check::warn(
-                "service.devices",
-                service,
-                format!(
-                    "the service serves TLS but doctor could not load its trust root: {e} \
-                     — the probe was skipped"
-                ),
-                Some("run `rusty-photon-doctor tls issue` to (re)create the pki tree".to_string()),
-            );
-        }
+        Err(e) => return client_build_warn(service, ca_path.is_some(), &e),
     };
     let credential = if auth_on {
         crate::provision::read_credential(&ctx.config_dir)
@@ -589,6 +647,77 @@ mod tests {
                 && text.contains("Focuser \"EAF\" (#1)"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn test_client_build_warn_with_a_ca_suggests_the_pki_tree() {
+        let check = client_build_warn(Some("ppba-driver".to_string()), true, &"boom");
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(check.service.as_deref(), Some("ppba-driver"));
+        assert!(
+            check.detail.contains("could not load its trust root: boom"),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check.suggestion.unwrap().contains("pki tree"),
+            "the CA-loading failure keeps the pki suggestion"
+        );
+    }
+
+    #[test]
+    fn test_client_build_warn_without_a_ca_gives_no_pki_guidance() {
+        let check = client_build_warn(Some("ppba-driver".to_string()), false, &"boom");
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check
+                .detail
+                .contains("could not build its probe client: boom"),
+            "{}",
+            check.detail
+        );
+        assert_eq!(check.suggestion, None);
+    }
+
+    #[test]
+    fn test_probe_host_is_localhost_without_an_acme_domain() {
+        assert_eq!(probe_host(None, "ppba-driver"), "localhost");
+    }
+
+    #[test]
+    fn test_probe_host_is_the_public_name_under_the_acme_domain() {
+        assert_eq!(
+            probe_host(Some("pier1.example.com"), "filemonitor"),
+            "filemonitor.pier1.example.com"
+        );
+    }
+
+    #[test]
+    fn test_acme_probe_domain_is_none_without_acme_json() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(acme_probe_domain(dir.path()), None);
+    }
+
+    #[test]
+    fn test_acme_probe_domain_reads_the_domain_from_acme_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            r#"{ "email": "op@example.com", "domain": "pier1.example.com",
+                 "dns_provider": "cloudflare", "dns_credentials": {} }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            acme_probe_domain(dir.path()).as_deref(),
+            Some("pier1.example.com")
+        );
+    }
+
+    #[test]
+    fn test_acme_probe_domain_is_none_when_acme_json_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("acme.json"), "not json").unwrap();
+        assert_eq!(acme_probe_domain(dir.path()), None);
     }
 
     #[test]

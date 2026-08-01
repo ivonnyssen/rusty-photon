@@ -53,6 +53,22 @@ Feature: Aggregation over the per-service doctors
     Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
     And that check's detail mentions "2 configured device(s)"
 
+  Scenario: an ACME install is probed at the service's public name, not localhost
+    Given an acme.json declaring domain "pier1.invalid"
+    And a config file "ppba-driver.json" declaring a port nothing listens on
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "fail" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "http://ppba-driver.pier1.invalid"
+
+  Scenario: an ACME install is verified by the public store, so a missing pki tree does not block the probe
+    Given an acme.json declaring domain "pier1.invalid"
+    And a config file "ppba-driver.json" with a tls block but no pki tree
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "fail" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "https://ppba-driver.pier1.invalid"
+
   Scenario: a stopped unit's own doctor report merges into the aggregate
     Given a stub per-service doctor for "ppba-driver" whose report has a failing "config.full-shape" check
     And a config file "ppba-driver.json" containing:
