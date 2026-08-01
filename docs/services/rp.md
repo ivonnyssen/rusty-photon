@@ -564,7 +564,10 @@ the plaintext credential `rp` presents as HTTP Basic on every delivery;
 omit it for a plugin that does not challenge. Both fields follow the
 [Orchestrator Registration](#orchestrator-registration) rules exactly —
 same shapes, same load-time validation naming the offending entry
-(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. Getting
+(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. What does
+not carry over is the count: any number of event subscribers may be
+registered, because `rp` delivers each event to all of them, while it
+invokes one orchestrator. Getting
 this wrong is quieter here than on the orchestrator path: delivery is
 fire-and-forget with no retry, so the event is simply lost and the night
 continues. A plugin that *answers* with a non-success status — a 401 from
@@ -1935,8 +1938,8 @@ At runtime, the plugin can call any tool on `rp`.
 
 #### Orchestrator Registration
 
-Exactly one orchestrator plugin is configured per session type. `rp`
-invokes it when a session starts:
+Exactly one orchestrator plugin is registered, and `rp` invokes it when a
+session starts:
 
 ```json
 {
@@ -1954,6 +1957,25 @@ The optional `config` object is opaque to `rp`: it is stored with the
 registration and passed through verbatim at invocation (see below).
 `calibrator-flats` carries its flat plan here; `session-runner` uses it to
 name the workflow document to execute and that document's parameters.
+Switching between orchestrators — a flats night, then a deep-sky night —
+is a change of *which one* is registered, not an extra entry beside the
+first.
+
+**One orchestrator, and it must carry an `invoke_url`.** Both are
+enforced at config load, so startup, `PUT /api/config` and `rp doctor`
+refuse the same file. A second `type: "orchestrator"` entry is rejected
+naming both (`plugins.1.type`, with `plugins.0` in the message): `rp`
+invokes one, and resolving that by array position would mean a
+registration that validates clean, is reported clean, and is never
+invoked — no error, no warning, no work — with any writer that
+round-trips `plugins[]` (`PUT /api/config`, `ui-htmx`) free to swap
+which one is live without touching a value. An orchestrator entry
+carrying no `invoke_url` is rejected the same way (`plugins.0.invoke_url`)
+rather than read as inert: read as inert it is indistinguishable from a
+rig that deliberately runs without an orchestrator, so
+`POST /api/session/start` would find nothing to invoke and report no
+fault, and a *stub* entry sitting ahead of a complete registration would
+disable orchestration entirely until the array was reordered.
 
 **A plugin may serve TLS and require authentication.** An `invoke_url`
 may be `https://` when the plugin's own service is TLS-enabled; `rp`

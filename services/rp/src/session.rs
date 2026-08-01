@@ -160,9 +160,18 @@ struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Pick the orchestrator registration out of `plugins` and build its
-    /// client. `Ok(None)` when no orchestrator is registered, or when its
-    /// entry carries no `invoke_url` — there is nothing to POST to.
+    /// Build the client for the registered orchestrator. `Ok(None)` when
+    /// no orchestrator is registered — the only reading of `plugins[]`
+    /// under which rp legitimately has nothing to invoke.
+    ///
+    /// The registration itself comes from
+    /// [`crate::config::OrchestratorRegistration::sole`], the same parse
+    /// `validate_config` runs, so what rp starts with is what
+    /// `PUT /api/config` and `rp doctor` accept: exactly one
+    /// orchestrator, carrying an `invoke_url` rp can POST to. A second
+    /// registration is not resolved by array position here — it fails
+    /// startup, because the entry that lost would do no work and say
+    /// nothing about it.
     ///
     /// Errors name the registration by its `plugins[]` index, the same
     /// path `validate_config` and doctor use (`plugins.<index>.auth`),
@@ -173,40 +182,26 @@ impl Orchestrator {
         plugins: &[Value],
         ca_cert_path: Option<&Path>,
     ) -> Result<Option<Self>, String> {
-        let Some((index, entry)) = plugins
-            .iter()
-            .enumerate()
-            .find(|(_, p)| crate::config::is_orchestrator(p))
+        let Some(registration) = crate::config::OrchestratorRegistration::sole(plugins)
+            // The same rendering `load_config` gives a `FieldError`, so
+            // the message an operator sees does not depend on which of
+            // the two rejected the config.
+            .map_err(|e| format!("{} {}", e.path, e.msg))?
         else {
             return Ok(None);
-        };
-        let Some(invoke_url) = entry
-            .get(crate::config::ORCHESTRATOR_URL_FIELD)
-            .and_then(|v| v.as_str())
-        else {
-            return Ok(None);
-        };
-        let name = entry
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("orchestrator");
-
-        let auth = match entry.get("auth") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(
-                serde_json::from_value::<ClientAuthConfig>(value.clone())
-                    .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
-            ),
         };
         let client = build_invoke_client(ca_cert_path).map_err(|e| {
-            format!("plugins.{index} ({name}): failed to build the invoke HTTP client: {e}")
+            format!(
+                "plugins.{} ({}): failed to build the invoke HTTP client: {e}",
+                registration.index, registration.name
+            )
         })?;
 
         Ok(Some(Self {
-            invoke_url: invoke_url.to_string(),
-            config: entry.get("config").cloned(),
+            invoke_url: registration.invoke_url,
+            config: registration.config,
             client,
-            auth,
+            auth: registration.auth,
         }))
     }
 }
@@ -242,9 +237,11 @@ pub struct SessionManager {
 impl SessionManager {
     /// `ca_cert_path` is rp's top-level `ca_cert` (`Config::ca_cert_path`):
     /// the trust the `/invoke` client needs to reach an orchestrator
-    /// serving TLS. Fails when the registration's `auth` block does not
-    /// parse or its client cannot be built — startup aborts loud rather
-    /// than leaving the first session start of the night to discover it.
+    /// serving TLS. Fails when `plugins[]` registers a second
+    /// orchestrator, when the registration carries no `invoke_url` or an
+    /// `auth` block that does not parse, or when its client cannot be
+    /// built — startup aborts loud rather than leaving the first session
+    /// start of the night to discover it.
     pub fn new(
         event_bus: Arc<EventBus>,
         plugins: &[Value],
@@ -1718,6 +1715,61 @@ mod tests {
         assert!(
             error.contains("plugins.0.auth (calibrator-flats)") && error.contains("password"),
             "a half-written credential must name the field it broke: {error}"
+        );
+    }
+
+    /// A registration that declares itself the orchestrator and names no
+    /// endpoint is malformed, not an rp with no orchestrator: it used to
+    /// read as the latter, which is indistinguishable from a rig that
+    /// deliberately runs without one — so every `POST
+    /// /api/session/start` did nothing and said nothing.
+    #[tokio::test]
+    async fn an_orchestrator_without_an_invoke_url_fails_startup() {
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
+        let plugins = vec![json!({
+            "name": "calibrator-flats",
+            "type": "orchestrator",
+        })];
+
+        let error = SessionManager::new(event_bus, &plugins, None)
+            .err()
+            .expect("an orchestrator with nothing to POST to must fail startup");
+        assert!(
+            error.contains("plugins.0.invoke_url") && error.contains("calibrator-flats"),
+            "must name the entry an operator has to fix: {error}"
+        );
+    }
+
+    /// rp invokes one orchestrator, so a second registration fails
+    /// startup rather than being resolved by array position — the entry
+    /// that lost would be fully validated, reported clean, and never
+    /// invoked, and any writer that round-trips `plugins[]` could swap
+    /// which one that is without touching a value.
+    #[tokio::test]
+    async fn a_second_orchestrator_registration_fails_startup() {
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
+        let plugins = vec![
+            json!({
+                "name": "calibrator-flats",
+                "type": "orchestrator",
+                "invoke_url": "http://127.0.0.1:11170/invoke",
+            }),
+            json!({
+                "name": "session-runner",
+                "type": "orchestrator",
+                "invoke_url": "http://127.0.0.1:11171/invoke",
+            }),
+        ];
+
+        let error = SessionManager::new(event_bus, &plugins, None)
+            .err()
+            .expect("two orchestrator registrations must fail startup");
+        assert!(
+            error.contains("plugins.1.type")
+                && error.contains("session-runner")
+                && error.contains("plugins.0")
+                && error.contains("calibrator-flats"),
+            "must name both registrations: {error}"
         );
     }
 
