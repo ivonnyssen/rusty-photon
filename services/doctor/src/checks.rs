@@ -85,9 +85,11 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(config_parsing(ctx));
     checks.extend(ports(ctx));
     checks.extend(units_and_privileges(ctx));
+    checks.extend(failed_units(ctx));
     checks.extend(name_joins(ctx));
     checks.extend(url_conventions(ctx));
     checks.extend(tls_and_auth(ctx));
+    checks.extend(pki_ownership(ctx));
     checks.extend(client_target_joins(ctx));
     checks.extend(fake_mount_join(ctx));
     checks.extend(rp_platform_defaults(ctx));
@@ -447,6 +449,76 @@ fn ports(ctx: &Context) -> Vec<Check> {
 
 // ---- Units and privileges (systemd facts) ----
 
+/// The renewal one-shot's unit stem. Sentinel's discovery skips it — a job
+/// is not a daemon, and supervising it would restart-loop a failed 3am run
+/// — which leaves doctor as the only thing that ever looks at it.
+const RENEW_UNIT: &str = "rusty-photon-renew";
+
+/// `units.failed`: the service manager is holding a unit in a failed
+/// state. A crashed daemon eventually shows up as a service nobody can
+/// reach; a failed **one-shot** shows up as nothing at all — it simply
+/// stops doing its job, silently, until someone runs `systemctl
+/// list-units` for unrelated reasons. Suggestion-only: doctor starts and
+/// resets no units.
+fn failed_units(ctx: &Context) -> Vec<Check> {
+    let judged: Vec<_> = ctx
+        .facts
+        .units
+        .iter()
+        .filter(|unit| unit.failed.is_some())
+        .collect();
+    if judged.is_empty() {
+        // Windows, or a staged scenario with no failure story.
+        return Vec::new();
+    }
+    let failed: Vec<_> = judged
+        .iter()
+        .filter(|unit| unit.failed == Some(true))
+        .collect();
+    if failed.is_empty() {
+        return vec![Check::ok(
+            "units.failed",
+            None,
+            format!("none of the {} installed units has failed", judged.len()),
+        )];
+    }
+    failed
+        .iter()
+        .map(|unit| {
+            let name = unit.source_name.as_deref().unwrap_or(&unit.name);
+            let consequence = if unit.name == RENEW_UNIT {
+                " — no certificate is being renewed while it stays that way, which \
+                 on an ACME install means every service loses TLS within 90 days"
+            } else {
+                ""
+            };
+            Check::fail(
+                "units.failed",
+                catalog::entry_for_unit(&unit.name).map(|entry| entry.name.to_string()),
+                format!(
+                    "{name} is in a failed state and stays there until something \
+                     clears it{consequence}"
+                ),
+                Some(failure_suggestion(ctx, name)),
+            )
+        })
+        .collect()
+}
+
+fn failure_suggestion(ctx: &Context, unit: &str) -> String {
+    match ctx.facts.platform {
+        Platform::Macos => format!(
+            "`brew services info {unit}` and the service's log say why; \
+             `brew services restart {unit}` re-runs it"
+        ),
+        _ => format!(
+            "`journalctl -u {unit} -e` says why; fix that, then `systemctl start \
+             {unit}` to re-run a one-shot (or `systemctl reset-failed {unit}` to \
+             clear the state for a daemon the timer or a dependency will start)"
+        ),
+    }
+}
+
 fn units_and_privileges(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     if ctx.facts.platform != Platform::Linux {
@@ -658,6 +730,106 @@ fn url_conventions(ctx: &Context) -> Vec<Check> {
 }
 
 // ---- TLS and auth ----
+
+/// `tls.ownership`: everything the install reads must belong to the config
+/// root's owner. The provisioning pass and every renewal end by aligning
+/// the tree (docs/services/doctor.md §Ownership under sudo), so a
+/// mismatch means a run that could not — an unprivileged doctor next to
+/// material an earlier `sudo` left behind. Material a service reads fails
+/// (a key it does not own is a handshake that never happens); anything
+/// else in the tree warns, because renewal skips it too. Unix only:
+/// Windows and a config root doctor cannot stat have no owner to compare.
+fn pki_ownership(ctx: &Context) -> Vec<Check> {
+    let Some(ownership) = crate::provision::pki_ownership(&ctx.config_dir) else {
+        return Vec::new();
+    };
+    ownership_checks(ctx, &ownership)
+}
+
+/// The judgment half of `tls.ownership`, over an already-gathered tree —
+/// which is what makes both the fail and the warn arm reachable without
+/// the privileges it takes to create a cross-owned file.
+fn ownership_checks(ctx: &Context, ownership: &crate::provision::PkiOwnership) -> Vec<Check> {
+    if ownership.examined == 0 {
+        return Vec::new();
+    }
+    let (uid, gid) = (ownership.uid, ownership.gid);
+    let (material, strays): (Vec<_>, Vec<_>) = ownership
+        .mismatched
+        .iter()
+        .partition(|entry| entry.essential);
+    if material.is_empty() && strays.is_empty() {
+        return vec![Check::ok(
+            "tls.ownership",
+            None,
+            format!(
+                "all {} pki entries belong to the config root's owner (uid {uid}, \
+                 gid {gid})",
+                ownership.examined
+            ),
+        )];
+    }
+
+    let mut checks = Vec::new();
+    if !material.is_empty() {
+        checks.push(Check::fail(
+            "tls.ownership",
+            None,
+            format!(
+                "material the services read does not belong to the config root's \
+                 owner (uid {uid}, gid {gid}): {} — a service cannot read a key it \
+                 does not own, so its next start serves no TLS, and the renewal \
+                 timer (which runs as that user) cannot renew it either",
+                relative_names(ctx, &material)
+            ),
+            Some(format!(
+                "run `sudo rusty-photon-doctor --fix` — its provisioning pass hands \
+                 the tree over — or `sudo chown {uid}:{gid} <path>` per entry"
+            )),
+        ));
+    }
+    if !strays.is_empty() {
+        checks.push(Check::warn(
+            "tls.ownership",
+            None,
+            format!(
+                "the pki tree also holds entries that belong to someone else and \
+                 that nothing reads (uid {uid}, gid {gid} expected): {} — renewal \
+                 leaves them alone rather than failing over them, so they are \
+                 reported here instead",
+                relative_names(ctx, &strays)
+            ),
+            Some(format!(
+                "`sudo chown {uid}:{gid} <path>` if they belong to the install, or \
+                 delete them; `ca.srl` is openssl's serial counter from a \
+                 hand-minted certificate and is safe to remove"
+            )),
+        ));
+    }
+    checks
+}
+
+/// Mismatching entries as config-root-relative paths, capped so a wholly
+/// foreign-owned tree names a few files instead of forty.
+fn relative_names(ctx: &Context, entries: &[&crate::provision::OwnershipMismatch]) -> String {
+    const SHOWN: usize = 5;
+    let mut names: Vec<String> = entries
+        .iter()
+        .take(SHOWN)
+        .map(|entry| {
+            entry
+                .path
+                .strip_prefix(&ctx.config_dir)
+                .unwrap_or(&entry.path)
+                .display()
+                .to_string()
+        })
+        .collect();
+    if entries.len() > SHOWN {
+        names.push(format!("and {} more", entries.len() - SHOWN));
+    }
+    names.join(", ")
+}
 
 fn tls_and_auth(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -1916,6 +2088,199 @@ mod tests {
             .expect("auth.absent");
         assert_eq!(auth.status, Status::Warn);
         assert!(auth.fixes.is_empty());
+    }
+
+    /// A packaged context whose units carry a gathered failure state.
+    fn failure_ctx(dir: &Path, platform: &str, units: &[(&str, bool)]) -> Context {
+        let units: Vec<serde_json::Value> = units
+            .iter()
+            .map(|(name, failed)| serde_json::json!({ "name": name, "failed": failed }))
+            .collect();
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": platform,
+            "units": units,
+        }))
+        .unwrap();
+        Context::gather(dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_failed_units_names_the_unit_and_the_service_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = failure_ctx(
+            dir.path(),
+            "linux",
+            &[("rusty-photon-rp", true), ("rusty-photon-sentinel", false)],
+        );
+
+        let checks = failed_units(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Fail);
+        assert_eq!(checks[0].service.as_deref(), Some("rp"));
+        assert!(checks[0].detail.contains("rusty-photon-rp"), "{checks:?}");
+        assert!(
+            checks[0]
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .contains("journalctl"),
+            "{:?}",
+            checks[0].suggestion
+        );
+    }
+
+    #[test]
+    fn test_a_failed_renewal_job_says_what_it_costs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = failure_ctx(dir.path(), "linux", &[("rusty-photon-renew", true)]);
+
+        let checks = failed_units(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(
+            checks[0].service, None,
+            "the renewal one-shot is a job, not a catalog service"
+        );
+        assert!(
+            checks[0].detail.contains("renewed"),
+            "a failed renewal must name the consequence, not just the state: {}",
+            checks[0].detail
+        );
+    }
+
+    #[test]
+    fn test_failed_units_is_ok_when_every_unit_is_healthy_and_silent_when_ungathered() {
+        let dir = tempfile::tempdir().unwrap();
+        let healthy = failure_ctx(dir.path(), "linux", &[("rusty-photon-rp", false)]);
+        let checks = failed_units(&healthy);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Ok);
+
+        // Windows gathers no failure state: no row either way.
+        let ungathered = packaged_ctx(dir.path(), "windows", "rusty-photon-rp");
+        assert!(failed_units(&ungathered).is_empty());
+    }
+
+    #[test]
+    fn test_a_failed_unit_on_macos_is_pointed_at_brew() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = failure_ctx(dir.path(), "macos", &[("rusty-photon-rp", true)]);
+        let suggestion = failed_units(&ctx)[0].suggestion.clone().unwrap();
+        assert!(suggestion.contains("brew services"), "{suggestion}");
+    }
+
+    fn mismatch(path: &Path, essential: bool) -> crate::provision::OwnershipMismatch {
+        crate::provision::OwnershipMismatch {
+            path: path.to_path_buf(),
+            essential,
+        }
+    }
+
+    #[test]
+    fn test_pki_ownership_is_ok_on_a_tree_this_run_owns() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = dir.path().join("pki");
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("ca.pem"), "cert").unwrap();
+        let ctx = config_only_ctx(dir.path());
+
+        let checks = pki_ownership(&ctx);
+        if !cfg!(unix) {
+            // Windows has no owner to compare material against, so the
+            // check says nothing rather than claiming a tree is fine.
+            assert!(checks.is_empty(), "{checks:?}");
+            return;
+        }
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "tls.ownership");
+        assert_eq!(checks[0].status, Status::Ok);
+    }
+
+    #[test]
+    fn test_pki_ownership_says_nothing_without_material_to_judge() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            pki_ownership(&config_only_ctx(dir.path())).is_empty(),
+            "a host that has never been provisioned has no ownership story"
+        );
+        // Nor about a config root that is not there at all: there is no
+        // owner to compare against, which is silence, not a verdict.
+        let absent = dir.path().join("never-created");
+        assert!(pki_ownership(&config_only_ctx(&absent)).is_empty());
+    }
+
+    #[test]
+    fn test_pki_ownership_fails_on_material_and_warns_on_strays_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = dir.path().join("pki");
+        let ctx = config_only_ctx(dir.path());
+        let ownership = crate::provision::PkiOwnership {
+            uid: 109,
+            gid: 114,
+            examined: 4,
+            mismatched: vec![
+                mismatch(&pki.join("zwo-camera-key.pem"), true),
+                mismatch(&pki.join("ca.srl"), false),
+            ],
+        };
+
+        let checks = ownership_checks(&ctx, &ownership);
+        assert_eq!(checks.len(), 2, "{checks:?}");
+        let failure = checks.iter().find(|c| c.status == Status::Fail).unwrap();
+        // Built as a path, not spelled with a separator: the detail renders
+        // whatever the platform uses.
+        let material = Path::new("pki").join("zwo-camera-key.pem");
+        assert!(
+            failure.detail.contains(&material.display().to_string()),
+            "the failure names the material, relative to the config root: {}",
+            failure.detail
+        );
+        assert!(!failure.detail.contains("ca.srl"), "{}", failure.detail);
+        assert!(
+            failure
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .contains("chown 109:114"),
+            "{:?}",
+            failure.suggestion
+        );
+
+        let stray = checks.iter().find(|c| c.status == Status::Warn).unwrap();
+        let srl = Path::new("pki").join("ca.srl");
+        assert!(
+            stray.detail.contains(&srl.display().to_string()),
+            "{}",
+            stray.detail
+        );
+        assert!(
+            !stray.detail.contains("zwo-camera-key.pem"),
+            "a stray warning must not restate the failure: {}",
+            stray.detail
+        );
+    }
+
+    #[test]
+    fn test_pki_ownership_caps_the_names_it_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = dir.path().join("pki");
+        let ctx = config_only_ctx(dir.path());
+        let mismatched: Vec<_> = (0..7)
+            .map(|i| mismatch(&pki.join(format!("service-{i}.pem")), true))
+            .collect();
+        let ownership = crate::provision::PkiOwnership {
+            uid: 0,
+            gid: 0,
+            examined: 7,
+            mismatched,
+        };
+
+        let checks = ownership_checks(&ctx, &ownership);
+        let detail = &checks[0].detail;
+        assert!(detail.contains("service-4.pem"), "{detail}");
+        assert!(
+            detail.contains("and 2 more") && !detail.contains("service-5.pem"),
+            "a wholly foreign-owned tree names a few files, not all of them: {detail}"
+        );
     }
 
     #[test]

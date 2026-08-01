@@ -38,6 +38,16 @@ Feature: TLS and credential provisioning under --fix
     And the config file "ppba-driver.json" has the string "observatory" at "/server/auth/username"
     And the auth hash at "/server/auth/password_hash" in "ppba-driver.json" verifies against the credential file
 
+  @unix
+  Scenario: The material --fix wrote belongs to the config root's owner
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And doctor has already run with --fix
+    When I run doctor with --json
+    Then the report contains an "ok" check named "tls.ownership"
+
   Scenario: The diagnosis warns about an installed service serving plain HTTP
     Given a config file "ppba-driver.json" containing:
       """

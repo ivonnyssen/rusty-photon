@@ -200,8 +200,9 @@ implementation:
 - **systemd** (Linux) — `systemctl list-unit-files 'rusty-photon-*'` for the
   inventory and enablement, `systemctl cat <unit>` for the
   `ConditionPathExists=` gate, `SupplementaryGroups=`, and the `ExecStart=`
-  binary (the aggregation shell-out target), and `systemctl is-active` for
-  the run state. Polkit facts come from a heuristic scan of
+  binary (the aggregation shell-out target), `systemctl is-active` for
+  the run state, and one `systemctl list-units --state=failed
+  'rusty-photon-*'` for the failed set (`units.failed`). Polkit facts come from a heuristic scan of
   `/etc/polkit-1/rules.d` and `/usr/share/polkit-1/rules.d` (the vendor dir
   the sentinel packages ship their rule to) for the manage-units action, the
   `rusty-photon-` unit prefix, and the `"rusty-photon"` user literal.
@@ -209,11 +210,13 @@ implementation:
   not `Get-Service` — only the CIM class carries the image path) for the
   inventory, start mode, run state, and `PathName`.
 - **brew services** (macOS) — `brew services list` filtered to
-  `rusty-photon-*` formulas for the inventory and run state; the shell-out
+  `rusty-photon-*` formulas for the inventory and run state (its `error`
+  status is the failed fact); the shell-out
   binary is the `brew --prefix`-linked `bin/<unit-stem>` when it exists.
 
 The inspector reports a platform-neutral inventory (unit name, enabled,
-active, the unit's binary, plus platform-specific facts where they exist);
+active, failed, the unit's binary, plus platform-specific facts where they
+exist);
 checks that depend on a fact one platform lacks (systemd conditions, polkit,
 systemd's `SupplementaryGroups=`) simply do not run on the other platforms.
 
@@ -304,6 +307,7 @@ the typed shape — validates its own file and doctor aggregates.
 
 | Check | Status | Trigger |
 |---|---|---|
+| `units.failed` | fail | The service manager is holding a `rusty-photon-*` unit in a failed state — one row per unit, tagged with the catalog service when the unit runs one. Linux reads it from one `systemctl list-units --state=failed` query (a failed unit is loaded, so the listing sees it, and the alternative is an `is-failed` per unit); macOS reads brew's `error` status, which costs nothing extra. Windows leaves the fact ungathered — a Scheduled Task's last result lives outside `Win32_Service` — and the check then emits no row at all rather than a green one it cannot back up. The case that motivates it is the **renewal one-shot**: a daemon that dies is eventually noticed because nothing answers it, but `rusty-photon-renew` failing means only that certificates quietly stop renewing, and sentinel deliberately does not supervise it (supervising a job would restart-loop a failed 3am run), so its row names that consequence explicitly. Suggestion-only: doctor starts and resets no units. |
 | `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and session-runner — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same four services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
 | `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
@@ -338,6 +342,7 @@ so there is no ui-htmx-side name join left to check.)
 | `tls.absent` (D6a) | warn | An installed service's config file exists but has no `server.tls` block: it serves plain HTTP. Legal (absent still means off — ADR-016 decision 10(d)), and fixable: the provisioning pass issues a cert and writes the block — on an ACME install (`acme.json` present) the block points at the existing wildcard pair instead, and while that pair is missing the check stays suggestion-only pointing at `doctor tls renew` (§What `--fix` adds). **No config file at all** (`FileAbsent`) grades the same way for any non-`config_gated` service (#598): doctor cannot tell whether the service has simply never started or a working config was deleted, but either way the next (re)start serves plain HTTP — unlike the block-absent case above, this is **unfixable**, since there is no file for `--fix` to write into; the suggestion is to create the file yourself (an empty `{}` is enough — `--fix` provisions `server.tls`/`server.auth` into it from there), or start the service once so it self-creates one, then re-run `--fix`. A `config_gated` service's `FileAbsent` state is expected (it cannot start without an operator-written file in the first place) and stays silent here — `inventory.unit-without-config` / `units.config-gated` own that story. |
 | `auth.absent` (D6a) | warn | An installed service's config file exists but has no `server.auth` block: it answers unauthenticated. Same legality and fix as `tls.absent`, including the `FileAbsent` extension above. |
 | `auth.mismatch` (D6a) | warn | A client auth block's plaintext password does not verify (Argon2id) against the target service's `server.auth` hash — the client will get 401s. Suggestion-only: hand-set credentials are operator intent, so doctor reports the pair and suggests `doctor auth rotate` to re-align everything to the observatory credential. |
+| `tls.ownership` | fail / warn | Unix only, install-wide (no service column). An entry in the pki tree — or `acme.json` / `renew.env` beside the configs — does not belong to the **config root's owner**, the identity the services and the renewal timer run as. Material something reads (the pki directory, `*.pem`, `credential`, `acme-account.json`, and those two files) fails: a service cannot read a key it does not own, so its next start serves no TLS. Anything else in the tree warns, because the ownership sweep skips it too (§Ownership under sudo) — the point of the row is that a mixed-ownership tree is visible in a normal `doctor` run instead of only in a 3am journal. Entries doctor cannot `stat` are not reported: unproven, not wrong. Suggestion-only, but a privileged `--fix` repairs it in passing — its provisioning pass runs the same sweep with the privileges to complete it. |
 | `tls.expiry` (D6b) | fail / warn | A configured `server.tls` certificate is **expired or unparseable** (fail — rustls loads an expired cert cleanly and only *clients* reject the handshake, so without this check the failure surfaces as every client erroring at night) or **inside its renewal window** (warn — 30 days for self-signed material, `renewal_days_before_expiry` for the ACME cert). Graded only when `tls.paths` is clean — an expiry verdict beside a failing pair would read as contradictory. Suggestion-only: the fix is `doctor tls renew` (or `tls issue --force` for a cert the renew legs don't own); `--fix` does not renew, because renewal belongs on the platform timer. |
 
 ### Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607))
@@ -919,7 +924,10 @@ binary and these units; plan decision 8, D7):
   appearance** — a fresh install or the upgrade that first ships it —
   and preserve an operator's explicit disable on later upgrades. Sentinel's service discovery deliberately skips the
   `renew` unit: it is a job, not a daemon — supervising it would
-  restart-loop a failed 3am run.
+  restart-loop a failed 3am run. Nothing watches it, in other words, which
+  is why a failed run is `units.failed`'s to report: the unit stays
+  `failed` after a bad night, and certificates simply stop renewing until
+  someone looks.
 - Windows: the MSI registers a Scheduled Task `rusty-photon-renew`
   (daily, 03:00) running `rusty-photon-doctor.exe tls renew` as
   LocalSystem — the account the services already run as; uninstall
@@ -938,7 +946,26 @@ material root-owned — files with no original whose owner
 `rusty_photon_config::save` could preserve — and without the alignment
 the services could not read their keys and the renewal timer (which runs
 as the service user) could not renew them. Unprivileged runs are a
-no-op (every owner already matches); a failed chown aborts loudly.
+no-op (every owner already matches).
+
+An entry the sweep cannot hand over aborts loudly **only when it is
+material something reads**: the pki directory itself (renewal writes new
+pairs into it), any `*.pem`, `credential`, `acme-account.json`, plus
+`acme.json` and `renew.env` beside the configs. A silently root-owned key
+breaks TLS at the next service start, and that is worth exit 2. Every
+other entry in the tree — `ca.srl`, the serial counter
+`openssl x509 -req -CAcreateserial` leaves beside the CA whenever an
+operator hand-mints a certificate for a third-party driver, a leftover
+CSR, an editor's backup — is aligned best-effort and only warns. Doctor
+neither writes nor reads those, and one of them landing root-owned must
+not disable unattended renewal: the renewal unit runs as the service
+user, which cannot chown a root-owned file, so a fatal sweep would fail
+the timer every day, for good, with nothing but a `failed` unit nobody
+watches to show for it (`units.failed` exists because that is invisible
+otherwise). Because the sweep runs *after* both renewal legs, a failure
+there is not a failed renewal — the message says so, and names the
+material and the `chown` that repairs it, so a renewal that wrote a pair
+is never mistaken for a failed ACME order.
 
 ## Report
 
