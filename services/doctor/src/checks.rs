@@ -85,6 +85,7 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(config_parsing(ctx));
     checks.extend(ports(ctx));
     checks.extend(units_and_privileges(ctx));
+    checks.extend(failed_units(ctx));
     checks.extend(name_joins(ctx));
     checks.extend(url_conventions(ctx));
     checks.extend(tls_and_auth(ctx));
@@ -423,6 +424,76 @@ fn ports(ctx: &Context) -> Vec<Check> {
 }
 
 // ---- Units and privileges (systemd facts) ----
+
+/// The renewal one-shot's unit stem. Sentinel's discovery skips it — a job
+/// is not a daemon, and supervising it would restart-loop a failed 3am run
+/// — which leaves doctor as the only thing that ever looks at it.
+const RENEW_UNIT: &str = "rusty-photon-renew";
+
+/// `units.failed`: the service manager is holding a unit in a failed
+/// state. A crashed daemon eventually shows up as a service nobody can
+/// reach; a failed **one-shot** shows up as nothing at all — it simply
+/// stops doing its job, silently, until someone runs `systemctl
+/// list-units` for unrelated reasons. Suggestion-only: doctor starts and
+/// resets no units.
+fn failed_units(ctx: &Context) -> Vec<Check> {
+    let judged: Vec<_> = ctx
+        .facts
+        .units
+        .iter()
+        .filter(|unit| unit.failed.is_some())
+        .collect();
+    if judged.is_empty() {
+        // Windows, or a staged scenario with no failure story.
+        return Vec::new();
+    }
+    let failed: Vec<_> = judged
+        .iter()
+        .filter(|unit| unit.failed == Some(true))
+        .collect();
+    if failed.is_empty() {
+        return vec![Check::ok(
+            "units.failed",
+            None,
+            format!("none of the {} installed units has failed", judged.len()),
+        )];
+    }
+    failed
+        .iter()
+        .map(|unit| {
+            let name = unit.source_name.as_deref().unwrap_or(&unit.name);
+            let consequence = if unit.name == RENEW_UNIT {
+                " — no certificate is being renewed while it stays that way, which \
+                 on an ACME install means every service loses TLS within 90 days"
+            } else {
+                ""
+            };
+            Check::fail(
+                "units.failed",
+                catalog::entry_for_unit(&unit.name).map(|entry| entry.name.to_string()),
+                format!(
+                    "{name} is in a failed state and stays there until something \
+                     clears it{consequence}"
+                ),
+                Some(failure_suggestion(ctx, name)),
+            )
+        })
+        .collect()
+}
+
+fn failure_suggestion(ctx: &Context, unit: &str) -> String {
+    match ctx.facts.platform {
+        Platform::Macos => format!(
+            "`brew services info {unit}` and the service's log say why; \
+             `brew services restart {unit}` re-runs it"
+        ),
+        _ => format!(
+            "`journalctl -u {unit} -e` says why; fix that, then `systemctl start \
+             {unit}` to re-run a one-shot (or `systemctl reset-failed {unit}` to \
+             clear the state for a daemon the timer or a dependency will start)"
+        ),
+    }
+}
 
 fn units_and_privileges(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -1992,6 +2063,84 @@ mod tests {
             .expect("auth.absent");
         assert_eq!(auth.status, Status::Warn);
         assert!(auth.fixes.is_empty());
+    }
+
+    /// A packaged context whose units carry a gathered failure state.
+    fn failure_ctx(dir: &Path, platform: &str, units: &[(&str, bool)]) -> Context {
+        let units: Vec<serde_json::Value> = units
+            .iter()
+            .map(|(name, failed)| serde_json::json!({ "name": name, "failed": failed }))
+            .collect();
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": platform,
+            "units": units,
+        }))
+        .unwrap();
+        Context::gather(dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_failed_units_names_the_unit_and_the_service_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = failure_ctx(
+            dir.path(),
+            "linux",
+            &[("rusty-photon-rp", true), ("rusty-photon-sentinel", false)],
+        );
+
+        let checks = failed_units(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Fail);
+        assert_eq!(checks[0].service.as_deref(), Some("rp"));
+        assert!(checks[0].detail.contains("rusty-photon-rp"), "{checks:?}");
+        assert!(
+            checks[0]
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .contains("journalctl"),
+            "{:?}",
+            checks[0].suggestion
+        );
+    }
+
+    #[test]
+    fn test_a_failed_renewal_job_says_what_it_costs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = failure_ctx(dir.path(), "linux", &[("rusty-photon-renew", true)]);
+
+        let checks = failed_units(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(
+            checks[0].service, None,
+            "the renewal one-shot is a job, not a catalog service"
+        );
+        assert!(
+            checks[0].detail.contains("renewed"),
+            "a failed renewal must name the consequence, not just the state: {}",
+            checks[0].detail
+        );
+    }
+
+    #[test]
+    fn test_failed_units_is_ok_when_every_unit_is_healthy_and_silent_when_ungathered() {
+        let dir = tempfile::tempdir().unwrap();
+        let healthy = failure_ctx(dir.path(), "linux", &[("rusty-photon-rp", false)]);
+        let checks = failed_units(&healthy);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Ok);
+
+        // Windows gathers no failure state: no row either way.
+        let ungathered = packaged_ctx(dir.path(), "windows", "rusty-photon-rp");
+        assert!(failed_units(&ungathered).is_empty());
+    }
+
+    #[test]
+    fn test_a_failed_unit_on_macos_is_pointed_at_brew() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = failure_ctx(dir.path(), "macos", &[("rusty-photon-rp", true)]);
+        let suggestion = failed_units(&ctx)[0].suggestion.clone().unwrap();
+        assert!(suggestion.contains("brew services"), "{suggestion}");
     }
 
     fn mismatch(path: &Path, essential: bool) -> crate::provision::OwnershipMismatch {

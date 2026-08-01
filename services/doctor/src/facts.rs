@@ -59,6 +59,14 @@ pub struct UnitFacts {
     /// unit is installed but not active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_path: Option<PathBuf>,
+    /// Whether the service manager holds the unit in a failed state — a
+    /// crashed daemon, or a one-shot job (the renewal timer's) whose last
+    /// run exited non-zero and which stays failed until something clears
+    /// it. `None` where the fact does not exist: Windows records a
+    /// Scheduled Task's last result elsewhere, and a staged facts file
+    /// says nothing about failure unless the scenario is about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -193,12 +201,23 @@ fn list_systemd_units() -> Vec<UnitFacts> {
     ])) else {
         return Vec::new();
     };
+    // One query for the whole inventory: a failed unit is loaded, so
+    // `list-units` sees it, and the alternative is an `is-failed` per unit.
+    let failed = run(Command::new("systemctl").args([
+        "list-units",
+        "--state=failed",
+        "--no-legend",
+        "--plain",
+        "rusty-photon-*",
+    ]))
+    .map(|listing| parse_failed_unit_listing(&listing));
     parse_unit_file_listing(&listing)
         .into_iter()
         .map(|(name, enabled)| {
             let unit_file = run(Command::new("systemctl").args(["cat", &name]));
             UnitFacts {
                 active: systemd_unit_is_active(&name),
+                failed: failed.as_ref().map(|stems| stems.contains(&name)),
                 binary_path: unit_file.as_deref().and_then(parse_exec_start),
                 condition_path: unit_file.as_deref().and_then(parse_condition_path),
                 source_name: None,
@@ -209,6 +228,19 @@ fn list_systemd_units() -> Vec<UnitFacts> {
                 name,
                 enabled,
             }
+        })
+        .collect()
+}
+
+/// The unit stems in `systemctl list-units --state=failed --no-legend
+/// --plain` output (`<unit> <load> <active> <sub> <description>`).
+pub fn parse_failed_unit_listing(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let unit = line.split_whitespace().next()?;
+            let stem = unit.strip_suffix(".service").unwrap_or(unit);
+            stem.starts_with("rusty-photon-").then(|| stem.to_string())
         })
         .collect()
 }
@@ -387,6 +419,9 @@ pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
                 source_name: None,
                 supplementary_groups: Vec::new(),
                 active: state.map(|s| s.trim() == "Running"),
+                // A Scheduled Task's last result — the Windows analogue of
+                // a failed one-shot — lives outside Win32_Service.
+                failed: None,
                 binary_path: path_name.and_then(parse_windows_path_name),
             })
         })
@@ -460,6 +495,9 @@ pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
                 condition_path: None,
                 supplementary_groups: Vec::new(),
                 active: Some(status == "started"),
+                // brew reports a service whose last start failed as
+                // `error` — sometimes with its exit code appended.
+                failed: Some(status.starts_with("error")),
                 // Filled by the gatherer from `brew --prefix` — a parse of
                 // the listing alone cannot know where binaries link.
                 binary_path: None,
@@ -489,6 +527,23 @@ mod tests {
                 ("rusty-photon-sentinel".to_string(), true),
             ]
         );
+    }
+
+    #[test]
+    fn test_failed_unit_listing_names_the_stems_systemd_holds_failed() {
+        // `--plain` drops the leading bullet systemd puts on failed units.
+        let listing = "rusty-photon-renew.service loaded failed failed Rusty Photon TLS renewal\n\
+                       rusty-photon-rp.service loaded failed failed Rusty Photon rp\n\
+                       nginx.service loaded failed failed nginx\n";
+        assert_eq!(
+            parse_failed_unit_listing(listing),
+            vec![
+                "rusty-photon-renew".to_string(),
+                "rusty-photon-rp".to_string()
+            ],
+            "foreign units are not this install's business"
+        );
+        assert!(parse_failed_unit_listing("").is_empty());
     }
 
     #[test]

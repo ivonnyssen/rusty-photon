@@ -35,8 +35,28 @@ fn disabled_unit(world: &mut DoctorWorld, unit: String) {
         source_name: None,
         supplementary_groups: Vec::new(),
         active: None,
+        failed: None,
         binary_path: None,
     });
+}
+
+#[given(expr = "platform facts where unit {string} is in a failed state")]
+fn failed_unit(world: &mut DoctorWorld, unit: String) {
+    world.add_unit(&unit);
+    let staged = world
+        .facts
+        .units
+        .iter_mut()
+        .find(|u| u.name == unit)
+        .expect("the unit was just added");
+    staged.failed = Some(true);
+}
+
+#[given("platform facts where the service manager holds no unit failed")]
+fn no_failed_units(world: &mut DoctorWorld) {
+    for unit in &mut world.facts.units {
+        unit.failed = Some(false);
+    }
 }
 
 #[given(expr = "Windows platform facts with an enabled unit {string}")]
@@ -65,6 +85,7 @@ fn push_gated_unit(world: &mut DoctorWorld, unit: String, gate: PathBuf) {
         source_name: None,
         supplementary_groups: Vec::new(),
         active: None,
+        failed: None,
         binary_path: None,
     });
 }

@@ -193,8 +193,9 @@ implementation:
 - **systemd** (Linux) — `systemctl list-unit-files 'rusty-photon-*'` for the
   inventory and enablement, `systemctl cat <unit>` for the
   `ConditionPathExists=` gate, `SupplementaryGroups=`, and the `ExecStart=`
-  binary (the aggregation shell-out target), and `systemctl is-active` for
-  the run state. Polkit facts come from a heuristic scan of
+  binary (the aggregation shell-out target), `systemctl is-active` for
+  the run state, and one `systemctl list-units --state=failed
+  'rusty-photon-*'` for the failed set (`units.failed`). Polkit facts come from a heuristic scan of
   `/etc/polkit-1/rules.d` and `/usr/share/polkit-1/rules.d` (the vendor dir
   the sentinel packages ship their rule to) for the manage-units action, the
   `rusty-photon-` unit prefix, and the `"rusty-photon"` user literal.
@@ -202,11 +203,13 @@ implementation:
   not `Get-Service` — only the CIM class carries the image path) for the
   inventory, start mode, run state, and `PathName`.
 - **brew services** (macOS) — `brew services list` filtered to
-  `rusty-photon-*` formulas for the inventory and run state; the shell-out
+  `rusty-photon-*` formulas for the inventory and run state (its `error`
+  status is the failed fact); the shell-out
   binary is the `brew --prefix`-linked `bin/<unit-stem>` when it exists.
 
 The inspector reports a platform-neutral inventory (unit name, enabled,
-active, the unit's binary, plus platform-specific facts where they exist);
+active, failed, the unit's binary, plus platform-specific facts where they
+exist);
 checks that depend on a fact one platform lacks (systemd conditions, polkit,
 systemd's `SupplementaryGroups=`) simply do not run on the other platforms.
 
@@ -296,6 +299,7 @@ the typed shape — validates its own file and doctor aggregates.
 
 | Check | Status | Trigger |
 |---|---|---|
+| `units.failed` | fail | The service manager is holding a `rusty-photon-*` unit in a failed state — one row per unit, tagged with the catalog service when the unit runs one. Linux reads it from one `systemctl list-units --state=failed` query (a failed unit is loaded, so the listing sees it, and the alternative is an `is-failed` per unit); macOS reads brew's `error` status, which costs nothing extra. Windows leaves the fact ungathered — a Scheduled Task's last result lives outside `Win32_Service` — and the check then emits no row at all rather than a green one it cannot back up. The case that motivates it is the **renewal one-shot**: a daemon that dies is eventually noticed because nothing answers it, but `rusty-photon-renew` failing means only that certificates quietly stop renewing, and sentinel deliberately does not supervise it (supervising a job would restart-loop a failed 3am run), so its row names that consequence explicitly. Suggestion-only: doctor starts and resets no units. |
 | `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and session-runner — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same four services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
 | `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
@@ -904,7 +908,10 @@ binary and these units; plan decision 8, D7):
   appearance** — a fresh install or the upgrade that first ships it —
   and preserve an operator's explicit disable on later upgrades. Sentinel's service discovery deliberately skips the
   `renew` unit: it is a job, not a daemon — supervising it would
-  restart-loop a failed 3am run.
+  restart-loop a failed 3am run. Nothing watches it, in other words, which
+  is why a failed run is `units.failed`'s to report: the unit stays
+  `failed` after a bad night, and certificates simply stop renewing until
+  someone looks.
 - Windows: the MSI registers a Scheduled Task `rusty-photon-renew`
   (daily, 03:00) running `rusty-photon-doctor.exe tls renew` as
   LocalSystem — the account the services already run as; uninstall
