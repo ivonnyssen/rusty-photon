@@ -355,21 +355,29 @@ fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
     let Some(url) = value.as_str() else {
         return Err(format!("must be a string, got {value}"));
     };
+    // Every branch that echoes the URL back redacts it first: a
+    // `FieldError` is rendered by the UI and by `rp doctor`, and these
+    // two run *before* the userinfo check below — on inputs that may not
+    // even parse — so a malformed credential-bearing URL would otherwise
+    // leak its password on the way to being rejected.
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(format!("must be an http:// or https:// URL, got {url:?}"));
+        return Err(format!(
+            "must be an http:// or https:// URL, got {:?}",
+            redact_userinfo(url)
+        ));
     }
     // The scheme is already known to be http(s), for which the URL
     // grammar requires a host — so a successful parse here is a URL rp
     // can post to, and the host-less case arrives as a parse error
     // ("empty host") rather than needing a branch of its own.
-    let parsed =
-        reqwest::Url::parse(url).map_err(|e| format!("is not a valid URL ({e}): {url:?}"))?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| format!("is not a valid URL ({e}): {:?}", redact_userinfo(url)))?;
     // Embedded credentials are rejected rather than honored: rp logs this
     // URL on every delivery attempt, so a password in it is a password in
     // the night's logs, and the sibling `auth` block — which rp applies
     // per-request, marked sensitive — would silently win over it anyway.
-    // The URL is deliberately absent from this message for the same
-    // reason: a `FieldError` is rendered by the UI and `rp doctor`.
+    // This message omits the URL entirely rather than redacting it: there
+    // is nothing left to point at that the field path does not say.
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(
             "must not embed credentials in the URL; put them in the sibling `auth` block"
@@ -377,6 +385,31 @@ fn validate_callback_url(value: &Value) -> std::result::Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// `url` with any embedded userinfo replaced by `***`, for the messages
+/// that echo a rejected URL back to an operator.
+///
+/// Deliberately textual rather than going through [`reqwest::Url`]: the
+/// callers run on input that has already failed a scheme check or failed
+/// to parse at all, so there is no parsed URL to read a username off.
+/// Scans only the authority — up to the first `/`, `?`, or `#` — so a
+/// later `@` in a path or query is left alone.
+fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
+    let authority_start = url.find("://").map_or(0, |i| i + 3);
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |i| authority_start + i);
+    // The last `@` in the authority is the delimiter; an earlier one
+    // would be inside the userinfo itself.
+    match url[authority_start..authority_end].rfind('@') {
+        Some(at) => std::borrow::Cow::Owned(format!(
+            "{}***@{}",
+            &url[..authority_start],
+            &url[authority_start + at + 1..]
+        )),
+        None => std::borrow::Cow::Borrowed(url),
+    }
 }
 
 /// Whether a plugin registration is the orchestrator kind — the single
@@ -859,6 +892,13 @@ mod tests {
                     "must not embed credentials",
                 ),
                 ("https://observatory@127.0.0.1:11170/invoke", "credentials"),
+                // A credential-bearing URL that is *also* malformed is
+                // rejected by an earlier branch — one that echoes the URL
+                // back. The shared secret-free assertion below is the
+                // point of these two: rejection must not leak what it
+                // rejected.
+                ("ftp://observatory:s3cret@127.0.0.1:11170/invoke", "http://"),
+                ("https://observatory:s3cret@", "empty host"),
             ] {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("config.json");
@@ -894,6 +934,41 @@ mod tests {
                     "the rejection leaked the embedded password: {error}"
                 );
             }
+        }
+    }
+
+    /// The redaction the rejection messages depend on, pinned directly:
+    /// it runs on input that may not parse, so it cannot lean on
+    /// `reqwest::Url` and has to get the authority boundaries right
+    /// itself.
+    #[test]
+    fn redact_userinfo_strips_only_the_authoritys_credentials() {
+        for (url, expected) in [
+            // Nothing to redact — returned untouched.
+            (
+                "https://127.0.0.1:11170/invoke",
+                "https://127.0.0.1:11170/invoke",
+            ),
+            ("127.0.0.1:11170/invoke", "127.0.0.1:11170/invoke"),
+            // User and user:password forms.
+            (
+                "https://observatory:s3cret@127.0.0.1:11170/invoke",
+                "https://***@127.0.0.1:11170/invoke",
+            ),
+            ("https://observatory@127.0.0.1/x", "https://***@127.0.0.1/x"),
+            // Malformed but still credential-bearing: the case the parse
+            // branch echoes.
+            ("https://observatory:s3cret@", "https://***@"),
+            // Scheme-less, so the authority starts at 0.
+            ("observatory:s3cret@127.0.0.1/x", "***@127.0.0.1/x"),
+            // An `@` past the authority is part of the path or query, not
+            // a credential, and must survive.
+            (
+                "https://127.0.0.1/hook@v2?to=a@b",
+                "https://127.0.0.1/hook@v2?to=a@b",
+            ),
+        ] {
+            assert_eq!(redact_userinfo(url), expected, "for {url:?}");
         }
     }
 
