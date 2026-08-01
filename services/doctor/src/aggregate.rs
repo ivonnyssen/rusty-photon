@@ -302,7 +302,10 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
     });
     let client = match rusty_photon_tls::client::build_reqwest_client(ca_path.as_deref()) {
         Ok(client) => client,
-        Err(e) => {
+        // Only the Some(ca_path) failure is the missing-trust-root story;
+        // with no CA to load (ACME install, plain-HTTP probe) a builder
+        // failure is not a pki problem and the pki suggestion would mislead.
+        Err(e) if ca_path.is_some() => {
             return Check::warn(
                 "service.devices",
                 service,
@@ -311,6 +314,14 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
                      — the probe was skipped"
                 ),
                 Some("run `rusty-photon-doctor tls issue` to (re)create the pki tree".to_string()),
+            );
+        }
+        Err(e) => {
+            return Check::warn(
+                "service.devices",
+                service,
+                format!("doctor could not build its probe client: {e} — the probe was skipped"),
+                None,
             );
         }
     };
