@@ -454,20 +454,24 @@ impl RpView {
         targets
     }
 
-    /// Every plugin registration carrying an `invoke_url` — the
-    /// orchestrator's, the one rp POSTs a session start to (rp.md
-    /// § Orchestrator Registration) — alongside its own `auth` field
-    /// (issue #800). Keyed on the field rather than the registration's
-    /// `type` for the same reason [`Self::equipment_targets`] walks any
-    /// object carrying an `alpaca_url`: the URL is what joins to a
-    /// target, and a plugin type that grows one later needs no new
-    /// doctor code. Event plugins' `webhook_url` is deliberately not
-    /// walked — rp has no CA-trust or credential wiring on that path to
-    /// point a fix at.
+    /// The orchestrator registration's `invoke_url` — what rp POSTs a
+    /// session start to (rp.md § Orchestrator Registration) — alongside
+    /// its own `auth` field (issue #800).
+    ///
+    /// Deliberately narrower than [`Self::equipment_targets`]'s
+    /// walk-anything-with-an-`alpaca_url` rule: a registration is an
+    /// opaque plugin-author surface, and rp interprets `invoke_url` and
+    /// `auth` on the **orchestrator** entry alone. Walking by field alone
+    /// would let `--fix` write a credential into a registration rp never
+    /// reads, and file a transport verdict on a URL rp never calls.
+    /// Event plugins' `webhook_url` is out for the stronger reason that
+    /// rp has no CA-trust or credential wiring on that path at all, so
+    /// there is no fix to point at.
     pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
         self.plugins
             .iter()
             .enumerate()
+            .filter(|(_, entry)| entry.get("type").and_then(Value::as_str) == Some("orchestrator"))
             .filter_map(|(idx, entry)| {
                 let url = entry.get("invoke_url")?.as_str()?;
                 Some(RpClientTarget {

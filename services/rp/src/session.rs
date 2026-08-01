@@ -167,10 +167,7 @@ impl Orchestrator {
         plugins: &[Value],
         ca_cert_path: Option<&Path>,
     ) -> Result<Option<Self>, String> {
-        let Some(entry) = plugins
-            .iter()
-            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"))
-        else {
+        let Some(entry) = plugins.iter().find(|p| crate::config::is_orchestrator(p)) else {
             return Ok(None);
         };
         let Some(invoke_url) = entry.get("invoke_url").and_then(|v| v.as_str()) else {

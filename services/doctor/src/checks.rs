@@ -3010,9 +3010,36 @@ mod tests {
         assert!(rp_client_joins(&ctx).is_empty());
     }
 
-    // An event plugin's `webhook_url` is deliberately out of the walk:
-    // rp's event-delivery path carries no CA-trust or credential field, so
-    // a verdict there would point at a fix that does not exist.
+    // Only the orchestrator registration is walked: rp interprets
+    // `invoke_url`/`auth` on no other entry, so joining one would file a
+    // transport verdict on a URL rp never calls and offer to write a
+    // credential rp never reads.
+    #[test]
+    fn test_rp_non_orchestrator_plugin_with_an_invoke_url_is_not_joined() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "calibrator-flats.json",
+            serde_json::json!({ "server": { "port": 11170,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plugins": [ { "name": "some-tool-provider", "type": "tool_provider",
+                               "invoke_url": "http://localhost:11170/invoke" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
+    }
+
+    // An event plugin's `webhook_url` is out for the stronger reason: rp's
+    // event-delivery path carries no CA-trust or credential field at all,
+    // so a verdict there would point at a fix that does not exist.
     #[test]
     fn test_rp_event_plugin_webhook_url_is_not_joined() {
         let dir = tempfile::tempdir().unwrap();

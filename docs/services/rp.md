@@ -1870,12 +1870,15 @@ single observatory-CA setting every other `rp` client uses (see
 plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
 it for a plugin that does not challenge. A registration is otherwise
-opaque to `rp` — unknown keys are the plugin author's business — but
-`auth` is the exception: a half-written block is rejected at config load
-with the offending entry named (`plugins.0.auth`), so `rp doctor` and
-`PUT /api/config` refuse it exactly as startup does, instead of it being
-read as "no credential" and 401-ing every session start. A `ca_cert` the
-invoke client cannot be built from fails startup the same way. Doctor
+opaque to `rp` — unknown keys are the plugin author's business — and the
+**orchestrator** registration's `auth` is the single exception: a
+half-written block is rejected at config load with the offending entry
+named (`plugins.0.auth`), so `rp doctor` and `PUT /api/config` refuse it
+exactly as startup does, instead of it being read as "no credential" and
+401-ing every session start. `rp` interprets `auth` on no other
+registration, so an event or tool-provider plugin carrying its own
+differently-shaped `auth` key is left alone. A `ca_cert` the invoke
+client cannot be built from fails startup the same way. Doctor
 reports the join between `plugins[].invoke_url` and the plugin service's
 own `server.tls`/`server.auth` as `joins.client-transport` /
 `joins.client-auth`, and `doctor --fix` wires both (see

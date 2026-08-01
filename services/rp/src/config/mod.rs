@@ -267,17 +267,26 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
 
 /// A plugin registration stays an opaque `Value` — it is a plugin-author
 /// surface, so unknown keys are legal there in a way they are nowhere else
-/// in this config. Its `auth` block is the exception: rp reads it as the
-/// client credential for the orchestrator's `/invoke` POST (rp.md
-/// § Orchestrator Registration), so a half-written one must fail like any
-/// other malformed credential rather than being silently ignored — or,
-/// worse, read as "no credential" and 401 every session start. Validated
-/// here rather than at first use so `load_config`, `PUT /api/config`, and
-/// `rp doctor` all reject it identically.
+/// in this config. The **orchestrator** registration's `auth` block is the
+/// one exception: rp reads it as the client credential for that plugin's
+/// `/invoke` POST (rp.md § Orchestrator Registration), so a half-written
+/// one must fail like any other malformed credential rather than being
+/// silently ignored — or, worse, read as "no credential" and 401 every
+/// session start. Validated here rather than at first use so
+/// `load_config`, `PUT /api/config`, and `rp doctor` all reject it
+/// identically.
+///
+/// Scoped to `type == "orchestrator"` exactly because the surface is
+/// otherwise opaque: rp interprets `auth` on no other registration, so an
+/// event or tool-provider plugin carrying its own differently-shaped
+/// `auth` key (a bearer token, say) is that author's business and must
+/// not fail rp's config load. The same scope decides which registration
+/// doctor offers to wire a credential into (`RpView::plugin_targets`).
 fn plugin_auth_errors(plugins: &[Value]) -> Vec<FieldError> {
     plugins
         .iter()
         .enumerate()
+        .filter(|(_, plugin)| is_orchestrator(plugin))
         .filter_map(|(index, plugin)| {
             let auth = match plugin.get("auth") {
                 None | Some(Value::Null) => return None,
@@ -291,6 +300,13 @@ fn plugin_auth_errors(plugins: &[Value]) -> Vec<FieldError> {
                 })
         })
         .collect()
+}
+
+/// Whether a plugin registration is the orchestrator kind — the single
+/// place that rule is written, shared by [`plugin_auth_errors`] and
+/// [`crate::session::SessionManager`]'s registration lookup.
+pub fn is_orchestrator(plugin: &Value) -> bool {
+    plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
 }
 
 pub fn load_config(path: &Path) -> Result<Config> {
@@ -724,6 +740,38 @@ mod tests {
         assert!(
             error.contains("plugins.0.auth") && error.contains("password"),
             "unexpected error: {error}"
+        );
+    }
+
+    /// The opaque half of the same rule: rp interprets `auth` on the
+    /// orchestrator registration alone, so another plugin type's
+    /// differently-shaped `auth` key is its author's business and must
+    /// not fail rp's load.
+    #[test]
+    fn a_non_orchestrator_plugins_own_auth_shape_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": [{
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribes_to": ["exposure_complete"],
+                    "auth": {"bearer_token": "the-plugin-authors-own-shape"}
+                }],
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.plugins[0]["auth"]["bearer_token"],
+            "the-plugin-authors-own-shape"
         );
     }
 

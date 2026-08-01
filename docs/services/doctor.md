@@ -403,12 +403,15 @@ it, present is operator intent" contract as every other client target.
 (`services/doctor/src/scan.rs`) walks the roster generically — any object
 under `equipment` carrying an `alpaca_url`, whether nested in an array
 (`cameras`, `focusers`, …) or standalone like `mount` — so a future
-equipment kind is covered without new doctor code; `RpView::plugin_targets`
-does the same for plugin registrations, keyed on the presence of an
-`invoke_url` rather than on the registration's `type`. An event plugin's
-`webhook_url` is deliberately **not** joined: rp's event-delivery path
-carries no CA-trust or credential field, so a verdict there would point
-at a fix that does not exist. A CA-trust gap is
+equipment kind is covered without new doctor code. `RpView::plugin_targets`
+is deliberately narrower — the **orchestrator** registration only, not
+any entry carrying an `invoke_url`: a registration is an opaque
+plugin-author surface, and rp interprets `invoke_url`/`auth` on that one
+entry alone, so walking by field would file a transport verdict on a URL
+rp never calls and offer to write a credential rp never reads. An event
+plugin's `webhook_url` is out for the stronger reason that rp's
+event-delivery path carries no CA-trust or credential field at all, so
+there is no fix to point at. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
