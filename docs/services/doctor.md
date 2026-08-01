@@ -922,7 +922,26 @@ material root-owned — files with no original whose owner
 `rusty_photon_config::save` could preserve — and without the alignment
 the services could not read their keys and the renewal timer (which runs
 as the service user) could not renew them. Unprivileged runs are a
-no-op (every owner already matches); a failed chown aborts loudly.
+no-op (every owner already matches).
+
+An entry the sweep cannot hand over aborts loudly **only when it is
+material something reads**: the pki directory itself (renewal writes new
+pairs into it), any `*.pem`, `credential`, `acme-account.json`, plus
+`acme.json` and `renew.env` beside the configs. A silently root-owned key
+breaks TLS at the next service start, and that is worth exit 2. Every
+other entry in the tree — `ca.srl`, the serial counter
+`openssl x509 -req -CAcreateserial` leaves beside the CA whenever an
+operator hand-mints a certificate for a third-party driver, a leftover
+CSR, an editor's backup — is aligned best-effort and only warns. Doctor
+neither writes nor reads those, and one of them landing root-owned must
+not disable unattended renewal: the renewal unit runs as the service
+user, which cannot chown a root-owned file, so a fatal sweep would fail
+the timer every day, for good, with nothing but a `failed` unit nobody
+watches to show for it (`units.failed` exists because that is invisible
+otherwise). Because the sweep runs *after* both renewal legs, a failure
+there is not a failed renewal — the message says so, and names the
+material and the `chown` that repairs it, so a renewal that wrote a pair
+is never mistaken for a failed ACME order.
 
 ## Report
 
