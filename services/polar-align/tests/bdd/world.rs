@@ -40,6 +40,11 @@ pub struct PolarAlignWorld {
     /// arcminutes (east-positive azimuth, up-positive altitude).
     pub injected_error_arcmin: Option<(f64, f64)>,
 
+    /// Per-scenario overrides merged into the service config's
+    /// `adjustment` block (set by Given steps before the service
+    /// starts, e.g. a short `max_duration` for deadline scenarios).
+    pub adjustment_overrides: serde_json::Map<String, Value>,
+
     // --- TLS + auth smoke test (`auth.feature`) ---
     pub tls_auth: TlsAuthState,
 

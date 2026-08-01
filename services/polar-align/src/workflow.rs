@@ -609,6 +609,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_star_overlay_clears_in_frame_when_a_target_leaves_the_sensor() {
+        use crate::math::WcsMatrix;
+
+        let frame = SolvedFrame {
+            center_ra_deg: 100.0,
+            center_dec_deg: 40.0,
+            matrix: WcsMatrix {
+                crpix1: 512.0,
+                crpix2: 384.0,
+                cd1_1: -2.9167e-4,
+                cd1_2: 0.0,
+                cd2_1: 0.0,
+                cd2_2: 2.9167e-4,
+            },
+        };
+        let boresight = unit_from_radec(100.0, 40.0);
+        let correction_t = Mat3::from_axis_angle(boresight, std::f64::consts::FRAC_PI_2);
+        // 500 px right of center: the 90° rotation sends the target
+        // ~500 px vertically, off the 768-row sensor.
+        let star = DetectedStar {
+            x: 1011.0,
+            y: 383.0,
+            flux: 1000.0,
+            saturated_pixel_count: 0,
+        };
+
+        let (stars, in_frame) =
+            star_overlay(&frame, correction_t, vec![star], (1024, 768)).unwrap();
+
+        assert!(!in_frame);
+        assert_eq!(stars.len(), 1, "the pair is still published for the UI");
+    }
+
+    #[test]
+    fn test_star_overlay_clears_in_frame_when_a_target_falls_behind_the_tangent_plane() {
+        use crate::math::WcsMatrix;
+
+        let frame = SolvedFrame {
+            center_ra_deg: 100.0,
+            center_dec_deg: 40.0,
+            matrix: WcsMatrix {
+                crpix1: 512.0,
+                crpix2: 384.0,
+                cd1_1: -2.9167e-4,
+                cd1_2: 0.0,
+                cd2_1: 0.0,
+                cd2_2: 2.9167e-4,
+            },
+        };
+        // Rotate 120° about an axis perpendicular to the boresight:
+        // the corrected direction points away from the tangent plane,
+        // so it has no pixel at all.
+        let boresight = unit_from_radec(100.0, 40.0);
+        let perpendicular = boresight
+            .cross(Vec3::new(0.0, 0.0, 1.0))
+            .normalized()
+            .unwrap();
+        let correction_t = Mat3::from_axis_angle(perpendicular, 120.0_f64.to_radians());
+        let star = DetectedStar {
+            x: 511.0,
+            y: 383.0,
+            flux: 1000.0,
+            saturated_pixel_count: 0,
+        };
+
+        let (stars, in_frame) =
+            star_overlay(&frame, correction_t, vec![star], (1024, 768)).unwrap();
+
+        assert!(!in_frame);
+        assert!(stars.is_empty(), "a target with no pixel publishes no pair");
+    }
+
     #[tokio::test]
     async fn test_stale_finish_permit_does_not_survive_re_arming() {
         let shared = WorkflowShared::default();

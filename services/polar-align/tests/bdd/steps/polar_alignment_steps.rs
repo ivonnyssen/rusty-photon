@@ -104,6 +104,40 @@ async fn stub_solver_choreographed(world: &mut PolarAlignWorld, east: f64, alt: 
     world.injected_error_arcmin = Some((east, alt));
 }
 
+#[given("a stub plate solver whose solves stop carrying a WCS matrix after the second point")]
+async fn stub_solver_loses_matrix(world: &mut PolarAlignWorld) {
+    // Points 1–2 carry the matrix; point 3 and the clamped adjustment
+    // entry do not. Measurement needs only centers, so it succeeds
+    // with no attitude seed, and every adjustment solve then fails
+    // the iteration ("solve carried no wcs_matrix").
+    let mut solves = choreograph_solves(30.0, -20.0);
+    for solve in solves.iter_mut().skip(2) {
+        solve.wcs_matrix = None;
+    }
+    let stub = PlateSolverStub::start(StubBehavior::Sequence(solves)).await;
+    world.plate_solver = Some(bdd_infra::rp_harness::PlateSolverConfig {
+        url: stub.url.clone(),
+        timeout: None,
+        default_search_radius_deg: None,
+    });
+    world.plate_solver_stub = Some(stub);
+}
+
+#[given(expr = "the workflow tolerates at most {int} consecutive failed solves")]
+async fn limit_solve_failures(world: &mut PolarAlignWorld, max: u32) {
+    world
+        .adjustment_overrides
+        .insert("max_solve_failures".to_string(), serde_json::json!(max));
+}
+
+#[given(expr = "the adjustment window is limited to {int} second(s)")]
+async fn limit_adjustment_window(world: &mut PolarAlignWorld, seconds: u64) {
+    world.adjustment_overrides.insert(
+        "max_duration".to_string(),
+        serde_json::json!(format!("{seconds}s")),
+    );
+}
+
 #[given("a stub plate solver that always fails")]
 async fn stub_solver_failing(world: &mut PolarAlignWorld) {
     let stub = PlateSolverStub::start(StubBehavior::Error {
@@ -296,6 +330,26 @@ async fn invoke_rejected(world: &mut PolarAlignWorld, expected: u16) {
     );
 }
 
+#[then(expr = "the polar-align status error should mention {string}")]
+async fn polar_align_error_mentions(world: &mut PolarAlignWorld, needle: String) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/status", world.polar_align_url());
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("failed to GET /status");
+    let body: serde_json::Value = resp.json().await.expect("failed to parse /status");
+    let error = body
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or_default();
+    assert!(
+        error.contains(&needle),
+        "status error {error:?} does not mention {needle:?}"
+    );
+}
+
 #[then(expr = "the polar-align workflow phase should be {string}")]
 async fn polar_align_phase_is(world: &mut PolarAlignWorld, expected: String) {
     let client = reqwest::Client::new();
@@ -363,7 +417,12 @@ async fn start_polar_align_service(world: &mut PolarAlignWorld) {
     if world.polar_align.is_some() {
         return;
     }
-    let config = PolarAlignWorld::polar_align_service_config();
+    let mut config = PolarAlignWorld::polar_align_service_config();
+    if let Some(adjustment) = config.get_mut("adjustment").and_then(|a| a.as_object_mut()) {
+        for (key, value) in &world.adjustment_overrides {
+            adjustment.insert(key.clone(), value.clone());
+        }
+    }
     let config_path = write_temp_config_file("polar-align-config", &config).await;
     world.polar_align = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 }
