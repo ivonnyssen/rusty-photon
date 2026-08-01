@@ -824,15 +824,28 @@ doctor binary with `--directory-url`/`--acme-root`.
 Two environment variables locate the binaries, mirroring
 `OMNISIM_PATH`: **`PEBBLE_PATH`** and **`PEBBLE_CHALLTESTSRV_PATH`**
 (both forwarded into Bazel test actions via `--test_env` in `.bazelrc`).
-Unlike OmniSim they are **optional**: when either is unset, the suite
-skips the `@pebble` scenarios and prints a loud
+Unlike OmniSim they are **optional on a dev box**: when either is unset,
+the suite skips the `@pebble` scenarios and prints a loud
 `skipping N @pebble scenarios` notice — the rest of doctor's suite runs
-normally, so a dev box without Pebble stays green while never
-*silently* under-testing. CI always provisions both binaries
-(`.github/actions/install-pebble`, pinned + SHA-verified like
-install-omnisim), so every PR exercises the scenarios on all three
-platforms. To run them locally, download the two binaries from a Pebble
-release and export the two variables.
+normally, so a box without Pebble stays green while never *silently*
+under-testing. Pebble backs six scenarios in one suite, so making it a
+hard prerequisite for all 95 targets would cost more than it buys.
+
+**In CI that skip is a failure.** `.bazelrc` sets
+`test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1`, and the suite's entry
+point turns missing locators into a panic naming how many scenarios the
+run would have dropped. Every workflow that runs doctor's suite provisions
+the binaries today (`.github/actions/install-pebble`, pinned +
+SHA-verified like install-omnisim), so the guard is inert — until an
+install step breaks, a workflow forgets it, or a new runner can't fetch
+the release, which is exactly when a skip notice in a green log would go
+unread.
+
+To run them locally: **`scripts/install-pebble.sh`** downloads and
+SHA-verifies the same pinned release into `~/.local/opt/pebble`
+(`--prefix` to choose elsewhere) and prints the two exports to add to your
+shell profile. Bumping the version means updating the table in both the
+script and the CI action — both fail closed on a mismatch.
 
 #### 5.7 Never block in a step — the whole suite shares one poll loop
 
