@@ -40,6 +40,19 @@ Feature: rp configuration page
     And the restart callout lists "session.file_naming_pattern"
     And rp's config file on disk contains the string "{target}_{filter}_{binning}_{exposure_duration}_{frame_number}"
 
+  # Clearing an optional text box means "unset this", and the form says so
+  # in the only spelling that means it: null. An empty string is a
+  # different state — rp reads an absent file_naming_pattern as "no
+  # templated naming" but an empty one as malformed — so sending "" would
+  # turn a clear into a config rp refuses to load.
+  Scenario: Clearing an optional field unsets it rather than sending an empty string
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I open the config page for "rp"
+    And I submit the rp form with "session.file_naming_pattern" set to ""
+    Then the page reports the changes take effect when rp is restarted
+    And rp's config file on disk has "session.file_naming_pattern" set to null
+
   Scenario: A value rp cannot parse is rejected and rp's config file is untouched
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp

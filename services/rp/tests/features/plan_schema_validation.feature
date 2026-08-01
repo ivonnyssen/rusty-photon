@@ -153,6 +153,24 @@ Feature: Plan schema and validation tools
     And the validation should report invalid
     And the validation errors should include path "file_naming_pattern"
 
+  # An empty pattern and an absent one are different states: absent means
+  # "use the default" (directory_pattern) or "no templated naming"
+  # (file_naming_pattern), while "" is a pattern with nothing in it. Both
+  # fields say so the same way, and both name null — the spelling that
+  # actually unsets them — so a cleared form field cannot quietly mean
+  # something the operator never chose.
+  Scenario: An empty pattern is rejected by both fields alike, naming the way to unset it
+    Given rp is running with a target store
+    And an MCP client connected to rp
+    When the MCP client validates entity "naming_pattern" with value:
+      """
+      {"file_naming_pattern": "", "directory_pattern": ""}
+      """
+    Then the tool call should succeed
+    And the validation should report invalid
+    And the validation error at path "file_naming_pattern" should mention "null"
+    And the validation error at path "directory_pattern" should mention "null"
+
   # The property the tools exist for: a surface that pre-flights with
   # validate_plan must not then be surprised by add_target, in either
   # direction. Both call the same rules.

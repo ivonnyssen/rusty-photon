@@ -227,6 +227,28 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
 /// charsets.
 pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
+    check_file_pattern_text(pattern)?;
+    validate_segments(&segments)
+}
+
+/// The text-level rules for `file_naming_pattern`, shared by
+/// [`validate_pattern`] and [`CompiledTemplate::compile`] so a pattern
+/// that fails to load can never be compiled either.
+fn check_file_pattern_text(pattern: &str) -> Result<(), String> {
+    // Empty is a *malformed* pattern, not an unset one. The two are
+    // different states with different behavior — unset falls back to flat
+    // `<uuid8>.fits` capture — and only `null`/absent expresses the
+    // second. Reading `""` as unset would let a cleared text box silently
+    // turn templated naming off, which is exactly the state rp warns
+    // about at startup.
+    if pattern.is_empty() {
+        return Err(
+            "file_naming_pattern is empty — an empty string is not a pattern; remove the field \
+             (or set it to null) to disable templated naming and fall back to flat \
+             <uuid8>.fits names"
+                .to_string(),
+        );
+    }
     // A file pattern names one file inside the directory
     // `directory_pattern` selected; the progress scan reads `.fits`
     // entries directly out of that directory. A `/` here would nest the
@@ -240,8 +262,7 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
              directory_pattern's directory; put path structure in session.directory_pattern"
         ));
     }
-    check_no_platform_separators(pattern, "file_naming_pattern")?;
-    validate_segments(&segments)
+    check_no_platform_separators(pattern, "file_naming_pattern")
 }
 
 /// Rejects the characters that are path syntax on *some* platform but
@@ -345,14 +366,18 @@ pub fn validate_directory_pattern(pattern: &str) -> Result<(), String> {
 /// place, and no token's shape admits `/`, so every separator here came
 /// from a literal the operator typed.
 fn check_relative_path_shape(pattern: &str) -> Result<(), String> {
-    // Empty means *unset*, not malformed: the config UI round-trips an
-    // absent `directory_pattern` as `""` (the same convention
-    // `session_state_file` uses for "derive the default"), and
-    // [`NamingTemplates::from_session_config`] resolves it to the
-    // documented default. Reading it as a path here would reject a form
-    // the operator never edited.
+    // Empty is a *malformed* pattern, not an unset one — the same
+    // distinction [`check_file_pattern_text`] draws, and drawn the same
+    // way so the two fields answer a cleared form field alike. `null`
+    // (or an absent field) is how "use the default" is expressed; `""`
+    // is a path with no components, which the progress scan could never
+    // match.
     if pattern.is_empty() {
-        return Ok(());
+        return Err(format!(
+            "directory_pattern is empty — an empty string is not a pattern; remove the field \
+             (or set it to null) to use the default {:?}",
+            NamingTemplates::DEFAULT_DIRECTORY_PATTERN
+        ));
     }
     if pattern.starts_with('/') {
         return Err(format!(
@@ -592,6 +617,7 @@ impl CompiledTemplate {
     /// why every token's shape is exercised by this module's tests.
     pub fn compile(pattern: &str) -> Result<Self, String> {
         let segments = parse_segments(pattern)?;
+        check_file_pattern_text(pattern)?;
         validate_segments(&segments)?;
         Self::build(segments)
     }
@@ -605,6 +631,7 @@ impl CompiledTemplate {
     /// Same as [`Self::compile`].
     pub fn compile_directory(pattern: &str) -> Result<Self, String> {
         let segments = parse_segments(pattern)?;
+        check_relative_path_shape(pattern)?;
         check_unambiguous(&segments)?;
         Self::build(segments)
     }
@@ -778,15 +805,13 @@ impl NamingTemplates {
         let Some(file_pattern) = config.file_naming_pattern.as_deref() else {
             return Ok(None);
         };
-        // Absent *or* empty falls back to the documented default: the
-        // config UI serializes an unset pattern as `""`, and compiling
-        // that literally would yield a zero-component directory
-        // template the progress scan could never match — every target
-        // silently deriving 0.
+        // Only *absent* falls back to the default. `Some("")` is a
+        // malformed pattern and [`CompiledTemplate::compile_directory`]
+        // says so, rather than being quietly read as unset here — the
+        // two states differ and `null` already expresses the second.
         let directory_pattern = config
             .directory_pattern
             .as_deref()
-            .filter(|p| !p.is_empty())
             .unwrap_or(Self::DEFAULT_DIRECTORY_PATTERN);
         Ok(Some(Self {
             directory: CompiledTemplate::compile_directory(directory_pattern)?,
@@ -1230,19 +1255,34 @@ mod tests {
         validate_directory_pattern("{target}/{night_date}/{frame_type}").unwrap();
     }
 
-    /// `""` is how the config UI round-trips an unset pattern, so it
-    /// must validate *and* resolve to the documented default rather
-    /// than compiling a zero-component directory template the scan
-    /// could never match.
+    /// An empty pattern is malformed, not unset — and both fields say so
+    /// the same way. `null` (or an absent field) is the only way to
+    /// express "use the default", so a cleared form field cannot
+    /// silently mean something the operator did not choose.
     #[test]
-    fn an_empty_directory_pattern_means_unset_not_malformed() {
-        validate_directory_pattern("").unwrap();
+    fn an_empty_pattern_is_rejected_by_both_fields_alike() {
+        for err in [
+            validate_pattern("").unwrap_err(),
+            validate_directory_pattern("").unwrap_err(),
+        ] {
+            assert!(err.contains("empty"), "{err}");
+            assert!(
+                err.contains("null"),
+                "the message must name the gesture that actually unsets it: {err}"
+            );
+        }
+    }
 
+    /// An absent `directory_pattern` still resolves to the documented
+    /// default — unsetting it is supported, it just has to be spelled
+    /// `null` rather than `""`.
+    #[test]
+    fn an_absent_directory_pattern_resolves_to_the_default() {
         let session = crate::config::session::SessionConfig {
             data_directory: "/tmp/x".to_string(),
             session_state_file: String::new(),
             file_naming_pattern: Some(DEFAULT_PATTERN.to_string()),
-            directory_pattern: Some(String::new()),
+            directory_pattern: None,
         };
         let templates = NamingTemplates::from_session_config(&session)
             .unwrap()
@@ -1250,8 +1290,23 @@ mod tests {
         assert_eq!(
             templates.directory.path_component_count(),
             3,
-            "an empty directory_pattern must resolve to the 3-component default"
+            "an absent directory_pattern must resolve to the 3-component default"
         );
+    }
+
+    /// The compilers enforce the same contract their validators do, so a
+    /// pattern that cannot load cannot be built either — including the
+    /// empty one, which would otherwise compile to a zero-component
+    /// directory template the progress scan could never match.
+    #[test]
+    fn compile_enforces_the_same_contract_as_the_validators() {
+        for pattern in ["", "/{target}", "{target}/../x", "{target}\\{night_date}"] {
+            CompiledTemplate::compile_directory(pattern)
+                .expect_err(&format!("compile_directory must reject {pattern:?}"));
+        }
+        CompiledTemplate::compile("").expect_err("compile must reject the empty file pattern");
+        CompiledTemplate::compile(&format!("{DEFAULT_PATTERN}/x"))
+            .expect_err("compile must reject a file pattern carrying a '/'");
     }
 
     /// The sibling rule: a file pattern names one file inside that
