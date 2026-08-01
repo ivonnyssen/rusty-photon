@@ -3116,6 +3116,33 @@ mod tests {
         }
     }
 
+    // rp's `EventBus` drops an event registration that carries no
+    // `subscribes_to` array — it receives nothing regardless of its
+    // `webhook_url` — so joining it would report a mismatch and offer a
+    // credential for deliveries that never happen.
+    #[test]
+    fn test_rp_event_plugin_without_subscriptions_is_not_joined() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "calibrator-flats.json",
+            serde_json::json!({ "server": { "port": 11170,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plugins": [ { "name": "image-analyzer", "type": "event",
+                               "webhook_url": "http://localhost:11170/webhook" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
+    }
+
     #[test]
     fn test_sentinel_monitor_scheme_and_auth_are_flagged_and_fixed() {
         let dir = tempfile::tempdir().unwrap();
