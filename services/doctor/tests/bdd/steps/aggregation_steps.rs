@@ -223,6 +223,21 @@ fn write_credential(world: &mut DoctorWorld, plaintext: &str) {
     std::fs::write(pki.join("credential"), format!("{plaintext}\n")).expect("credential file");
 }
 
+/// The minimal `acme.json` that flips the install to ACME for the probes:
+/// the domain is what they derive public names from, the rest is the
+/// config type's required fields. A reserved-TLD domain keeps the derived
+/// names unresolvable, so probe scenarios stay hermetic.
+#[given(expr = "an acme.json declaring domain {string}")]
+fn acme_json_with_domain(world: &mut DoctorWorld, domain: String) {
+    let config = serde_json::json!({
+        "email": "op@example.com",
+        "domain": domain,
+        "dns_provider": "cloudflare",
+        "dns_credentials": {},
+    });
+    world.write_config("acme.json", &config.to_string());
+}
+
 /// A config whose `server.tls` is set while no pki tree exists — the probe
 /// must warn that it cannot verify, not connect unverified.
 #[given(expr = "a config file {string} with a tls block but no pki tree")]
