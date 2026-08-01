@@ -27,7 +27,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -85,7 +85,12 @@ pub struct EventPlugin {
     /// The registration's `auth` credential, presented as HTTP Basic on
     /// every delivery. `None` for a plugin that does not challenge —
     /// every event to one that does would 401.
-    pub auth: Option<ClientAuthConfig>,
+    ///
+    /// Behind an `Arc` because [`EventBus::deliver_to_plugins`] hands one
+    /// to a spawned task per event per subscriber: sharing it keeps the
+    /// plaintext password from being copied on that path, which is the
+    /// busiest one rp has.
+    pub auth: Option<Arc<ClientAuthConfig>>,
 }
 
 /// The uniform wire shape for every emitted event.
@@ -354,10 +359,10 @@ impl EventBus {
 
         let auth = match entry.get("auth") {
             None | Some(Value::Null) => None,
-            Some(value) => Some(
+            Some(value) => Some(Arc::new(
                 serde_json::from_value::<ClientAuthConfig>(value.clone())
                     .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
-            ),
+            )),
         };
 
         Ok(Some(EventPlugin {
@@ -502,8 +507,18 @@ impl EventBus {
                         request = request.basic_auth(&auth.username, Some(&auth.password));
                     }
                     match request.send().await {
-                        Ok(resp) => {
+                        Ok(resp) if resp.status().is_success() => {
                             debug!(plugin = %name, event = %event_type, status = %resp.status(), "event delivered");
+                        }
+                        // A reached-but-refusing plugin is the failure this
+                        // path is worst at showing: `send()` returns `Ok`
+                        // for a 401 or a 500, delivery is fire-and-forget,
+                        // and the night continues. Logged at `warn!`
+                        // because it is operator-actionable — a wrong
+                        // `auth` block silently costs a plugin its whole
+                        // night's work otherwise.
+                        Ok(resp) => {
+                            tracing::warn!(plugin = %name, event = %event_type, status = %resp.status(), "plugin rejected the event");
                         }
                         Err(e) => {
                             debug!(plugin = %name, event = %event_type, error = %e, "failed to deliver event");
