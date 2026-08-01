@@ -479,8 +479,8 @@ impl RpView {
     /// and file a transport verdict on a URL rp never calls — a tool
     /// provider, for one, is reached over MCP and authenticates however
     /// its author chose. The scope mirrors rp's own
-    /// `config::dialed_url_field`; the two must agree, or doctor advises a
-    /// fix rp ignores.
+    /// `config::ORCHESTRATOR_URL_FIELD` / `config::EVENT_URL_FIELD`
+    /// mapping; the two must agree, or doctor advises a fix rp ignores.
     pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
         self.plugins
             .iter()
@@ -505,14 +505,17 @@ impl RpView {
 /// The callback field rp POSTs to for this registration, or `None` when
 /// rp would not dial it at all.
 ///
-/// Mirrors rp's `config::dialed_url_field`. doctor cannot share rp's
-/// code here (it reads the config as opaque JSON from another crate), so
-/// the two are held together by their tests.
+/// Mirrors the field rp reads per dialed type
+/// (`config::ORCHESTRATOR_URL_FIELD`, `config::EVENT_URL_FIELD`). doctor
+/// cannot share rp's code here (it reads the config as opaque JSON from
+/// another crate), so the two are held together by their tests.
 ///
 /// Every registration of a dialed type is joined, with no second guess at
-/// whether rp would actually deliver to it: rp refuses to start on an
-/// event registration it cannot deliver to (rp.md § Delivery: Webhooks),
-/// so an entry that reaches a running rig is one rp dials.
+/// whether rp would actually dial it: rp refuses to start on an event
+/// registration it cannot deliver to (rp.md § Delivery: Webhooks) or on
+/// an orchestrator registration it cannot invoke — a second one, or one
+/// with no `invoke_url` (rp.md § Orchestrator Registration) — so an entry
+/// that reaches a running rig is one rp dials.
 fn dialed_url_field(entry: &Value) -> Option<&'static str> {
     match entry.get("type").and_then(Value::as_str)? {
         "orchestrator" => Some("invoke_url"),
