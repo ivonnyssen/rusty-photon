@@ -510,15 +510,19 @@ impl EventBus {
                         Ok(resp) if resp.status().is_success() => {
                             debug!(plugin = %name, event = %event_type, status = %resp.status(), "event delivered");
                         }
-                        // A reached-but-refusing plugin is the failure this
-                        // path is worst at showing: `send()` returns `Ok`
-                        // for a 401 or a 500, delivery is fire-and-forget,
-                        // and the night continues. Logged at `warn!`
-                        // because it is operator-actionable — a wrong
-                        // `auth` block silently costs a plugin its whole
-                        // night's work otherwise.
+                        // A plugin that answers but does not accept is the
+                        // failure this path is worst at showing: `send()`
+                        // returns `Ok` for a 401 or a 500 alike, delivery
+                        // is fire-and-forget, and the night continues.
+                        // Logged at `warn!` because it is
+                        // operator-actionable — a wrong `auth` block
+                        // silently costs a plugin its whole night's work
+                        // otherwise. The wording stays neutral across the
+                        // whole non-2xx range, since a 500 is the plugin
+                        // failing rather than refusing; `status` says
+                        // which.
                         Ok(resp) => {
-                            tracing::warn!(plugin = %name, event = %event_type, status = %resp.status(), "plugin rejected the event");
+                            tracing::warn!(plugin = %name, event = %event_type, status = %resp.status(), "plugin returned a non-success status");
                         }
                         Err(e) => {
                             debug!(plugin = %name, event = %event_type, error = %e, "failed to deliver event");
@@ -876,9 +880,12 @@ mod tests {
     /// fails these tests — a merely slow one on a loaded runner cannot.
     /// Derived from that constant rather than hand-picked, so raising the
     /// production timeout cannot leave the tests waiting less than the
-    /// code is allowed to take. Costs nothing when the delivery lands:
-    /// [`wait_for_count`] polls and returns early.
-    const DELIVERY_BUDGET: Duration = Duration::from_secs(WEBHOOK_TIMEOUT.as_secs() * 2);
+    /// code is allowed to take. Multiplied as a `Duration`, not via
+    /// `as_secs()`: a sub-second `WEBHOOK_TIMEOUT` would truncate to a
+    /// zero budget and fail every one of these tests instantly. Costs
+    /// nothing when the delivery lands: [`wait_for_count`] polls and
+    /// returns early.
+    const DELIVERY_BUDGET: Duration = WEBHOOK_TIMEOUT.saturating_mul(2);
 
     fn bus_with_subscriber(webhook_url: &str, auth: Option<Value>) -> EventBus {
         let mut entry = json!({
