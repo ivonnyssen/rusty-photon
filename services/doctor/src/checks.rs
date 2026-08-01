@@ -2159,6 +2159,12 @@ mod tests {
         let ctx = config_only_ctx(dir.path());
 
         let checks = pki_ownership(&ctx);
+        if !cfg!(unix) {
+            // Windows has no owner to compare material against, so the
+            // check says nothing rather than claiming a tree is fine.
+            assert!(checks.is_empty(), "{checks:?}");
+            return;
+        }
         assert_eq!(checks.len(), 1, "{checks:?}");
         assert_eq!(checks[0].name, "tls.ownership");
         assert_eq!(checks[0].status, Status::Ok);
@@ -2195,8 +2201,11 @@ mod tests {
         let checks = ownership_checks(&ctx, &ownership);
         assert_eq!(checks.len(), 2, "{checks:?}");
         let failure = checks.iter().find(|c| c.status == Status::Fail).unwrap();
+        // Built as a path, not spelled with a separator: the detail renders
+        // whatever the platform uses.
+        let material = Path::new("pki").join("zwo-camera-key.pem");
         assert!(
-            failure.detail.contains("pki/zwo-camera-key.pem"),
+            failure.detail.contains(&material.display().to_string()),
             "the failure names the material, relative to the config root: {}",
             failure.detail
         );
@@ -2212,7 +2221,12 @@ mod tests {
         );
 
         let stray = checks.iter().find(|c| c.status == Status::Warn).unwrap();
-        assert!(stray.detail.contains("pki/ca.srl"), "{}", stray.detail);
+        let srl = Path::new("pki").join("ca.srl");
+        assert!(
+            stray.detail.contains(&srl.display().to_string()),
+            "{}",
+            stray.detail
+        );
         assert!(
             !stray.detail.contains("zwo-camera-key.pem"),
             "a stray warning must not restate the failure: {}",
