@@ -368,7 +368,7 @@ mod tests {
 
     fn enforcer_with(probes: Vec<ScriptedProbe>) -> SafetyEnforcer<ScriptedProbe> {
         let event_bus = Arc::new(EventBus::from_config(&[]));
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &[]));
+        let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         SafetyEnforcer {
             probes,
             poll_interval: Duration::from_millis(1),
@@ -711,7 +711,7 @@ mod tests {
     #[tokio::test]
     async fn from_registry_is_none_without_monitors() {
         let event_bus = Arc::new(EventBus::from_config(&[]));
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &[]));
+        let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let enforcer = SafetyEnforcer::from_registry(
             empty_registry(),
             event_bus,
@@ -943,7 +943,7 @@ mod tests {
         };
         let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
         let event_bus = Arc::new(EventBus::from_config(&[]));
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &[]));
+        let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let enforcer = SafetyEnforcer::from_registry(
             equipment,
             event_bus.clone(),

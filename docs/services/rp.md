@@ -1852,7 +1852,8 @@ invokes it when a session starts:
   "invoke_url": "http://localhost:11160/invoke",
   "requires_tools": ["slew", "capture", "start_guiding", "stop_guiding",
                       "dither", "get_next_target", "record_exposure"],
-  "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" }
+  "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" },
+  "auth": { "username": "observatory", "password": "..." }
 }
 ```
 
@@ -1860,6 +1861,22 @@ The optional `config` object is opaque to `rp`: it is stored with the
 registration and passed through verbatim at invocation (see below).
 `calibrator-flats` carries its flat plan here; `session-runner` uses it to
 name the workflow document to execute and that document's parameters.
+
+**A plugin may serve TLS and require authentication.** An `invoke_url`
+may be `https://` when the plugin's own service is TLS-enabled; `rp`
+verifies that certificate against the top-level `ca_cert`, the same
+single observatory-CA setting every other `rp` client uses (see
+[Configuration](#configuration)). The optional `auth` block is the
+plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
+mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
+it for a plugin that does not challenge. Both are read once at startup:
+an `auth` block that does not parse, or a `ca_cert` the client cannot be
+built from, fails startup with the registration named, rather than
+surfacing as a dead `/invoke` on the first session of the night. Doctor
+reports the join between `plugins[].invoke_url` and the plugin service's
+own `server.tls`/`server.auth` as `joins.client-transport` /
+`joins.client-auth`, and `doctor --fix` wires both (see
+[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
 
 #### Orchestrator Invocation Protocol
 
@@ -1891,12 +1908,21 @@ whatever state it needs to resume (for `session-runner` that is the
 blackboard, keyed by the unchanged `session_id`) and receives the same
 `workflow_id`/`session_id`/`config` as the original invocation.
 
+The POST carries the registration's `auth` credential as an HTTP Basic
+`Authorization` header when one is configured, over a client that trusts
+the top-level `ca_cert` — so an orchestrator serving TLS or challenging
+for a credential is reached like any other rp client target (see
+[Orchestrator Registration](#orchestrator-registration)).
+
 The invoke POST is retried on transport errors and 5xx responses
 (3 attempts, 1 s apart); a 4xx response is treated as permanent. If
 all attempts fail, the session returns to `idle` and a
 `session_stopped` event with `reason: "orchestrator_invoke_failed"`
 is emitted — a session never sits `active` with an orchestrator that
-was never reached.
+was never reached. A `401` is that permanent case: a plugin that
+challenges but whose registration carries no (or a stale) `auth` block
+ends the session start immediately rather than retrying into the same
+rejection.
 
 `config` is the orchestrator's registered `config` object, passed through
 verbatim — `rp` never interprets it. The key is always present: when the
@@ -2075,7 +2101,8 @@ when the device's own service is TLS-enabled (e.g. via doctor's D6
 provisioning). `rp`'s Alpaca client verifies that certificate against
 the top-level `ca_cert` config (see [Configuration](#configuration)) —
 an observatory runs one self-signed CA, so one rp-level setting covers
-every device, the plate-solver service, and the guider service alike.
+every device, the plate-solver service, the guider service, and the
+orchestrator plugin alike.
 Setting `ca_cert` makes it the client's **only** trusted root
 (`tls_certs_only`, ADR-002): the platform trust store no longer
 applies, so a public-CA `https://` target becomes unreachable
@@ -4652,8 +4679,9 @@ field named (see [Camera Cooling](#camera-cooling)).
 
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices
-(`equipment.*[].alpaca_url`), the plate-solver service, and the guider
-service. An observatory runs one self-signed CA (doctor's D6
+(`equipment.*[].alpaca_url`), the plate-solver service, the guider
+service, and the orchestrator plugin's `invoke_url`. An observatory
+runs one self-signed CA (doctor's D6
 provisioning), so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
 once the CA exists (`services/doctor/src/provision/mod.rs`

@@ -325,6 +325,14 @@ plain, unauthenticated HTTP; a plan file without a `server` block keeps
 loading (port 11170 on all interfaces). `--port` / `--bind-address`
 override `server.port` / `server.bind_address` from the command line.
 
+Turning `server.tls`/`server.auth` on here requires the matching change
+on rp's side of the `/invoke` call: rp's plugin registration must point
+`invoke_url` at `https://` and carry the `auth` credential (rp.md
+§Orchestrator Registration). Doctor reports that pairing as
+`joins.client-transport` / `joins.client-auth` against rp's config, and
+`doctor --fix` writes both, so provisioning this service's server side no
+longer strands the client that calls it.
+
 `service_auth` (optional `{ "username", "password" }`) and `ca_cert`
 (optional PEM CA path) apply to calibrator-flats **as a client of rp's
 MCP server**. The `mcp_server_url` itself still arrives per-invocation in
