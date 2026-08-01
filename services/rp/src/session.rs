@@ -101,16 +101,34 @@ struct PersistedSession {
     progress: Value,
 }
 
+/// Connect-phase timeout for the `/invoke` POST. A loopback or LAN plugin
+/// completes the TCP connect far inside this; the bound keeps a
+/// black-holed host from stalling the connect indefinitely. Mirrors
+/// `equipment::alpaca::ALPACA_CONNECT_TIMEOUT`.
+const INVOKE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Read timeout for the `/invoke` POST. The protocol's acknowledgement is
+/// prompt by contract — an orchestrator spawns the workflow and answers
+/// with timing estimates (rp.md § Orchestrator Invocation Protocol) — so
+/// 10 s is far above any healthy ack. Without it a silently stalled
+/// plugin would hang inside a single attempt forever, which is not a
+/// transport error and so never reaches [`INVOKE_ATTEMPTS`]' retry: the
+/// session would sit `active` behind a workflow that was never
+/// acknowledged. Same failure class as the #319 Alpaca hang.
+const INVOKE_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// rp's client for the orchestrator `/invoke` POST: `ca_cert_path` is
 /// the observatory CA (`Config::ca_cert_path`, rp.md §Configuration),
 /// without which an `https://` `invoke_url` signed by that CA fails
 /// certificate verification — the same wiring `build_alpaca_client` and
-/// the solver/guider clients carry.
+/// the solver/guider clients carry, timeouts included.
 fn build_invoke_client(
     ca_cert_path: Option<&Path>,
 ) -> Result<reqwest::Client, Box<dyn std::error::Error + Send + Sync>> {
     Ok(rusty_photon_tls::client::client_builder(ca_cert_path)?
         .user_agent("rusty-photon-rp")
+        .connect_timeout(INVOKE_CONNECT_TIMEOUT)
+        .read_timeout(INVOKE_READ_TIMEOUT)
         .build()?)
 }
 
@@ -1639,6 +1657,36 @@ mod tests {
             stub.bodies.read().await.is_empty(),
             "the stub must not have accepted an uncredentialed invocation"
         );
+    }
+
+    /// A plugin that accepts the connection but never answers must
+    /// surface as a transport error the retry can act on, not hang inside
+    /// one attempt — the session would otherwise sit `active` behind a
+    /// workflow that was never acknowledged. `start_paused` advances
+    /// virtual time so the read timeout and the retry backoff fire in
+    /// real-time milliseconds; the outer `timeout` only trips if the
+    /// client-level timeout regresses, turning a silent hang into a loud
+    /// failure.
+    #[tokio::test(start_paused = true)]
+    async fn invoke_times_out_on_a_silently_stalled_orchestrator() {
+        let app = Router::new().route(
+            "/invoke",
+            post(|| async { std::future::pending::<Json<Value>>().await }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let manager = manager_with_auth(&format!("http://127.0.0.1:{port}/invoke"), None);
+        manager.start().await.unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(600), async {
+            while manager.status().await != "idle" {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        outcome.expect("a stalled orchestrator must time out, not hang the invocation");
     }
 
     #[tokio::test]

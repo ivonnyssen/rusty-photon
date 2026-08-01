@@ -1869,10 +1869,13 @@ single observatory-CA setting every other `rp` client uses (see
 [Configuration](#configuration)). The optional `auth` block is the
 plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
-it for a plugin that does not challenge. Both are read once at startup:
-an `auth` block that does not parse, or a `ca_cert` the client cannot be
-built from, fails startup with the registration named, rather than
-surfacing as a dead `/invoke` on the first session of the night. Doctor
+it for a plugin that does not challenge. A registration is otherwise
+opaque to `rp` — unknown keys are the plugin author's business — but
+`auth` is the exception: a half-written block is rejected at config load
+with the offending entry named (`plugins.0.auth`), so `rp doctor` and
+`PUT /api/config` refuse it exactly as startup does, instead of it being
+read as "no credential" and 401-ing every session start. A `ca_cert` the
+invoke client cannot be built from fails startup the same way. Doctor
 reports the join between `plugins[].invoke_url` and the plugin service's
 own `server.tls`/`server.auth` as `joins.client-transport` /
 `joins.client-auth`, and `doctor --fix` wires both (see
@@ -1915,7 +1918,12 @@ for a credential is reached like any other rp client target (see
 [Orchestrator Registration](#orchestrator-registration)).
 
 The invoke POST is retried on transport errors and 5xx responses
-(3 attempts, 1 s apart); a 4xx response is treated as permanent. If
+(3 attempts, 1 s apart); a 4xx response is treated as permanent. The
+client bounds each attempt (5 s connect, 10 s read) so a plugin that
+accepts the connection and then stalls surfaces as a transport error the
+retry can act on — the acknowledgement is prompt by contract, so a stall
+is a fault, and without the bound the session would sit `active` behind
+a workflow that was never acknowledged. If
 all attempts fail, the session returns to `idle` and a
 `session_stopped` event with `reason: "orchestrator_invoke_failed"`
 is emitted — a session never sits `active` with an orchestrator that

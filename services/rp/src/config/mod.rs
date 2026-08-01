@@ -261,7 +261,36 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     {
         errors.extend(train_errors);
     }
+    errors.extend(plugin_auth_errors(&config.plugins));
     errors
+}
+
+/// A plugin registration stays an opaque `Value` — it is a plugin-author
+/// surface, so unknown keys are legal there in a way they are nowhere else
+/// in this config. Its `auth` block is the exception: rp reads it as the
+/// client credential for the orchestrator's `/invoke` POST (rp.md
+/// § Orchestrator Registration), so a half-written one must fail like any
+/// other malformed credential rather than being silently ignored — or,
+/// worse, read as "no credential" and 401 every session start. Validated
+/// here rather than at first use so `load_config`, `PUT /api/config`, and
+/// `rp doctor` all reject it identically.
+fn plugin_auth_errors(plugins: &[Value]) -> Vec<FieldError> {
+    plugins
+        .iter()
+        .enumerate()
+        .filter_map(|(index, plugin)| {
+            let auth = match plugin.get("auth") {
+                None | Some(Value::Null) => return None,
+                Some(value) => value,
+            };
+            serde_json::from_value::<rp_auth::config::ClientAuthConfig>(auth.clone())
+                .err()
+                .map(|e| FieldError {
+                    path: format!("plugins.{index}.auth"),
+                    msg: e.to_string(),
+                })
+        })
+        .collect()
 }
 
 pub fn load_config(path: &Path) -> Result<Config> {
@@ -665,5 +694,65 @@ mod tests {
                 value.pointer(pointer)
             );
         }
+    }
+
+    /// A plugin registration is otherwise opaque, but its `auth` block is
+    /// read as rp's client credential — a half-written one must fail at
+    /// load (and so at `PUT /api/config` and `rp doctor`) rather than be
+    /// silently read as "no credential" and 401 every session start.
+    #[test]
+    fn a_malformed_plugin_auth_block_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": [{
+                    "name": "calibrator-flats",
+                    "type": "orchestrator",
+                    "invoke_url": "http://127.0.0.1:11170/invoke",
+                    "auth": {"username": "observatory"}
+                }],
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("plugins.0.auth") && error.contains("password"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The opaque half of the same rule: a registration's other keys stay
+    /// the plugin author's business, and an absent `auth` is the ordinary
+    /// no-credential case.
+    #[test]
+    fn a_plugin_registration_without_auth_loads_with_its_own_keys_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": [{
+                    "name": "calibrator-flats",
+                    "type": "orchestrator",
+                    "invoke_url": "http://127.0.0.1:11170/invoke",
+                    "config": {"camera_id": "main-cam"},
+                    "some_plugin_specific_key": 42
+                }],
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.plugins[0]["some_plugin_specific_key"], 42);
     }
 }
