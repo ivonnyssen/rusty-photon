@@ -410,6 +410,9 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
   provides `stop()` for graceful SIGTERM shutdown, and drains stdout to prevent
   pipe deadlocks. On `Drop`, sends a best-effort SIGTERM.
 - `parse_bound_port()` — standalone function also usable by ConformU tests.
+- `run_once_async()` / `run_once()` — run a binary once (a `doctor` subcommand,
+  a `--help`) and reap its output. Steps use the async form; see
+  [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
 
 **Labeled stderr forwarding.** Every spawned child's stderr (where every
 service's `tracing` output goes) is captured and re-printed line-by-line,
@@ -830,6 +833,53 @@ normally, so a dev box without Pebble stays green while never
 install-omnisim), so every PR exercises the scenarios on all three
 platforms. To run them locally, download the two binaries from a Pebble
 release and export the two variables.
+
+#### 5.7 Never block in a step — the whole suite shares one poll loop
+
+Cucumber drives every scenario as a `LocalBoxFuture` in a **single**
+`FuturesUnordered`, polled by the one task `bdd_main!` hands to
+`Runtime::block_on`. Up to 64 scenarios are in flight there (cucumber's
+default), and they are concurrent, not parallel: whatever a step does
+synchronously, the other 63 scenarios wait through.
+
+That makes a blocking wait inside a step — most often waiting on a child
+process — cost far more than the step it sits in. While it runs:
+
+- no other scenario is polled, so their in-process test servers stop
+  answering and their timers fire late;
+- steps elsewhere fail with transport errors and timeouts that read like
+  product bugs. `rusty-photon-tls`'s server bounds how long a connection
+  may make no progress and drops it when the bound passes, so a client
+  starved past that bound sees a bare `ConnectionAborted` with nothing
+  wrong on either side;
+- the suite loses its concurrency: wall time becomes the *sum* of every
+  blocking wait. Doctor's suite spends most of its steps running the
+  doctor binary — moving those waits off the poll loop took it from 20.6 s
+  to 3.9 s locally, and from 160.8 s to 5.7 s with each spawn slowed to
+  900 ms to emulate a contended 4-vCPU Windows runner.
+
+So: **`bdd_infra::run_once_async` in a step, never `run_once`** (the
+synchronous form is for plain `#[test]`s, which have no runtime to yield
+to), and any other blocking wait belongs in `tokio::task::spawn_blocking`.
+`tokio::task::block_in_place` is *not* a fix here — it hands a worker's
+queue to a replacement thread, and the poll loop being starved is not on a
+worker.
+
+The same reasoning applies to a helper a step calls: make it `async` all
+the way down rather than blocking one level lower.
+
+#### 5.8 What a BDD suite logs
+
+`bdd_main!` installs a `tracing` subscriber (`bdd_infra::init_test_tracing`)
+filtered to `warn,rusty_photon_tls=debug`, overridable with `RUST_LOG`.
+
+Services under test are child processes whose stderr the suite already
+forwards labelled (§5.1), so this subscriber only ever sees library code
+running **in** the test process. It is deliberately near-silent, with one
+exception: `rusty-photon-tls`'s server answers a connection it cannot
+serve by dropping it and saying why at `debug!`, which is otherwise the
+one failure the client cannot report — it just sees the socket die. Keep
+new defaults to that bar: something a failing step cannot explain without.
 
 ---
 

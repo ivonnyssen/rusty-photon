@@ -49,20 +49,20 @@ fn issue_acme_args(world: &DoctorWorld, domain: &str) -> Vec<String> {
     .collect()
 }
 
-fn run_issue_acme(world: &mut DoctorWorld, domain: &str) {
+async fn run_issue_acme(world: &mut DoctorWorld, domain: &str) {
     let args = issue_acme_args(world, domain);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    world.run_doctor_subcommand(&refs, None);
+    world.run_doctor_subcommand(&refs, None).await;
 }
 
 #[when(expr = "I run doctor tls issue --acme against the local directory for domain {string}")]
-fn when_issue_acme(world: &mut DoctorWorld, domain: String) {
-    run_issue_acme(world, &domain);
+async fn when_issue_acme(world: &mut DoctorWorld, domain: String) {
+    run_issue_acme(world, &domain).await;
 }
 
 #[given(expr = "doctor tls issue --acme has already run against it for domain {string}")]
-fn issue_acme_already_ran(world: &mut DoctorWorld, domain: String) {
-    run_issue_acme(world, &domain);
+async fn issue_acme_already_ran(world: &mut DoctorWorld, domain: String) {
+    run_issue_acme(world, &domain).await;
     let output = world.output.as_ref().expect("tls issue --acme ran");
     assert!(
         output.status.success(),

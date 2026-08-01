@@ -324,12 +324,12 @@ impl DoctorWorld {
     }
 
     /// Run the doctor binary against the staged config dir and facts.
-    pub fn run_doctor(&mut self, json: bool) {
-        self.run_doctor_args(json, false);
+    pub async fn run_doctor(&mut self, json: bool) {
+        self.run_doctor_args(json, false).await;
     }
 
     /// [`run_doctor`], optionally with `--fix`.
-    pub fn run_doctor_args(&mut self, json: bool, fix: bool) {
+    pub async fn run_doctor_args(&mut self, json: bool, fix: bool) {
         let facts_path = self.temp.path().join("facts.json");
         std::fs::write(
             &facts_path,
@@ -355,7 +355,7 @@ impl DoctorWorld {
         if fix {
             args.push("--fix");
         }
-        let output = bdd_infra::run_once("doctor", &args, None);
+        let output = bdd_infra::run_once_async("doctor", &args, None).await;
         self.report = if json && output.status.code() != Some(2) {
             Some(serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
                 panic!(
@@ -372,7 +372,7 @@ impl DoctorWorld {
     /// Run the doctor binary with a subcommand (`tls issue`, `auth rotate`,
     /// …) against the staged config dir and facts. The global
     /// `--config-dir`/`--platform-facts` flags precede the subcommand.
-    pub fn run_doctor_subcommand(&mut self, subcommand_args: &[&str], stdin: Option<&[u8]>) {
+    pub async fn run_doctor_subcommand(&mut self, subcommand_args: &[&str], stdin: Option<&[u8]>) {
         let facts_path = self.temp.path().join("facts.json");
         std::fs::write(
             &facts_path,
@@ -389,7 +389,7 @@ impl DoctorWorld {
         ];
         args.extend_from_slice(subcommand_args);
         let json = subcommand_args.contains(&"--json");
-        let output = bdd_infra::run_once("doctor", &args, stdin);
+        let output = bdd_infra::run_once_async("doctor", &args, stdin).await;
         self.report = if json && output.status.code() == Some(0) {
             Some(serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
                 panic!(

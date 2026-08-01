@@ -59,18 +59,22 @@ fn pki_file_deleted(world: &mut DoctorWorld, name: String) {
 // ---------------------------------------------------------------------------
 
 #[when("I run doctor tls renew")]
-fn run_renew(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "renew"], None);
+async fn run_renew(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["tls", "renew"], None).await;
 }
 
 #[when("I run doctor tls renew with --json")]
-fn run_renew_json(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "renew", "--json"], None);
+async fn run_renew_json(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "renew", "--json"], None)
+        .await;
 }
 
 #[when("I run doctor tls renew with --force")]
-fn run_renew_force(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "renew", "--force"], None);
+async fn run_renew_force(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "renew", "--force"], None)
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +115,20 @@ fn cert_carries_san(world: &mut DoctorWorld, name: String, san: String) {
 // The in-process hot-reload proof
 // ---------------------------------------------------------------------------
 
+/// How many times [`https_get_capturing_peer`] re-runs the whole probe
+/// before failing the scenario, and how long it waits between tries.
+///
+/// The server bounds how long one connection may make no progress — a wait
+/// for the first byte, and the handshake itself — and drops it when the bound
+/// passes, which reaches the client as a bare transport abort with nothing
+/// wrong on either side. Scheduling delay alone can consume that bound on a
+/// loaded runner, and a fresh connection starts a fresh one, so retrying the
+/// *transport* costs nothing the scenario cares about. A TLS or HTTP verdict
+/// — the certificate the server actually serves, which is this scenario's
+/// whole subject — is never retried: those fail on the first attempt.
+const PROBE_ATTEMPTS: usize = 3;
+const PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Handshake against `addr` trusting `ca_path`, returning the HTTP status
 /// of a `/health` GET plus the peer's leaf certificate DER — reqwest hides
 /// the peer certificate, so this speaks rustls directly.
@@ -118,8 +136,6 @@ pub async fn https_get_capturing_peer(
     addr: std::net::SocketAddr,
     ca_path: &Path,
 ) -> (u16, Vec<u8>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     rusty_photon_tls::install_default_crypto_provider();
     let ca_pem = std::fs::read_to_string(ca_path).expect("CA pem");
     let mut roots = rustls::RootCertStore::empty();
@@ -130,9 +146,43 @@ pub async fn https_get_capturing_peer(
         .with_root_certificates(roots)
         .with_no_client_auth();
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
-    let tcp = tokio::net::TcpStream::connect(addr).await.expect("connect");
+
+    let started = std::time::Instant::now();
+    let mut aborts = Vec::new();
+    for attempt in 1..=PROBE_ATTEMPTS {
+        match probe_once(&connector, addr).await {
+            Ok(captured) => return captured,
+            Err(e) if is_transport_abort(&e) => {
+                aborts.push(format!(
+                    "attempt {attempt} after {:?}: {e}",
+                    started.elapsed()
+                ));
+                tokio::time::sleep(PROBE_BACKOFF).await;
+            }
+            // A TLS alert, an untrusted certificate, a refused connect: the
+            // server is answering, just not the way the scenario expects.
+            Err(e) => panic!("HTTPS probe of {addr} failed: {e}"),
+        }
+    }
+    panic!(
+        "HTTPS probe of {addr} was aborted on all {PROBE_ATTEMPTS} attempts over {:?} — {}",
+        started.elapsed(),
+        aborts.join("; ")
+    );
+}
+
+/// One connect + handshake + `GET /health`. Every transport failure comes
+/// back as an error for [`https_get_capturing_peer`] to grade; only broken
+/// test material (an unusable CA, a server with no leaf certificate) panics.
+async fn probe_once(
+    connector: &tokio_rustls::TlsConnector,
+    addr: std::net::SocketAddr,
+) -> std::io::Result<(u16, Vec<u8>)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let tcp = tokio::net::TcpStream::connect(addr).await?;
     let name = rustls::pki_types::ServerName::try_from("localhost").expect("server name");
-    let mut tls = connector.connect(name, tcp).await.expect("TLS handshake");
+    let mut tls = connector.connect(name, tcp).await?;
     let peer_der = tls
         .get_ref()
         .1
@@ -141,23 +191,41 @@ pub async fn https_get_capturing_peer(
         .to_vec();
 
     tls.write_all(b"GET /health HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
-        .await
-        .expect("request written");
+        .await?;
     let mut response = Vec::new();
     // The server may close without a TLS close_notify; the bytes read so
     // far still carry the status line.
     tls.read_to_end(&mut response).await.ok();
-    let status = std::str::from_utf8(&response)
+    std::str::from_utf8(&response)
         .ok()
         .and_then(|text| text.split_whitespace().nth(1))
         .and_then(|code| code.parse().ok())
-        .unwrap_or_else(|| {
-            panic!(
-                "no HTTP status line in: {}",
-                String::from_utf8_lossy(&response)
+        .map(|status| (status, peer_der))
+        .ok_or_else(|| {
+            // A response with no status line is a connection that died
+            // mid-answer — same grading as any other truncated read.
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "no HTTP status line in: {}",
+                    String::from_utf8_lossy(&response)
+                ),
             )
-        });
-    (status, peer_der)
+        })
+}
+
+/// Whether an error means the connection died under the probe rather than
+/// the server refusing what the probe asked for. rustls surfaces protocol
+/// and certificate failures as `InvalidData`, which is deliberately absent.
+fn is_transport_abort(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::TimedOut
+    )
 }
 
 #[given(expr = "a hot-reloading test HTTPS server is started with the {string} certificate")]

@@ -70,8 +70,8 @@ fn acme_pair_staged(world: &mut DoctorWorld, days: i64) {
 }
 
 #[given("doctor has already run with --fix")]
-fn doctor_ran_with_fix(world: &mut DoctorWorld) {
-    world.run_doctor_args(true, true);
+async fn doctor_ran_with_fix(world: &mut DoctorWorld) {
+    world.run_doctor_args(true, true).await;
     let output = world.output.as_ref().expect("doctor ran");
     assert_ne!(
         output.status.code(),

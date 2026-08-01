@@ -106,6 +106,10 @@
 /// suite must additionally route its scenario filter through
 /// [`sharding::scenario_in_current_shard`], or every shard runs the whole
 /// suite.
+///
+/// Finally it installs the suite's `tracing` subscriber
+/// ([`init_test_tracing`]), so in-process library code a step drives can
+/// explain itself when the step fails.
 #[macro_export]
 macro_rules! bdd_main {
     ($($body:tt)*) => {
@@ -116,6 +120,7 @@ macro_rules! bdd_main {
         fn main() {
             $crate::sharding::advertise_bazel_sharding_support();
             $crate::__bdd_bazel_chdir();
+            $crate::init_test_tracing();
             // 16 MB driver + worker stacks: see the macro docs — the rp suite
             // overflows Windows' ~1 MB main-thread stack otherwise.
             const BDD_STACK_SIZE: usize = 16 * 1024 * 1024;
@@ -136,6 +141,36 @@ macro_rules! bdd_main {
             driver.join().expect("bdd_main: driver thread panicked");
         }
     };
+}
+
+/// What a BDD suite logs when `RUST_LOG` says nothing.
+///
+/// Every service under test is a *child process* whose own subscriber and
+/// stderr the suite already forwards, so the only events this subscriber can
+/// ever see are from library code running **in** the test process. Of that,
+/// `rusty-photon-tls`'s server loop is the piece whose failure modes are
+/// otherwise unobservable: it answers a connection it cannot serve — a
+/// handshake that errored, one that never sent a byte inside the idle bound,
+/// a certificate pair that failed to reload — by dropping the connection and
+/// saying so at `debug!`, leaving the client with a bare transport error and
+/// no reason for it. Everything else stays at `warn` so a passing run's log
+/// is unchanged.
+const DEFAULT_BDD_LOG: &str = "warn,rusty_photon_tls=debug";
+
+/// Install the suite's `tracing` subscriber — called for you by
+/// [`bdd_main!`], and safe to call again (a suite that installs its own
+/// subscriber first keeps it).
+///
+/// `RUST_LOG` overrides [`DEFAULT_BDD_LOG`] as usual, which is how you turn a
+/// suite up while reproducing a failure locally. ANSI is off: this writes into
+/// a Bazel test log, not a terminal.
+pub fn init_test_tracing() {
+    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_BDD_LOG.to_string());
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .try_init();
 }
 
 #[doc(hidden)]
@@ -499,6 +534,10 @@ impl Drop for ServiceHandle {
 /// Use this for one-shot commands like `doctor tls issue` that are not
 /// long-running servers. When `stdin_data` is `Some`, the data is piped to the
 /// process's stdin.
+///
+/// **A cucumber step must call [`run_once_async`] instead** — see its docs for
+/// what a blocking wait costs the suite around it. This synchronous form is
+/// for callers with no runtime to yield to: plain `#[test]` integration tests.
 pub fn run_once(
     package_name: &str,
     args: &[&str],
@@ -506,8 +545,50 @@ pub fn run_once(
 ) -> std::process::Output {
     let binary = require_binary(package_name);
     debug!(binary = %binary, "running {} from pre-built binary", package_name);
+    run_to_completion(package_name, &binary, args, stdin_data)
+}
 
-    let mut cmd = std::process::Command::new(&binary);
+/// [`run_once`], awaited instead of blocked on.
+///
+/// Cucumber drives every scenario as a `LocalBoxFuture` in **one**
+/// `FuturesUnordered` on the [`bdd_main!`] runtime's `block_on` task, so up to
+/// 64 scenarios' worth of async work shares a single poll loop. A synchronous
+/// wait inside a step stops that loop: for as long as the child runs, no other
+/// scenario is polled — in-process test servers stop answering, timers fire
+/// late, and steps elsewhere in the suite fail with transport errors and
+/// timeouts that read like product bugs. The cost scales with the number of
+/// scenarios in flight and with how slowly the host spawns processes, which is
+/// why it bites hardest on the 3-4 vCPU CI runners.
+///
+/// Waiting on the blocking pool instead lets the step yield, so the poll loop
+/// keeps running and the suite keeps its concurrency.
+pub async fn run_once_async(
+    package_name: &str,
+    args: &[&str],
+    stdin_data: Option<&[u8]>,
+) -> std::process::Output {
+    let binary = require_binary(package_name);
+    debug!(binary = %binary, "running {} from pre-built binary", package_name);
+
+    let package = package_name.to_string();
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let stdin_data = stdin_data.map(<[u8]>::to_vec);
+    tokio::task::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_to_completion(&package, &binary, &args, stdin_data.as_deref())
+    })
+    .await
+    .unwrap_or_else(|e| panic!("failed to join the {package_name} run: {e}"))
+}
+
+/// Spawn `binary`, feed it `stdin_data`, and reap its `Output`.
+fn run_to_completion(
+    package_name: &str,
+    binary: &str,
+    args: &[&str],
+    stdin_data: Option<&[u8]>,
+) -> std::process::Output {
+    let mut cmd = std::process::Command::new(binary);
     cmd.args(args);
     if let Some((key, value)) = child_coverage_profile_var(package_name) {
         cmd.env(key, value);
