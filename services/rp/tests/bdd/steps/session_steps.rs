@@ -41,6 +41,47 @@ fn server_config_advertises_url(world: &mut RpWorld, url: String) {
     world.advertised_url = Some(url);
 }
 
+#[given(expr = "a test orchestrator that requires the credential {string} with password {string}")]
+async fn orchestrator_requires_credential(world: &mut RpWorld, username: String, password: String) {
+    if world.orchestrator.is_none() {
+        let invocations = world.orchestrator_invocations.clone();
+        let cancelled = world.orchestrator_cancelled.clone();
+        world.orchestrator = Some(
+            TestOrchestrator::start_requiring_auth(
+                invocations,
+                cancelled,
+                OrchestratorBehavior::WaitForStop,
+                &username,
+                &password,
+            )
+            .await,
+        );
+    }
+    add_orchestrator_plugin(world);
+}
+
+#[given(
+    expr = "the orchestrator registration carries the credential {string} with password {string}"
+)]
+fn orchestrator_registration_carries_credential(
+    world: &mut RpWorld,
+    username: String,
+    password: String,
+) {
+    let entry = world
+        .plugin_configs
+        .iter_mut()
+        .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"))
+        .expect("no orchestrator plugin registered; add the test orchestrator first");
+    entry
+        .as_object_mut()
+        .expect("orchestrator plugin config is not an object")
+        .insert(
+            "auth".to_string(),
+            serde_json::json!({ "username": username, "password": password }),
+        );
+}
+
 #[given(expr = "a plugin configured as orchestrator with invoke URL {string}")]
 fn plugin_configured_as_orchestrator(world: &mut RpWorld, invoke_url: String) {
     // Only add if not already present
@@ -243,6 +284,14 @@ async fn orchestrator_was_invoked(world: &mut RpWorld) {
     assert!(
         world.wait_for_orchestrator_invocation().await,
         "expected orchestrator to have been invoked"
+    );
+}
+
+#[then("the test orchestrator should have recorded no invocation")]
+async fn orchestrator_recorded_no_invocation(world: &mut RpWorld) {
+    assert!(
+        world.orchestrator_invocations.read().await.is_empty(),
+        "an invocation carrying no credential must be rejected before it is recorded"
     );
 }
 

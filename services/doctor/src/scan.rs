@@ -318,7 +318,9 @@ pub struct RpUrlTargetView {
 
 /// rp: the blocks doctor reads. `equipment` stays a `Value` — device usage
 /// is opaque; only each entry's `alpaca_url` and the mount's nested
-/// `guiding.url` are extracted.
+/// `guiding.url` are extracted. `plugins` is opaque for the same reason:
+/// registrations are a plugin-author surface, and only the orchestrator's
+/// `invoke_url` + `auth` are extracted (issue #800).
 #[derive(Debug, Deserialize, Default)]
 pub struct RpView {
     #[serde(default)]
@@ -327,6 +329,8 @@ pub struct RpView {
     pub session: Option<RpSessionView>,
     #[serde(default)]
     pub plate_solver: Option<RpUrlTargetView>,
+    #[serde(default)]
+    pub plugins: Vec<Value>,
     #[serde(default)]
     pub ca_cert: Option<String>,
 }
@@ -406,7 +410,7 @@ impl RpView {
     /// `alpaca_urls()`'s existing walk. The guider's URL
     /// (`equipment.mount.guiding.url`) lives under a `url` key, not
     /// `alpaca_url`, so it never collides with this walk.
-    pub fn equipment_targets(&self) -> Vec<RpEquipmentTarget> {
+    pub fn equipment_targets(&self) -> Vec<RpClientTarget> {
         let mut targets = Vec::new();
         let Some(Value::Object(kinds)) = &self.equipment else {
             return targets;
@@ -423,7 +427,7 @@ impl RpView {
                 Value::Array(entries) => {
                     for (idx, entry) in entries.iter().enumerate() {
                         if let Some(url) = entry.get("alpaca_url").and_then(Value::as_str) {
-                            targets.push(RpEquipmentTarget {
+                            targets.push(RpClientTarget {
                                 field: format!("equipment.{kind}.{idx}.alpaca_url"),
                                 url: url.to_string(),
                                 url_pointer: format!("/equipment/{escaped_kind}/{idx}/alpaca_url"),
@@ -437,7 +441,7 @@ impl RpView {
                 }
                 Value::Object(_) => {
                     if let Some(url) = value.get("alpaca_url").and_then(Value::as_str) {
-                        targets.push(RpEquipmentTarget {
+                        targets.push(RpClientTarget {
                             field: format!("equipment.{kind}.alpaca_url"),
                             url: url.to_string(),
                             url_pointer: format!("/equipment/{escaped_kind}/alpaca_url"),
@@ -453,19 +457,53 @@ impl RpView {
         }
         targets
     }
+
+    /// The orchestrator registration's `invoke_url` — what rp POSTs a
+    /// session start to (rp.md § Orchestrator Registration) — alongside
+    /// its own `auth` field (issue #800).
+    ///
+    /// Deliberately narrower than [`Self::equipment_targets`]'s
+    /// walk-anything-with-an-`alpaca_url` rule: a registration is an
+    /// opaque plugin-author surface, and rp interprets `invoke_url` and
+    /// `auth` on the **orchestrator** entry alone. Walking by field alone
+    /// would let `--fix` write a credential into a registration rp never
+    /// reads, and file a transport verdict on a URL rp never calls.
+    /// Event plugins' `webhook_url` is out for the stronger reason that
+    /// rp has no CA-trust or credential wiring on that path at all, so
+    /// there is no fix to point at.
+    pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
+        self.plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.get("type").and_then(Value::as_str) == Some("orchestrator"))
+            .filter_map(|(idx, entry)| {
+                let url = entry.get("invoke_url")?.as_str()?;
+                Some(RpClientTarget {
+                    field: format!("plugins.{idx}.invoke_url"),
+                    url: url.to_string(),
+                    url_pointer: format!("/plugins/{idx}/invoke_url"),
+                    auth_pointer: format!("/plugins/{idx}/auth"),
+                    auth: entry
+                        .get("auth")
+                        .and_then(|a| serde_json::from_value(a.clone()).ok()),
+                })
+            })
+            .collect()
+    }
 }
 
-/// One client target inside rp's generic equipment roster —
-/// [`RpView::equipment_targets`]. `field` is a dotted path (the same
-/// convention rp's own `field_errors` uses, e.g.
+/// One client target rp walks a config-controlled collection for —
+/// [`RpView::equipment_targets`]'s generic equipment roster and
+/// [`RpView::plugin_targets`]'s plugin registrations. `field` is a dotted
+/// path (the same convention rp's own `field_errors` uses, e.g.
 /// `equipment.cameras.0.alpaca_url`) for **display only** — unlike
 /// `rp_client_joins`'s other two call sites, this is not run back through
-/// `field.replace('.', "/")` to derive a pointer, because `kind` is a
-/// config-controlled JSON key that may itself need RFC-6901 escaping.
+/// `field.replace('.', "/")` to derive a pointer, because a `kind` key is
+/// config-controlled and may itself need RFC-6901 escaping.
 /// `url_pointer`/`auth_pointer` are pre-built, already-escaped JSON
 /// pointers.
 #[derive(Debug, Clone)]
-pub struct RpEquipmentTarget {
+pub struct RpClientTarget {
     pub field: String,
     pub url: String,
     pub url_pointer: String,
