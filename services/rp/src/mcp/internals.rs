@@ -830,67 +830,75 @@ impl McpHandler {
             let sensor_temperature_c = cam.ccd_temperature().await.ok();
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
-            // is the feature's on/off switch. `None` keeps `image_path`
-            // as the flat `<doc_uuid_8>.fits` computed above and leaves
-            // the document's `target`/`frame_type` fields unset.
+            // stamps the document's `target`/`frame_type` fields.
+            // `None` leaves both unset. The *templated path* is a
+            // separate switch — `session.file_naming_pattern` — so a rig
+            // with no pattern configured still records what a frame is
+            // and what it is of, it just keeps the flat
+            // `<doc_uuid_8>.fits` name (and, having nothing on disk to
+            // attribute, derives no progress; rp.md § Progress
+            // derivation).
             let mut exposure_target: Option<persistence::ExposureTarget> = None;
             let mut resolved_frame_type: Option<FrameType> = None;
             if let Some(frame_type) = frame_type {
-                let templates = self.naming_templates.as_ref().ok_or_else(|| {
-                    "capture: frame_type requires session.file_naming_pattern to be configured"
-                        .to_string()
-                })?;
-
                 let (target_field, target_slug) =
                     self.resolve_capture_target(target, frame_type).await?;
-                let (filter_name, filter_position) =
-                    self.resolve_capture_filter(camera_id, frame_type).await?;
-                let bin = cam
-                    .bin()
-                    .await
-                    .map_err(|e| format!("capture: failed to read binning: {}", e))?;
-                let binning = rp_targets::Binning {
-                    x: bin[0] as u8,
-                    y: bin[1] as u8,
-                };
-                let night_date = self.site.as_ref().map(|site| site.night_date(captured_at));
-
-                let mut fields = naming_template::TemplateFields {
-                    target: Some(target_slug),
-                    filter: Some(filter_name.clone()),
-                    binning: Some(binning),
-                    exposure_duration: Some(duration),
-                    filter_position: Some(filter_position),
-                    sensor_temp_c: sensor_temperature_c.map(|t| t.round() as i32),
-                    night_date,
-                    frame_type: Some(frame_type),
-                    ..Default::default()
-                };
-
-                let dir_relative = templates.directory.render(&fields).map_err(|e| {
-                    format!("capture: failed to render session.directory_pattern: {}", e)
-                })?;
-                let scan_dir =
-                    std::path::Path::new(&self.session_config.data_directory).join(&dir_relative);
-                let frame_number =
-                    next_frame_number(&templates.file, &scan_dir, &filter_name, binning, duration)
-                        .await?;
-                fields.frame_number = Some(frame_number);
-                fields.uuid8 = Some(uuid8.to_string());
-
-                let file_base = templates.file.render(&fields).map_err(|e| {
-                    format!(
-                        "capture: failed to render session.file_naming_pattern: {}",
-                        e
-                    )
-                })?;
-
-                image_path = scan_dir
-                    .join(format!("{}.fits", file_base))
-                    .to_string_lossy()
-                    .into_owned();
                 exposure_target = Some(target_field);
                 resolved_frame_type = Some(frame_type);
+
+                if let Some(templates) = self.naming_templates.as_ref() {
+                    let (filter_name, filter_position) =
+                        self.resolve_capture_filter(camera_id, frame_type).await?;
+                    let bin = cam
+                        .bin()
+                        .await
+                        .map_err(|e| format!("capture: failed to read binning: {}", e))?;
+                    let binning = rp_targets::Binning {
+                        x: bin[0] as u8,
+                        y: bin[1] as u8,
+                    };
+                    let night_date = self.site.as_ref().map(|site| site.night_date(captured_at));
+
+                    let mut fields = naming_template::TemplateFields {
+                        target: Some(target_slug),
+                        filter: Some(filter_name.clone()),
+                        binning: Some(binning),
+                        exposure_duration: Some(duration),
+                        filter_position: Some(filter_position),
+                        sensor_temp_c: sensor_temperature_c.map(|t| t.round() as i32),
+                        night_date,
+                        frame_type: Some(frame_type),
+                        ..Default::default()
+                    };
+
+                    let dir_relative = templates.directory.render(&fields).map_err(|e| {
+                        format!("capture: failed to render session.directory_pattern: {}", e)
+                    })?;
+                    let scan_dir = std::path::Path::new(&self.session_config.data_directory)
+                        .join(&dir_relative);
+                    let frame_number = next_frame_number(
+                        &templates.file,
+                        &scan_dir,
+                        &filter_name,
+                        binning,
+                        duration,
+                    )
+                    .await?;
+                    fields.frame_number = Some(frame_number);
+                    fields.uuid8 = Some(uuid8.to_string());
+
+                    let file_base = templates.file.render(&fields).map_err(|e| {
+                        format!(
+                            "capture: failed to render session.file_naming_pattern: {}",
+                            e
+                        )
+                    })?;
+
+                    image_path = scan_dir
+                        .join(format!("{}.fits", file_base))
+                        .to_string_lossy()
+                        .into_owned();
+                }
             }
 
             let image_array = cam

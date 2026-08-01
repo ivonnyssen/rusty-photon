@@ -83,8 +83,9 @@ Feature: Deep-sky workflow document
     And an SSE client is watching rp's event stream
     When a session is started via the REST API
     # max_frames is 0 (no budget), so the session can only end through
-    # rp's progress counters: each captured frame is recorded via
-    # record_exposure, and once the 2-frame goal is met the planner
+    # rp's derived progress: each capture carries the pass's target and
+    # frame_type: Light, so the frame lands in the target's directory,
+    # and once the scan finds the 2-frame goal met the planner
     # eliminates the exhausted target and answers end_of_session.
     Then the session ends within 90 seconds
     And the SSE stream should show exactly 2 "exposure_complete" events

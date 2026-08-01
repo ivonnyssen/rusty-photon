@@ -1,13 +1,32 @@
 Feature: Unit wiring and privilege diagnosis
-  Two failure modes live between the unit files and the services they start,
-  both invisible until the moment they matter. A unit gated on
+  Three failure modes live between the unit files and the services they
+  start, all invisible until the moment they matter. A unit gated on
   ConditionPathExists= whose target file is missing is installed, enabled,
-  and silently inert — systemd "starts" it without running anything. And
-  sentinel's restart machinery needs a polkit rule: its unit runs as an
+  and silently inert — systemd "starts" it without running anything.
+  Sentinel's restart machinery needs a polkit rule: its unit runs as an
   unprivileged user with NoNewPrivileges=yes, so without a rule granting
   org.freedesktop.systemd1.manage-units for rusty-photon-* units, every
   restart it attempts is denied at the privilege boundary. Both facts are
-  systemd-specific and the checks run only where they exist.
+  systemd-specific and the checks run only where they exist. And a unit the
+  service manager holds in a failed state keeps failing on its own schedule
+  with nothing to show for it — a one-shot like the renewal job most of all,
+  since sentinel deliberately does not supervise it.
+
+  Scenario: A failed unit is reported with what it costs
+    Given an empty config directory
+    And platform facts where unit "rusty-photon-renew" is in a failed state
+    When I run doctor with --json
+    Then doctor exits with code 1
+    And the report contains a "fail" check named "units.failed"
+    And that check's detail mentions "renewed"
+    And that check's suggestion mentions "journalctl"
+
+  Scenario: Units the service manager is happy with report clean
+    Given a config directory with a valid "qhy-focuser.json" on port 11113
+    And platform facts with an enabled unit "rusty-photon-qhy-focuser"
+    And platform facts where the service manager holds no unit failed
+    When I run doctor with --json
+    Then the report contains an "ok" check named "units.failed"
 
   Scenario: An enabled unit gated on a missing config file is inert
     Given an empty config directory

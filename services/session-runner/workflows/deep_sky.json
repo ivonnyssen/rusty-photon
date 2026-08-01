@@ -473,7 +473,9 @@
                     "tool": "capture",
                     "args": {
                       "train_id": { "$expr": "params.train_id" },
-                      "duration": { "$expr": "session.pass_duration" }
+                      "duration": { "$expr": "session.pass_duration" },
+                      "target": { "$expr": "session.target_name" },
+                      "frame_type": "Light"
                     }
                   },
                   {

@@ -46,6 +46,61 @@ fn webhook_ack_config(world: &mut RpWorld, estimated: i32, max: i32) {
     ));
 }
 
+/// An auth-enabled subscriber: the receiver 401s anything that does not
+/// present exactly this credential, the way a plugin serving behind
+/// `rp_auth`'s middleware does. rp reaches it only when the registration
+/// carries a matching `auth` block.
+#[given(
+    expr = "a test webhook receiver requiring the credential {string} with password {string} subscribed to {string}"
+)]
+async fn webhook_receiver_requiring_auth(
+    world: &mut RpWorld,
+    username: String,
+    password: String,
+    event_type: String,
+) {
+    assert!(
+        world.webhook_receiver.is_none(),
+        "the auth-requiring receiver must be the scenario's first"
+    );
+    let (estimated, max) = world
+        .webhook_ack_config
+        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
+    world.webhook_receiver = Some(
+        WebhookReceiver::start_requiring_auth(
+            world.received_events.clone(),
+            estimated,
+            max,
+            &username,
+            &password,
+        )
+        .await,
+    );
+    add_event_plugin(world, vec![event_type]);
+}
+
+#[given(
+    expr = "the event plugin registration carries the credential {string} with password {string}"
+)]
+fn event_plugin_registration_carries_credential(
+    world: &mut RpWorld,
+    username: String,
+    password: String,
+) {
+    let entry = world
+        .plugin_configs
+        .iter_mut()
+        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some("test-event-plugin"))
+        .expect("the event plugin registration must exist before its credential is set");
+    entry
+        .as_object_mut()
+        .expect("a plugin registration is a JSON object")
+        .insert(
+            "auth".to_string(),
+            serde_json::json!({ "username": username, "password": password }),
+        );
+}
+
 #[given(expr = "a plugin configured with webhook URL {string} subscribed to {string}")]
 fn plugin_with_url(world: &mut RpWorld, webhook_url: String, event_type: String) {
     world.plugin_configs.push(serde_json::json!({

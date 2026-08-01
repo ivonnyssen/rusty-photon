@@ -345,6 +345,50 @@ into a reusable render/parse engine (`CompiledTemplate`, backed by the
 `regex` crate: each token's shape becomes a named capture group in one
 combined anchored regex, so `parse` is never a naive `split('_')`).
 
+**Path shape is validated too**, because `capture` joins the rendered
+directory onto `data_directory` while the progress scan walks
+`data_directory` to the pattern's component depth — the two have to
+agree on what a component is. `directory_pattern` must therefore be a
+canonical relative path: no leading `/` (an absolute path makes
+`PathBuf::join` discard the base, writing frames outside
+`data_directory` altogether), no trailing or repeated `/` (the
+filesystem collapses the empty component when `capture` creates the
+directory, but the scan would still walk a level too deep and match
+nothing), and no `.` or `..` component. `file_naming_pattern` may not
+contain `/` at all: it names one file inside that directory, and
+nesting it deeper puts the frame where the scan does not look. Both
+patterns additionally reject `\` and `:` on **every** host, not just
+Windows: a config that loads on Linux has to mean the same thing on
+Windows, where `\` separates paths (the scan would count one component
+and walk the wrong depth) and `C:` is drive-absolute (`PathBuf::join`
+discards the base, so frames escape `data_directory`). Neither
+character is legal in a Windows filename regardless.
+
+Those are instances of one rule rather than a list: **`capture` must be
+able to create exactly the name the scan will look for, on every
+supported platform.** So the rest of Windows' illegal filename set
+(`<>"|?*` and control characters) is rejected too, as is a component
+with a trailing `.` or space — Windows strips those, so `capture` would
+create `night.` as `night` while the scan kept looking for `night.`. No
+token's shape can introduce any of them, so checking the pattern text is
+exact: every occurrence came from a literal someone typed. Each is
+rejected at load rather than quietly canonicalized — rewriting what the
+operator wrote is how the writer and the scanner drift apart in the
+first place, and the symptom otherwise is a night of frames that
+silently count for nothing.
+
+**An empty pattern is malformed, not unset**, and both fields say so
+alike. Absent (or `null`) is how each is turned off — `directory_pattern`
+falls back to its documented default, `file_naming_pattern` falls back to
+flat `<uuid8>.fits` capture — while `""` is a pattern with nothing in it,
+which for a directory means a path with no components the progress scan
+could never match. The two are different states, so only the spelling
+that means "unset" is read that way, and the load error names it. This
+matters most through the config UI, where clearing a text box is the
+natural gesture for turning a field off: the BFF sends `null` for a
+cleared optional field precisely so that gesture reaches rp as the state
+the operator intended (ui-htmx.md § Schema-driven config form).
+
 **Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
 (§ Capture Tool Details) feed `render`, and rendering replaces the flat
 `<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
@@ -355,11 +399,10 @@ prefixed before the UUID-8 suffix, e.g.
 resolver regardless of the surrounding path. `directory_pattern`
 defaults to `"{target}/{night_date}/{frame_type}"` when unset but
 `file_naming_pattern` is configured — only the file pattern needs
-explicit configuration to opt in. **Not yet landed:** the on-disk frame
-scan behind full target *progress* derivation (`get_target`,
-`list_targets`, `get_session_progress`) doesn't call `parse` yet —
-`capture` calls `parse` today only to compute each new frame's
-`{frame_number}`, a narrower reuse of the same primitive.
+explicit configuration to opt in. The same `parse` runs on both sides of
+the round trip: `capture` calls it to compute each new frame's
+`{frame_number}`, and the progress scan calls it to attribute frames on
+disk back to a target and goal (§ Progress derivation).
 
 The full UUID is the canonical document identifier — used by the API,
 the FITS header, and the sidecar's `id` field. The 8-char suffix
@@ -509,6 +552,45 @@ for the deadline-monitoring design this envelope feeds.
 Plugins register a callback URL and subscribed events in the configuration.
 `rp` POSTs events to each registered URL. All plugins use the same
 asynchronous request-response pattern.
+
+**A `type: "event"` registration must be deliverable.** `name`,
+`webhook_url`, and a `subscribes_to` list holding at least one
+event-name string are all required. Each is checked at config load with
+the offending entry named (`plugins.0.subscribes_to`), and `rp` refuses
+to start when one is missing or mistyped. Accepting such a registration
+as inert is the more dangerous reading: a `subscribe_to` typo would leave
+a plugin that looks registered, logs nothing, and receives nothing for
+the whole night. There is deliberately no "registered but idle" state —
+to stop delivering to a plugin, remove its registration.
+
+**A subscriber may serve TLS and require authentication.** A
+`webhook_url` may be `https://` when the plugin's own service is
+TLS-enabled; `rp` verifies that certificate against the top-level
+`ca_cert`, the same single observatory-CA setting every other `rp` client
+uses (see [Configuration](#configuration)). The optional `auth` block is
+the plaintext credential `rp` presents as HTTP Basic on every delivery;
+omit it for a plugin that does not challenge. Both fields follow the
+[Orchestrator Registration](#orchestrator-registration) rules exactly —
+same shapes, same load-time validation naming the offending entry
+(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. Getting
+this wrong is quieter here than on the orchestrator path: delivery is
+fire-and-forget with no retry, so the event is simply lost and the night
+continues. A plugin that *answers* with a non-success status — a 401 from
+a wrong credential, a 500 from a plugin bug — is logged at `warn!` with
+that status, because that line is the only signal an operator gets that a
+subscriber is silently doing nothing; a plugin that cannot be reached at
+all stays at `debug!`, since an unreachable subscriber is the ordinary
+case for a plugin that is simply not running.
+`rp` reads a callback URL and `auth` only on the registrations it
+dials — the orchestrator and event kinds — so a tool provider's own
+differently-shaped `auth` key is left alone. One client, built once at
+startup, serves every subscriber; a `ca_cert` it cannot be built from
+fails startup, and with no subscriber registered no client is built at
+all. Doctor reports the join between `plugins[].webhook_url` and the
+plugin service's own `server.tls`/`server.auth` as
+`joins.client-transport` / `joins.client-auth`, and `doctor --fix` wires
+both (see
+[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
 
 #### Request
 
@@ -995,11 +1077,11 @@ hours, `dec` is degrees. See
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `get_next_target` | time (optional) | target, reason, exposure | Evaluate candidates and recommend next target. `target` nests its coordinate as `coord: {ra_hours, dec_degrees}`; `exposure` is a nested `{filter, duration_secs}` object from the recommended target's first **incomplete** goal (the `record_exposure` counters rotate the plan), or null when the target defines none — see §"Dynamic Planner" |
-| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches an active target-store row, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, desired_count, good, total}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_next_target` | time (optional) | target, reason, exposure | Evaluate candidates and recommend next target. `target` nests its coordinate as `coord: {ra_hours, dec_degrees}`; `exposure` is a nested `{filter, duration_secs}` object from the recommended target's first **incomplete** goal (the derived on-disk progress rotates the plan), or null when the target defines none — see §"Dynamic Planner" |
+| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-goal `{filter, binning, exposure_duration, desired_count, good, total}` list when `target_name` (as given or catalog-resolved) matches an active target-store row, null otherwise (including the ra/dec form) — see [Target Store § Progress derivation](#progress-derivation) |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
-| `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name an active target-store row (its slug); omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted. *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
-| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every active target-store row (the unfiltered slot appears under the empty-string key). *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, desired_count, good, total}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `record_exposure` | target, filter (optional) | target, filter, progress | Read the target's derived progress back and record `filter` as the session's most recent (the filter-batching tie-break). It increments nothing — `capture` already wrote the frame. `target` must name an active target-store row (its slug); omit `filter` (or pass null / `""`) for an unfiltered frame — see [Target Store § Progress derivation](#progress-derivation) |
+| `get_session_progress` | — | progress | Full progress overview: target slug → the per-goal `{filter, binning, exposure_duration, desired_count, good, total}` list, for every active target-store row |
 
 **Targets**
 
@@ -1011,9 +1093,9 @@ contract.
 **Session**
 
 There are no session-state tools: persistence is automatic (the
-registry and planner counters are written on every transition and
-every `record_exposure` — see [Session
-Persistence](#session-persistence)), and an orchestrator's own resume
+registry is written on every transition, and progress needs no
+persisting at all — it is derived from the frames on disk, see
+[Session Persistence](#session-persistence)), and an orchestrator's own resume
 state is its own concern (`session-runner`'s blackboard). An earlier
 design sketched `save_session_state` / `get_session_state` tools; they
 were dropped — no orchestrator had a use for them that the automatic
@@ -1054,15 +1136,26 @@ the same idiom applied one tool call earlier — no new subsystem, no
 rp-side session-target tracking — the workflow already holds the value
 at the moment `capture` runs; it was simply never passed.
 
-`frame_type` is the feature's on/off switch: omitted (the default),
+`frame_type` switches the document stamping: omitted (the default),
 `capture` behaves exactly as before — a flat `<doc_uuid_8>.fits`, no
 `target`/`frame_type` on the exposure document, `target` ignored if
 somehow supplied anyway. This is what every caller that hasn't been
 updated for Decision 11 keeps doing unchanged, including `auto_focus`'s
 and `center_on_target`'s internal captures (see below) and any
-orchestrator predating this feature. Supplying `frame_type` requires
-`session.file_naming_pattern` to be configured (§ Persistence) —
-`capture` errors otherwise, naming the missing config.
+orchestrator predating this feature.
+
+**The templated path is a second, independent switch:
+`session.file_naming_pattern`** (§ Persistence). Supplying `frame_type`
+without it is *not* an error — the document still records what the
+frame is and what it is of, and the file keeps the flat
+`<doc_uuid_8>.fits` name. The two are deliberately decoupled because
+the shipped `deep_sky` workflow passes `frame_type: Light` on every
+frame: coupling them would make a rig that never configured a naming
+pattern fail every capture the moment it adopted the current workflow.
+The cost of leaving the pattern unset is that nothing on disk carries a
+target, so no progress can be derived from it and the planner never
+exhausts a goal (§ Progress derivation) — a rig running plans wants the
+pattern configured.
 
 When `frame_type: Light`, `target` is **required** — a Light frame with
 no target has no sensible directory bucket, and only Light frames
@@ -1879,9 +1972,16 @@ plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
 it for a plugin that does not challenge. A registration is otherwise
 opaque to `rp` — unknown keys are the plugin author's business — and the
-**orchestrator** registration is the single exception, because `rp` reads
-two of its fields. `invoke_url` must be an `http://` or `https://` URL
-(the same rule `server.advertised_url` follows) and `auth`, when present,
+registrations `rp` **dials** are the exception, because on those `rp`
+reads two fields: the callback URL and `auth`. (The other dialed kind is
+the event plugin, whose `webhook_url` follows these rules identically —
+see [Delivery: Webhooks](#delivery-webhooks).)
+`invoke_url` must be an `http://` or `https://` URL
+(the same rule `server.advertised_url` follows) carrying no embedded
+credentials — `https://user:pass@host/…` is rejected, because `rp` logs
+the callback URL on every attempt and the `auth` block beside it, applied
+per request and marked sensitive, is the supported way to authenticate.
+`auth`, when present,
 must be a complete `{username, password}` pair; either one malformed is
 rejected at config load with the offending entry named
 (`plugins.0.invoke_url`, `plugins.0.auth`), so `rp doctor` and
@@ -1889,7 +1989,7 @@ rejected at config load with the offending entry named
 bad credential would be read as "no credential" and 401 every session
 start, and a bad URL would fail every attempt — both at the first session
 start of the night rather than at diagnosis time. `rp` reads neither
-field on any other registration, so an event or tool-provider plugin
+field on a registration it does not dial, so a tool-provider plugin
 carrying its own differently-shaped `auth` or `invoke_url` key is left
 alone. A `ca_cert` the invoke client cannot be built from fails startup
 the same way. Doctor
@@ -2740,11 +2840,12 @@ the format and engine are specified in
   transition, `rp` cancels the active orchestrator workflow, aborts
   exposures, stops guiding, parks the mount, and persists session state.
   The orchestrator cannot prevent or delay this.
-- **Session persistence** — the session registry and planner progress
-  counters are persisted automatically on every transition and every
-  `record_exposure`, and an `rp` restart re-invokes the orchestrator
-  with recovery context (see [Session
-  Persistence](#session-persistence)).
+- **Session persistence** — the session registry is persisted
+  automatically on every transition, and an `rp` restart re-invokes the
+  orchestrator with recovery context (see [Session
+  Persistence](#session-persistence)). Progress needs no persistence:
+  it is derived from the frames on disk, so a restart resumes at the
+  true count rather than at zero.
 
 **The orchestrator owns** (implemented as plugin logic):
 
@@ -2781,8 +2882,9 @@ Safety event (unsafe transition)
   → on safe transition: rp re-invokes the orchestrator with recovery context
 
 rp restarts mid-session (crash, power failure, systemd restart)
-  → rp restores the session registry + planner counters from the
-    session state file (see Session Persistence)
+  → rp restores the session registry (and the last recorded filter)
+    from the session state file; progress needs no restoring — it is
+    derived from the frames on disk (see Session Persistence)
   → rp re-invokes the orchestrator with recovery context
     ({"reason": "rp_restart"}) and the same ids
   → the orchestrator resumes from its own persisted state
@@ -2824,7 +2926,8 @@ Loop:
     → tools/call capture {camera_id: "main-cam", duration: "5m"}
     ← {image_path: "...", document_id: "doc-042"}
     → tools/call record_exposure {target: "M31", filter: "Luminance"}
-    ← {completed: 13, goal: 40}
+    ← {progress: [{filter: "Luminance", binning: "1x1", exposure_duration: "5m",
+                   desired_count: 40, good: 13, total: 13}, ...]}
     → check if dither needed → tools/call dither {pixels: 5}
     → check if temperature drifted → tools/call auto_focus {...}
     → check if meridian flip needed → stop guide, flip, re-center, re-focus, start guide
@@ -3828,19 +3931,18 @@ Planner), `record_exposure`, `get_session_progress`, and
 `get_next_target` applies altitude gating to store rows (Decision 9,
 below), reading `target.scheduling.min_altitude_degrees`, falling back
 to `target_store.default_scheduling.min_altitude_degrees`, falling back
-in turn to the planner-wide `planner.min_altitude_degrees`. The three
-progress tools still return the per-filter `{completed, goal}` counter
-shape; their reshape to derived, per-goal progress (§ Progress
-derivation) waits on the on-disk frame scan, which needs both the
-grading plugin's sidecar shape and `capture`'s target linkage (§
-Capture Tool Details) — neither has landed, so there is nothing yet to
-derive a store target's progress from.
+in turn to the planner-wide `planner.min_altitude_degrees`.
 
-Progress (`get_target` / `list_targets`) is derived on demand from
-goals, but only the shape — every goal currently reports `good: 0,
-total: 0` (§ Progress derivation): the on-disk frame scan needs both
-the grading plugin's sidecar shape and `capture`'s target linkage (§
-Capture Tool Details), neither of which has landed.
+Progress everywhere — `get_target` / `list_targets`, the two progress
+tools, and the planner's own decision logic — is **derived on demand
+from the frames on disk** (§ Progress derivation). Nothing is stored:
+`record_exposure` no longer increments a counter, because `capture`
+already wrote the frame the derivation finds on its next read. One
+consequence is the point of the whole target store: a target's plan
+spans however many nights it takes to reach its goals, so frames
+captured on previous nights count, and a resumed or restarted session
+picks up where the disk left off rather than starting the night at
+zero.
 
 **Fixed migration requirements.** Two behaviors the planner already had
 carried over to the store:
@@ -3894,12 +3996,14 @@ bridge) from being silently clobbered by a later catalog-centroid add
 of the same object — the protection applies to every writer, not only
 the bridge.
 
-A `display_name` base is kebab-cased (lower-cased, words joined with
-`-`) before `TargetSlug::new` — `"Comet Test"` → `comet-test` — since
-an operator-typed name reads better hyphenated; a `catalog_ref` base
-goes through `TargetSlug::new` unchanged, whose whitespace-*stripping*
-normalization suits compact catalog names (`"NGC 7000"` → `ngc7000`,
-matching `rp-catalog`).
+Every base — `catalog_ref` or `display_name`, add form or import form —
+goes through the one derivation, `TargetSlug::from_display_name`:
+whitespace runs collapse to a hyphen and the result is lower-cased, so
+`"Comet Test"` → `comet-test` and `"NGC 7000"` → `ngc-7000`. Tools that
+take a `slug` parameter parse it with `TargetSlug::new`, which rejects
+whitespace rather than normalizing it and names the derived form in the
+error. See [rp-targets.md § Identity](../crates/rp-targets.md#identity-the-slug)
+for why the lossy step is deliberately confined to one function.
 
 ### Writer identity
 
@@ -4037,10 +4141,10 @@ Document).
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`), `position_angle_degrees` (optional — degrees east of north, `0.0 ≤ angle < 360.0`, see [Position angle](#position-angle); rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session. **Not yet accepted:** `grading` (wait on the on-disk frame scan) |
+| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`), `position_angle_degrees` (optional — degrees east of north, `0.0 ≤ angle < 360.0`, see [Position angle](#position-angle); rejected with `source`), `grading` (optional — field-for-field `GradingThresholds`; omitted fields fall back to `target_store.default_grading`; rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session |
 | `get_target` | slug | target, progress | Fetch one target with derived progress (below) |
 | `list_targets` | active_only (optional) | targets: [{...target fields, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the ui-htmx targets inbox read. Each element is the flattened target plus a `progress` field (not the `{target, progress}` nesting `get_target` uses) |
-| `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the ui-htmx targets inbox) accepts a pending target into the rotation. `scheduling`, when supplied, replaces the whole overrides object rather than merging field-wise. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (the only field with explicit-null semantics — see [Position angle](#position-angle)) |
+| `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` / `grading` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the ui-htmx targets inbox) accepts a pending target into the rotation. `scheduling` and `grading`, when supplied, each replace the whole overrides object rather than merging field-wise; an explicit `null` on `grading` clears the override back to inherit-`default_grading`. Re-grading is free — thresholds are applied at read time, so tightening one immediately re-partitions `good`/`total` with nothing on disk renamed or moved. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (see [Position angle](#position-angle)) |
 | `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
 | `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
 
@@ -4054,23 +4158,76 @@ humantime string (e.g. `"5m"`), `coord` as `{ra_hours, dec_degrees}`
 via `GoalWire` first, for friendlier per-field errors than raw serde's), so
 what a tool accepts is byte-for-byte what it returns. One consequence of
 deriving: every stored field appears in responses — including `grading`,
-which is always `null` today (it is still **not accepted** on input; see
-`add_target` above).
+which is `null` on a target that inherits `target_store.default_grading`
+rather than overriding it.
+
+### Plan schema and validation
+
+The plan-data analogue of the `config.get` / `config.schema` /
+`config.apply` protocol (ADR-019, and
+[rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol-the-decision-1-role)):
+two read-only MCP tools that let any surface discover the shape of plan
+data and check a candidate against **the same rules the write tools
+enforce**, without writing anything.
+
+**MCP only — there is no REST counterpart.** rp's HTTP surface covers
+service-level concerns (health, config, session lifecycle, documents,
+events); plan data lives entirely on the MCP surface, so these tools add
+no routes. `config.schema` remains the REST-side config analogue and is
+unrelated to plan data.
+
+| Tool | Parameters | Returns | Notes |
+|---|---|---|---|
+| `get_plan_schema` | `entity` | entity, schema | The JSON Schema for one plan-data entity, generated from the same types the write tools deserialize — so it cannot drift from what they accept |
+| `validate_plan` | `entity`, `value` | valid, errors[] | Check `value` against every rule the corresponding write would apply. Writes nothing, touches no store, and never actuates |
+
+`entity` is one of:
+
+| `entity` | Shape | Validated the same way as |
+|---|---|---|
+| `target` | the `add_target` payload | `add_target` |
+| `goals` | a `goals[]` array | `set_goals` / `add_target`'s `goals` |
+| `naming_pattern` | `{file_naming_pattern?, directory_pattern?}` | config load |
+
+`errors[]` entries are `{path, msg}` — the identical `FieldError` shape
+`config-actions` returns, deliberately, so a surface renders a plan
+error next to its field with the code it already has for driver config.
+`path` is dotted and indexed into the submitted value
+(`goals[1].binning`, `scheduling.min_altitude_degrees`, `ra_hours`).
+`valid` is `errors.is_empty()`.
+
+**The one property that matters.** These tools are worth having only if
+they cannot disagree with the writers, so they do not re-implement any
+rule: `validate_plan` and `add_target` / `set_goals` call the *same*
+functions in `mcp::built_in::plan_validation`, which is the only place
+the rules exist. The write tools render the first `FieldError` into
+their existing error string; `validate_plan` returns the whole list
+structured. A payload `validate_plan` accepts is therefore accepted by
+`add_target`, and one it rejects is rejected with the same path —
+pinned by BDD rather than left to convention.
+
+Some rules deliberately sit outside this validator because they are
+**facts about the world, not about the payload**: whether a slug already
+exists (dedup and suffix allocation), whether a referenced slug is
+present, and whether a `catalog_ref` resolves against the embedded
+catalog. `validate_plan` reports a payload that is well-formed and
+rule-compliant; it does not predict which slug an `add_target` would land
+on, and says so rather than guessing.
+
+Consolidating the rules closed a real gap in the writers rather than
+merely exposing them: `add_target` and `update_target` never
+range-checked their `grading` and `scheduling` parameters, so a negative
+or `NaN` threshold was accepted as a per-target override while config
+load rejected the identical value for `target_store.default_grading`.
+Both now go through the shared validator.
 
 ### Progress derivation
-
-**Landed: the shape. Not yet landed: the scan.** `good`/`total` are
-hard-coded `0` for every goal today — the on-disk frame scan below
-needs both the grading plugin's sidecar shape and `capture`'s target
-linkage (§ Capture Tool Details), neither of which has landed. The
-rest of this section describes the target design.
 
 Progress is computed on demand, never stored (full rules in
 [`rp-targets.md` § Progress derivation](../crates/rp-targets.md#progress-derivation-the-actuals)):
 a target's plan spans however many nights it takes to reach its
-goals, so `rp` walks **every** `<night_date>` subdirectory under a
-target's slug directory (`<data_directory>/<slug>/*/Light/`,
-accumulating across the whole project, not one night), parses each
+goals, so `rp` walks **every** night directory under a target's slug
+(accumulating across the whole project, not one night), parses each
 filename through the configured `file_naming_pattern` (§ Persistence)
 to bucket frames by `(filter, binning, exposure_duration)`, then classifies each frame
 good/rejected against its sidecar's grading section and the target's
@@ -4078,15 +4235,135 @@ effective `GradingThresholds` (its own overrides, field-wise over
 `target_store.default_grading`). `get_target`/`list_targets` report, per
 target, a list of `{filter, binning, exposure_duration, desired_count, good, total}` —
 one entry per `AcquisitionGoal` — superseding the filter-only
-`{completed, goal}` shape that `get_target_status.progress` and
-`get_session_progress` return today (§ Dynamic Planner), which
-cannot distinguish two goals that share a filter (e.g. `Ha` at two
-different exposure lengths).
+`{completed, goal}` shape `get_target_status.progress` and
+`get_session_progress` used to return, which could not distinguish two
+goals that share a filter (e.g. `Ha` at two different exposure
+lengths).
 
-`record_exposure` (today: increments a session-persisted counter, §
-Session Persistence) collapses to a no-op / progress-cache-invalidation
-hook once P1 lands — `capture` already wrote the frame that the
-derivation above finds on its next read.
+**When derivation is inert.** The whole scan is predicated on a
+configured `session.file_naming_pattern`: without one `capture` still
+succeeds and still stamps what each frame *is*, but it writes a flat
+`<uuid8>.fits` carrying no target identity, so there is nothing on disk
+to attribute. Every target then derives `0/desired_count` forever and a
+goal-terminated session never ends on goals — it runs to `max_frames` or
+dawn. That is a config-time mistake with a night-time symptom, so `rp`
+**warns at startup** when the pattern is absent rather than letting it
+pass silently. It is a warning and not a load failure because a rig may
+legitimately image without goals; `target_store.default_grading` is the
+stricter case and does fail the load (§ Configuration), since thresholds
+cannot mean anything with no frames to grade.
+
+**Which directories are walked.** The scan is driven by the same two
+compiled templates `capture` renders (§ Persistence), so it finds
+exactly the layout `capture` writes, whatever the operator configured.
+`rp` walks `<data_directory>` to the depth of `directory_pattern`'s
+`/`-separated segment count, parses each directory's data-directory-
+relative path back through the *directory* template, and keeps the
+ones whose `{target}` is this slug. Every `.fits` file in a kept
+directory has its stem parsed through the *file* template. The frame's
+sub-spec comes from the filename alone — `{filter}`, `{binning}`, and
+`{exposure_duration}` are all *required* tokens of
+`file_naming_pattern`, so they are always there — while its target and
+frame type may come from either template, the filename winning when
+both carry them. A frame is counted when:
+
+- its `{target}` is this target's slug, **and**
+- its frame type is `Light` — read from whichever template supplies
+  `{frame_type}` (the default `directory_pattern` does). When neither
+  pattern carries the token, frame type is unknown and every frame in
+  the slug's directories counts; a rig configured that way cannot
+  separate lights from calibration frames on disk, and its progress
+  says so.
+
+Directories and filenames that don't parse are skipped and
+`debug!`-logged with the path — they count toward neither `total` nor
+any goal and never fail the scan. An absent or empty slug directory
+yields `total = 0` for every goal, so each reports `0/desired_count`:
+an uncaptured filter is 0 %, not an error. Sidecar `.json` files are
+ignored by the walk (they share a stem with their FITS file, so
+counting both would double-count). The scan is `readdir` + regex —
+no file opens at all unless grading is configured (below).
+
+**Buckets to goals.** A bucket is keyed by the exact
+`(filter, binning, exposure_duration)` triple, which is precisely an
+`AcquisitionGoal`'s identity — and the store already rejects a goal set
+carrying that triple twice (`rp-targets`' `validate_goals`, "duplicate
+goal key"), so each bucket belongs to exactly one goal and the mapping
+is total. Frames whose triple matches no goal are counted in neither
+`good` nor `total`: progress is reported per goal, and a frame outside
+every goal has no goal to progress. A goal that has been over-shot
+reports the true count — `good` above `desired_count` is a finished
+goal with frames to spare, not an error, and the planner clamps when it
+computes a completion fraction rather than the scan hiding the surplus.
+
+One normalization applies on the way in: a frame whose `{filter}` token
+reads `NA` is matched to the **unfiltered** goal slot (`filter: ""`).
+That is not a special case invented here — it is the inverse of what
+`capture` already writes, which renders the literal `"NA"` for a train
+with no filter wheel (§ Capture Tool Details). Without it, an OSC rig's
+frames could never match its own unfiltered goals, and every plan on a
+filter-wheel-less setup would sit at zero forever. A filter genuinely
+named `NA` in a wheel's roster is indistinguishable from "no wheel"
+under this rule, on disk and in progress alike — do not name a filter
+`NA`.
+
+**Good vs rejected.** For each counted frame `rp` reads the sidecar's
+`grading` section and applies the target's **effective** thresholds
+(`target.grading` field-wise over `target_store.default_grading`).
+The section is a plugin section like any other (§ Plugin Sections) —
+`rp` neither writes nor validates it; the grading plugin that measures
+frames is a separate component and is not part of this service. `rp`
+reads four optional numeric metrics, each paired with the threshold
+that judges it:
+
+| Sidecar metric | Threshold | Frame is rejected when |
+|---|---|---|
+| `hfr` | `max_hfr_pixels` | `hfr > max_hfr_pixels` |
+| `star_count` | `min_star_count` | `star_count < min_star_count` |
+| `eccentricity` | `max_eccentricity` | `eccentricity > max_eccentricity` |
+| `snr` | `min_snr` | `snr < min_snr` |
+
+```jsonc
+"sections": {
+  "grading": { "hfr": 2.31, "star_count": 1847, "eccentricity": 0.42, "snr": 38.6 }
+}
+```
+
+**A frame is rejected only on evidence.** `good` counts every frame
+that is not *demonstrably* rejected: a frame with no sidecar, no
+`grading` section, an unparseable one, or simply no value for the
+metric a threshold judges, counts as good. Only a metric that is
+present *and* violates its effective threshold rejects a frame, and
+any one violation is enough. This is what keeps progress meaningful
+without a grading plugin installed — the alternative (ungraded means
+not-good) would pin `good` at `0` forever on every rig that has no
+plugin, so no plan could ever complete and every session would run
+until dawn. It also makes the verdict dynamic in the direction the
+design requires: nothing on disk is renamed or moved for rejection,
+so raising a threshold re-admits frames it previously excluded.
+
+When a target's effective thresholds are entirely empty — the default,
+since `default_grading` is unset out of the box and a target's own
+`grading` is `null` until an operator sets one — there is nothing any
+sidecar could contradict, so `rp` skips sidecar reads altogether and
+`good == total`. Configuring grading is what turns the per-frame
+sidecar reads on, per target.
+
+**Cost.** One `readdir` per night directory plus a regex per entry,
+repeated per target on each read. At a realistic project size (a few
+hundred nights of a few hundred frames) this is milliseconds, and
+`get_next_target` performs it once per call for the active set rather
+than once per target per check. Nothing is cached: a cache would have
+to be invalidated by exactly the events (`capture` writing a frame, a
+plugin writing a verdict, an operator editing a threshold or culling
+files by hand) that the on-demand read already observes for free.
+
+`record_exposure` no longer increments a counter — `capture` already
+wrote the frame the derivation finds. It survives as the orchestrator's
+per-frame progress readback and as the input to the planner's
+filter-batching tie-break (§ Decision Logic bullet 4), which is the one
+genuinely session-scoped fact the filesystem cannot supply: *which
+filter the last frame used*. See its row in [Planner Tools](#planner-tools).
 
 ### Configuration
 
@@ -4106,6 +4383,12 @@ Landed today:
     "dedup_arcsec": 30.0,                      // proximity-upsert window; below any mosaic panel spacing
     "naming_tolerance_arcmin": 10.0,           // DSO-class cone radius; display only, never identity
     "star_naming_tolerance_arcmin": 2.0        // star-class cone; a star names a target only when no DSO is in its cone
+  },
+  "default_grading": {                         // optional; omitted ⇒ no frame is ever rejected
+    "max_hfr_pixels": null,                    // setup-dependent; opt-in
+    "min_star_count": 20,
+    "max_eccentricity": 0.6,
+    "min_snr": null
   }
 }
 ```
@@ -4123,29 +4406,23 @@ store-backed target's `None` `scheduling` fields fall back to in
 other three fields are stored but their *enforcement* stays deferred,
 per `rp-targets.md`'s MVP scope).
 
-**Not yet accepted** — config load rejects this as an unknown field
-today (`deny_unknown_fields`):
+`default_grading` is the value a target's `None` `grading` override
+fields fall back to (§ Progress derivation). Every field is optional
+and `null` means "don't judge this metric"; an entirely absent or
+empty `default_grading`, with no per-target override, means no frame
+is ever rejected and `good == total`. Each supplied field must be a
+finite number (config load rejects anything else, naming the field),
+and `min_star_count` is a non-negative integer.
 
-```jsonc
-"target_store": {
-  "default_grading": {
-    "max_hfr_pixels": null,                    // setup-dependent; opt-in
-    "min_star_count": 20,
-    "max_eccentricity": 0.6,
-    "min_snr": null
-  }
-}
-```
+The frame scan `default_grading` feeds needs
+`session.file_naming_pattern` to be configured (§ Persistence) — that
+is what puts targets and sub-specs into the on-disk layout in the
+first place. With no naming pattern configured, `capture` writes flat
+`<doc_uuid_8>.fits` files that carry no target, so every goal reports
+`0/desired_count` and the planner never exhausts a target. Setting
+`default_grading` without `file_naming_pattern` is a config-load
+error rather than a silent no-op.
 
-`default_grading` will be the value a target's `None` `grading`
-override fields fall back to (§ Progress derivation) once the on-disk
-frame scan lands.
-
-The `default_grading` block above lands with the frame-scan-based
-progress derivation (§ Progress derivation), alongside
-`session.directory_pattern` / `session.file_naming_pattern` (§
-Persistence — config-load validation of the naming-template token
-contract has landed; rendering and the frame scan it feeds have not).
 The legacy `targets[]` config array is gone — a breaking, pre-1.0 hard
 cutover. `Config` has `deny_unknown_fields`, so a stray `targets` key,
 or an array shape under `target_store`, fails loudly at config load;
@@ -4164,16 +4441,40 @@ decide what to do next — `rp` does not make workflow decisions.
 | `get_next_target` | train_id (optional — the imaging train, for the position-angle fallback; unknown ids are an error) | target (nested `coord`), reason, exposure (nested `{filter, duration_secs}`, null when none), position_angle_degrees (the effective framing angle — target value → the named train's `default_position_angle_degrees` → `0.0`; null when target is null. See [Target Store → Position angle](#position-angle)) | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter |
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
-| `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress. Reads store rows only *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
-| `get_session_progress` | — | progress | Full per-target, per-filter progress overview. Reads store rows only *(P1 planned: reshapes to per-goal `{filter, binning, exposure_duration, desired_count, good, total}` — see [Target Store § Progress derivation](#progress-derivation))* |
+| `record_exposure` | target, filter | target, filter, progress | Read back the target's derived progress after a frame, and record the filter as the session's most recent (§ Decision Logic bullet 4). It does **not** increment anything — `capture` already wrote the frame the scan finds ([Target Store § Progress derivation](#progress-derivation)). `progress` is the per-goal list below; an unknown target slug is still an error, so a mis-wired orchestrator fails loudly rather than silently losing frames |
+| `get_session_progress` | — | progress | Full progress overview: target slug → the per-goal list below, for every active target-store row |
+
+`get_target_status.progress`, `get_session_progress`, and
+`record_exposure.progress` all carry the same per-goal shape as
+`get_target`/`list_targets` — one entry per `AcquisitionGoal`, in goal
+order:
+
+```jsonc
+[
+  {"filter": "Ha", "binning": "1x1", "exposure_duration": "5m", "desired_count": 40, "good": 12, "total": 13},
+  {"filter": "OIII", "binning": "1x1", "exposure_duration": "5m", "desired_count": 40, "good": 0, "total": 0}
+]
+```
+
+This replaces the filter-keyed `{completed, goal}` map these tools
+returned before the frame scan landed. The old shape could not
+distinguish two goals sharing a filter, and its `completed` counted
+only frames recorded in the current session; `good`/`total` count
+every frame on disk for the target, across every night.
 
 ### Decision Logic (inside `get_next_target`)
 
 The convenience tool delegates each numbered check to the named
-primitive (or to the persisted progress map for non-ephemeris
+primitive (or to the derived progress map for non-ephemeris
 checks). Primitives are defined in the
 [Primitive vs. Convenience MCP Tools](#primitive-vs-convenience-mcp-tools)
 table.
+
+`get_next_target` derives progress **once per call** for the active
+target set (§ Progress derivation) and then decides against that
+snapshot, so the decision logic itself stays a pure function of its
+inputs — the filesystem is read at the tool boundary, not inside the
+ranking.
 
 1. Eliminate targets whose `compute_alt_az` altitude is below
    `min_altitude_degrees` (per-target value, falling back to the
@@ -4185,7 +4486,7 @@ table.
    current `get_local_sidereal_time` (highest altitude, best
    seeing).
 3. Prefer targets with the least progress toward their integration
-   goal (from the persisted `record_exposure` counters).
+   goal (from the derived, on-disk progress — § Progress derivation).
 4. Minimize filter changes: among the remaining ties, batch the
    same-filter exposure as the previous frame.
 5. Account for meridian flip timing — avoid starting a long
@@ -4207,21 +4508,23 @@ after each exposure, after each target switch, or when conditions change.
 > preference), bullets 3–4 (progress + filter tie-breaking, below),
 > and bullet 6 in full — when no target survives, either **every**
 > target has met its integration goal (all plans complete per the
-> `record_exposure` counters) and the answer is `EndOfSession`, or
+> derived progress) and the answer is `EndOfSession`, or
 > the Sun-elevation cut-off (astronomical dusk, -18°) separates a
 > bright sky from `AllBelowMinAltitude` and the Sun's trend
 > (sampled 60 s ahead) separates dusk from dawn: `WaitForTwilight`
 > while the Sun is descending toward tonight's dark window (or
 > holding level), `EndOfSession` once it is climbing out of it.
-> A target whose plan is complete (every `exposures[]` entry
-> carries a `count` and its per-filter counter has reached it) is
-> **exhausted** and eliminated like a below-floor target; a target
-> with no plan, or any uncounted entry, has no finite goal and is
-> never exhausted.
+> A target whose plan is complete (every goal's `good` count has
+> reached its `desired_count`) is **exhausted** and eliminated like a
+> below-floor target; a target with no goals has no finite integration
+> goal and is never exhausted. Exhaustion is judged on `good`, not
+> `total`: a rejected frame does not advance a plan, so a night of
+> poor seeing keeps the target in the rotation instead of retiring it
+> on frames that will never be stacked.
 > Bullets 3–4 break transit ties: targets whose |HA| is within
 > 0.5 h of the best candidate's count as equally transiting (near
 > culmination the altitude gain over half an hour of hour angle is
-> negligible), and among them the smallest completed-to-goal
+> negligible), and among them the smallest good-to-desired
 > fraction wins (bullet 3; a target without goals counts as 0),
 > then the target whose next exposure matches the last recorded
 > frame's filter (bullet 4), then target-store list order.
@@ -4259,9 +4562,10 @@ Targets are defined in the redb-backed store, not in config — see the
 The session registry is persisted to disk on every state transition so an
 `rp` restart mid-night (crash, power failure, systemd restart) can resume
 the interrupted session. `rp` persists only what `rp` owns — which
-session was running and the planner's progress counters; the
-orchestrator persists its own workflow state (for `session-runner`, the
-blackboard, keyed by the unchanged `session_id`).
+session was running, plus the one scrap of planner runtime state that
+is not derivable from disk; the orchestrator persists its own workflow
+state (for `session-runner`, the blackboard, keyed by the unchanged
+`session_id`).
 
 ### Persisted State
 
@@ -4276,7 +4580,6 @@ or empty:
   "status": "active",
   "started_at": "2026-07-10T04:12:00Z",
   "progress": {
-    "completed": { "M31": { "Luminance": 12, "": 3 } },
     "last_filter_key": "Luminance"
   }
 }
@@ -4286,17 +4589,15 @@ or empty:
   state — § Safety). An idle session has no file: every transition to
   idle (manual stop, workflow completion, invocation failure) deletes
   it.
-- `progress` is the planner's `record_exposure` counter store (target →
-  filter key → completed count; the empty-string key is the unfiltered
-  slot, `last_filter_key` feeds the plan-rotation tie-breaking) —
-  exactly what `get_next_target` uses to rotate plans, balance targets,
-  and reach `end_of_session`. Goals are not persisted; they derive from
-  the target store on every read. **P1 note:** [Target
-  Store](#target-store) moves `completed` counts to on-demand
-  filesystem derivation once the frame scan lands, so this field is
-  expected to shrink to just `last_filter_key` (still session-runtime
-  state, not derivable from disk) — the exact persisted shape is
-  finalized when that lands.
+- `progress` holds only `last_filter_key`, the filter of the most
+  recent `record_exposure` — the input to the planner's filter-batching
+  tie-break (§ Decision Logic bullet 4), and the one planner fact the
+  filesystem cannot supply. Frame counts are **not** persisted: they
+  are derived from the frames on disk on every read ([Target Store §
+  Progress derivation](#progress-derivation)), which is what lets a
+  restart resume at the true count and lets a plan span nights.
+  Losing this file costs at most one avoidable filter change on the
+  next `get_next_target`.
 - Device addresses, camera assignments, and mount state are **not**
   persisted: equipment comes from the config file, and pointing is
   re-derived by the orchestrator on resume (a recovery invocation
@@ -4312,7 +4613,7 @@ the listener starts serving — `rp` checks the session state file:
    idle and wait for a session-start command. A corrupt file is never
    fatal — refusing to start over unreadable bookkeeping would be worse
    than losing one resume.
-2. **File present**: restore the planner progress counters, mark the
+2. **File present**: restore the last recorded filter, mark the
    session active with the persisted ids, and re-invoke the
    orchestrator with recovery context `{"reason": "rp_restart"}` and
    the same `workflow_id`/`session_id`/`config` — identical
@@ -4367,11 +4668,13 @@ The state file is written atomically (sibling temp file, fsync, rename,
 fsync parent directory — the workspace pattern, as for exposure
 documents) on:
 
-- session start (status `active`, fresh ids, counters cleared),
+- session start (status `active`, fresh ids, `last_filter_key`
+  cleared),
 - safety interrupt (status `interrupted`) and resume (back to
   `active`),
-- every successful `record_exposure` — the counters are the resume
-  payload, so at most one frame's progress is lost to a power failure.
+- every successful `record_exposure` — which now writes only the
+  updated `last_filter_key`; frame counts survive a power failure on
+  their own, because they live in the frames themselves.
 
 It is deleted on every transition to idle (manual stop, workflow
 completion, invocation failure). A failed state write is logged at
@@ -4734,12 +5037,13 @@ the URL is derived from the listener — a wildcard `bind_address`
 advertises the system hostname; see [MCP Server](#mcp-server). Setting
 it also admits that host to the MCP endpoint's `Host` allowlist, which
 is how a name `rp` cannot derive (a reverse proxy, an mDNS alias) is
-made acceptable to the endpoint as well as advertised. The
-`server` block is otherwise the shared server-config shape, except
-that `rp` carries this extra field in its own config type
-(`services/rp/src/config/server.rs`) — rp is the only service that
-advertises its own URL to another process, so the knob does not live
-in `rusty-photon-server-config`.
+made acceptable to the endpoint as well as advertised. The whole
+`server` block is `rusty-photon-server-config`'s
+`AdvertisingServerConfig` — the shared plain-HTTP shape plus this
+field — which `rp` uses directly rather than defining a copy of, so
+the shape `rp` accepts is by construction the one
+`rusty-photon-doctor` validates it against (`class = "advertising"`
+in `services/rp/pkg/doctor.toml`).
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
@@ -5264,8 +5568,9 @@ Behavioral specifications for `rp`'s responsibilities:
 - Event delivery to webhook endpoints
 - Power failure recovery (`startup_recovery.feature`: an rp restart
   mid-session re-invokes the orchestrator with recovery context from
-  the persisted state file, planner counters survive, and completed or
-  stopped sessions leave nothing to recover — see § Recovery Behavior;
+  the persisted state file, derived progress survives the restart on
+  disk, and completed or stopped sessions leave nothing to recover —
+  see § Recovery Behavior;
   the end-to-end restart against a real engine lives in
   `services/session-runner/tests/features/recovery.feature`)
 

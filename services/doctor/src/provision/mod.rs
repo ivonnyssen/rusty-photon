@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use rand::distr::{Alphanumeric, SampleString};
 use rusty_photon_tls::permissions::write_restricted;
 use serde_json::json;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::report::{AppliedFix, FixOp};
 
@@ -93,7 +93,19 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 }
 
 /// Align the pki tree (and `acme.json`/`renew.env` beside the configs) with
-/// the config root's owner.
+/// the config root's owner, logging every best-effort skip. The
+/// provisioning paths have no operator-warning channel of their own; the
+/// renewal path does, and calls
+/// [`align_pki_ownership_with_warnings`] instead.
+pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
+    for warning in align_pki_ownership_with_warnings(config_dir)? {
+        warn!("{warning}");
+    }
+    Ok(())
+}
+
+/// Align the pki tree (and `acme.json`/`renew.env` beside the configs) with
+/// the config root's owner, returning the entries left as they were.
 ///
 /// Provisioning as root on a packaged host (`sudo rusty-photon-doctor
 /// --fix`) creates key material root-owned; the services — and the renewal
@@ -103,49 +115,187 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 /// wholesale: every entry whose owner differs from the config root's is
 /// chowned to match. For an unprivileged caller on its own tree every
 /// owner already matches and this is a no-op. Symlinks are skipped (doctor
-/// never creates one there; following it would chown the target). A failed
-/// chown is an error: a silently root-owned key breaks TLS at the next
-/// service start. `renew.env` is operator-authored (docs/services/doctor.md
-/// §Renewal) and not always present, so it is included best-effort: it is
-/// unconditionally added to `paths`, but a missing file simply fails the
-/// `symlink_metadata` lookup in the loop below and is skipped there like
-/// any other absent entry.
+/// never creates one there; following it would chown the target).
+///
+/// Only [essential](is_essential_pki_entry) material aborts loudly — a
+/// silently root-owned key breaks TLS at the next service start. Every
+/// other entry in the tree is aligned best-effort and returned as a
+/// warning: a file doctor did not create and nothing reads must not
+/// disable unattended renewal for good.
+///
+/// `renew.env` is operator-authored (docs/services/doctor.md §Renewal) and
+/// not always present, so it is included best-effort: it is
+/// unconditionally added to `entries`, but a missing file simply fails the
+/// `symlink_metadata` lookup and is skipped like any other absent entry.
 #[cfg(unix)]
-pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
+pub fn align_pki_ownership_with_warnings(config_dir: &Path) -> Result<Vec<String>, String> {
     use std::os::unix::fs::MetadataExt;
     let Ok(root_meta) = std::fs::metadata(config_dir) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let (uid, gid) = (root_meta.uid(), root_meta.gid());
-    let mut paths = vec![config_dir.join("acme.json"), config_dir.join("renew.env")];
-    let pki = pki_dir(config_dir);
-    if let Ok(entries) = std::fs::read_dir(&pki) {
-        paths.push(pki);
-        paths.extend(entries.flatten().map(|e| e.path()));
-    }
-    for path in paths {
-        let meta = match std::fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("could not stat {}: {e}", path.display())),
-        };
-        if meta.file_type().is_symlink() || (meta.uid() == uid && meta.gid() == gid) {
+    let mut warnings = Vec::new();
+    for (path, essential) in alignment_entries(config_dir) {
+        let Err(problem) = align_entry(&path, uid, gid) else {
             continue;
-        }
-        std::os::unix::fs::chown(&path, Some(uid), Some(gid)).map_err(|e| {
-            format!(
-                "could not chown {} to the config root's owner (uid {uid}, gid {gid}): {e} — \
-                 the services and the renewal timer run as that user and need this material",
+        };
+        if essential {
+            return Err(format!(
+                "{problem} — the services and the renewal timer run as the config \
+                 root's owner and need this material; `sudo chown {uid}:{gid} {}` \
+                 (or a privileged `rusty-photon-doctor --fix`) repairs it",
                 path.display()
-            )
-        })?;
-        debug!(path = %path.display(), uid, gid, "aligned ownership with the config root");
+            ));
+        }
+        warnings.push(format!(
+            "{problem} — no service and no renewal reads this file, so it was left \
+             as it is; `sudo chown {uid}:{gid} {}` if it should belong to the install",
+            path.display()
+        ));
     }
-    Ok(())
+    Ok(warnings)
 }
 
 #[cfg(not(unix))]
-pub fn align_pki_ownership(_config_dir: &Path) -> Result<(), String> {
+pub fn align_pki_ownership_with_warnings(_config_dir: &Path) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
+/// One entry the ownership sweep would have to hand over.
+#[derive(Debug, Clone)]
+pub struct OwnershipMismatch {
+    pub path: PathBuf,
+    /// Material a service or a renewal reads — the sweep's own split.
+    pub essential: bool,
+}
+
+/// What the ownership sweep sees: the owner it aligns to, how many
+/// entries exist to align, and which of them do not belong to that owner.
+#[derive(Debug, Clone)]
+pub struct PkiOwnership {
+    pub uid: u32,
+    pub gid: u32,
+    /// Entries that exist. Zero means there is no material to judge — a
+    /// host that has never been provisioned.
+    pub examined: usize,
+    pub mismatched: Vec<OwnershipMismatch>,
+}
+
+/// The read-only half of [`align_pki_ownership`], for `tls.ownership`:
+/// what a privileged `--fix` would chown, without touching anything.
+/// `None` where the question does not arise — a non-Unix host, or a
+/// config root doctor cannot stat. An entry doctor cannot stat is not
+/// reported: its ownership is unproven, not wrong.
+#[cfg(unix)]
+pub fn pki_ownership(config_dir: &Path) -> Option<PkiOwnership> {
+    use std::os::unix::fs::MetadataExt;
+    let root_meta = std::fs::metadata(config_dir).ok()?;
+    let (uid, gid) = (root_meta.uid(), root_meta.gid());
+    let mut ownership = PkiOwnership {
+        uid,
+        gid,
+        examined: 0,
+        mismatched: Vec::new(),
+    };
+    for (path, essential) in alignment_entries(config_dir) {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        ownership.examined += 1;
+        ownership
+            .mismatched
+            .extend(foreign_entry(path, essential, &meta, uid, gid));
+    }
+    Some(ownership)
+}
+
+/// The ownership comparison itself: `Some` when the entry does not belong
+/// to the owner the sweep aligns everything to.
+#[cfg(unix)]
+fn foreign_entry(
+    path: PathBuf,
+    essential: bool,
+    meta: &std::fs::Metadata,
+    uid: u32,
+    gid: u32,
+) -> Option<OwnershipMismatch> {
+    use std::os::unix::fs::MetadataExt;
+    (meta.uid() != uid || meta.gid() != gid).then_some(OwnershipMismatch { path, essential })
+}
+
+#[cfg(not(unix))]
+pub fn pki_ownership(_config_dir: &Path) -> Option<PkiOwnership> {
+    None
+}
+
+/// Everything the ownership sweep covers, each paired with whether failing
+/// to align it is fatal. The pki directory itself is essential: renewal
+/// writes new pairs into it. It is listed whether or not it can be
+/// *listed* — a tree this run cannot read is the ownership problem most
+/// worth reporting, so dropping it here would hide exactly the case the
+/// sweep exists for. An absent one costs nothing: it fails the
+/// `symlink_metadata` lookup later and is skipped like any other absent
+/// entry.
+#[cfg(unix)]
+fn alignment_entries(config_dir: &Path) -> Vec<(PathBuf, bool)> {
+    let pki = pki_dir(config_dir);
+    let mut entries = vec![
+        (config_dir.join("acme.json"), true),
+        (config_dir.join("renew.env"), true),
+        (pki.clone(), true),
+    ];
+    if let Ok(listing) = std::fs::read_dir(&pki) {
+        entries.extend(listing.flatten().map(|e| {
+            let path = e.path();
+            let essential = is_essential_pki_entry(&path);
+            (path, essential)
+        }));
+    }
+    entries
+}
+
+/// Whether an entry in the pki tree is material a service or a renewal
+/// actually reads: any certificate or key (`*.pem`), the credential, the
+/// persisted ACME account.
+///
+/// Everything else is a stray — `ca.srl`, the serial counter
+/// `openssl x509 -req -CAcreateserial` drops beside the CA when an
+/// operator hand-mints a certificate for a third-party driver, a leftover
+/// CSR, an editor's backup. Doctor neither writes nor reads those, so one
+/// of them being unownable is not a reason to stop renewing certificates.
+#[cfg(unix)]
+fn is_essential_pki_entry(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default();
+    path.extension().is_some_and(|e| e == "pem")
+        || name == "credential"
+        || name == "acme-account.json"
+}
+
+/// Hand one entry to the config root's owner. `Ok` covers everything that
+/// needs nothing done: an entry that is gone, a symlink, one already
+/// owned correctly. `Err` describes the host-level problem, leaving the
+/// caller to decide how much it costs.
+#[cfg(unix)]
+fn align_entry(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("could not stat {}: {e}", path.display())),
+    };
+    if meta.file_type().is_symlink() || (meta.uid() == uid && meta.gid() == gid) {
+        return Ok(());
+    }
+    std::os::unix::fs::chown(path, Some(uid), Some(gid)).map_err(|e| {
+        format!(
+            "could not chown {} to the config root's owner (uid {uid}, gid {gid}): {e}",
+            path.display()
+        )
+    })?;
+    debug!(path = %path.display(), uid, gid, "aligned ownership with the config root");
     Ok(())
 }
 
@@ -569,6 +719,160 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         align_pki_ownership(dir.path()).unwrap();
         align_pki_ownership(&dir.path().join("never-created")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_essential_pki_entries_are_the_material_something_reads() {
+        for material in ["ca.pem", "ca-key.pem", "zwo-camera.pem", "acme-cert.pem"] {
+            assert!(is_essential_pki_entry(Path::new(material)), "{material}");
+        }
+        assert!(is_essential_pki_entry(Path::new("credential")));
+        assert!(is_essential_pki_entry(Path::new("acme-account.json")));
+        // ca.srl is openssl's serial counter from a hand-minted
+        // certificate: doctor never writes it and renewal never reads it.
+        for stray in ["ca.srl", "zwo-camera.csr", "ca.pem.bak", "notes.txt"] {
+            assert!(!is_essential_pki_entry(Path::new(stray)), "{stray}");
+        }
+    }
+
+    /// Strip search permission from the pki directory so `lstat` on its
+    /// entries fails with EACCES: the alignment's host-level failure that
+    /// an unprivileged test can actually produce. `None` when the process
+    /// is privileged (DAC checks bypassed), where there is nothing to
+    /// assert.
+    #[cfg(unix)]
+    fn tree_whose_entries_cannot_be_stat_ed(entry: &str) -> Option<(tempfile::TempDir, PathBuf)> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join(entry), "content").unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let readable = std::fs::symlink_metadata(pki.join(entry)).is_ok();
+        if readable {
+            std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!("running privileged; the unalignable-entry paths need an unprivileged run");
+            return None;
+        }
+        Some((dir, pki))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_only_warns_about_a_stray_it_cannot_align() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some((dir, pki)) = tree_whose_entries_cannot_be_stat_ed("ca.srl") else {
+            return;
+        };
+        let warnings = align_pki_ownership_with_warnings(dir.path()).unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("ca.srl"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("chown"),
+            "the warning must name the repair: {warnings:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_fails_on_material_it_cannot_align() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some((dir, pki)) = tree_whose_entries_cannot_be_stat_ed("sentinel-key.pem") else {
+            return;
+        };
+        let err = align_pki_ownership_with_warnings(dir.path()).unwrap_err();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(err.contains("sentinel-key.pem"), "{err}");
+        assert!(
+            err.contains("chown"),
+            "the error must name the repair: {err}"
+        );
+    }
+
+    /// The chown the sweep performs, exercised directly against an owner
+    /// this process cannot hand a file to. Unprivileged that is EPERM —
+    /// the arm the fatal/best-effort split hangs on; privileged the chown
+    /// really happens and the entry is simply aligned.
+    #[cfg(unix)]
+    #[test]
+    fn test_align_entry_reports_a_chown_it_cannot_perform() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ca-key.pem");
+        std::fs::write(&file, "key material").unwrap();
+        const NOBODY: u32 = 65534;
+        match align_entry(&file, NOBODY, NOBODY) {
+            Err(problem) => {
+                assert!(problem.contains("ca-key.pem"), "{problem}");
+                assert!(problem.contains("could not chown"), "{problem}");
+            }
+            Ok(()) => {
+                use std::os::unix::fs::MetadataExt;
+                let meta = std::fs::metadata(&file).unwrap();
+                assert_eq!(meta.uid(), NOBODY, "a privileged run must have chowned it");
+            }
+        }
+    }
+
+    /// The comparison `tls.ownership` reports on, judged against an owner
+    /// that is not this process's — the packaged service user next to
+    /// material an earlier `sudo` left behind. Testable as a function
+    /// because a sandbox cannot create a cross-owned file to point at.
+    #[cfg(unix)]
+    #[test]
+    fn test_an_entry_owned_by_someone_else_is_a_mismatch() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sentinel-key.pem");
+        std::fs::write(&file, "key material").unwrap();
+        let meta = std::fs::symlink_metadata(&file).unwrap();
+
+        let foreign =
+            foreign_entry(file.clone(), true, &meta, meta.uid() + 1, meta.gid()).expect("mismatch");
+        assert!(foreign.path.ends_with("sentinel-key.pem"));
+        assert!(foreign.essential, "a key file is material something reads");
+        // A group it does not share counts too: the services' access is
+        // owner *and* group.
+        assert!(foreign_entry(file.clone(), false, &meta, meta.uid(), meta.gid() + 1).is_some());
+        assert!(
+            foreign_entry(file, true, &meta, meta.uid(), meta.gid()).is_none(),
+            "an entry that already belongs to the config root's owner is not a finding"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_logs_the_strays_it_leaves_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some((dir, pki)) = tree_whose_entries_cannot_be_stat_ed("ca.srl") else {
+            return;
+        };
+        // The logging wrapper the provisioning paths call: a stray it
+        // cannot align is a log line, never a failed provisioning run.
+        let aligned = align_pki_ownership(dir.path());
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        aligned.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_pki_tree_that_cannot_be_listed_is_still_judged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("ca.pem"), "cert").unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let ownership = pki_ownership(dir.path()).unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            ownership.examined >= 1,
+            "the directory itself must be judged even when its contents cannot be \
+             listed — an unreadable tree is the ownership problem, not an excuse \
+             to say nothing"
+        );
     }
 
     #[cfg(unix)]

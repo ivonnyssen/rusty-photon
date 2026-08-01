@@ -56,10 +56,35 @@ pub async fn renew(
         .map_err(|message| renew_error(message, &applied, &warnings))?;
     // A `sudo … tls renew` (the manual escape hatch) rewrites pairs
     // root-owned; the scheduled run as the service user is a no-op here.
-    super::align_pki_ownership(config_dir)
-        .map_err(|message| renew_error(message, &applied, &warnings))?;
+    // A stray the sweep cannot hand over is only a warning — the timer
+    // must keep renewing.
+    match super::align_pki_ownership_with_warnings(config_dir) {
+        Ok(skipped) => warnings.extend(skipped),
+        Err(message) => {
+            return Err(renew_error(
+                alignment_failure(message, &applied),
+                &applied,
+                &warnings,
+            ))
+        }
+    }
 
     Ok((applied, warnings))
+}
+
+/// Ownership alignment runs after both legs, so its failure is not a
+/// failed renewal: whatever was re-issued is on disk (and reported in
+/// `applied`). The exit status alone cannot tell an operator that, so the
+/// message does.
+fn alignment_failure(message: String, applied: &[AppliedFix]) -> String {
+    if applied.is_empty() {
+        return message;
+    }
+    format!(
+        "the renewal itself succeeded — {} action(s) are already on disk — but the \
+         pki tree could not be aligned afterwards: {message}",
+        applied.len()
+    )
 }
 
 /// A [`RenewError`] carrying whatever had already been applied and warned
@@ -824,6 +849,58 @@ mod tests {
         assert!(
             marker.is_file(),
             "the hook after the failing one must still run"
+        );
+    }
+
+    /// Material the sweep cannot align still fails the renewal — a key no
+    /// service can read is not a state to exit 0 on. The unalignable state
+    /// is a pki directory that lists but cannot be traversed, which leaves
+    /// nothing for the legs to renew (`ca.pem` is never a renewable pair)
+    /// and puts the failure squarely on the sweep.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_material_the_sweep_cannot_align_fails_the_renewal() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, pki) = stage_tree();
+        std::fs::remove_file(pki.join("ca-key.pem")).unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o400)).unwrap();
+        if std::fs::symlink_metadata(pki.join("ca.pem")).is_ok() {
+            std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!(
+                "running privileged; the unalignable-material path needs an unprivileged run"
+            );
+            return;
+        }
+
+        let result = renew(dir.path(), false).await;
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let err = result.unwrap_err();
+        assert!(err.message.contains("ca.pem"), "{}", err.message);
+        assert!(
+            err.applied.is_empty(),
+            "nothing was renewed, so nothing is claimed: {:?}",
+            err.applied
+        );
+    }
+
+    #[test]
+    fn test_an_alignment_failure_says_the_certificate_work_survived() {
+        let problem = "could not chown ca-key.pem".to_string();
+        assert_eq!(alignment_failure(problem.clone(), &[]), problem);
+
+        let after_work = alignment_failure(
+            problem.clone(),
+            &[AppliedFix {
+                check: "provisioning".to_string(),
+                op: FixOp::GenerateCert {
+                    service: "zwo-camera".to_string(),
+                },
+            }],
+        );
+        assert!(after_work.contains(&problem), "{after_work}");
+        assert!(
+            after_work.contains("succeeded"),
+            "a renewal that wrote a pair must not read as a failed order: {after_work}"
         );
     }
 

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rusty_photon_server_config::doctor_toml::ServerClass;
-use rusty_photon_server_config::{AlpacaServerConfig, ServerConfig};
+use rusty_photon_server_config::{AdvertisingServerConfig, AlpacaServerConfig, ServerConfig};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -136,6 +136,13 @@ fn parse_server_block(block: &Value, class: ServerClass) -> ServerBlock {
         ServerClass::Core => match ServerConfig::deserialize(block) {
             Ok(server) => ServerBlock::Parsed {
                 server,
+                discovery_port: None,
+            },
+            Err(e) => ServerBlock::Invalid(e.to_string()),
+        },
+        ServerClass::Advertising => match AdvertisingServerConfig::deserialize(block) {
+            Ok(config) => ServerBlock::Parsed {
+                server: config.core(),
                 discovery_port: None,
             },
             Err(e) => ServerBlock::Invalid(e.to_string()),
@@ -458,30 +465,33 @@ impl RpView {
         targets
     }
 
-    /// The orchestrator registration's `invoke_url` — what rp POSTs a
-    /// session start to (rp.md § Orchestrator Registration) — alongside
-    /// its own `auth` field (issue #800).
+    /// The callback URL of every registration rp dials — the orchestrator's
+    /// `invoke_url`, what rp POSTs a session start to (rp.md § Orchestrator
+    /// Registration), and an event plugin's `webhook_url`, what it POSTs
+    /// each subscribed event to (§ Delivery: Webhooks) — alongside that
+    /// registration's own `auth` field (issue #800).
     ///
     /// Deliberately narrower than [`Self::equipment_targets`]'s
     /// walk-anything-with-an-`alpaca_url` rule: a registration is an
-    /// opaque plugin-author surface, and rp interprets `invoke_url` and
-    /// `auth` on the **orchestrator** entry alone. Walking by field alone
-    /// would let `--fix` write a credential into a registration rp never
-    /// reads, and file a transport verdict on a URL rp never calls.
-    /// Event plugins' `webhook_url` is out for the stronger reason that
-    /// rp has no CA-trust or credential wiring on that path at all, so
-    /// there is no fix to point at.
+    /// opaque plugin-author surface, and rp interprets a callback URL and
+    /// `auth` on those two entry types alone. Walking by field alone would
+    /// let `--fix` write a credential into a registration rp never reads,
+    /// and file a transport verdict on a URL rp never calls — a tool
+    /// provider, for one, is reached over MCP and authenticates however
+    /// its author chose. The scope mirrors rp's own
+    /// `config::dialed_url_field`; the two must agree, or doctor advises a
+    /// fix rp ignores.
     pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
         self.plugins
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.get("type").and_then(Value::as_str) == Some("orchestrator"))
             .filter_map(|(idx, entry)| {
-                let url = entry.get("invoke_url")?.as_str()?;
+                let url_field = dialed_url_field(entry)?;
+                let url = entry.get(url_field)?.as_str()?;
                 Some(RpClientTarget {
-                    field: format!("plugins.{idx}.invoke_url"),
+                    field: format!("plugins.{idx}.{url_field}"),
                     url: url.to_string(),
-                    url_pointer: format!("/plugins/{idx}/invoke_url"),
+                    url_pointer: format!("/plugins/{idx}/{url_field}"),
                     auth_pointer: format!("/plugins/{idx}/auth"),
                     auth: entry
                         .get("auth")
@@ -489,6 +499,25 @@ impl RpView {
                 })
             })
             .collect()
+    }
+}
+
+/// The callback field rp POSTs to for this registration, or `None` when
+/// rp would not dial it at all.
+///
+/// Mirrors rp's `config::dialed_url_field`. doctor cannot share rp's
+/// code here (it reads the config as opaque JSON from another crate), so
+/// the two are held together by their tests.
+///
+/// Every registration of a dialed type is joined, with no second guess at
+/// whether rp would actually deliver to it: rp refuses to start on an
+/// event registration it cannot deliver to (rp.md § Delivery: Webhooks),
+/// so an entry that reaches a running rig is one rp dials.
+fn dialed_url_field(entry: &Value) -> Option<&'static str> {
+    match entry.get("type").and_then(Value::as_str)? {
+        "orchestrator" => Some("invoke_url"),
+        "event" => Some("webhook_url"),
+        _ => None,
     }
 }
 

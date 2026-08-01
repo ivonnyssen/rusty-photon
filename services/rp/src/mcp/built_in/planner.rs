@@ -134,21 +134,49 @@ impl McpHandler {
     /// the listing fails (logged at `debug!`), which surfaces as
     /// `no_targets_configured` / an unknown-target error rather than a
     /// tool failure.
-    async fn active_planner_targets(&self) -> Vec<crate::planner::decision::PlannerTarget> {
+    async fn active_targets(&self) -> Vec<rp_targets::Target> {
         let Some(store) = self.target_store.as_ref() else {
             return Vec::new();
         };
         match store.list_targets().await {
-            Ok(targets) => targets
-                .iter()
-                .filter(|t| t.active)
-                .map(crate::planner::decision::PlannerTarget::from)
-                .collect(),
+            Ok(mut targets) => {
+                targets.retain(|t| t.active);
+                targets
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "target store list_targets failed; planner sees no targets");
                 Vec::new()
             }
         }
+    }
+
+    /// The candidate set plus the progress snapshot to rank it against:
+    /// every active store row projected onto the decision type, and each
+    /// one's per-goal counts derived from the frames on disk (rp.md §
+    /// Progress derivation).
+    ///
+    /// Deriving here — once per call, at the tool boundary — is what
+    /// keeps `decision::next_target` a pure function of its arguments.
+    async fn planner_snapshot(
+        &self,
+    ) -> (
+        Vec<crate::planner::decision::PlannerTarget>,
+        crate::planner::progress::PlanProgress,
+    ) {
+        let targets = self.active_targets().await;
+        let last_filter_key = self
+            .progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last_filter_key()
+            .map(String::from);
+        let mut progress = crate::planner::progress::PlanProgress::new(last_filter_key);
+        let mut candidates = Vec::with_capacity(targets.len());
+        for target in &targets {
+            progress.insert(target.slug.as_str(), self.derive_progress(target).await);
+            candidates.push(crate::planner::decision::PlannerTarget::from(target));
+        }
+        (candidates, progress)
     }
 }
 
@@ -477,11 +505,12 @@ impl McpHandler {
 
     #[tool(description = "Sky position + progress for a target. Accepts either \
                        target_name (resolved via the embedded catalog) or a \
-                       raw ra/dec pair. progress is the per-filter \
-                       {completed, goal} map from the record_exposure \
-                       counters when target_name (as given or \
-                       catalog-resolved) slugifies to an active target-store \
-                       row, null otherwise. Requires `site`.")]
+                       raw ra/dec pair. progress is the per-goal list \
+                       {filter, binning, exposure_duration, desired_count, \
+                       good, total} derived from the frames on disk when \
+                       target_name (as given or catalog-resolved) slugifies \
+                       to an active target-store row, null otherwise. \
+                       Requires `site`.")]
     pub(crate) async fn get_target_status(
         &self,
         Parameters(params): Parameters<GetTargetStatusParams>,
@@ -531,24 +560,34 @@ impl McpHandler {
                 ))
             }
         };
-        // The progress counters are keyed by a target's slug (its stable
-        // identity), while `get_target_status` is queried by a free-form
-        // or catalog name — so slugify both the caller's `target_name`
-        // and its catalog-resolved form (`name`) and match those against
-        // the active store rows (`PlannerTarget.name` is the slug). The
-        // ra/dec form has no name to match and reports progress: null.
+        // Progress is keyed by a target's slug (its stable identity),
+        // while `get_target_status` is queried by a free-form or catalog
+        // name — so slugify both the caller's `target_name` and its
+        // catalog-resolved form (`name`) and match those against the
+        // active store rows. The ra/dec form has no name to match and
+        // reports progress: null.
         let progress = match params.target_name.as_deref() {
             Some(raw) => {
+                // Both spellings, one derivation: the caller's
+                // `target_name` and its catalog-resolved form go through
+                // the same `from_display_name` every writer used, so the
+                // slug matched here is by construction the slug stored.
                 let wanted: Vec<String> = [raw, name.as_str()]
-                    .iter()
-                    .filter_map(|s| rp_targets::TargetSlug::new(s).ok())
+                    .into_iter()
+                    .filter_map(|s| rp_targets::TargetSlug::from_display_name(s).ok())
                     .map(|slug| slug.as_str().to_string())
                     .collect();
-                let targets = self.active_planner_targets().await;
-                match targets.iter().find(|t| wanted.contains(&t.name)) {
-                    Some(configured) => {
-                        let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::planner::convenience::target_progress_view(configured, &store)
+                let targets = self.active_targets().await;
+                match targets
+                    .iter()
+                    .find(|t| wanted.iter().any(|w| w == t.slug.as_str()))
+                {
+                    Some(matched) => {
+                        let counts = self.derive_progress(matched).await;
+                        serde_json::to_value(crate::mcp::built_in::targets::progress_rows(
+                            matched, &counts,
+                        ))
+                        .unwrap_or(serde_json::Value::Null)
                     }
                     None => serde_json::Value::Null,
                 }
@@ -632,8 +671,9 @@ impl McpHandler {
         };
         let eph = rp_ephemeris::ErfarsEphemeris::new();
         // Candidates are every active store row (Decision 9), projected
-        // onto the decision candidate type.
-        let candidates = self.active_planner_targets().await;
+        // onto the decision candidate type, paired with the progress
+        // derived from their frames on disk.
+        let (candidates, progress) = self.planner_snapshot().await;
         // A store-backed target's own default floor, falling back to
         // the planner-wide default (`planner.min_altitude_degrees`).
         let default_min_altitude_degrees = self
@@ -641,18 +681,15 @@ impl McpHandler {
             .default_scheduling
             .min_altitude_degrees
             .unwrap_or(self.default_min_altitude_degrees);
-        let rec = {
-            let progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-            crate::planner::decision::next_target(
-                &eph,
-                site,
-                time,
-                &candidates,
-                default_min_altitude_degrees,
-                train_default_position_angle_deg,
-                &progress,
-            )
-        };
+        let rec = crate::planner::decision::next_target(
+            &eph,
+            site,
+            time,
+            &candidates,
+            default_min_altitude_degrees,
+            train_default_position_angle_deg,
+            &progress,
+        );
         // The recommendation's derived `Serialize` is the wire contract
         // (see `PlannerTarget`): `target` nests its `coord`, and the
         // selected plan entry surfaces as a nested `exposure` object.
@@ -663,67 +700,70 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Record one completed frame against an active target-store \
-                       row's per-filter counter (keyed by the target's slug) \
-                       and return it: {target, filter, completed, goal}. goal \
-                       is the summed desired_count for that filter in the \
-                       target's goals (null when the filter is not among its \
-                       goals). Omit filter (or pass null / \"\") for an \
-                       unfiltered frame. The counters drive get_next_target's \
-                       plan rotation, target balancing, and the all-goals-met \
-                       end_of_session; they reset when a fresh session starts."
+        description = "Read back an active target-store row's progress after a \
+                       frame, and record filter as the session's most recent \
+                       (the planner's filter-batching tie-break). It \
+                       increments nothing — capture already wrote the frame \
+                       the scan finds. Returns {target, filter, progress}, \
+                       where progress is the per-goal list {filter, binning, \
+                       exposure_duration, desired_count, good, total} derived \
+                       from the frames on disk. Omit filter (or pass null / \
+                       \"\") for an unfiltered frame."
     )]
     pub(crate) async fn record_exposure(
         &self,
         Parameters(params): Parameters<RecordExposureParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        // Recording against an unknown slug would count frames the
-        // planner can never see — a typo'd orchestrator call should
-        // fail loudly, not silently disable progress tracking.
-        let targets = self.active_planner_targets().await;
-        let Some(target) = targets.iter().find(|t| t.name == params.target) else {
+        // Recording against an unknown slug means the orchestrator
+        // believes it is imaging a target the planner cannot see — a
+        // typo'd call should fail loudly rather than silently succeed.
+        let targets = self.active_targets().await;
+        let Some(target) = targets.iter().find(|t| t.slug.as_str() == params.target) else {
             return Ok(tool_error!(
                 "unknown target `{}`: not an active target-store row",
                 params.target
             ));
         };
         let key = crate::planner::progress::filter_key(params.filter.as_deref());
-        let completed = {
+        {
             let mut store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-            store.record(&target.name, params.filter.as_deref())
-        };
-        // The counters are the resume payload of the session state file
-        // (rp.md § Write Strategy): re-persist after every recorded
-        // frame so a power failure loses at most one frame's progress.
+            store.record(params.filter.as_deref());
+        }
+        // Frame counts survive a crash on their own — they live in the
+        // frames. Only the last filter needs persisting (rp.md § Write
+        // Strategy), and losing it costs one avoidable filter change.
         if let Some(session_manager) = &self.session_manager {
             session_manager.persist_progress().await;
         }
-        let goal = crate::planner::progress::SessionProgress::goal_for(target, &key);
+        let counts = self.derive_progress(target).await;
         Ok(tool_success!({
-            "target": target.name,
+            "target": target.slug.as_str(),
             "filter": if key.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(key) },
-            "completed": completed,
-            "goal": goal,
+            "progress": crate::mcp::built_in::targets::progress_rows(target, &counts),
         }))
     }
 
     #[tool(
-        description = "Full progress overview from the record_exposure counters: \
-                       target slug -> filter -> {completed, goal} for every \
-                       active target-store row (the unfiltered slot appears \
-                       under the empty-string key; a recorded filter outside \
-                       the target's goals has goal null)."
+        description = "Full progress overview derived from the frames on disk: \
+                       target slug -> the per-goal list {filter, binning, \
+                       exposure_duration, desired_count, good, total}, for \
+                       every active target-store row."
     )]
     pub(crate) async fn get_session_progress(
         &self,
         Parameters(_params): Parameters<GetSessionProgressParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let targets = self.active_planner_targets().await;
-        let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-        let v = crate::planner::convenience::session_progress_view(&targets, &store);
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            v.to_string(),
-        )]))
+        let targets = self.active_targets().await;
+        // BTreeMap so the payload's target order is stable across calls.
+        let mut progress = std::collections::BTreeMap::new();
+        for target in &targets {
+            let counts = self.derive_progress(target).await;
+            progress.insert(
+                target.slug.as_str().to_string(),
+                crate::mcp::built_in::targets::progress_rows(target, &counts),
+            );
+        }
+        Ok(tool_success!({ "progress": progress }))
     }
 
     #[tool(

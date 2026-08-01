@@ -163,14 +163,27 @@ impl Orchestrator {
     /// Pick the orchestrator registration out of `plugins` and build its
     /// client. `Ok(None)` when no orchestrator is registered, or when its
     /// entry carries no `invoke_url` — there is nothing to POST to.
+    ///
+    /// Errors name the registration by its `plugins[]` index, the same
+    /// path `validate_config` and doctor use (`plugins.<index>.auth`),
+    /// with the plugin's own name beside it: nothing stops two
+    /// registrations sharing a `name`, and the index is what an operator
+    /// can act on.
     fn from_plugins(
         plugins: &[Value],
         ca_cert_path: Option<&Path>,
     ) -> Result<Option<Self>, String> {
-        let Some(entry) = plugins.iter().find(|p| crate::config::is_orchestrator(p)) else {
+        let Some((index, entry)) = plugins
+            .iter()
+            .enumerate()
+            .find(|(_, p)| crate::config::is_orchestrator(p))
+        else {
             return Ok(None);
         };
-        let Some(invoke_url) = entry.get("invoke_url").and_then(|v| v.as_str()) else {
+        let Some(invoke_url) = entry
+            .get(crate::config::ORCHESTRATOR_URL_FIELD)
+            .and_then(|v| v.as_str())
+        else {
             return Ok(None);
         };
         let name = entry
@@ -182,11 +195,12 @@ impl Orchestrator {
             None | Some(Value::Null) => None,
             Some(value) => Some(
                 serde_json::from_value::<ClientAuthConfig>(value.clone())
-                    .map_err(|e| format!("plugins[{name}].auth: {e}"))?,
+                    .map_err(|e| format!("plugins.{index}.auth ({name}): {e}"))?,
             ),
         };
-        let client = build_invoke_client(ca_cert_path)
-            .map_err(|e| format!("plugins[{name}]: failed to build the invoke HTTP client: {e}"))?;
+        let client = build_invoke_client(ca_cert_path).map_err(|e| {
+            format!("plugins.{index} ({name}): failed to build the invoke HTTP client: {e}")
+        })?;
 
         Ok(Some(Self {
             invoke_url: invoke_url.to_string(),
@@ -893,7 +907,7 @@ mod tests {
     }
 
     fn manager_for(invoke_url: &str) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -977,9 +991,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_start_clears_the_planner_progress_counters() {
+    async fn a_fresh_start_clears_the_last_recorded_filter() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -988,7 +1002,7 @@ mod tests {
         let progress = Arc::new(std::sync::Mutex::new(
             crate::planner::progress::SessionProgress::default(),
         ));
-        progress.lock().unwrap().record("M31", Some("Red"));
+        progress.lock().unwrap().record(Some("Red"));
         let manager = Arc::new(
             SessionManager::new(event_bus, &plugins, None)
                 .unwrap()
@@ -998,9 +1012,9 @@ mod tests {
         manager.start().await.unwrap();
 
         assert_eq!(
-            progress.lock().unwrap().completed_for("M31", Some("Red")),
-            0,
-            "a fresh session start must reset last night's counters"
+            progress.lock().unwrap().last_filter_key(),
+            None,
+            "a fresh session start must forget last night's filter"
         );
     }
 
@@ -1137,7 +1151,7 @@ mod tests {
         Arc<SessionManager>,
         Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     ) {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1161,7 +1175,7 @@ mod tests {
         path: std::path::PathBuf,
         cooling: Arc<crate::cooling::CoolingController>,
     ) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1262,26 +1276,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_progress_rewrites_the_counters_and_is_a_noop_when_idle() {
+    async fn persist_progress_rewrites_the_last_filter_and_is_a_noop_when_idle() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
         let (manager, progress) = manager_with_state(&stub.url, path.clone());
 
-        // Idle: no session, no file — even with counters recorded.
-        progress.lock().unwrap().record("M31", Some("Red"));
+        // Idle: no session, no file — even with a filter recorded.
+        progress.lock().unwrap().record(Some("Red"));
         manager.persist_progress().await;
         assert!(!path.exists(), "an idle session must have no state file");
 
         manager.start().await.unwrap();
-        // start() cleared the counters; the persisted store is empty.
-        assert_eq!(read_state(&path)["progress"]["completed"], json!({}));
+        // start() cleared it; the persisted store carries no filter.
+        assert_eq!(
+            read_state(&path)["progress"]["last_filter_key"],
+            json!(null)
+        );
 
-        progress.lock().unwrap().record("M31", Some("Red"));
-        progress.lock().unwrap().record("M31", Some("Red"));
+        progress.lock().unwrap().record(Some("Red"));
         manager.persist_progress().await;
         let persisted = read_state(&path);
-        assert_eq!(persisted["progress"]["completed"]["M31"]["Red"], 2);
         assert_eq!(persisted["progress"]["last_filter_key"], "Red");
     }
 
@@ -1291,13 +1306,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
 
-        // First life: a session with two recorded frames, then a crash
+        // First life: a session with a recorded frame, then a crash
         // (the manager is simply dropped — nothing deletes the file).
         let (first, progress) = manager_with_state(&stub.url, path.clone());
         first.start().await.unwrap();
         assert!(wait_for_hits(&stub, 1).await);
-        progress.lock().unwrap().record("M31", Some("Red"));
-        progress.lock().unwrap().record("M31", Some("Red"));
+        progress.lock().unwrap().record(Some("Red"));
         first.persist_progress().await;
         drop(first);
 
@@ -1309,12 +1323,9 @@ mod tests {
         );
         assert_eq!(second.status().await, "active");
         assert_eq!(
-            fresh_progress
-                .lock()
-                .unwrap()
-                .completed_for("M31", Some("Red")),
-            2,
-            "the planner counters must be restored from the state file"
+            fresh_progress.lock().unwrap().last_filter_key(),
+            Some("Red"),
+            "the last filter must be restored from the state file"
         );
 
         assert!(wait_for_hits(&stub, 2).await, "no recovery re-invocation");
@@ -1458,10 +1469,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_startup_zeroes_stale_counters_when_progress_is_unreadable_or_absent() {
-        // The log promises "resuming with zeroed counters" — a store
-        // that already holds counts (a reused manager) must not leak
-        // them into the recovered session.
+    async fn recover_startup_clears_a_stale_filter_when_progress_is_unreadable_or_absent() {
+        // A store that already holds a filter (a reused manager) must
+        // not leak it into the recovered session.
         for progress in [json!("garbage"), Value::Null] {
             let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
             let dir = tempfile::tempdir().unwrap();
@@ -1480,13 +1490,13 @@ mod tests {
             .unwrap();
 
             let (manager, store) = manager_with_state(&stub.url, path.clone());
-            store.lock().unwrap().record("M31", Some("Red"));
+            store.lock().unwrap().record(Some("Red"));
 
             assert!(manager.recover_startup(true).await);
             assert_eq!(
-                store.lock().unwrap().completed_for("M31", Some("Red")),
-                0,
-                "progress {progress} must overwrite stale in-memory counters"
+                store.lock().unwrap().last_filter_key(),
+                None,
+                "progress {progress} must overwrite the stale in-memory filter"
             );
         }
     }
@@ -1605,7 +1615,7 @@ mod tests {
     }
 
     fn manager_with_auth(invoke_url: &str, auth: Option<Value>) -> Arc<SessionManager> {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let mut entry = json!({
             "name": "test-orchestrator",
             "type": "orchestrator",
@@ -1694,7 +1704,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_orchestrator_auth_block_fails_startup() {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "calibrator-flats",
             "type": "orchestrator",
@@ -1706,14 +1716,14 @@ mod tests {
             .err()
             .expect("a half-written credential must fail startup");
         assert!(
-            error.contains("plugins[calibrator-flats].auth") && error.contains("password"),
+            error.contains("plugins.0.auth (calibrator-flats)") && error.contains("password"),
             "a half-written credential must name the field it broke: {error}"
         );
     }
 
     #[tokio::test]
     async fn an_unreadable_ca_cert_fails_startup() {
-        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "calibrator-flats",
             "type": "orchestrator",
@@ -1725,7 +1735,7 @@ mod tests {
                 .err()
                 .expect("an unreadable ca_cert must fail startup");
         assert!(
-            error.contains("plugins[calibrator-flats]") && error.contains("invoke HTTP client"),
+            error.contains("plugins.0 (calibrator-flats)") && error.contains("invoke HTTP client"),
             "unexpected error: {error}"
         );
     }
@@ -1799,7 +1809,7 @@ mod tests {
 
         let trusting = Arc::new(
             SessionManager::new(
-                Arc::new(EventBus::from_config(&[])),
+                Arc::new(EventBus::from_config(&[], None).unwrap()),
                 &plugins,
                 Some(&ca_path),
             )
@@ -1817,7 +1827,12 @@ mod tests {
         );
 
         let untrusting = Arc::new(
-            SessionManager::new(Arc::new(EventBus::from_config(&[])), &plugins, None).unwrap(),
+            SessionManager::new(
+                Arc::new(EventBus::from_config(&[], None).unwrap()),
+                &plugins,
+                None,
+            )
+            .unwrap(),
         );
         untrusting.start().await.unwrap();
         assert!(

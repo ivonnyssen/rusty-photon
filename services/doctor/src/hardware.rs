@@ -606,6 +606,7 @@ mod tests {
                 source_name: None,
                 supplementary_groups: Vec::new(),
                 active: None,
+                failed: None,
                 binary_path: None,
             }],
             polkit_grants_sentinel_restart: None,

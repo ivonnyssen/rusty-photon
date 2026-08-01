@@ -4,11 +4,17 @@ Feature: Planner convenience tools
   `get_next_target`, `get_meridian_status`, `record_exposure`,
   `get_session_progress` — that compose the primitives from
   `ephemeris_primitives.feature`, the embedded catalog, and the
-  per-target/per-filter progress counters. v1 implements §"Dynamic
+  per-goal progress derived from the frames on disk
+  (`target_store_progress.feature`). v1 implements §"Dynamic
   Planner" decision-logic bullets 1 (altitude half), 2, 3, 4, and 6
   (eliminate below-floor and goal-met targets, prefer transiting,
   break near-transit ties by least progress then filter batching,
   twilight / end-of-session fallback).
+
+  Progress is never a counter the planner keeps: `capture` writes a
+  frame, and every later read derives the counts from the files. These
+  scenarios therefore drive the planner by placing frames on disk, not
+  by calling `record_exposure` — which increments nothing.
 
   Planner candidates come from the active rows of the rp-targets store
   (seeded via the `add_target` MCP tool); the legacy `targets[]` config
@@ -24,8 +30,8 @@ Feature: Planner convenience tools
   coordinate nests as `coord: {ra_hours, dec_degrees}`, plus the plan
   entry to shoot next as a nested `exposure` object:
   `exposure.filter` and `exposure.duration_secs` are the first goal (in
-  store order) whose `desired_count` the `record_exposure` counters have
-  not yet met; `exposure` is null when the target defines no goals — the
+  store order) whose `desired_count` the frames on disk have not yet
+  met; `exposure` is null when the target defines no goals — the
   orchestrator then falls back to its own exposure parameters.
 
   Scenario: Tool catalog includes the convenience tools
@@ -116,36 +122,47 @@ Feature: Planner convenience tools
     And the result reason should be "end_of_session"
     And the result target should be null
 
-  # The progress scenarios drive the record_exposure counters through
-  # the MCP surface end-to-end: an always-visible target (floor -90)
-  # keeps the recommendation deterministic at any wall-clock, and
-  # counted goals give the planner finite integration targets. Targets
-  # are addressed by slug — record_exposure keys the counters by the
-  # target's stable identity ("Test Field" -> test-field).
+  # The progress scenarios place frames on disk and let the planner
+  # derive the counts, which is how a real night works: `capture`
+  # writes the file, nothing increments a counter. An always-visible
+  # target (floor -90) keeps the recommendation deterministic at any
+  # wall-clock, and counted goals give the planner finite integration
+  # targets. Targets are addressed by slug — a frame belongs to a
+  # target through the `{target}` token in its path ("Test Field" ->
+  # test-field).
 
-  Scenario: record_exposure reports the per-filter counter and its goal
+  Scenario: record_exposure reports the target's derived progress
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the MCP client has added the always-visible target "Test Field" with goals:
       | filter | binning | exposure_duration | desired_count |
-      | Red    | 1x1     | 120s              | 2             |
+      | Red    | 1x1     | 2m                | 2             |
+    And the data directory contains these frames:
+      | path                                                                             | sidecar |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | absent  |
     When the MCP client calls "record_exposure" for target "test-field" filter "Red"
     Then the tool call should succeed
-    And the result completed should be 1 with a goal of 2
+    And the reported progress should be exactly:
+      | filter | binning | exposure_duration | good | total | desired_count |
+      | Red    | 1x1     | 2m                | 1    | 1     | 2             |
 
   Scenario: A met integration goal rotates the recommendation to the next goal
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the MCP client has added the always-visible target "Test Field" with goals:
       | filter | binning | exposure_duration | desired_count |
-      | Red    | 1x1     | 120s              | 1             |
-      | Blue   | 1x1     | 60s               | 1             |
-    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
-    And the MCP client calls "get_next_target"
+      | Red    | 1x1     | 2m                | 1             |
+      | Blue   | 1x1     | 1m                | 1             |
+    And the data directory contains these frames:
+      | path                                                                             | sidecar |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | absent  |
+    When the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the result reason should be "best_transiting_candidate"
     And the result filter should be "Blue"
@@ -154,42 +171,100 @@ Feature: Planner convenience tools
   Scenario: Exhausting every integration goal ends the session
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the MCP client has added the always-visible target "Test Field" with goals:
       | filter | binning | exposure_duration | desired_count |
-      | Red    | 1x1     | 120s              | 1             |
-    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
-    And the MCP client calls "get_next_target"
+      | Red    | 1x1     | 2m                | 1             |
+    And the data directory contains these frames:
+      | path                                                                             | sidecar |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | absent  |
+    When the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the result reason should be "end_of_session"
     And the result target should be null
 
-  Scenario: get_session_progress reports every configured target's counters
+  # A rejected frame is captured but not good, and the planner counts
+  # goals met on `good` — so a night of bad seeing keeps the target in
+  # the rotation instead of retiring it on frames that will never stack.
+  Scenario: A frame rejected by grading does not exhaust its goal
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
+    And rp is configured with target-store default grading max_hfr_pixels 3.0
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the MCP client has added the always-visible target "Test Field" with goals:
       | filter | binning | exposure_duration | desired_count |
-      | Red    | 1x1     | 120s              | 2             |
-      | Blue   | 1x1     | 60s               | 1             |
-    When the MCP client calls "record_exposure" for target "test-field" filter "Red"
-    And the MCP client calls "get_session_progress"
+      | Red    | 1x1     | 2m                | 1             |
+    And the data directory contains these frames:
+      | path                                                                             | sidecar      |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | {"hfr": 9.9} |
+    When the MCP client calls "get_next_target"
     Then the tool call should succeed
-    And the progress for target "test-field" filter "Red" should be 1 of 2
-    And the progress for target "test-field" filter "Blue" should be 0 of 1
+    And the result reason should be "best_transiting_candidate"
+    And the result filter should be "Red"
+
+  # get_target_status resolves target_name through the embedded catalog
+  # for its sky maths, then slugifies it to match a store row for
+  # progress — so this target is stored under a catalog name, the way
+  # the tool is actually queried.
+  Scenario: get_target_status reports the matched target's derived progress
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    And the MCP client has added the always-visible target "M 31" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 2m                | 2             |
+    # A name becomes a slug exactly one way — whitespace runs collapse to
+    # a hyphen — so "M 31" is stored, imaged, and looked up as m-31.
+    And the data directory contains these frames:
+      | path                                                                 | sidecar |
+      | m-31/2026-07-30/Light/m-31_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | absent  |
+    When the MCP client calls "get_target_status" for target "M 31"
+    Then the tool call should succeed
+    And the reported progress should be exactly:
+      | filter | binning | exposure_duration | good | total | desired_count |
+      | Red    | 1x1     | 2m                | 1    | 1     | 2             |
+
+  Scenario: get_session_progress reports every configured target's derived progress
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Test Field" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 2m                | 2             |
+      | Blue   | 1x1     | 1m                | 1             |
+    And the data directory contains these frames:
+      | path                                                                             | sidecar |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | absent  |
+    When the MCP client calls "get_session_progress"
+    Then the tool call should succeed
+    And the progress for target "test-field" should be exactly:
+      | filter | binning | exposure_duration | good | total | desired_count |
+      | Red    | 1x1     | 2m                | 1    | 1     | 2             |
+      | Blue   | 1x1     | 1m                | 0    | 0     | 1             |
 
   Scenario: The planner balances equally transiting targets by progress
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the MCP client has added the always-visible targets "First Field" and "Second Field", each wanting 2 unfiltered 2-second frames
     # Identical coordinates mean an exact transit tie; without the
-    # recorded frame, store order would recommend "First Field".
-    When the MCP client calls "record_exposure" for target "first-field" with no filter
-    And the MCP client calls "get_next_target"
+    # captured frame, store order would recommend "First Field". The
+    # unfiltered goal renders "NA" for the filter token, exactly as
+    # `capture` writes it on a rig with no filter wheel.
+    And the data directory contains these frames:
+      | path                                                                                | sidecar |
+      | first-field/2026-07-30/Light/first-field_NA_1x1_0001_2s_fpos_0_-10C_aaaaaaa1.fits   | absent  |
+    When the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the recommended target should be "second-field"
 

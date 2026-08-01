@@ -22,6 +22,7 @@
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
 //! and plugin tests depend on bdd-infra; bdd-infra does not depend on rp).
 
+mod basic_auth;
 mod computed_sky;
 mod config;
 mod guider_stub;

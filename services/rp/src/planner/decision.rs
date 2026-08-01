@@ -31,7 +31,7 @@ use rp_ephemeris::{Ephemeris, Site};
 use rp_targets::IcrsCoord;
 use serde::Serialize;
 
-use super::progress::SessionProgress;
+use super::progress::PlanProgress;
 
 /// Sun altitude (degrees) at astronomical dusk — the boundary that
 /// rp.md's prose for `WaitForTwilight` references. Above this, the
@@ -147,7 +147,7 @@ pub fn next_target(
     targets: &[PlannerTarget],
     default_min_altitude_deg: f64,
     train_default_position_angle_deg: Option<f64>,
-    progress: &SessionProgress,
+    progress: &PlanProgress,
 ) -> NextTargetRecommendation {
     if targets.is_empty() {
         return NextTargetRecommendation {
@@ -387,6 +387,24 @@ mod tests {
         TwilightKind, TwilightWindow,
     };
 
+    /// A progress snapshot with `good == total` counts per plan entry,
+    /// in plan order — the ungraded case, which is what every decision
+    /// test here cares about. The scan derives these for real; the
+    /// decision logic only ever reads them.
+    fn met(entries: &[(&str, &[u32])]) -> PlanProgress {
+        let mut p = PlanProgress::default();
+        for (name, counts) in entries {
+            p.insert(
+                name,
+                counts
+                    .iter()
+                    .map(|&n| super::super::progress_scan::GoalProgress { good: n, total: n })
+                    .collect(),
+            );
+        }
+        p
+    }
+
     /// Hand-rolled mock so the decision logic is testable without
     /// hitting real ERFA. The closures fix the answers per-target.
     #[derive(Default)]
@@ -528,7 +546,7 @@ mod tests {
             &[],
             20.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::NoTargetsConfigured);
@@ -556,7 +574,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
@@ -584,7 +602,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
@@ -615,7 +633,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -644,7 +662,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -673,7 +691,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
@@ -703,7 +721,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -734,7 +752,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -775,7 +793,7 @@ mod tests {
             &never_visible_target(),
             20.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -797,7 +815,7 @@ mod tests {
             &never_visible_target(),
             20.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -826,7 +844,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -865,7 +883,7 @@ mod tests {
             &targets,
             20.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         let target = rec.target.expect("expected a target");
         assert_eq!(target.name, "M42");
@@ -917,7 +935,7 @@ mod tests {
             &[t],
             20.0,
             Some(254.0),
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.position_angle_degrees, Some(121.25));
     }
@@ -933,7 +951,7 @@ mod tests {
             &targets,
             20.0,
             Some(254.0),
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.position_angle_degrees, Some(254.0));
         let rec = next_target(
@@ -943,7 +961,7 @@ mod tests {
             &targets,
             20.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.position_angle_degrees, Some(0.0));
     }
@@ -957,7 +975,7 @@ mod tests {
             &[],
             20.0,
             Some(254.0),
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert_eq!(rec.position_angle_degrees, None);
     }
@@ -971,8 +989,7 @@ mod tests {
             target_with_plan("M31", 12.0, vec![spec("L", 1)]),
             target_with_plan("M42", 10.0, vec![spec("L", 1)]),
         ];
-        let mut p = SessionProgress::default();
-        p.record("M31", Some("L"));
+        let p = met(&[("M31", &[1])]);
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "M42");
     }
@@ -984,8 +1001,7 @@ mod tests {
         // session is over. This is the non-dawn `EndOfSession`.
         let eph = night_eph(&[12.0]);
         let targets = vec![target_with_plan("M31", 12.0, vec![spec("L", 1)])];
-        let mut p = SessionProgress::default();
-        p.record("M31", Some("L"));
+        let p = met(&[("M31", &[1])]);
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
@@ -1007,8 +1023,7 @@ mod tests {
             target_with_plan("done", 12.0, vec![spec("L", 1)]),
             target_with_plan("still rising", 10.0, vec![spec("L", 1)]),
         ];
-        let mut p = SessionProgress::default();
-        p.record("done", Some("L"));
+        let p = met(&[("done", &[1])]);
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
@@ -1022,13 +1037,13 @@ mod tests {
             12.0,
             vec![spec("L", 1), spec("R", 1)],
         )];
-        let mut p = SessionProgress::default();
+        let p = PlanProgress::default();
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(
             rec.exposure.expect("plan entry").filter.as_deref(),
             Some("L")
         );
-        p.record("M31", Some("L"));
+        let p = met(&[("M31", &[1, 0])]);
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(
             rec.exposure.expect("plan entry").filter.as_deref(),
@@ -1047,8 +1062,7 @@ mod tests {
             target_with_plan("closer", 12.0, vec![spec("L", 2)]),
             target_with_plan("fresh", 11.7, vec![spec("L", 2)]),
         ];
-        let mut p = SessionProgress::default();
-        p.record("closer", Some("L"));
+        let p = met(&[("closer", &[1])]);
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "fresh");
     }
@@ -1064,8 +1078,7 @@ mod tests {
             target_with_plan("blue next", 12.0, vec![spec("Blue", 5)]),
             target_with_plan("red next", 11.7, vec![spec("Red", 5)]),
         ];
-        let mut p = SessionProgress::default();
-        p.record("somewhere else entirely", Some("Red"));
+        let p = PlanProgress::new(Some("Red".to_string()));
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "red next");
     }
@@ -1080,10 +1093,7 @@ mod tests {
             target_with_plan("transiting", 12.0, vec![spec("L", 10)]),
             target_with_plan("far and fresh", 10.9, vec![spec("L", 10)]),
         ];
-        let mut p = SessionProgress::default();
-        for _ in 0..9 {
-            p.record("transiting", Some("L"));
-        }
+        let p = met(&[("transiting", &[9])]);
         let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
         assert_eq!(rec.target.expect("expected a target").name, "transiting");
     }
@@ -1111,7 +1121,7 @@ mod tests {
             &targets,
             30.0,
             None,
-            &SessionProgress::default(),
+            &PlanProgress::default(),
         );
         assert!(
             rec.target.is_some(),

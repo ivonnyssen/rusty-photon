@@ -99,7 +99,10 @@ impl ServerBuilder {
         equipment.validate_site(config.site.as_ref()).await?;
 
         debug!("initializing event bus");
-        let event_bus = Arc::new(EventBus::from_config(&config.plugins));
+        let event_bus = Arc::new(
+            EventBus::from_config(&config.plugins, config.ca_cert_path())
+                .map_err(crate::error::RpError::Config)?,
+        );
 
         debug!("initializing session manager");
         // The planner's record_exposure counters, shared between the
@@ -248,6 +251,9 @@ impl ServerBuilder {
                     ))
                 })?
                 .map(Arc::new);
+        if let Some(warning) = crate::config::progress_derivation_warning(&config.session) {
+            tracing::warn!("{}", warning);
+        }
 
         // Build the guider HTTP client when the operator configured
         // one (`equipment.mount.guiding`) — same aborts-loud posture
@@ -882,7 +888,8 @@ mod tests {
             .err()
             .expect("build must fail when the registration can't be read");
         assert!(
-            err.to_string().contains("plugins[calibrator-flats].auth"),
+            err.to_string()
+                .contains("plugins.0.auth (calibrator-flats)"),
             "{err}"
         );
     }

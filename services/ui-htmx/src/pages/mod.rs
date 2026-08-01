@@ -127,7 +127,11 @@ pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
 #[derive(Debug, Clone, PartialEq)]
 enum FieldKind {
     /// A `string` leaf — rendered as a text input, set verbatim.
-    Str,
+    /// `nullable` (schema `type:["string","null"]`) persists `null` when
+    /// cleared, exactly as it does for [`FieldKind::Int`]/[`FieldKind::Num`]:
+    /// an optional field the operator emptied is *unset*, and `""` is a
+    /// value the driver is entitled to reject.
+    Str { nullable: bool },
     /// A `boolean` leaf — rendered as a checkbox (present ⇒ true, absent ⇒ false).
     Bool,
     /// An `integer` leaf. `nullable` (schema `type:["integer","null"]`) persists
@@ -166,7 +170,7 @@ impl FieldSpec {
         match self.kind {
             FieldKind::Bool | FieldKind::IntSet { .. } => "checkbox",
             FieldKind::Int { .. } | FieldKind::Num { .. } => "number",
-            FieldKind::Str => "text",
+            FieldKind::Str { .. } => "text",
         }
     }
 }
@@ -413,7 +417,7 @@ fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec
             max: node.get("maximum").and_then(Value::as_i64),
         },
         // "string" and any unexpected base fall back to a text field.
-        _ => FieldKind::Str,
+        _ => FieldKind::Str { nullable },
     };
     field_spec(name, kind)
 }
@@ -920,9 +924,21 @@ pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, F
                     }
                 }
             }
-            FieldKind::Str => {
+            FieldKind::Str { nullable } => {
                 if let Some(raw) = form.get(&spec.name) {
-                    set_pointer(&mut config, &spec.pointer, Value::String(raw.to_string()));
+                    // Optional: clear to null, the same gesture the number
+                    // kinds honour below. `""` is not a spelling of "unset" —
+                    // a driver that distinguishes the two (rp's naming
+                    // patterns: absent means a documented default, empty
+                    // means malformed) must receive the one the operator
+                    // meant. Required: keep writing the empty string, so a
+                    // driver that validates its own required fields still
+                    // gets to say so.
+                    if *nullable && raw.trim().is_empty() {
+                        set_pointer(&mut config, &spec.pointer, Value::Null);
+                    } else {
+                        set_pointer(&mut config, &spec.pointer, Value::String(raw.to_string()));
+                    }
                 }
             }
             FieldKind::Int { nullable, min, max } => {
@@ -1200,6 +1216,16 @@ mod tests {
                 "properties": {
                     "equipment": { "$ref": "#/$defs/EquipmentConfig" },
                     "server": { "type": "object", "properties": { "port": { "type": "integer" } } },
+                    // rp's `session`: a required string beside an
+                    // `Option<String>`, the pair that makes the nullable
+                    // distinction observable.
+                    "session": {
+                        "type": "object",
+                        "properties": {
+                            "data_directory": { "type": "string" },
+                            "file_naming_pattern": { "type": ["string", "null"] },
+                        },
+                    },
                 },
             }),
             locked_fields: vec![],
@@ -1500,7 +1526,7 @@ mod tests {
                 .kind
                 .clone()
         };
-        assert_eq!(kind("serial.port"), FieldKind::Str);
+        assert_eq!(kind("serial.port"), FieldKind::Str { nullable: false });
         assert_eq!(kind("cover_calibrator.enabled"), FieldKind::Bool);
         assert_eq!(
             kind("server.discovery_port"),
@@ -1748,6 +1774,59 @@ mod tests {
             .pointer("/server/discovery_port")
             .unwrap()
             .is_null());
+    }
+
+    /// Clearing an optional *text* box unsets the field, exactly as
+    /// clearing an optional number does. `""` is a different state — rp
+    /// reads an absent `file_naming_pattern` as "no templated naming" but
+    /// an empty one as malformed — so the form must send the state the
+    /// operator actually chose.
+    #[test]
+    fn merge_form_empty_nullable_string_becomes_null() {
+        let model = FieldModel::from_schema(&rp_like_schema());
+        let config = json!({
+            "session": {
+                "data_directory": "/var/lib/rusty-photon",
+                "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}_{uuid8}",
+            },
+        });
+        let form = form_from(&[
+            ("__config", &config.to_string()),
+            ("__overrides", "[]"),
+            ("session.file_naming_pattern", ""),
+            ("session.data_directory", "/var/lib/rusty-photon"),
+        ]);
+        let merged = merge_form(&form, &model).unwrap();
+        assert!(
+            merged
+                .config
+                .pointer("/session/file_naming_pattern")
+                .unwrap()
+                .is_null(),
+            "a cleared optional string must reach the driver as null, not \"\""
+        );
+    }
+
+    /// The other half of the rule: a *required* string keeps sending `""`,
+    /// so a driver that validates its own required fields still gets the
+    /// chance to reject the empty value rather than seeing it as unset.
+    #[test]
+    fn merge_form_empty_required_string_stays_a_string() {
+        let model = FieldModel::from_schema(&rp_like_schema());
+        let config = json!({ "session": { "data_directory": "/var/lib/rusty-photon" } });
+        let form = form_from(&[
+            ("__config", &config.to_string()),
+            ("__overrides", "[]"),
+            ("session.data_directory", ""),
+        ]);
+        let merged = merge_form(&form, &model).unwrap();
+        assert_eq!(
+            merged
+                .config
+                .pointer("/session/data_directory")
+                .and_then(Value::as_str),
+            Some("")
+        );
     }
 
     #[test]

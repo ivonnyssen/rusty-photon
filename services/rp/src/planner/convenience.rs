@@ -1,22 +1,25 @@
-//! Convenience-tool body helpers: `get_target_status`,
-//! `get_meridian_status`, plus the progress views for `record_exposure`
-//! / `get_session_progress`. Each produces a JSON `Value` from typed
+//! Convenience-tool body helpers: `get_target_status` and
+//! `get_meridian_status`. Each produces a JSON `Value` from typed
 //! inputs through a derived `Serialize` projection — there is no
 //! hand-built JSON here. (`get_next_target` has no helper at all: its
 //! wire type is `super::decision::NextTargetRecommendation`, whose own
 //! derived `Serialize` the tool body serializes directly.) The MCP tool
 //! body in `crate::mcp` handles parameter parsing, equipment lookup,
-//! locking the shared progress store, and `CallToolResult` shaping.
-
-use std::collections::BTreeMap;
+//! deriving progress, and `CallToolResult` shaping.
+//!
+//! The per-filter `{completed, goal}` progress views that used to live
+//! here are gone with the counters: every progress surface now emits
+//! the per-goal rows `crate::mcp::built_in::targets::progress_rows`
+//! builds from the on-disk scan (rp.md § Progress derivation), so there
+//! is one definition of a target's progress rather than two shapes that
+//! could drift.
 
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, SideOfPier, Site};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::decision::{signed_hour_angle, PlannerTarget};
-use super::progress::SessionProgress;
+use super::decision::signed_hour_angle;
 
 /// The `get_target_status` result: sky position for one named target
 /// plus the caller-supplied `progress` (the per-filter map when the
@@ -84,66 +87,6 @@ pub fn target_status_view(
     Ok(serde_json::to_value(view).unwrap_or(Value::Null))
 }
 
-/// One filter slot's progress: frames done and the goal (`null` when
-/// the filter is outside the target's plan).
-#[derive(Serialize)]
-struct ProgressEntry {
-    completed: u32,
-    goal: Option<u32>,
-}
-
-/// One target's per-filter progress: filter key (the empty string is
-/// the unfiltered slot) → `{completed, goal}`. Plan entries seed the
-/// keys (so untouched goals show `completed: 0`), and recorded filters
-/// outside the plan appear with `goal: null`. The `BTreeMap` keeps the
-/// keys in a stable, sorted order.
-fn target_progress_map(
-    target: &PlannerTarget,
-    progress: &SessionProgress,
-) -> BTreeMap<String, ProgressEntry> {
-    let keys = target
-        .exposures
-        .iter()
-        .map(|e| super::progress::filter_key(e.filter.as_deref()))
-        .chain(
-            progress
-                .recorded_filter_keys(&target.name)
-                .into_iter()
-                .map(String::from),
-        );
-    let mut map = BTreeMap::new();
-    for key in keys {
-        let completed = progress.completed_for(&target.name, Some(&key));
-        let goal = SessionProgress::goal_for(target, &key);
-        map.insert(key, ProgressEntry { completed, goal });
-    }
-    map
-}
-
-/// One target's per-filter progress map, as a JSON object — the
-/// `progress` field of `get_target_status` / `record_exposure`.
-pub fn target_progress_view(target: &PlannerTarget, progress: &SessionProgress) -> Value {
-    serde_json::to_value(target_progress_map(target, progress)).unwrap_or(Value::Null)
-}
-
-/// The full `get_session_progress` payload: `{progress: {target ->
-/// {filter -> {completed, goal}}}}` for every configured target (a
-/// target with no plan and no recorded frames is an empty object).
-#[derive(Serialize)]
-struct SessionProgressView {
-    progress: BTreeMap<String, BTreeMap<String, ProgressEntry>>,
-}
-
-/// Build the `get_session_progress` payload over every configured
-/// target.
-pub fn session_progress_view(targets: &[PlannerTarget], progress: &SessionProgress) -> Value {
-    let map = targets
-        .iter()
-        .map(|t| (t.name.clone(), target_progress_map(t, progress)))
-        .collect();
-    serde_json::to_value(SessionProgressView { progress: map }).unwrap_or(Value::Null)
-}
-
 /// The `get_meridian_status` result: time-to-flip from the mount's
 /// current pointing plus the side of pier (`SideOfPier`'s own
 /// kebab-case `Serialize` gives `"east"` / `"west"` / `"unknown"`).
@@ -184,7 +127,6 @@ pub fn meridian_status_view(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-    use crate::planner::decision::{ExposureSpec, PlannerTarget};
 
     fn site() -> Site {
         Site::new(47.6062, -122.3321).unwrap()
@@ -208,78 +150,6 @@ mod tests {
         // The progress argument passes through verbatim (null here —
         // Polaris is not a configured target).
         assert!(v["progress"].is_null());
-    }
-
-    #[test]
-    fn target_progress_view_seeds_plan_keys_and_carries_off_plan_records() {
-        let target = PlannerTarget {
-            name: "M31".into(),
-            coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
-            min_altitude_degrees: None,
-            position_angle_degrees: None,
-            exposures: vec![
-                ExposureSpec {
-                    filter: Some("L".to_string()),
-                    duration_secs: 300.0,
-                    count: Some(4),
-                },
-                ExposureSpec {
-                    filter: Some("R".to_string()),
-                    duration_secs: 120.0,
-                    count: None,
-                },
-            ],
-        };
-        let mut progress = SessionProgress::default();
-        progress.record("M31", Some("L"));
-        progress.record("M31", Some("Ha"));
-        let v = target_progress_view(&target, &progress);
-        assert_eq!(v["L"], serde_json::json!({"completed": 1, "goal": 4}));
-        assert_eq!(
-            v["R"],
-            serde_json::json!({"completed": 0, "goal": null}),
-            "an uncounted plan entry appears with a null goal"
-        );
-        assert_eq!(
-            v["Ha"],
-            serde_json::json!({"completed": 1, "goal": null}),
-            "a recorded filter outside the plan appears with a null goal"
-        );
-    }
-
-    #[test]
-    fn session_progress_view_lists_every_configured_target() {
-        let planned = PlannerTarget {
-            name: "M31".into(),
-            coord: rp_targets::IcrsCoord::try_new(0.7, 41.0).unwrap(),
-            min_altitude_degrees: None,
-            position_angle_degrees: None,
-            exposures: vec![ExposureSpec {
-                filter: None,
-                duration_secs: 60.0,
-                count: Some(2),
-            }],
-        };
-        let bare = PlannerTarget {
-            name: "M42".into(),
-            coord: rp_targets::IcrsCoord::try_new(5.5, -5.4).unwrap(),
-            min_altitude_degrees: None,
-            position_angle_degrees: None,
-            exposures: Vec::new(),
-        };
-        let mut progress = SessionProgress::default();
-        progress.record("M31", None);
-        let v = session_progress_view(&[planned, bare], &progress);
-        assert_eq!(
-            v["progress"]["M31"][""],
-            serde_json::json!({"completed": 1, "goal": 2}),
-            "the unfiltered slot lives under the empty-string key"
-        );
-        assert_eq!(
-            v["progress"]["M42"],
-            serde_json::json!({}),
-            "a target with no plan and no records is an empty object"
-        );
     }
 
     #[test]
