@@ -227,6 +227,19 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
 /// charsets.
 pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
+    // A file pattern names one file inside the directory
+    // `directory_pattern` selected; the progress scan reads `.fits`
+    // entries directly out of that directory. A `/` here would nest the
+    // frame a level deeper, where the scan would never see it — silently
+    // deriving 0 for every goal. Directory structure is
+    // `directory_pattern`'s job, and saying so at load beats a night of
+    // frames that do not count.
+    if pattern.contains('/') {
+        return Err(format!(
+            "file_naming_pattern {pattern:?} contains '/' — it names a single file within \
+             directory_pattern's directory; put path structure in session.directory_pattern"
+        ));
+    }
     validate_segments(&segments)
 }
 
@@ -239,7 +252,69 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
 /// single frame).
 pub fn validate_directory_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
+    check_relative_path_shape(pattern)?;
     check_unambiguous(&segments)
+}
+
+/// A `directory_pattern` must render a **canonical, relative** path:
+/// exactly one `/` between components, no leading or trailing `/`, and
+/// no `.` or `..` component.
+///
+/// This is a correctness rule, not tidiness. `capture` joins the
+/// rendered directory onto `data_directory` and the progress scan walks
+/// `data_directory` to the pattern's component depth, so the two must
+/// agree on what that depth means:
+///
+/// - A **leading `/`** makes the rendered path absolute, and
+///   `PathBuf::join` with an absolute path *discards the base* — frames
+///   would be written outside `data_directory` entirely.
+/// - `..` components escape `data_directory` the slower way.
+/// - A **doubled or trailing `/`** is normalized away by the OS when
+///   `capture` creates the directory, but still counts toward the
+///   pattern's component depth, so the scan walks one level too deep and
+///   matches nothing. Every target would silently derive `0/N`.
+///
+/// Rejected at load rather than canonicalized: silently rewriting what
+/// an operator wrote is how the two sides drift apart in the first
+/// place, and no token's shape admits `/`, so every separator here came
+/// from a literal the operator typed.
+fn check_relative_path_shape(pattern: &str) -> Result<(), String> {
+    // Empty means *unset*, not malformed: the config UI round-trips an
+    // absent `directory_pattern` as `""` (the same convention
+    // `session_state_file` uses for "derive the default"), and
+    // [`NamingTemplates::from_session_config`] resolves it to the
+    // documented default. Reading it as a path here would reject a form
+    // the operator never edited.
+    if pattern.is_empty() {
+        return Ok(());
+    }
+    if pattern.starts_with('/') {
+        return Err(format!(
+            "directory_pattern must be relative to data_directory, but {pattern:?} starts with \
+             '/' — an absolute path would place frames outside data_directory"
+        ));
+    }
+    if pattern.ends_with('/') {
+        return Err(format!(
+            "directory_pattern {pattern:?} ends with '/' — a trailing separator adds an empty \
+             path component the progress scan would walk into and never match"
+        ));
+    }
+    for component in pattern.split('/') {
+        if component.is_empty() {
+            return Err(format!(
+                "directory_pattern {pattern:?} contains an empty path component (a repeated \
+                 '/') — the filesystem collapses it but the progress scan would not"
+            ));
+        }
+        if component == "." || component == ".." {
+            return Err(format!(
+                "directory_pattern {pattern:?} contains a {component:?} component — a \
+                 directory_pattern may not traverse outside data_directory"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The body of [`validate_pattern`], operating on already-parsed
@@ -635,9 +710,15 @@ impl NamingTemplates {
         let Some(file_pattern) = config.file_naming_pattern.as_deref() else {
             return Ok(None);
         };
+        // Absent *or* empty falls back to the documented default: the
+        // config UI serializes an unset pattern as `""`, and compiling
+        // that literally would yield a zero-component directory
+        // template the progress scan could never match — every target
+        // silently deriving 0.
         let directory_pattern = config
             .directory_pattern
             .as_deref()
+            .filter(|p| !p.is_empty())
             .unwrap_or(Self::DEFAULT_DIRECTORY_PATTERN);
         Ok(Some(Self {
             directory: CompiledTemplate::compile_directory(directory_pattern)?,
@@ -1007,6 +1088,69 @@ mod tests {
             err.contains("target") && err.contains("night_date"),
             "{err}"
         );
+    }
+
+    /// `capture` joins the rendered directory onto `data_directory`
+    /// while the progress scan walks to the pattern's component depth,
+    /// so a non-canonical pattern makes the two disagree. Each of these
+    /// used to load cleanly and then derive 0 for every goal — and the
+    /// absolute form was worse than that, since `PathBuf::join` with an
+    /// absolute path discards the base and would write frames outside
+    /// `data_directory`.
+    #[test]
+    fn directory_pattern_must_be_a_canonical_relative_path() {
+        for (pattern, expected) in [
+            ("/{target}/{night_date}/{frame_type}", "relative"),
+            ("{target}/{night_date}/{frame_type}/", "trailing"),
+            (
+                "{target}//{night_date}/{frame_type}",
+                "empty path component",
+            ),
+            ("../{target}/{night_date}/{frame_type}", "traverse"),
+            ("./{target}/{night_date}/{frame_type}", "traverse"),
+        ] {
+            let err = validate_directory_pattern(pattern).unwrap_err();
+            assert!(
+                err.contains(expected),
+                "pattern {pattern:?} should be rejected mentioning {expected:?}, got: {err}"
+            );
+        }
+    }
+
+    /// `""` is how the config UI round-trips an unset pattern, so it
+    /// must validate *and* resolve to the documented default rather
+    /// than compiling a zero-component directory template the scan
+    /// could never match.
+    #[test]
+    fn an_empty_directory_pattern_means_unset_not_malformed() {
+        validate_directory_pattern("").unwrap();
+
+        let session = crate::config::session::SessionConfig {
+            data_directory: "/tmp/x".to_string(),
+            session_state_file: String::new(),
+            file_naming_pattern: Some(DEFAULT_PATTERN.to_string()),
+            directory_pattern: Some(String::new()),
+        };
+        let templates = NamingTemplates::from_session_config(&session)
+            .unwrap()
+            .expect("a configured file pattern builds templates");
+        assert_eq!(
+            templates.directory.path_component_count(),
+            3,
+            "an empty directory_pattern must resolve to the 3-component default"
+        );
+    }
+
+    /// The sibling rule: a file pattern names one file inside that
+    /// directory, so a `/` would nest the frame where the scan does not
+    /// look.
+    #[test]
+    fn file_naming_pattern_rejects_path_separators() {
+        let err = validate_pattern(
+            "{target}/{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}",
+        )
+        .unwrap_err();
+        assert!(err.contains("directory_pattern"), "{err}");
     }
 
     #[test]

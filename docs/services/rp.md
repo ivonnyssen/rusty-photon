@@ -337,6 +337,23 @@ into a reusable render/parse engine (`CompiledTemplate`, backed by the
 `regex` crate: each token's shape becomes a named capture group in one
 combined anchored regex, so `parse` is never a naive `split('_')`).
 
+**Path shape is validated too**, because `capture` joins the rendered
+directory onto `data_directory` while the progress scan walks
+`data_directory` to the pattern's component depth — the two have to
+agree on what a component is. `directory_pattern` must therefore be a
+canonical relative path: no leading `/` (an absolute path makes
+`PathBuf::join` discard the base, writing frames outside
+`data_directory` altogether), no trailing or repeated `/` (the
+filesystem collapses the empty component when `capture` creates the
+directory, but the scan would still walk a level too deep and match
+nothing), and no `.` or `..` component. `file_naming_pattern` may not
+contain `/` at all: it names one file inside that directory, and
+nesting it deeper puts the frame where the scan does not look. Each is
+rejected at load rather than quietly canonicalized — rewriting what the
+operator wrote is how the writer and the scanner drift apart in the
+first place, and the symptom otherwise is a night of frames that
+silently count for nothing.
+
 **Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
 (§ Capture Tool Details) feed `render`, and rendering replaces the flat
 `<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
