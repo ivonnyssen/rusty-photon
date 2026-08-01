@@ -1871,14 +1871,20 @@ plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
 mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
 it for a plugin that does not challenge. A registration is otherwise
 opaque to `rp` — unknown keys are the plugin author's business — and the
-**orchestrator** registration's `auth` is the single exception: a
-half-written block is rejected at config load with the offending entry
-named (`plugins.0.auth`), so `rp doctor` and `PUT /api/config` refuse it
-exactly as startup does, instead of it being read as "no credential" and
-401-ing every session start. `rp` interprets `auth` on no other
-registration, so an event or tool-provider plugin carrying its own
-differently-shaped `auth` key is left alone. A `ca_cert` the invoke
-client cannot be built from fails startup the same way. Doctor
+**orchestrator** registration is the single exception, because `rp` reads
+two of its fields. `invoke_url` must be an `http://` or `https://` URL
+(the same rule `server.advertised_url` follows) and `auth`, when present,
+must be a complete `{username, password}` pair; either one malformed is
+rejected at config load with the offending entry named
+(`plugins.0.invoke_url`, `plugins.0.auth`), so `rp doctor` and
+`PUT /api/config` refuse it exactly as startup does. Left to first use, a
+bad credential would be read as "no credential" and 401 every session
+start, and a bad URL would fail every attempt — both at the first session
+start of the night rather than at diagnosis time. `rp` reads neither
+field on any other registration, so an event or tool-provider plugin
+carrying its own differently-shaped `auth` or `invoke_url` key is left
+alone. A `ca_cert` the invoke client cannot be built from fails startup
+the same way. Doctor
 reports the join between `plugins[].invoke_url` and the plugin service's
 own `server.tls`/`server.auth` as `joins.client-transport` /
 `joins.client-auth`, and `doctor --fix` wires both (see

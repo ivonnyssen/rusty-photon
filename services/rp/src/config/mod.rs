@@ -261,20 +261,22 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     {
         errors.extend(train_errors);
     }
-    errors.extend(plugin_auth_errors(&config.plugins));
+    errors.extend(orchestrator_registration_errors(&config.plugins));
     errors
 }
 
 /// A plugin registration stays an opaque `Value` — it is a plugin-author
 /// surface, so unknown keys are legal there in a way they are nowhere else
-/// in this config. The **orchestrator** registration's `auth` block is the
-/// one exception: rp reads it as the client credential for that plugin's
-/// `/invoke` POST (rp.md § Orchestrator Registration), so a half-written
-/// one must fail like any other malformed credential rather than being
-/// silently ignored — or, worse, read as "no credential" and 401 every
-/// session start. Validated here rather than at first use so
-/// `load_config`, `PUT /api/config`, and `rp doctor` all reject it
-/// identically.
+/// in this config. The **orchestrator** registration is the one exception,
+/// because rp reads two of its fields: `invoke_url`, the endpoint it POSTs
+/// a session start to, and `auth`, the credential it presents there
+/// (rp.md § Orchestrator Registration). Both are permanent configuration
+/// faults when malformed — a half-written credential would be read as "no
+/// credential" and 401 every session start; a bad URL would fail every
+/// attempt — so both fail at load rather than at first use, which means
+/// `load_config`, `PUT /api/config`, and `rp doctor` all reject them
+/// identically instead of leaving the first session start of the night to
+/// discover it.
 ///
 /// Scoped to `type == "orchestrator"` exactly because the surface is
 /// otherwise opaque: rp interprets `auth` on no other registration, so an
@@ -282,28 +284,61 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
 /// `auth` key (a bearer token, say) is that author's business and must
 /// not fail rp's config load. The same scope decides which registration
 /// doctor offers to wire a credential into (`RpView::plugin_targets`).
-fn plugin_auth_errors(plugins: &[Value]) -> Vec<FieldError> {
+fn orchestrator_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
     plugins
         .iter()
         .enumerate()
         .filter(|(_, plugin)| is_orchestrator(plugin))
-        .filter_map(|(index, plugin)| {
-            let auth = match plugin.get("auth") {
-                None | Some(Value::Null) => return None,
-                Some(value) => value,
-            };
-            serde_json::from_value::<rp_auth::config::ClientAuthConfig>(auth.clone())
-                .err()
-                .map(|e| FieldError {
-                    path: format!("plugins.{index}.auth"),
-                    msg: e.to_string(),
-                })
+        .flat_map(|(index, plugin)| {
+            let mut errors = Vec::new();
+            if let Some(auth) = plugin.get("auth").filter(|v| !v.is_null()) {
+                if let Err(e) =
+                    serde_json::from_value::<rp_auth::config::ClientAuthConfig>(auth.clone())
+                {
+                    errors.push(FieldError {
+                        path: format!("plugins.{index}.auth"),
+                        msg: e.to_string(),
+                    });
+                }
+            }
+            if let Some(url) = plugin.get("invoke_url").filter(|v| !v.is_null()) {
+                if let Err(msg) = validate_invoke_url(url) {
+                    errors.push(FieldError {
+                        path: format!("plugins.{index}.invoke_url"),
+                        msg,
+                    });
+                }
+            }
+            errors
         })
         .collect()
 }
 
+/// `invoke_url` must be an `http://` or `https://` URL rp can actually
+/// POST to. Rejected at load for the same reason `server.advertised_url`
+/// is: a bad scheme or a non-URL is a permanent configuration fault, and
+/// left to first use it would only surface as three retried failures at
+/// the first session start of the night. Mirrors [`server::AdvertisedUrl`]'s
+/// rule rather than inventing a second one.
+fn validate_invoke_url(value: &Value) -> std::result::Result<(), String> {
+    let Some(url) = value.as_str() else {
+        return Err(format!("must be a string, got {value}"));
+    };
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!("must be an http:// or https:// URL, got {url:?}"));
+    }
+    // The scheme is already known to be http(s), for which the URL
+    // grammar requires a host — so a successful parse here is a URL rp
+    // can post to, and the host-less case arrives as a parse error
+    // ("empty host") rather than needing a branch of its own.
+    reqwest::Url::parse(url)
+        .map(|_| ())
+        .map_err(|e| format!("is not a valid URL ({e}): {url:?}"))
+}
+
 /// Whether a plugin registration is the orchestrator kind — the single
-/// place that rule is written, shared by [`plugin_auth_errors`] and
+/// place that rule is written, shared by
+/// [`orchestrator_registration_errors`] and
 /// [`crate::session::SessionManager`]'s registration lookup.
 pub fn is_orchestrator(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
@@ -741,6 +776,69 @@ mod tests {
             error.contains("plugins.0.auth") && error.contains("password"),
             "unexpected error: {error}"
         );
+    }
+
+    /// `invoke_url` is the registration's primary field, so it fails at
+    /// load on the same terms as `auth` beside it — a bad scheme is a
+    /// permanent fault, and left to first use it would only surface as
+    /// three retried failures at the first session start of the night.
+    #[test]
+    fn a_non_http_invoke_url_fails_to_load() {
+        for (url, expected) in [
+            ("ftp://127.0.0.1:11170/invoke", "http://"),
+            ("127.0.0.1:11170/invoke", "http://"),
+            ("http://", "empty host"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{
+                        "session": {{"data_directory": "/tmp/rp-test"}},
+                        "equipment": {{}},
+                        "plugins": [{{
+                            "name": "calibrator-flats",
+                            "type": "orchestrator",
+                            "invoke_url": "{url}"
+                        }}],
+                        "server": {{ "port": 0 }}
+                    }}"#
+                ),
+            )
+            .unwrap();
+
+            let error = load_config(&path).unwrap_err().to_string();
+            assert!(
+                error.contains("plugins.0.invoke_url") && error.contains(expected),
+                "unexpected error for {url:?}: {error}"
+            );
+        }
+    }
+
+    /// A non-orchestrator registration's own `invoke_url`-shaped key is
+    /// its author's business, same as its `auth`.
+    #[test]
+    fn a_non_orchestrator_plugins_invoke_url_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": [{
+                    "name": "some-tool-provider",
+                    "type": "tool_provider",
+                    "invoke_url": "ipc:///run/plugin.sock"
+                }],
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.plugins[0]["invoke_url"], "ipc:///run/plugin.sock");
     }
 
     /// The opaque half of the same rule: rp interprets `auth` on the
