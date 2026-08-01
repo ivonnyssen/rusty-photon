@@ -261,16 +261,40 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
             Some(Ok(_)) => {}
         }
         match &scan.server {
-            ServerBlock::Invalid(e) => checks.push(Check::fail(
-                "config.server-shape",
-                svc(scan),
-                format!(
-                    "the server block in {} does not parse ({e}) — the service \
-                     will refuse to start",
-                    scan.config_path.display()
-                ),
-                None,
-            )),
+            ServerBlock::Invalid(e) => {
+                checks.push(Check::fail(
+                    "config.server-shape",
+                    svc(scan),
+                    format!(
+                        "the server block in {} does not parse ({e}) — the service \
+                         will refuse to start",
+                        scan.config_path.display()
+                    ),
+                    None,
+                ));
+                // Every check that reads `server.tls` / `server.auth` needs a
+                // parsed block and self-limits without one. Silence there
+                // would read as a clean bill of health for the one service
+                // whose config doctor understands least, so the cost is
+                // stated rather than left to be inferred from absent rows.
+                checks.push(Check::warn(
+                    "config.checks-skipped",
+                    svc(scan),
+                    format!(
+                        "{} was not diagnosed for TLS or auth — tls.absent, \
+                         auth.absent, tls.paths, tls.expiry, auth.mismatch and \
+                         every client-target join that resolves here need a \
+                         parsed server block",
+                        scan.entry.name
+                    ),
+                    Some(
+                        "fix the server block (config.server-shape names the error) \
+                         and re-run; `doctor --fix` will not provision into a block \
+                         it cannot parse"
+                            .to_string(),
+                    ),
+                ));
+            }
             ServerBlock::Parsed { .. } | ServerBlock::BlockAbsent => checks.push(Check::ok(
                 "config.server-shape",
                 svc(scan),
@@ -748,7 +772,8 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         // HTTP defaults, so both blocks are absent.
         ServerBlock::BlockAbsent => (true, true, false),
         // An unparseable block is config.server-shape's diagnosis; writing
-        // into it would be guesswork.
+        // into it would be guesswork. What that costs is reported once, as
+        // `config.checks-skipped`, beside that failure.
         ServerBlock::Invalid(_) => return Vec::new(),
         // Handled above; kept here so the match stays exhaustive if the
         // early return above is ever removed.

@@ -54,9 +54,9 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
             match unit.active {
                 None => None,
                 Some(true) => match scan.entry.class {
-                    // Core services expose no management API; the
+                    // Non-Alpaca services expose no management API; the
                     // config-side checks cover them fully.
-                    ServerClass::Core => None,
+                    ServerClass::Core | ServerClass::Advertising => None,
                     ServerClass::Alpaca => Some(Probe::Devices(scan)),
                 },
                 Some(false) => Some(Probe::ShellOut(scan, unit)),

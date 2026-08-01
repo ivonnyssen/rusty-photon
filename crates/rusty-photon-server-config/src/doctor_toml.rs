@@ -33,6 +33,9 @@ pub enum ServerClass {
     Alpaca,
     /// [`crate::ServerConfig`] — the plain-HTTP services.
     Core,
+    /// [`crate::AdvertisingServerConfig`] — a plain-HTTP service that also
+    /// advertises its own URL to another process. rp alone today.
+    Advertising,
 }
 
 /// Where a service's config keeps its serial device path, and what the
@@ -103,9 +106,11 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
                 let parsed = match v {
                     "\"alpaca\"" => ServerClass::Alpaca,
                     "\"core\"" => ServerClass::Core,
+                    "\"advertising\"" => ServerClass::Advertising,
                     other => {
                         return Err(format!(
-                            "line {}: class must be \"alpaca\" or \"core\", got {other}",
+                            "line {}: class must be \"alpaca\", \"core\", or \
+                             \"advertising\", got {other}",
                             idx + 1
                         ))
                     }
@@ -323,6 +328,12 @@ mod tests {
     fn parses_core_class() {
         let meta = parse("class = \"core\"\nport = 11114\n").unwrap();
         assert_eq!(meta.class, ServerClass::Core);
+    }
+
+    #[test]
+    fn parses_advertising_class() {
+        let meta = parse("class = \"advertising\"\nport = 11115\n").unwrap();
+        assert_eq!(meta.class, ServerClass::Advertising);
     }
 
     #[test]
