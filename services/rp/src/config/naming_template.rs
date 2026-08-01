@@ -554,6 +554,28 @@ impl CompiledTemplate {
         Ok(out)
     }
 
+    /// How many `/`-separated path components this pattern renders to —
+    /// 1 for a pattern with no separator, 3 for the documented
+    /// `directory_pattern` default `{target}/{night_date}/{frame_type}`.
+    ///
+    /// The progress frame scan (rp.md § Progress derivation) uses this
+    /// to know how deep to walk below `data_directory` before a
+    /// directory is a candidate to [`Self::parse`]. No token's shape
+    /// admits `/`, so every separator in the rendered output comes from
+    /// a literal — counting them here is exact, not a heuristic.
+    #[must_use]
+    pub fn path_component_count(&self) -> usize {
+        let separators: usize = self
+            .parts
+            .iter()
+            .map(|part| match part {
+                TemplatePart::Literal(text) => text.matches('/').count(),
+                TemplatePart::Token(_) => 0,
+            })
+            .sum();
+        separators + 1
+    }
+
     /// Parses a rendered filename base back into fields, or `None` if
     /// it doesn't match the pattern at all. A non-match is not an
     /// error: the on-disk frame scan's job (rp-targets.md § Progress
@@ -632,6 +654,38 @@ mod tests {
 
     const DEFAULT_PATTERN: &str =
         "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+
+    #[test]
+    fn path_component_count_counts_the_pattern_separators() {
+        // What the progress frame scan walks to (rp.md § Progress
+        // derivation): the documented directory default is three deep,
+        // a filename is one, and a flat directory layout is one.
+        assert_eq!(
+            CompiledTemplate::compile_directory(NamingTemplates::DEFAULT_DIRECTORY_PATTERN)
+                .unwrap()
+                .path_component_count(),
+            3
+        );
+        assert_eq!(
+            CompiledTemplate::compile_directory("{target}")
+                .unwrap()
+                .path_component_count(),
+            1
+        );
+        assert_eq!(
+            CompiledTemplate::compile_directory("{target}/{night_date}")
+                .unwrap()
+                .path_component_count(),
+            2
+        );
+        assert_eq!(
+            CompiledTemplate::compile(DEFAULT_PATTERN)
+                .unwrap()
+                .path_component_count(),
+            1,
+            "a filename pattern has no separators"
+        );
+    }
 
     #[test]
     fn default_pattern_is_valid() {

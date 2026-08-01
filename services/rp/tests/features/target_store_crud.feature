@@ -46,7 +46,7 @@ Feature: Target store CRUD (P1)
     When the MCP client calls "add_target" with catalog_ref "M 31"
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "m31"
+    And the target slug should be "m-31"
 
   Scenario: Re-adding the same catalog object updates it in place
     Given rp is running with a target store
@@ -55,7 +55,7 @@ Feature: Target store CRUD (P1)
     When the MCP client calls "add_target" with catalog_ref "M 31" and notes "re-add"
     Then the tool call should succeed
     And the target result should be an in-place update
-    And the target slug should be "m31"
+    And the target slug should be "m-31"
     When the MCP client calls "list_targets"
     Then the tool call should succeed
     And list_targets should report exactly 1 target
@@ -82,7 +82,7 @@ Feature: Target store CRUD (P1)
     When the MCP client calls "add_target" with catalog_ref "NGC 7000"
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "ngc7000-2"
+    And the target slug should be "ngc-7000-2"
     When the MCP client calls "list_targets"
     Then the tool call should succeed
     And list_targets should report exactly 2 targets

@@ -27,28 +27,35 @@ Feature: Session recovery across rp restarts
     And the recovery invocation should carry the original workflow and session ids
     And the session status should become "active"
 
-  # The data_directory is pinned so the redb target store (which now
-  # owns the target and its goals) survives the restart alongside the
-  # session_state_file's counters. The target is addressed by slug
-  # ("Test Field" -> test-field).
-  Scenario: Planner progress counters survive an rp restart
+  # The data_directory is pinned so both the redb target store (which
+  # owns the target and its goals) and the captured frames survive the
+  # restart. Progress needs no recovery machinery at all: it is derived
+  # from those frames on every read (rp.md § Progress derivation), so a
+  # restarted rp resumes at the true count rather than at zero. The
+  # target is addressed by slug ("Test Field" -> test-field).
+  Scenario: Derived progress survives an rp restart
     Given a test orchestrator that waits for a stop signal
     And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with frame naming
     And rp's data_directory is pinned to a fresh tempdir
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the MCP client has added the always-visible target "Test Field" with goals:
       | filter | binning | exposure_duration | desired_count |
-      | Red    | 1x1     | 120s              | 4             |
+      | Red    | 1x1     | 2m                | 4             |
+    And the data directory contains these frames:
+      | path                                                                             | sidecar |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits | absent  |
+      | test-field/2026-07-30/Light/test-field_Red_1x1_0002_2m_fpos_1_-10C_aaaaaaa2.fits | absent  |
     When a session is started via the REST API
-    And the MCP client calls "record_exposure" for target "test-field" filter "Red"
-    And the MCP client calls "record_exposure" for target "test-field" filter "Red"
     And rp is killed
     And rp is restarted after the crash
     And an MCP client connected to rp
     And the MCP client calls "get_session_progress"
     Then the tool call should succeed
-    And the progress for target "test-field" filter "Red" should be 2 of 4
+    And the progress for target "test-field" should be exactly:
+      | filter | binning | exposure_duration | good | total | desired_count |
+      | Red    | 1x1     | 2m                | 2    | 2     | 4             |
 
   Scenario: A completed session is not resumed after a restart
     Given a test orchestrator that completes immediately

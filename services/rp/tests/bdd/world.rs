@@ -343,6 +343,29 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for RpWorld {
 }
 
 impl RpWorld {
+    /// The `session.data_directory` the running rp was configured with —
+    /// where the progress frame scan looks (rp.md § Progress
+    /// derivation), so a scenario can seed frames into it.
+    ///
+    /// Covers both bootstraps: the target-store suites' bespoke launcher
+    /// (`write_target_store_config`, which puts the data directory under
+    /// `config_rest_dir`) and the OmniSim/mount path, which needs a
+    /// `pinned_data_directory` — without the pin `RpConfigBuilder`
+    /// generates a fresh path per build and the seeded frames would land
+    /// somewhere rp never reads.
+    pub fn data_directory(&self) -> std::path::PathBuf {
+        if let Some(dir) = &self.pinned_data_directory {
+            return std::path::PathBuf::from(dir);
+        }
+        if let Some(dir) = &self.config_rest_dir {
+            return dir.path().join("data");
+        }
+        panic!(
+            "no known data directory: pin one with `pinned_data_directory` \
+             (OmniSim bootstrap) or start rp via `write_target_store_config`"
+        )
+    }
+
     /// The base URL for the OmniSim Alpaca simulator.
     /// Panics if OmniSim has not been started yet.
     pub fn omnisim_url(&self) -> String {

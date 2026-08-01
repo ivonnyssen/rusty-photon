@@ -250,6 +250,21 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
             });
         }
     }
+    // Grading thresholds only ever apply to frames the progress scan can
+    // find, and the scan needs the naming templates to find any (rp.md §
+    // Progress derivation). Configured without them, `default_grading`
+    // would silently judge nothing — a misconfiguration worth failing on
+    // rather than a working setup.
+    if config.target_store.default_grading.is_some() && config.session.file_naming_pattern.is_none()
+    {
+        errors.push(FieldError {
+            path: "target_store.default_grading".to_string(),
+            msg: "grading thresholds need session.file_naming_pattern configured — \
+                  without it capture writes flat filenames the progress scan cannot \
+                  attribute to a target, so no frame would ever be graded"
+                .to_string(),
+        });
+    }
     for (index, cam) in config.equipment.cameras.iter().enumerate() {
         errors.extend(cam.field_errors(index));
     }
@@ -262,6 +277,30 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
         errors.extend(train_errors);
     }
     errors
+}
+
+/// The startup warning to emit when progress derivation is inert, or
+/// `None` when it is live.
+///
+/// Progress is derived by scanning the frames `capture` wrote (rp.md §
+/// Progress derivation), and only a configured `session.file_naming_pattern`
+/// puts a target's identity into the path. Without it every capture still
+/// succeeds and still records what it is — it just lands in a flat
+/// `<uuid8>.fits` the scan cannot attribute, so goals silently never
+/// advance. That is a config-time mistake with a night-time symptom, so it
+/// is worth saying out loud at startup even though it is not fatal:
+/// unlike `target_store.default_grading` (which cannot mean anything
+/// without a pattern and so fails the load), a rig may legitimately image
+/// without goals.
+#[must_use]
+pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&'static str> {
+    session.file_naming_pattern.is_none().then_some(
+        "session.file_naming_pattern is not configured: capture writes flat \
+         <uuid8>.fits filenames, so the progress scan cannot attribute frames to a \
+         target. Every target's progress stays 0/0 and goal-terminated sessions \
+         never end on goals — they run to max_frames or dawn. See \
+         docs/services/rp.md § Progress derivation.",
+    )
 }
 
 pub fn load_config(path: &Path) -> Result<Config> {
@@ -508,6 +547,60 @@ mod tests {
     fn validate_config_accepts_scaffold() {
         let config: Config = serde_json::from_value(default_scaffold()).unwrap();
         assert_eq!(validate_config(&config), vec![]);
+    }
+
+    #[test]
+    fn grading_thresholds_without_a_naming_pattern_are_rejected() {
+        // Without `file_naming_pattern` the progress scan has nothing to
+        // attribute frames with, so the thresholds would judge nothing
+        // (rp.md § Progress derivation).
+        let mut scaffold = default_scaffold();
+        scaffold["target_store"] = serde_json::json!({
+            "default_grading": { "max_hfr_pixels": 3.0 }
+        });
+        let config: Config = serde_json::from_value(scaffold).unwrap();
+        let errors = validate_config(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "target_store.default_grading");
+        assert!(errors[0].msg.contains("file_naming_pattern"), "{errors:?}");
+    }
+
+    #[test]
+    fn grading_thresholds_are_accepted_alongside_a_naming_pattern() {
+        let mut scaffold = default_scaffold();
+        scaffold["session"]["file_naming_pattern"] = serde_json::json!(
+            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}"
+        );
+        scaffold["target_store"] = serde_json::json!({
+            "default_grading": { "max_hfr_pixels": 3.0 }
+        });
+        let config: Config = serde_json::from_value(scaffold).unwrap();
+        assert_eq!(validate_config(&config), vec![]);
+    }
+
+    /// A rig may legitimately image without goals, so a missing naming
+    /// pattern warns rather than failing the load — but it must warn,
+    /// because the symptom (goals that never advance) otherwise only
+    /// shows up mid-night.
+    #[test]
+    fn a_missing_naming_pattern_warns_that_progress_derivation_is_inert() {
+        let config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        assert!(config.session.file_naming_pattern.is_none());
+
+        let warning = progress_derivation_warning(&config.session)
+            .expect("no naming pattern must produce a startup warning");
+        assert!(warning.contains("file_naming_pattern"), "{warning}");
+        assert!(warning.contains("progress"), "{warning}");
+    }
+
+    #[test]
+    fn a_configured_naming_pattern_warns_about_nothing() {
+        let mut scaffold = default_scaffold();
+        scaffold["session"]["file_naming_pattern"] = serde_json::json!(
+            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}"
+        );
+        let config: Config = serde_json::from_value(scaffold).unwrap();
+        assert_eq!(progress_derivation_warning(&config.session), None);
     }
 
     /// Serialize → deserialize → serialize must be a fixed point: the REST

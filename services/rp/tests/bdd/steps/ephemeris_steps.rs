@@ -175,35 +175,11 @@ fn recommended_target(world: &mut RpWorld, expected: String) {
     assert_eq!(name, expected.as_str());
 }
 
-#[then(expr = "the result completed should be {int} with a goal of {int}")]
-fn result_completed_and_goal(world: &mut RpWorld, completed: u64, goal: u64) {
-    let value = success_payload(world);
-    assert_eq!(
-        value.get("completed").and_then(|v| v.as_u64()),
-        Some(completed),
-        "unexpected `completed` in: {value}"
-    );
-    assert_eq!(
-        value.get("goal").and_then(|v| v.as_u64()),
-        Some(goal),
-        "unexpected `goal` in: {value}"
-    );
-}
-
-/// Asserts one slot of the `get_session_progress` payload. The filter
-/// key is the exact map key — pass `""` for the unfiltered slot.
-#[then(expr = "the progress for target {string} filter {string} should be {int} of {int}")]
-fn progress_slot(world: &mut RpWorld, target: String, filter: String, completed: u64, goal: u64) {
-    let value = success_payload(world);
-    let slot = value
-        .pointer(&format!("/progress/{target}/{filter}"))
-        .unwrap_or_else(|| panic!("missing progress slot `{target}`/`{filter}` in: {value}"));
-    assert_eq!(
-        slot.get("completed").and_then(|v| v.as_u64()),
-        Some(completed)
-    );
-    assert_eq!(slot.get("goal").and_then(|v| v.as_u64()), Some(goal));
-}
+// The per-goal progress assertions ("the reported progress should be
+// exactly:" / "the progress for target {string} should be exactly:")
+// live in target_store_progress_steps.rs, alongside the frame-seeding
+// Given that produces the counts. The filter-keyed `{completed, goal}`
+// steps they replaced are gone with the counters themselves.
 
 // `get_next_target` surfaces the recommended plan entry as a nested
 // `exposure: {filter, duration_secs}` object (null when the target has

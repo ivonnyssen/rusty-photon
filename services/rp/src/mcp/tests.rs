@@ -3919,6 +3919,22 @@ async fn handler_with_planned_target() -> (McpHandler, tempfile::TempDir) {
 /// site-configured handler (the store is now the sole planner-target
 /// source).
 async fn handler_with_store_target(target: rp_targets::Target) -> (McpHandler, tempfile::TempDir) {
+    handler_with_store_target_and_defaults(target, crate::config::TargetStoreConfig::default())
+        .await
+}
+
+/// As [`handler_with_store_target`], with explicit target-store
+/// settings — for the scenarios that configure `default_grading`.
+///
+/// The handler's data directory is the same temp dir, and the
+/// documented naming templates are compiled onto it, so
+/// [`seed_frame`] can place frames the progress scan will find (rp.md
+/// § Progress derivation). The `TempDir` is returned so the caller
+/// keeps it alive for the test's duration.
+async fn handler_with_store_target_and_defaults(
+    target: rp_targets::Target,
+    defaults: crate::config::TargetStoreConfig,
+) -> (McpHandler, tempfile::TempDir) {
     use rp_targets::TargetStore;
     let dir = tempfile::tempdir().unwrap();
     let store = rp_targets::RedbTargetStore::open(dir.path().join("targets.redb"))
@@ -3926,9 +3942,51 @@ async fn handler_with_store_target(target: rp_targets::Target) -> (McpHandler, t
         .unwrap();
     store.upsert_target(target).await.unwrap();
     let store: Arc<dyn rp_targets::TargetStore> = Arc::new(store);
-    let h = test_handler_with_site(test_site())
-        .with_target_store(Some(store), crate::config::TargetStoreConfig::default());
+    let mut h = test_handler_with_site(test_site());
+    h.session_config.data_directory = dir.path().to_string_lossy().to_string();
+    let h = h
+        .with_target_store(Some(store), defaults)
+        .with_naming_templates(Some(Arc::new(test_naming_templates())));
     (h, dir)
+}
+
+/// The documented default `directory_pattern` / `file_naming_pattern`
+/// pair (rp.md § Persistence), compiled.
+fn test_naming_templates() -> crate::config::naming_template::NamingTemplates {
+    crate::config::naming_template::NamingTemplates::from_session_config(
+        &crate::config::session::SessionConfig {
+        data_directory: String::new(),
+        file_naming_pattern: Some(
+            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+                .to_string(),
+            ),
+            // The default `directory_pattern` applies whenever
+            // `file_naming_pattern` is set.
+            directory_pattern: None,
+            session_state_file: String::new(),
+        },
+    )
+    .unwrap()
+    .unwrap()
+}
+
+/// Write one empty `.fits` frame at `relative` under the handler's data
+/// directory, optionally with a sidecar carrying a `grading` section.
+/// The scan reads filenames and sidecars, never pixels.
+fn seed_frame(dir: &tempfile::TempDir, relative: &str, grading: Option<serde_json::Value>) {
+    let mut path = dir.path().to_path_buf();
+    for component in relative.split('/') {
+        path.push(component);
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    if let Some(grading) = grading {
+        std::fs::write(
+            path.with_extension("json"),
+            serde_json::to_vec(&serde_json::json!({ "sections": { "grading": grading } })).unwrap(),
+        )
+        .unwrap();
+    }
 }
 
 /// One acquisition goal in the store's typed shape.
@@ -3941,10 +3999,11 @@ fn store_goal(filter: &str, secs: u64, desired_count: u32) -> rp_targets::Acquis
     }
 }
 
-/// A store `Target` from a display name (whose slug is the
-/// whitespace-stripped, lower-cased form), coordinates, an optional
+/// A store `Target` from a display name, coordinates, an optional
 /// per-target altitude floor, and goals. `active: true` so the planner
-/// sees it.
+/// sees it. The slug comes from `from_display_name`, the same derivation
+/// `add_target` uses — a fixture that minted slugs its own way is what
+/// let a lookup/store mismatch hide here once already.
 fn test_store_target(
     display_name: &str,
     ra_hours: f64,
@@ -3953,7 +4012,7 @@ fn test_store_target(
     goals: Vec<rp_targets::AcquisitionGoal>,
 ) -> rp_targets::Target {
     rp_targets::Target {
-        slug: rp_targets::TargetSlug::new(display_name).unwrap(),
+        slug: rp_targets::TargetSlug::from_display_name(display_name).unwrap(),
         display_name: display_name.to_string(),
         coord: rp_targets::IcrsCoord::try_new(ra_hours, dec_degrees).unwrap(),
         catalog_ref: None,
@@ -3990,98 +4049,135 @@ async fn record_exposure_errors_for_an_unknown_target() {
 }
 
 #[tokio::test]
-async fn record_exposure_increments_and_reports_the_plan_goal() {
-    let (h, _store_dir) = handler_with_planned_target().await;
-    let v = ok_json(
-        h.record_exposure(Parameters(RecordExposureParams {
-            target: "testfield".into(),
-            filter: Some("Red".into()),
-        }))
-        .await,
+async fn record_exposure_reports_derived_progress_without_incrementing() {
+    let (h, store_dir) = handler_with_planned_target().await;
+    seed_frame(
+        &store_dir,
+        "test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits",
+        None,
     );
-    assert_eq!(v["target"], "testfield");
+    let call = |filter: Option<&str>| {
+        let filter = filter.map(String::from);
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "test-field".into(),
+            filter,
+        }))
+    };
+    let v = ok_json(call(Some("Red")).await);
+    assert_eq!(v["target"], "test-field");
     assert_eq!(v["filter"], "Red");
-    assert_eq!(v["completed"], 1);
-    assert_eq!(v["goal"], 1);
-    // An unfiltered frame lands in the empty-string slot, outside
-    // this plan: filter echoes back null and the goal is null.
-    let v = ok_json(
-        h.record_exposure(Parameters(RecordExposureParams {
-            target: "testfield".into(),
-            filter: None,
-        }))
-        .await,
-    );
+    assert_eq!(v["progress"][0]["filter"], "Red");
+    assert_eq!(v["progress"][0]["good"], 1);
+    assert_eq!(v["progress"][0]["total"], 1);
+    assert_eq!(v["progress"][0]["desired_count"], 1);
+    assert_eq!(v["progress"][1]["filter"], "Blue");
+    assert_eq!(v["progress"][1]["good"], 0);
+
+    // Calling again changes nothing — the frame on disk is the count,
+    // and `record_exposure` increments nothing.
+    let v = ok_json(call(Some("Red")).await);
+    assert_eq!(v["progress"][0]["good"], 1);
+
+    // An unfiltered frame echoes its filter back as null; the progress
+    // payload is the target's, not the filter's.
+    let v = ok_json(call(None).await);
     assert!(v["filter"].is_null());
-    assert_eq!(v["completed"], 1);
-    assert!(v["goal"].is_null());
+    assert_eq!(v["progress"][0]["good"], 1);
 }
 
 #[tokio::test]
 async fn get_session_progress_reports_every_configured_target() {
-    let (h, _store_dir) = handler_with_planned_target().await;
-    let _ = ok_json(
-        h.record_exposure(Parameters(RecordExposureParams {
-            target: "testfield".into(),
-            filter: Some("Red".into()),
-        }))
-        .await,
+    let (h, store_dir) = handler_with_planned_target().await;
+    seed_frame(
+        &store_dir,
+        "test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits",
+        None,
     );
     let v = ok_json(
         h.get_session_progress(Parameters(GetSessionProgressParams {}))
             .await,
     );
     assert_eq!(
-        v["progress"]["testfield"]["Red"],
-        serde_json::json!({"completed": 1, "goal": 1})
+        v["progress"]["test-field"][0],
+        serde_json::json!({
+            "filter": "Red", "binning": "1x1", "exposure_duration": "2m",
+            "desired_count": 1, "good": 1, "total": 1
+        })
     );
     assert_eq!(
-        v["progress"]["testfield"]["Blue"],
-        serde_json::json!({"completed": 0, "goal": 1}),
-        "plan entries appear before any frame is recorded"
+        v["progress"]["test-field"][1],
+        serde_json::json!({
+            "filter": "Blue", "binning": "1x1", "exposure_duration": "1m",
+            "desired_count": 1, "good": 0, "total": 0
+        }),
+        "every goal appears, captured or not"
     );
 }
 
 #[tokio::test]
 async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
     // The tool-level loop an orchestrator drives: recommend Red,
-    // record it, recommend Blue, record it, end_of_session — all
-    // through one shared progress store.
-    let (h, _store_dir) = handler_with_planned_target().await;
-    let v = ok_json(
+    // capture writes the frame, recommend Blue, capture writes that
+    // one, end_of_session — the plan rotates off the frames on disk.
+    let (h, store_dir) = handler_with_planned_target().await;
+    let next = || {
         h.get_next_target(Parameters(GetNextTargetParams {
             time: None,
             train_id: None,
         }))
-        .await,
-    );
+    };
+    let v = ok_json(next().await);
     assert_eq!(v["exposure"]["filter"], "Red");
     assert_eq!(v["exposure"]["duration_secs"], 120.0);
-    let _ = ok_json(
-        h.record_exposure(Parameters(RecordExposureParams {
-            target: "testfield".into(),
-            filter: Some("Red".into()),
-        }))
-        .await,
+
+    seed_frame(
+        &store_dir,
+        "test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits",
+        None,
     );
-    let v = ok_json(
-        h.get_next_target(Parameters(GetNextTargetParams {
-            time: None,
-            train_id: None,
-        }))
-        .await,
-    );
+    let v = ok_json(next().await);
     assert_eq!(
         v["exposure"]["filter"], "Blue",
         "the met Red goal rotates the plan"
     );
     assert_eq!(v["exposure"]["duration_secs"], 60.0);
-    let _ = ok_json(
-        h.record_exposure(Parameters(RecordExposureParams {
-            target: "testfield".into(),
-            filter: Some("Blue".into()),
-        }))
-        .await,
+
+    seed_frame(
+        &store_dir,
+        "test-field/2026-07-30/Light/test-field_Blue_1x1_0001_1m_fpos_2_-10C_bbbbbbb1.fits",
+        None,
+    );
+    let v = ok_json(next().await);
+    assert_eq!(v["reason"], "end_of_session");
+    assert!(v["target"].is_null());
+}
+
+#[tokio::test]
+async fn a_rejected_frame_does_not_end_the_session() {
+    // Same loop, but the only frame is graded out: `total` advances and
+    // `good` does not, so the goal is unmet and the target stays in the
+    // rotation (rp.md § Decision Logic — exhaustion is judged on good).
+    let (h, store_dir) = handler_with_store_target_and_defaults(
+        test_store_target(
+            "Test Field",
+            0.0,
+            0.0,
+            Some(-90.0),
+            vec![store_goal("Red", 120, 1)],
+        ),
+        crate::config::TargetStoreConfig {
+            default_grading: Some(rp_targets::GradingThresholds {
+                max_hfr_pixels: Some(3.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await;
+    seed_frame(
+        &store_dir,
+        "test-field/2026-07-30/Light/test-field_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits",
+        Some(serde_json::json!({ "hfr": 9.9 })),
     );
     let v = ok_json(
         h.get_next_target(Parameters(GetNextTargetParams {
@@ -4090,15 +4186,15 @@ async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
         }))
         .await,
     );
-    assert_eq!(v["reason"], "end_of_session");
-    assert!(v["target"].is_null());
+    assert_eq!(v["reason"], "best_transiting_candidate");
+    assert_eq!(v["exposure"]["filter"], "Red");
 }
 
 #[tokio::test]
 async fn get_target_status_reports_progress_for_a_configured_target() {
     // Stored under its catalog name so the same string both resolves
-    // coordinates and (slugified to `m31`) matches the progress map.
-    let (h, _store_dir) = handler_with_store_target(test_store_target(
+    // coordinates and (derived to `m-31`) matches the progress map.
+    let (h, store_dir) = handler_with_store_target(test_store_target(
         "M 31",
         0.7123,
         41.269,
@@ -4106,12 +4202,10 @@ async fn get_target_status_reports_progress_for_a_configured_target() {
         vec![store_goal("Red", 120, 4)],
     ))
     .await;
-    let _ = ok_json(
-        h.record_exposure(Parameters(RecordExposureParams {
-            target: "m31".into(),
-            filter: Some("Red".into()),
-        }))
-        .await,
+    seed_frame(
+        &store_dir,
+        "m-31/2026-07-30/Light/m-31_Red_1x1_0001_2m_fpos_1_-10C_aaaaaaa1.fits",
+        None,
     );
     let v = ok_json(
         h.get_target_status(Parameters(GetTargetStatusParams {
@@ -4123,12 +4217,15 @@ async fn get_target_status_reports_progress_for_a_configured_target() {
         .await,
     );
     assert_eq!(
-        v["progress"]["Red"],
-        serde_json::json!({"completed": 1, "goal": 4})
+        v["progress"][0],
+        serde_json::json!({
+            "filter": "Red", "binning": "1x1", "exposure_duration": "2m",
+            "desired_count": 4, "good": 1, "total": 1
+        })
     );
     // A case-variant spelling resolves through the catalog to the
     // same canonical name, and the progress lookup must follow it —
-    // "m 31" answers with "M 31"'s counters, not progress: null.
+    // "m 31" answers with "M 31"'s progress, not null.
     let v = ok_json(
         h.get_target_status(Parameters(GetTargetStatusParams {
             target_name: Some("m 31".into()),
@@ -4140,8 +4237,7 @@ async fn get_target_status_reports_progress_for_a_configured_target() {
     );
     assert_eq!(v["target_name"], "M 31");
     assert_eq!(
-        v["progress"]["Red"],
-        serde_json::json!({"completed": 1, "goal": 4}),
+        v["progress"][0]["good"], 1,
         "progress must match via the catalog-resolved name"
     );
 }

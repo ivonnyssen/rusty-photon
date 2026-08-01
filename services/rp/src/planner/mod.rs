@@ -15,3 +15,4 @@ pub mod decision;
 pub mod goal_wire;
 pub mod primitives;
 pub mod progress;
+pub mod progress_scan;

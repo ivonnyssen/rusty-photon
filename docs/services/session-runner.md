@@ -657,9 +657,10 @@ The format provides three tools for this, in preference order:
 
 1. **Dispatch-driven loops.** A capture loop that asks `get_next_target`
    and records progress with `record_exposure` is naturally re-entrant —
-   `rp`'s persisted progress counters *are* the resume state. This is the
-   ecosystem lesson (Ekos counts frames on disk; Target Scheduler keeps a
-   DB) applied through `rp`'s planner.
+   the frames `capture` already wrote *are* the resume state, since
+   `rp` derives progress from them on every read (rp.md § Progress
+   derivation). This is the ecosystem lesson (Ekos counts frames on
+   disk; Target Scheduler keeps a DB) applied through `rp`'s planner.
 2. **Idempotent procedure.** Startup steps that are safe to repeat (cool
    the camera to a setpoint, unpark, connect) simply re-run.
 3. **`once` markers** for steps that are *not* safe or sensible to repeat:
@@ -1095,7 +1096,10 @@ whenever the recommended filter differs from the wheel's current one →
 acquire on target change: stop guiding if active, slew → optional
 `center_on_target` → optional `move_rotator` to the pass's effective
 position angle → optional `auto_focus` → optional `start_guiding` →
-one `capture` per pass → `record_exposure` → optional `dither` on the
+one `capture` per pass (carrying the pass's `target` and
+`frame_type: Light`, so the frame lands in the target's own directory
+and counts toward its goals — rp.md § Progress derivation) →
+`record_exposure` → optional `dither` on the
 `dither_every` cadence, re-asking the planner after every frame) →
 shutdown (stop guiding, optional `park`).
 
@@ -1204,7 +1208,8 @@ the document simplifies when it lands:
   "unfiltered" means the wheel is left untouched, so a plan that
   wants glass-free frames through a filter wheel names its clear
   slot (rp.md § Target Definition), which also keeps the
-  `record_exposure` counters truthful. The
+  `{filter}` token in each frame's filename truthful — and with it the
+  progress the scan derives. The
   filter change is its own step *before* acquisition, gated on "does
   this pass's filter differ from the wheel's current one"
   (`session.current_filter`) — so it fires on a target switch **and**

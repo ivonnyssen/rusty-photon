@@ -1,14 +1,19 @@
 @serial
 Feature: Capture threads target identity into the file-naming template (Decision 11)
   `capture` accepts two optional parameters: `target` (a slug) and
-  `frame_type` (`Light`/`Dark`/`Flat`/`Bias`). `frame_type` is the
-  feature's on/off switch — omitted, `capture` keeps writing a flat
-  `<doc_uuid_8>.fits` regardless of `target` or any configured
-  pattern, exactly as before Decision 11 landed. Supplying `frame_type`
-  requires `session.file_naming_pattern` to be configured, and renders
+  `frame_type` (`Light`/`Dark`/`Flat`/`Bias`). `frame_type` stamps the
+  exposure document's `target`/`frame_type` fields; omitted, both stay
+  unset and `capture` writes a flat `<doc_uuid_8>.fits` regardless of
+  `target`, exactly as before Decision 11 landed.
+
+  The templated on-disk path is a **separate** switch:
+  `session.file_naming_pattern`. Configured, `capture` renders
   `session.directory_pattern` (defaulting to
   `"{target}/{night_date}/{frame_type}"`) then `file_naming_pattern`
-  into the final on-disk path.
+  into the final path. Unconfigured, a `frame_type` capture still
+  records what the frame is and what it is of — it just keeps the flat
+  name, and with nothing on disk to attribute, derives no progress
+  (rp.md § Progress derivation).
 
   `frame_type: Light` requires `target`: the slug is resolved against
   the target store, an unknown slug errors, and the resolved
@@ -41,11 +46,14 @@ Feature: Capture threads target identity into the file-naming template (Decision
     Then the tool call should succeed
     And the captured image_path should be a flat uuid8-named .fits file
 
-  Scenario: frame_type without a configured naming pattern is rejected
+  Scenario: frame_type without a configured naming pattern still stamps the document
     Given rp is running with a capture rig and no naming templates configured
     When the MCP client calls "capture" with camera "main-cam" for 1000 ms and frame_type "Dark"
-    Then the tool call should return an error
-    And the error message should contain "file_naming_pattern"
+    And I fetch the document for the captured document_id
+    Then the tool call should succeed
+    And the captured image_path should be a flat uuid8-named .fits file
+    And the document field "frame_type" should be "Dark"
+    And the document's target slug should be "dark"
 
   Scenario: A Light frame requires a target
     Given rp is running with a capture rig and naming templates configured

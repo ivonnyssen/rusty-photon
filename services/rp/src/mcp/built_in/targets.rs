@@ -5,11 +5,10 @@
 //! The store is the sole source of planner targets ([`super::planner`]'s
 //! `get_next_target` / `record_exposure` / `get_session_progress` read
 //! its active rows); its settings live under the `target_store` config
-//! key (`crate::config::target_store`). Progress derivation here always
-//! reports `good: 0, total: 0`: the on-disk frame scan needs both the
-//! grading plugin's sidecar shape and `capture`'s target linkage,
-//! neither of which has landed yet (`docs/crates/rp-targets.md` § MVP
-//! scope).
+//! key (`crate::config::target_store`). Progress is derived per read
+//! from the frames on disk by [`crate::planner::progress_scan`] — never
+//! stored — so `good`/`total` here are the same numbers the planner
+//! decides on (rp.md § Progress derivation).
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -22,6 +21,7 @@ use rp_targets::{
     AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore, WriteStamp, OPERATOR_WRITER,
 };
 
+use crate::config::target_store::GradingWire;
 use crate::equipment::EquipmentRegistry;
 use crate::planner::goal_wire::GoalWire;
 
@@ -76,6 +76,11 @@ pub struct AddTargetParams {
     /// with `source` — imports never carry an angle.
     #[serde(default)]
     pub position_angle_degrees: Option<f64>,
+    /// Per-target grading overrides (rp.md § Progress derivation).
+    /// Omitted fields fall back to `target_store.default_grading` from
+    /// config. Not accepted with `source` — imports carry no thresholds.
+    #[serde(default)]
+    pub grading: Option<GradingWire>,
     /// Selects the import form (rp.md § Target Store → Import form):
     /// bare `ra_hours` + `dec_degrees` plus this typed provenance.
     #[serde(default)]
@@ -165,6 +170,13 @@ pub struct UpdateTargetParams {
     #[serde(default, deserialize_with = "double_option")]
     #[schemars(with = "Option<f64>")]
     pub position_angle_degrees: Option<Option<f64>>,
+    /// Replaces the target's grading overrides wholesale when present,
+    /// like `scheduling`; an explicit `null` clears them back to
+    /// inherit-`target_store.default_grading` (rp.md § Progress
+    /// derivation).
+    #[serde(default, deserialize_with = "double_option_grading")]
+    #[schemars(with = "Option<GradingWire>")]
+    pub grading: Option<Option<GradingWire>>,
 }
 
 /// Distinguishes an absent field (`None` — leave untouched) from an
@@ -176,6 +188,15 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(Some(Option::<f64>::deserialize(deserializer)?))
+}
+
+/// [`double_option`] for the `grading` override object — same
+/// absent-vs-explicit-null distinction, different inner type.
+fn double_option_grading<'de, D>(deserializer: D) -> Result<Option<Option<GradingWire>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<GradingWire>::deserialize(deserializer)?))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -299,11 +320,7 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
 
-        let base_slug_str = match &catalog_ref {
-            Some(_) => base_slug_input,
-            None => kebab_slug_candidate(&base_slug_input),
-        };
-        let base_slug = match TargetSlug::new(&base_slug_str) {
+        let base_slug = match TargetSlug::from_display_name(&base_slug_input) {
             Ok(s) => s,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
@@ -356,7 +373,7 @@ impl McpHandler {
             active: params.active.unwrap_or(true),
             goals,
             scheduling: params.scheduling.map(Into::into),
-            grading: None,
+            grading: params.grading.map(Into::into),
             notes: params.notes,
             created_at: now.clone(),
             updated_at: now,
@@ -374,10 +391,9 @@ impl McpHandler {
         }))
     }
 
-    #[tool(description = "Fetch one target with derived progress \
-                       (per-goal {filter, binning, exposure_duration, good, total, \
-                       desired} — good/total are always 0 until the \
-                       on-disk frame scan lands).")]
+    #[tool(description = "Fetch one target with progress derived from the \
+                       frames on disk (per-goal {filter, binning, \
+                       exposure_duration, desired_count, good, total}).")]
     pub(crate) async fn get_target(
         &self,
         Parameters(params): Parameters<GetTargetParams>,
@@ -390,10 +406,13 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         match store.get_target(&slug).await {
-            Ok(Some(t)) => Ok(tool_success!({
-                "target": target_to_json(&t),
-                "progress": progress_for(&t),
-            })),
+            Ok(Some(t)) => {
+                let counts = self.derive_progress(&t).await;
+                Ok(tool_success!({
+                    "target": target_to_json(&t),
+                    "progress": progress_rows(&t, &counts),
+                }))
+            }
             Ok(None) => Ok(tool_error!("no target with slug {:?}", params.slug)),
             Err(e) => Ok(tool_error!("target store error: {}", e)),
         }
@@ -415,14 +434,13 @@ impl McpHandler {
         if params.active_only == Some(true) {
             targets.retain(|t| t.active);
         }
-        let items: Vec<Value> = targets
-            .iter()
-            .map(|t| {
-                let mut v = target_to_json(t);
-                v["progress"] = json!(progress_for(t));
-                v
-            })
-            .collect();
+        let mut items: Vec<Value> = Vec::with_capacity(targets.len());
+        for t in &targets {
+            let counts = self.derive_progress(t).await;
+            let mut v = target_to_json(t);
+            v["progress"] = json!(progress_rows(t, &counts));
+            items.push(v);
+        }
         Ok(tool_success!({ "targets": items }))
     }
 
@@ -485,6 +503,12 @@ impl McpHandler {
                 Ok(v) => target.position_angle_degrees = v,
                 Err(e) => return Ok(tool_error!("{}", e)),
             }
+        }
+        // Same double-option shape: absent → untouched, explicit null →
+        // cleared back to inherit `target_store.default_grading`, an
+        // object → replaces the overrides wholesale.
+        if let Some(v) = params.grading {
+            target.grading = v.map(Into::into);
         }
         target.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         target.updated_by = OPERATOR_WRITER.to_string();
@@ -585,6 +609,12 @@ impl McpHandler {
         if params.notes.is_some() {
             return Ok(tool_error!(
                 "notes is not accepted with source — rp writes the provenance line itself"
+            ));
+        }
+        if params.grading.is_some() {
+            return Ok(tool_error!(
+                "grading is not accepted with source — imports inherit \
+                 target_store.default_grading until the operator sets thresholds"
             ));
         }
         if source.kind.trim().is_empty() || source.kind == OPERATOR_WRITER {
@@ -700,7 +730,7 @@ impl McpHandler {
                 }
             };
 
-        let base_slug = match TargetSlug::new(&base_slug_input) {
+        let base_slug = match TargetSlug::from_display_name(&base_slug_input) {
             Ok(s) => s,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
@@ -749,13 +779,6 @@ impl McpHandler {
     }
 }
 
-/// Turns an operator-typed display name into a base-slug candidate:
-/// lower-cased words joined with hyphens (`"Comet Test"` -> `"comet-test"`).
-/// Distinct from `TargetSlug::new`'s own whitespace-*stripping*
-/// normalization (which suits compact catalog names like `"NGC 7000"` ->
-/// `"ngc7000"`, per `rp-targets.md` § Identity) — an operator-typed name
-/// reads better hyphenated. Catalog adds bypass this and go straight to
-/// `TargetSlug::new`.
 /// Boundary validation for the per-target framing angle, sharing the
 /// domain (and validator) of the per-train config default
 /// ([`crate::config::PositionAngleDegrees`]), with the error naming
@@ -767,13 +790,6 @@ fn validate_position_angle(value: Option<f64>) -> Result<Option<f64>, String> {
             .map(|a| Some(a.value()))
             .map_err(|e| format!("position_angle_degrees: {e}")),
     }
-}
-
-fn kebab_slug_candidate(display_name: &str) -> String {
-    display_name
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-")
 }
 
 fn same_object(ra1_hours: f64, dec1_degrees: f64, ra2_hours: f64, dec2_degrees: f64) -> bool {
@@ -923,7 +939,8 @@ fn validate_goal_filters(
 /// The derived shape and the [`GoalWire`] input shape agree because
 /// `Binning` serializes as its canonical `"AxB"` string and
 /// `exposure_duration` as humantime; `grading` rides along as `null`
-/// until the grading plugin lands (rp.md: "Not yet accepted").
+/// on a target that inherits `target_store.default_grading` rather than
+/// overriding it.
 fn target_to_json(t: &Target) -> Value {
     // Infallible for `Target` (string map keys, infallible Serialize
     // impls); `Null` could only surface a serializer bug.
@@ -936,24 +953,61 @@ fn target_to_json(t: &Target) -> Value {
 /// row's goal part is byte-for-byte the `goals[]` shape `set_goals`
 /// accepts (including the `desired_count` key).
 #[derive(Debug, Serialize)]
-struct ProgressRow {
+pub(crate) struct ProgressRow {
     #[serde(flatten)]
     goal: GoalWire,
-    /// Frames graded good — hard-coded 0 until the on-disk scan lands
-    /// (needs the grading plugin's sidecar shape and `capture`'s target
-    /// linkage).
+    /// Frames captured against this goal's sub-spec that grading did
+    /// not demonstrably reject.
     good: u32,
-    /// Frames captured — hard-coded 0, same dependency as `good`.
+    /// Every frame captured against this goal's sub-spec.
     total: u32,
 }
 
-fn progress_for(t: &Target) -> Vec<ProgressRow> {
+impl McpHandler {
+    /// Derive one target's per-goal counts from the frames on disk
+    /// (rp.md § Progress derivation), resolving its effective grading
+    /// thresholds against `target_store.default_grading` first.
+    ///
+    /// `pub(crate)` because the planner tools derive the same numbers —
+    /// there is exactly one definition of a target's progress, and both
+    /// the operator surface and `get_next_target` read it here.
+    pub(crate) async fn derive_progress(
+        &self,
+        target: &Target,
+    ) -> Vec<crate::planner::progress_scan::GoalProgress> {
+        let thresholds = crate::planner::progress_scan::effective_thresholds(
+            target,
+            self.target_store_defaults.default_grading,
+        );
+        crate::planner::progress_scan::scan_target(
+            std::path::Path::new(&self.session_config.data_directory),
+            self.naming_templates.as_deref(),
+            target,
+            thresholds,
+        )
+        .await
+    }
+}
+
+/// Pair a target's goals with the counts the on-disk scan derived for
+/// them. `counts` comes back from
+/// [`crate::planner::progress_scan::scan_target`] in goal order, so the
+/// zip is positional; a short `counts` (only possible if the two ever
+/// disagreed about goal count) reports zeros rather than panicking.
+pub(crate) fn progress_rows(
+    t: &Target,
+    counts: &[crate::planner::progress_scan::GoalProgress],
+) -> Vec<ProgressRow> {
     t.goals
         .iter()
-        .map(|g| ProgressRow {
-            goal: GoalWire::from(g),
-            good: 0,
-            total: 0,
+        .enumerate()
+        .map(|(i, g)| {
+            let counts = counts.get(i).copied().unwrap_or_default();
+            ProgressRow {
+                goal: GoalWire::from(g),
+                good: counts.good,
+                total: counts.total,
+            }
         })
         .collect()
 }
