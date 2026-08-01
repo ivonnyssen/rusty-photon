@@ -395,6 +395,19 @@ mod tests {
         );
     }
 
+    /// A doubled space is a typo, not a different target: a run of
+    /// whitespace collapses to one hyphen, so the accidental spelling
+    /// lands on the same slug — and therefore the same stored row and
+    /// the same on-disk directory — as the intended one.
+    #[test]
+    fn a_doubled_space_derives_the_same_slug_as_a_single_one() {
+        let intended = TargetSlug::from_display_name("M 31").unwrap();
+        assert_eq!(TargetSlug::from_display_name("M  31").unwrap(), intended);
+        assert_eq!(TargetSlug::from_display_name(" M 31 ").unwrap(), intended);
+        assert_eq!(TargetSlug::from_display_name("M\t31").unwrap(), intended);
+        assert_eq!(intended.as_str(), "m-31");
+    }
+
     /// The property that makes one derivation safe: re-deriving a slug
     /// that already exists cannot move it, so a stored row stays
     /// reachable no matter how many times a name round-trips.
