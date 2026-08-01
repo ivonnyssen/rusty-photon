@@ -44,10 +44,11 @@ const DEBUG_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// One pooled client for the whole test process rather than one per call:
 /// the command-log steps poll in a loop, so a client per call would
 /// rebuild a connection pool — and pay a fresh TCP connect — on every
-/// poll. The timeout is a whole-request deadline, sized for a CPU-starved
-/// runner: cucumber keeps up to 64 scenarios in flight and each one owns a
-/// service process, so dozens of this suite's binaries can be competing
-/// for a few cores and a loopback round-trip can stall for seconds.
+/// poll. The timeout is a whole-request deadline covering connect,
+/// headers and body, sized for a runner where a request can sit
+/// mid-response for seconds: every scenario shares one poll loop, so any
+/// step that blocks stops this fetch too (`docs/skills/testing.md` §5.7),
+/// and dozens of this suite's service processes compete for a few cores.
 fn debug_client() -> reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT
@@ -335,9 +336,9 @@ impl StarAdventurerWorld {
     ///
     /// Retrying the fetch — not just the assertion — is what keeps a
     /// scenario alive on a loaded runner. A single loopback request can
-    /// lose the scheduler race and blow its deadline while the driver
-    /// behaviour under test is perfectly fine, so one hiccup must not
-    /// fail an assertion that the next poll would have satisfied.
+    /// blow its deadline while the driver behaviour under test is
+    /// perfectly fine, so one hiccup must not fail an assertion that the
+    /// next poll would have satisfied. See `docs/skills/testing.md` §5.9.
     pub async fn wait_for_command_log(
         &self,
         timeout: Duration,
