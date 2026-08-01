@@ -170,9 +170,10 @@ reports `failed`, and the loop continues. `consecutive_solve_failures`
 have clouded over.
 
 `/adjust/finish` (or the deadline) posts the completion report and
-returns the plugin to idle. Tracking is left on, mount in place —
-the operator typically proceeds straight into a normal imaging
-session.
+moves `/status.phase` to `complete`, preserving the final measurement
+for display; the next `/invoke` resets it for a new run. Tracking is
+left on, mount in place — the operator typically proceeds straight
+into a normal imaging session.
 
 ### `GET /status`
 
