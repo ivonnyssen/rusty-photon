@@ -9,15 +9,23 @@ use serde::Serialize;
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, warn};
 
-use crate::config::PolarAlignConfig;
+use crate::config::{MeasurementMode, PolarAlignConfig};
 use crate::ephemeris::EphemerisCtx;
 use crate::error::{PolarAlignError, Result};
 use crate::math::{
-    alignment_errors, attitude_from_wcs, axis_from_three_points, relative_rotation,
-    rotation_between, unit_from_radec, wcs_pixel_to_sky, wcs_sky_to_pixel, AlignmentErrors, Mat3,
-    SolvedFrame, Vec3,
+    alignment_errors, attitude_from_wcs, axis_from_attitudes, axis_from_three_points,
+    relative_rotation, rotation_between, unit_from_radec, wcs_pixel_to_sky, wcs_sky_to_pixel,
+    AlignmentErrors, Mat3, SolvedFrame, Vec3,
 };
 use crate::mcp_client::{DetectedStar, McpClient, SolveResult};
+
+/// Measurement targets below this observed altitude abort before any
+/// motion — near-horizon exposures are refraction-dominated garbage.
+const MIN_TARGET_ALTITUDE_DEG: f64 = 10.0;
+
+/// The cross-check separation (2′) above which the plane-normal and
+/// attitude-based axes disagreeing is worth an operator's attention.
+const CROSS_CHECK_WARN_ARCSEC: f64 = 120.0;
 
 /// Workflow lifecycle, serialized verbatim into `/status.phase`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -41,6 +49,12 @@ pub struct MeasurementStatus {
     pub total_error_arcmin: f64,
     pub azimuth_direction: String,
     pub altitude_direction: String,
+    /// Angular separation between the primary axis and the alternate
+    /// method's axis (plane-normal vs attitude-based, whichever the
+    /// mode does not use). A measurement-phase result; absent when
+    /// the alternate method had nothing to work with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross_check_arcsec: Option<f64>,
     pub measured_at: DateTime<Utc>,
 }
 
@@ -139,6 +153,7 @@ fn measurement_status(
         total_error_arcmin: errors.total_error_deg * 60.0,
         azimuth_direction: errors.azimuth_direction().to_string(),
         altitude_direction: errors.altitude_direction().to_string(),
+        cross_check_arcsec: None,
         measured_at,
     }
 }
@@ -212,26 +227,66 @@ async fn run_inner(
         mcp.set_tracking(true).await?;
     }
 
-    // Three-point measurement sweep: equal-declination points on one
-    // side of the meridian, hour angles first + i·sweep.
-    let dec_deg = config.measurement_dec_deg();
-    let ha_sign = config.measurement.direction.ha_sign();
+    // Three-point measurement sweep. Targets are planned once up
+    // front (the ~arcminute of sidereal drift while the sweep runs is
+    // immaterial — the measurement uses solved positions, commanded
+    // ones only place the points on one pier side).
+    let planned_at = Utc::now();
+    let (targets, slew_first) = match config.measurement.mode {
+        MeasurementMode::NearPole => {
+            // Equal-declination points on one side of the meridian,
+            // hour angles first + i·sweep.
+            let dec_deg = config.measurement_dec_deg();
+            let ha_sign = config.measurement.direction.ha_sign();
+            let lst_deg = eph.lst_hours(planned_at) * 15.0;
+            let targets = [0.0_f64, 1.0, 2.0].map(|i| {
+                let ha_deg = ha_sign
+                    * (config.measurement.first_point_ha_deg.degrees()
+                        + i * config.measurement.sweep_deg.degrees());
+                ((lst_deg - ha_deg).rem_euclid(360.0), dec_deg)
+            });
+            (targets, true)
+        }
+        MeasurementMode::CurrentPosition => {
+            let position = mcp.get_mount_position().await?;
+            let ha0_deg = (eph.lst_hours(planned_at) * 15.0 - position.ra_deg + 180.0)
+                .rem_euclid(360.0)
+                - 180.0;
+            debug!(
+                ra_deg = position.ra_deg,
+                dec_deg = position.dec_deg,
+                ha0_deg,
+                "measuring from the current mount position"
+            );
+            let targets = current_position_targets(
+                position.ra_deg,
+                position.dec_deg,
+                ha0_deg,
+                config.measurement.sweep_deg.degrees(),
+            );
+            (targets, false)
+        }
+    };
+    require_targets_above_horizon(eph, planned_at, &targets)?;
+
     let mut centers: Vec<Vec3> = Vec::with_capacity(3);
+    let mut attitudes: Vec<Option<Mat3>> = Vec::with_capacity(3);
     let mut last_solve: Option<SolveResult> = None;
     let mut last_capture_center = (0.0, 0.0);
 
-    for i in 0..3u32 {
-        let ha_deg = ha_sign
-            * (config.measurement.first_point_ha_deg.degrees()
-                + f64::from(i) * config.measurement.sweep_deg.degrees());
-        let lst_hours = eph.lst_hours(Utc::now());
-        let ra_deg = (lst_hours * 15.0 - ha_deg).rem_euclid(360.0);
-
-        debug!(
-            point = i + 1,
-            ra_deg, dec_deg, ha_deg, "slewing to measurement point"
-        );
-        mcp.slew(ra_deg, dec_deg, config.measurement.settle).await?;
+    for (i, &(ra_deg, dec_deg)) in targets.iter().enumerate() {
+        if i > 0 || slew_first {
+            debug!(
+                point = i + 1,
+                ra_deg, dec_deg, "slewing to measurement point"
+            );
+            mcp.slew(ra_deg, dec_deg, config.measurement.settle).await?;
+        } else {
+            debug!(
+                point = i + 1,
+                ra_deg, dec_deg, "capturing the first point in place"
+            );
+        }
 
         let capture = mcp
             .capture(&config.camera_id, config.measurement.exposure)
@@ -253,16 +308,53 @@ async fn run_inner(
             "measurement point solved"
         );
         centers.push(unit_from_radec(solve.ra_center, solve.dec_center));
+        attitudes.push(measurement_attitude(config.measurement.mode, i, &solve)?);
         last_capture_center = (solve.ra_center, solve.dec_center);
         last_solve = Some(solve);
     }
 
-    let mut axis = axis_from_three_points(
-        centers[0],
-        centers[1],
-        centers[2],
-        eph.pole_hemisphere_unit(),
-    )?;
+    // Axis: primary per mode, the alternate method as a best-effort
+    // cross-check (plan D9).
+    let toward = eph.pole_hemisphere_unit();
+    let (mut axis, cross_check_arcsec) = match config.measurement.mode {
+        MeasurementMode::NearPole => {
+            let primary = axis_from_three_points(centers[0], centers[1], centers[2], toward)?;
+            let cross = match attitudes.iter().copied().collect::<Option<Vec<Mat3>>>() {
+                Some(list) => match axis_from_attitudes(&list, toward) {
+                    Ok(alternate) => Some(alternate.angle_to(primary).to_degrees() * 3600.0),
+                    Err(e) => {
+                        debug!(error = %e, "attitude-based cross-check unavailable");
+                        None
+                    }
+                },
+                None => None,
+            };
+            (primary, cross)
+        }
+        MeasurementMode::CurrentPosition => {
+            let list: Vec<Mat3> = attitudes.iter().copied().flatten().collect();
+            let primary = axis_from_attitudes(&list, toward)?;
+            let cross = match axis_from_three_points(centers[0], centers[1], centers[2], toward) {
+                Ok(alternate) => Some(alternate.angle_to(primary).to_degrees() * 3600.0),
+                Err(e) => {
+                    debug!(error = %e, "plane-normal cross-check unavailable");
+                    None
+                }
+            };
+            (primary, cross)
+        }
+    };
+    if let Some(arcsec) = cross_check_arcsec {
+        if arcsec > CROSS_CHECK_WARN_ARCSEC {
+            warn!(
+                cross_check_arcsec = arcsec,
+                "the plane-normal and attitude-based axes disagree by more than 2 arcminutes; \
+                 the solves may be poor"
+            );
+        } else {
+            debug!(cross_check_arcsec = arcsec, "axis method cross-check");
+        }
+    }
 
     let now = Utc::now();
     let observed = eph.observed_of(axis, now)?;
@@ -281,12 +373,14 @@ async fn run_inner(
 
     {
         let mut status = shared.status.write().await;
-        status.measurement = Some(measurement_status(
+        let mut measurement = measurement_status(
             observed.azimuth_degrees,
             observed.altitude_degrees,
             &errors,
             now,
-        ));
+        );
+        measurement.cross_check_arcsec = cross_check_arcsec;
+        status.measurement = Some(measurement);
         status.phase = Phase::Adjusting;
     }
 
@@ -308,6 +402,7 @@ async fn run_inner(
         &errors,
         now,
     );
+    final_measurement.cross_check_arcsec = cross_check_arcsec;
 
     let finish = shared.finish_signal().await;
     loop {
@@ -335,10 +430,13 @@ async fn run_inner(
         )
         .await
         {
-            Ok((measurement, mut adjustment)) => {
+            Ok((mut measurement, mut adjustment)) => {
                 consecutive_failures = 0;
                 adjustment.consecutive_solve_failures = 0;
                 adjustment.iterations = iterations;
+                // The cross-check is a measurement-phase result;
+                // adjustment solves refresh the errors, not it.
+                measurement.cross_check_arcsec = cross_check_arcsec;
                 final_measurement = measurement.clone();
                 let mut status = shared.status.write().await;
                 status.measurement = Some(measurement);
@@ -385,6 +483,89 @@ async fn run_inner(
         final_measurement,
         adjustment_iterations: iterations,
     })
+}
+
+/// The camera attitude of a measurement solve. `near_pole` measures
+/// from centers alone, so a missing or degenerate `wcs_matrix` only
+/// costs the cross-check; `current_position` has no axis without
+/// full attitudes and must abort naming the point.
+fn measurement_attitude(
+    mode: MeasurementMode,
+    point_index: usize,
+    solve: &SolveResult,
+) -> Result<Option<Mat3>> {
+    match solved_frame(solve) {
+        Some(frame) => match attitude_from_wcs(&frame) {
+            Ok(attitude) => Ok(Some(attitude)),
+            Err(e) if mode == MeasurementMode::CurrentPosition => Err(e),
+            Err(e) => {
+                debug!(
+                    point = point_index + 1,
+                    error = %e,
+                    "measurement solve yielded no usable attitude; the cross-check is skipped"
+                );
+                Ok(None)
+            }
+        },
+        None if mode == MeasurementMode::CurrentPosition => {
+            Err(PolarAlignError::Workflow(format!(
+                "measurement point {} solve carried no wcs_matrix; measuring from the current \
+                 position needs full camera attitudes",
+                point_index + 1
+            )))
+        }
+        None => {
+            debug!(
+                point = point_index + 1,
+                "measurement solve carried no wcs_matrix; the cross-check is skipped"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// The three equal-declination targets of a current-position sweep:
+/// anchored on the mount's own reported position and stepping away
+/// from the meridian on the side the mount already stands (positive
+/// hour angle = west of the meridian), so an RA-only sweep can never
+/// cross it and invite a GoTo flip. Keeping the mount's *reported*
+/// declination is what guarantees the dec axis never moves.
+fn current_position_targets(
+    ra0_deg: f64,
+    dec0_deg: f64,
+    ha0_deg: f64,
+    sweep_deg: f64,
+) -> [(f64, f64); 3] {
+    // Hour angle grows westward as RA shrinks; sweep toward larger
+    // |hour angle| on the current side.
+    let ra_step = if ha0_deg >= 0.0 {
+        -sweep_deg
+    } else {
+        sweep_deg
+    };
+    [0.0_f64, 1.0, 2.0].map(|i| ((ra0_deg + i * ra_step).rem_euclid(360.0), dec0_deg))
+}
+
+/// Rejects any measurement target below the altitude floor before
+/// the mount moves at all.
+fn require_targets_above_horizon(
+    eph: &EphemerisCtx,
+    at: DateTime<Utc>,
+    targets: &[(f64, f64)],
+) -> Result<()> {
+    for (i, &(ra_deg, dec_deg)) in targets.iter().enumerate() {
+        let observed = eph.observed_of(unit_from_radec(ra_deg, dec_deg), at)?;
+        if observed.altitude_degrees < MIN_TARGET_ALTITUDE_DEG {
+            return Err(PolarAlignError::Workflow(format!(
+                "measurement point {} (RA {ra_deg:.1}°, dec {dec_deg:.1}°) sits at altitude \
+                 {:.1}°, below the {MIN_TARGET_ALTITUDE_DEG}° floor; start from a higher \
+                 pointing",
+                i + 1,
+                observed.altitude_degrees
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// One adjustment iteration: capture, solve, update the axis through
@@ -558,6 +739,95 @@ mod tests {
         }"#;
         let solve: SolveResult = serde_json::from_str(json).unwrap();
         assert!(solved_frame(&solve).is_none());
+    }
+
+    fn matrixless_solve() -> SolveResult {
+        serde_json::from_str(
+            r#"{
+                "ra_center": 52.1, "dec_center": 85.2,
+                "pixel_scale_arcsec": 1.05, "rotation_deg": 12.0
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_measurement_attitude_matrixless_aborts_only_current_position() {
+        let solve = matrixless_solve();
+        let near_pole = measurement_attitude(MeasurementMode::NearPole, 2, &solve).unwrap();
+        assert!(near_pole.is_none(), "near-pole degrades to no cross-check");
+        let err = measurement_attitude(MeasurementMode::CurrentPosition, 2, &solve).unwrap_err();
+        assert!(err.to_string().contains("point 3"), "{err}");
+        assert!(err.to_string().contains("full camera attitudes"), "{err}");
+    }
+
+    #[test]
+    fn test_measurement_attitude_extracts_from_a_matrix_bearing_solve() {
+        let solve: SolveResult = serde_json::from_str(
+            r#"{
+                "ra_center": 52.1, "dec_center": 85.2,
+                "pixel_scale_arcsec": 1.05, "rotation_deg": 0.0,
+                "wcs_matrix": {
+                    "crpix1": 512.0, "crpix2": 384.0,
+                    "cd1_1": -2.9e-4, "cd1_2": 0.0, "cd2_1": 0.0, "cd2_2": 2.9e-4
+                }
+            }"#,
+        )
+        .unwrap();
+        let attitude = measurement_attitude(MeasurementMode::CurrentPosition, 0, &solve)
+            .unwrap()
+            .expect("matrix-bearing solve must yield an attitude");
+        let boresight = attitude.column(2);
+        let expected = unit_from_radec(52.1, 85.2);
+        assert!((boresight - expected).norm() < 1e-9, "boresight column");
+    }
+
+    #[test]
+    fn test_current_position_targets_sweep_away_from_the_meridian() {
+        // West of the meridian (positive hour angle): RA must shrink.
+        let west = current_position_targets(100.0, 60.0, 30.0, 15.0);
+        assert_eq!(west, [(100.0, 60.0), (85.0, 60.0), (70.0, 60.0)]);
+        // East of the meridian: RA must grow.
+        let east = current_position_targets(100.0, 60.0, -20.0, 15.0);
+        assert_eq!(east, [(100.0, 60.0), (115.0, 60.0), (130.0, 60.0)]);
+        // On the meridian either side works; the west branch is taken.
+        let tied = current_position_targets(100.0, 60.0, 0.0, 15.0);
+        assert_eq!(tied[2], (70.0, 60.0));
+        // RA folds through 0.
+        let folded = current_position_targets(5.0, 60.0, 30.0, 15.0);
+        assert_eq!(folded[2], (335.0, 60.0));
+    }
+
+    fn test_eph() -> EphemerisCtx {
+        let config: PolarAlignConfig = serde_json::from_str(
+            r#"{
+                "camera_id": "c", "mount_id": "m",
+                "site": { "latitude_deg": 48.0, "longitude_deg": -122.8 },
+                "refraction": { "enabled": false }
+            }"#,
+        )
+        .unwrap();
+        EphemerisCtx::from_config(&config).unwrap()
+    }
+
+    #[test]
+    fn test_targets_above_horizon_rejects_a_sunken_point() {
+        let eph = test_eph();
+        let at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 1, 8, 0, 0).unwrap();
+        // Dec −80 never rises above ~−38° at latitude 48.
+        let err =
+            require_targets_above_horizon(&eph, at, &[(10.0, 85.0), (100.0, -80.0)]).unwrap_err();
+        assert!(err.to_string().contains("point 2"), "{err}");
+        assert!(err.to_string().contains("below the 10° floor"), "{err}");
+    }
+
+    #[test]
+    fn test_targets_above_horizon_accepts_a_circumpolar_sweep() {
+        let eph = test_eph();
+        let at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 1, 8, 0, 0).unwrap();
+        // Dec 60 at latitude 48 never dips below ~18°.
+        let targets = current_position_targets(100.0, 60.0, 30.0, 15.0);
+        require_targets_above_horizon(&eph, at, &targets).unwrap();
     }
 
     #[test]

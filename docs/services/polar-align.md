@@ -5,12 +5,13 @@
 `polar-align` is an orchestrator plugin that measures how far an
 equatorial mount's RA axis is from the refracted celestial pole and
 guides the operator through correcting it. It slews the mount to three
-RA positions near the pole, captures and plate-solves an image at
-each, computes the axis direction from the three solved pointings,
-then enters a live adjustment phase: it keeps capturing and solving
-while the operator turns the mount's azimuth/altitude adjusters,
-publishing the residual error and PoleMaster-style star/target-circle
-pairs after every solve.
+RA positions — near the pole by default, or sweeping outward from
+wherever the mount already points in current-position mode — captures
+and plate-solves an image at each, computes the axis direction from
+the three solves, then enters a live adjustment phase: it keeps
+capturing and solving while the operator turns the mount's
+azimuth/altitude adjusters, publishing the residual error and
+PoleMaster-style star/target-circle pairs after every solve.
 
 The method is N.I.N.A. Three Point Polar Alignment's: rotating only
 the RA axis sweeps the camera pointing along a circle whose center is
@@ -78,6 +79,7 @@ Accessibility"); `/status` carries their paths, never pixels.
 | Tool | Usage |
 |------|-------|
 | `get_park_state` | Read `at_park` before any motion; decide whether to unpark |
+| `get_mount_position` | Read the mount-frame pointing that anchors a current-position measurement (RA-only targets are computed relative to it) |
 | `unpark` | Clear `AtPark` (no motion) before enabling tracking |
 | `get_tracking` | Read tracking state and `can_set_tracking` |
 | `set_tracking` | Enable sidereal tracking (required by `slew`; keeps the field quasi-static during adjustment) |
@@ -124,20 +126,45 @@ concurrent alignments are meaningless.
 2. `get_tracking`; if tracking is off and `can_set_tracking`:
    `set_tracking(true)`. Off and not settable: abort (rp's `slew`
    would fail anyway; failing here gives a clearer message).
-3. Compute the three measurement targets from the site and wall
-   clock: local sidereal time from `site.longitude_deg`; target
-   hour angles `direction × (first_point_ha_deg + i × sweep_deg)`
-   for i = 0, 1, 2; declination `measurement_dec_deg` (sign follows
-   the site hemisphere); RA = LST − HA, folded to [0, 24h).
+3. Compute the three measurement targets, by `measurement.mode`:
+   - **`near_pole`** (default): local sidereal time from
+     `site.longitude_deg`; target hour angles
+     `direction × (first_point_ha_deg + i × sweep_deg)` for
+     i = 0, 1, 2; declination `measurement_dec_deg` (sign follows
+     the site hemisphere); RA = LST − HA, folded to [0, 24h).
+   - **`current_position`**: `get_mount_position` anchors the sweep.
+     All three targets keep the mount's own reported declination —
+     commanding the mount-frame declination it already reports is
+     what guarantees the dec axis never moves — and step
+     `sweep_deg` apart in RA, in the direction that moves the
+     hour angle *away* from the meridian (a sweep toward the
+     meridian could trigger a GoTo meridian flip mid-measurement).
+     `dec_deg`, `first_point_ha_deg`, and `direction` are unused in
+     this mode.
+   Any target below 10° observed altitude aborts before any motion,
+   naming the point and its altitude — a near-horizon exposure gives
+   refraction-dominated garbage.
 4. For each point: `slew` → settle → `capture`
    (`measurement.exposure`) → `plate_solve` with
    `pointing_hint` = the commanded coordinates and
-   `search_radius_deg` = `solve.search_radius_deg`.
-5. Axis from the three solved centers (plane normal, sign toward the
-   visible pole), converted to observed azimuth/altitude; error
-   against the refracted pole (see the plan's D2/D3). If the three
-   centers are closer than `min_point_separation_arcsec` (degenerate
-   sweep — mount didn't move), abort with a distinct error.
+   `search_radius_deg` = `solve.search_radius_deg`. In
+   `current_position` mode the first point is captured where the
+   mount already stands — only points 2 and 3 slew — and every
+   measurement solve must carry a `wcs_matrix`; a matrix-less solve
+   aborts with an error naming the point (the mode's axis needs full
+   camera attitudes).
+5. Axis, by mode: `near_pole` fits the plane normal of the three
+   solved centers (sign toward the visible pole); a degenerate sweep
+   (centers closer than ~2 arcsec — the mount didn't move) aborts
+   with a distinct error. `current_position` extracts the common
+   rotation axis of the relative rotations between the three camera
+   attitudes, which works anywhere in the sky. Whichever method is
+   not primary runs as a best-effort cross-check: the angular
+   separation between the two axes is published as
+   `measurement.cross_check_arcsec` and warned about above 2′
+   (see the plan's D2/D9 and the Geometry Reference). The axis is
+   converted to observed azimuth/altitude; error against the
+   refracted pole (D3).
 6. Phase transitions to `adjusting`; the measurement result is
    published on `/status`.
 
@@ -192,6 +219,7 @@ reports `"phase": "idle"`.
     "total_error_arcmin": 24.4,
     "azimuth_direction": "move azimuth west",
     "altitude_direction": "raise altitude",
+    "cross_check_arcsec": 8.3,
     "measured_at": "2026-08-01T21:14:03Z"
   },
   "adjustment": {
@@ -215,6 +243,13 @@ reports `"phase": "idle"`.
   operator converges). Signed errors: azimuth positive = axis east of
   the pole, altitude positive = axis above it; the `*_direction`
   strings state the corrective adjuster motion in plain words.
+- `cross_check_arcsec` is the angular separation between the primary
+  axis and the alternate method's axis (plane-normal vs
+  attitude-based, whichever is not primary for the mode). It is a
+  measurement-phase result — adjustment solves do not recompute it —
+  and is omitted when the alternate method had nothing to work with
+  (e.g. matrix-less solves in `near_pole` mode). A large value means
+  bad solves or a mount that moved more than its RA axis.
 - `adjustment.in_frame` is false when the total error exceeds what the
   sensor can show (targets would fall outside the frame); UIs show an
   arrow from the numbers instead of circles.
@@ -256,6 +291,7 @@ packaged systemd unit gates on the file with `ConditionPathExists`
   "mount_id": "mount",
   "site": { "latitude_deg": 48.1, "longitude_deg": -122.8 },
   "measurement": {
+    "mode": "near_pole",
     "dec_deg": 85.0,
     "first_point_ha_deg": 15.0,
     "sweep_deg": 45.0,
@@ -283,10 +319,11 @@ packaged systemd unit gates on the file with `ConditionPathExists`
 | `mount_id` | string | required | The mount (informational; rp's mount tools address the singular configured mount) |
 | `site.latitude_deg` | float | required | Geodetic latitude, degrees, north positive. Range ±90; `abs(latitude) < 1°` is rejected (no meaningful pole altitude) |
 | `site.longitude_deg` | float | required | Degrees, east positive, range ±180 |
-| `measurement.dec_deg` | float | 85.0 | Measurement declination; sign is folded to the site hemisphere at load |
-| `measurement.first_point_ha_deg` | float | 15.0 | Hour angle of the first point, degrees from the meridian (1–60) |
+| `measurement.mode` | `"near_pole"`\|`"current_position"` | `"near_pole"` | `near_pole` sweeps the configured dec-85 arc; `current_position` sweeps the RA axis from wherever the mount points, away from the meridian |
+| `measurement.dec_deg` | float | 85.0 | `near_pole` only. Measurement declination; sign is folded to the site hemisphere at load |
+| `measurement.first_point_ha_deg` | float | 15.0 | `near_pole` only. Hour angle of the first point, degrees from the meridian (1–60) |
 | `measurement.sweep_deg` | float | 45.0 | Hour-angle step between points (10–60; total span ≤ 150° keeps one pier side) |
-| `measurement.direction` | `"east"`\|`"west"` | `"west"` | Which side of the meridian the three points sit on |
+| `measurement.direction` | `"east"`\|`"west"` | `"west"` | `near_pole` only. Which side of the meridian the three points sit on; `current_position` picks the side the mount is already on |
 | `measurement.exposure` | humantime | `"2s"` | Measurement exposure duration |
 | `measurement.settle` | humantime | `"2s"` | Extra settle after each slew before capturing |
 | `adjustment.exposure` | humantime | `"2s"` | Adjustment-loop exposure duration |
@@ -311,8 +348,9 @@ The rp-side plugin registration:
   "type": "orchestrator",
   "invoke_url": "http://localhost:11172/invoke",
   "requires_tools": [
-    "capture", "plate_solve", "slew", "abort_slew",
-    "set_tracking", "get_tracking", "unpark", "get_park_state"
+    "capture", "get_camera_info", "plate_solve", "detect_stars",
+    "slew", "abort_slew", "set_tracking", "get_tracking",
+    "unpark", "get_park_state", "get_mount_position"
   ]
 }
 ```
@@ -331,6 +369,23 @@ tests are the executable spec):
   if `K` points away from the visible pole's hemisphere. Degenerate
   input (`|p_i − p_j|` under `min_point_separation_arcsec`, or a
   cross product below numeric floor) is an error, not a NaN.
+- **Axis from attitudes.** The relative rotation between two camera
+  attitudes taken with only the RA axis moving is a rotation about
+  the axis itself (commanded sweep plus tracking, both about the
+  same physical axis), so its rotation axis — from the matrix's
+  skew-symmetric part, angle via
+  `atan2(|skew|/2, (trace − 1)/2)` — *is* the RA axis. Three
+  attitudes give two consecutive segments; each must rotate by at
+  least ~1° (else the mount didn't move and the extraction is noise)
+  and the two sign-aligned segment axes must agree within 1° — a
+  disagreement means something other than the RA axis moved (a
+  meridian flip, a bumped mount) and is an error. A rotation within
+  numerical noise of 180° is rejected too: its axis is ambiguous,
+  and a real near-180° relative rotation is itself flip-shaped. The
+  surviving segment axes are averaged, sign toward the visible pole.
+  This works at any pointing, including ones where the solved
+  centers barely separate — the camera *frame* still rotates by the
+  full sweep even when the boresight barely moves.
 - **Attitude from WCS.** Boresight from the solve's center; the
   solve response's `wcs_matrix` block (CRPIX + the 2×2 CD matrix,
   degrees/pixel, FITS conventions) gives the sky directions of the
@@ -386,7 +441,11 @@ Per `docs/skills/testing.md`.
   a start vector about the misaligned axis; the module must recover
   the injected error to sub-arcsecond accuracy with refraction off,
   both hemispheres, both sweep directions, mirrored and unmirrored CD
-  matrices. Star detection is rp's, already tested there; the
+  matrices. The attitude-based axis is held to the same bar through
+  `wcs_from_attitude` — the exact inverse of `attitude_from_wcs` —
+  which synthesizes per-point solves from attitudes rotated about a
+  known axis, including from mid-sky pointings where the plane fit
+  is poorly conditioned. Star detection is rp's, already tested there; the
   plugin's selection logic (brightest-N, saturated rejection) is
   unit-tested on canned `detect_stars` payloads.
 - **BDD** carries the orchestration, with the full topology (OmniSim
@@ -400,9 +459,9 @@ Per `docs/skills/testing.md`.
 
 ## MVP Scope
 
-In scope for v1: everything above. Out of scope (see the plan):
-ui-htmx page (P5), attitude-based axis + arbitrary start position
-(P6), site-from-rp sourcing, manual-rotation mode for non-GoTo
+In scope: everything above, including the P6 attitude-based axis and
+`current_position` mode. Out of scope (see the plan): ui-htmx page
+(P5), site-from-rp sourcing, manual-rotation mode for non-GoTo
 trackers, PNG preview endpoint.
 
 ## References

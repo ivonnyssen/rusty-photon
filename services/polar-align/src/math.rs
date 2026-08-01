@@ -11,6 +11,16 @@ use crate::error::{PolarAlignError, Result};
 /// move between exposures.
 const MIN_POINT_SEPARATION_RAD: f64 = 1e-5;
 
+/// Minimum rotation (1°) between consecutive attitudes for the axis
+/// extraction to rise above solve noise — a smaller rotation means
+/// the mount ignored the slew and the axis would be amplified noise.
+const MIN_ATTITUDE_ROTATION_RAD: f64 = std::f64::consts::PI / 180.0;
+
+/// Maximum angle (1°) between the sign-aligned axes of consecutive
+/// rotation segments; more means something other than the RA axis
+/// moved between the measurement points.
+const MAX_SEGMENT_DISAGREEMENT_RAD: f64 = std::f64::consts::PI / 180.0;
+
 /// A unit-ish vector in a right-handed celestial cartesian frame
 /// (x → RA 0°, y → RA 90°, z → north pole).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +139,11 @@ impl Mat3 {
             }
         }
         Self { rows }
+    }
+
+    /// The `j`-th column as a vector.
+    pub fn column(self, j: usize) -> Vec3 {
+        Vec3::new(self.rows[0][j], self.rows[1][j], self.rows[2][j])
     }
 
     /// Rodrigues rotation about a unit axis by `angle_rad`.
@@ -254,6 +269,86 @@ pub fn relative_rotation(prev: Mat3, now: Mat3) -> Mat3 {
     now.mul_mat(prev.transpose())
 }
 
+/// Axis and unsigned angle of a proper rotation, from its
+/// skew-symmetric part (`R − Rᵀ = 2 sin(angle) [axis]×`). The angle
+/// lands in (0, π); a rotation's handedness rides in the axis sign.
+/// Errors when the rotation is numerically the identity (no axis
+/// exists) or within numerical noise of a half turn, where the skew
+/// part vanishes and the axis is ambiguous.
+pub fn rotation_axis_angle(r: Mat3) -> Result<(Vec3, f64)> {
+    let m = r.rows;
+    let skew = Vec3::new(m[2][1] - m[1][2], m[0][2] - m[2][0], m[1][0] - m[0][1]);
+    let sin_term = skew.norm() / 2.0;
+    let cos_term = (m[0][0] + m[1][1] + m[2][2] - 1.0) / 2.0;
+    if sin_term < 1e-9 {
+        return Err(PolarAlignError::Geometry(if cos_term > 0.0 {
+            "the two attitudes are identical; there is no rotation to extract an axis from"
+                .to_string()
+        } else {
+            "the rotation between attitudes is within numerical noise of 180°; its axis is \
+             ambiguous"
+                .to_string()
+        }));
+    }
+    Ok((skew.normalized()?, sin_term.atan2(cos_term)))
+}
+
+/// The mount's RA-axis direction from camera attitudes taken with
+/// only the RA axis moving: every relative rotation between them
+/// (commanded sweep plus tracking, the same physical axis) is a
+/// rotation about that axis. Each consecutive segment must rotate by
+/// at least ~1°, and the sign-aligned segment axes must agree within
+/// 1° — a disagreement means something other than the RA axis moved
+/// (a meridian flip, a bumped mount). `toward` picks the hemisphere,
+/// exactly as for [`axis_from_three_points`].
+pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
+    if attitudes.len() < 2 {
+        return Err(PolarAlignError::Geometry(
+            "at least two camera attitudes are needed to extract a rotation axis".to_string(),
+        ));
+    }
+    let mut segments: Vec<Vec3> = Vec::with_capacity(attitudes.len() - 1);
+    for (i, pair) in attitudes.windows(2).enumerate() {
+        let (axis, angle) =
+            rotation_axis_angle(relative_rotation(pair[0], pair[1])).map_err(|e| {
+                PolarAlignError::Geometry(format!(
+                    "between measurement points {} and {}: {}",
+                    i + 1,
+                    i + 2,
+                    e
+                ))
+            })?;
+        if angle < MIN_ATTITUDE_ROTATION_RAD {
+            return Err(PolarAlignError::Geometry(format!(
+                "the mount rotated only {:.2}° between measurement points {} and {}; at least \
+                 1° is needed for a usable axis",
+                angle.to_degrees(),
+                i + 1,
+                i + 2
+            )));
+        }
+        segments.push(if axis.dot(toward) < 0.0 {
+            axis.scale(-1.0)
+        } else {
+            axis
+        });
+    }
+    for pair in segments.windows(2) {
+        let disagreement = pair[0].angle_to(pair[1]);
+        if disagreement > MAX_SEGMENT_DISAGREEMENT_RAD {
+            return Err(PolarAlignError::Geometry(format!(
+                "the rotation segments between the measurement points disagree by {:.2}°; \
+                 something other than the RA axis moved (a meridian flip or a bumped mount)",
+                disagreement.to_degrees()
+            )));
+        }
+    }
+    segments
+        .into_iter()
+        .fold(Vec3::new(0.0, 0.0, 0.0), |acc, s| acc + s)
+        .normalized()
+}
+
 /// The rotation taking `from` onto `to` about their common
 /// perpendicular. Identity when they already coincide.
 pub fn rotation_between(from: Vec3, to: Vec3) -> Result<Mat3> {
@@ -299,6 +394,36 @@ pub fn wcs_sky_to_pixel(frame: &SolvedFrame, sky: Vec3) -> Result<Option<(f64, f
     let dx = (m.cd2_2 * xi - m.cd1_2 * eta) / det;
     let dy = (-m.cd2_1 * xi + m.cd1_1 * eta) / det;
     Ok(Some((m.crpix1 + dx, m.crpix2 + dy)))
+}
+
+/// The linear WCS a solve would report for a camera at `attitude`
+/// with `scale_deg_per_px` square pixels and reference pixel
+/// `crpix` — the exact inverse of [`attitude_from_wcs`], for
+/// attitudes whose columns are orthonormal with the boresight third.
+/// Test choreography uses it to synthesize solves from attitudes
+/// rotated about a known axis.
+pub fn wcs_from_attitude(
+    attitude: Mat3,
+    scale_deg_per_px: f64,
+    crpix: (f64, f64),
+) -> Result<SolvedFrame> {
+    let x = attitude.column(0);
+    let y = attitude.column(1);
+    let b = attitude.column(2);
+    let (center_ra_deg, center_dec_deg) = radec_from_unit(b);
+    let (east, north) = tangent_basis(b)?;
+    Ok(SolvedFrame {
+        center_ra_deg,
+        center_dec_deg,
+        matrix: WcsMatrix {
+            crpix1: crpix.0,
+            crpix2: crpix.1,
+            cd1_1: scale_deg_per_px * x.dot(east),
+            cd1_2: scale_deg_per_px * y.dot(east),
+            cd2_1: scale_deg_per_px * x.dot(north),
+            cd2_2: scale_deg_per_px * y.dot(north),
+        },
+    })
 }
 
 /// Unit vector in the horizontal cartesian frame
@@ -532,6 +657,201 @@ mod tests {
         assert!(
             updated.angle_to(axis) > 0.004,
             "the adjustment itself must move the axis"
+        );
+    }
+
+    #[test]
+    fn test_rotation_axis_angle_recovers_axis_and_angle() {
+        let axis = unit_from_radec(200.0, 30.0);
+        for angle in [0.1, 0.8, 2.0] {
+            let (u, a) = rotation_axis_angle(Mat3::from_axis_angle(axis, angle)).unwrap();
+            assert_vec_close(u, axis, TIGHT, "extracted axis");
+            assert_close(a, angle, TIGHT, "extracted angle");
+        }
+        // A negative rotation extracts as the flipped axis with a
+        // positive angle — same rotation, angle stays in (0, π).
+        let (u, a) = rotation_axis_angle(Mat3::from_axis_angle(axis, -0.7)).unwrap();
+        assert_vec_close(u, axis.scale(-1.0), TIGHT, "flipped axis");
+        assert_close(a, 0.7, TIGHT, "positive angle");
+    }
+
+    #[test]
+    fn test_rotation_axis_angle_rejects_identity_and_half_turn() {
+        let err = rotation_axis_angle(Mat3::identity()).unwrap_err();
+        assert!(err.to_string().contains("identical"), "{err}");
+        let half_turn = Mat3::from_axis_angle(unit_from_radec(10.0, 20.0), std::f64::consts::PI);
+        let err = rotation_axis_angle(half_turn).unwrap_err();
+        assert!(err.to_string().contains("180"), "{err}");
+    }
+
+    /// Attitude at a boresight with pixel axes derived from the local
+    /// tangent frame — any rigid choice works, only relative
+    /// rotations enter the axis extraction.
+    fn attitude_with_boresight(b: Vec3) -> Mat3 {
+        let x = Vec3::new(0.0, 0.0, 1.0).cross(b).normalized().unwrap();
+        let y = b.cross(x);
+        Mat3::from_columns(x, y, b)
+    }
+
+    #[test]
+    fn test_axis_from_attitudes_recovers_a_known_axis_both_parities() {
+        for (axis_ra, axis_dec, toward_dec) in [(37.0, 89.2, 90.0), (120.0, -89.4, -90.0)] {
+            let axis = unit_from_radec(axis_ra, axis_dec);
+            // Boresight 35° off-axis: a mid-sky pointing, where the
+            // plane fit is legal but this method must work anyway.
+            let offset =
+                Mat3::from_axis_angle(unit_from_radec(axis_ra + 90.0, 0.0), 35.0_f64.to_radians());
+            let a0_proper = attitude_with_boresight(offset.mul_vec(axis));
+            let a0_mirrored = {
+                let a = a0_proper;
+                Mat3::from_columns(a.column(0).scale(-1.0), a.column(1), a.column(2))
+            };
+            for a0 in [a0_proper, a0_mirrored] {
+                let attitudes: Vec<Mat3> = [0.0_f64, 45.0, 90.0]
+                    .iter()
+                    .map(|deg| Mat3::from_axis_angle(axis, deg.to_radians()).mul_mat(a0))
+                    .collect();
+                let toward = unit_from_radec(0.0, toward_dec);
+                let fitted = axis_from_attitudes(&attitudes, toward).unwrap();
+                assert_vec_close(fitted, axis, 1e-9, "attitude-fitted axis");
+            }
+        }
+    }
+
+    /// Tracking between exposures is a rotation about the axis
+    /// itself; unequal amounts per segment must not move the result.
+    #[test]
+    fn test_axis_from_attitudes_ignores_tracking_between_points() {
+        let axis = unit_from_radec(15.0, 88.9);
+        let offset = Mat3::from_axis_angle(unit_from_radec(105.0, 0.0), 5.0_f64.to_radians());
+        let a0 = attitude_with_boresight(offset.mul_vec(axis));
+        let attitudes: Vec<Mat3> = [0.0_f64, 45.0 + 3.2, 90.0 + 3.2 + 7.9]
+            .iter()
+            .map(|deg| Mat3::from_axis_angle(axis, deg.to_radians()).mul_mat(a0))
+            .collect();
+        let fitted = axis_from_attitudes(&attitudes, unit_from_radec(0.0, 90.0)).unwrap();
+        assert_vec_close(fitted, axis, 1e-9, "tracking-immune axis");
+    }
+
+    #[test]
+    fn test_axis_from_attitudes_rejects_an_unmoved_mount() {
+        let axis = unit_from_radec(15.0, 88.9);
+        let a0 = attitude_with_boresight(unit_from_radec(20.0, 84.0));
+        let barely = Mat3::from_axis_angle(axis, 0.5_f64.to_radians()).mul_mat(a0);
+        let err = axis_from_attitudes(&[a0, barely], unit_from_radec(0.0, 90.0)).unwrap_err();
+        assert!(err.to_string().contains("rotated only"), "{err}");
+        let err = axis_from_attitudes(&[a0], unit_from_radec(0.0, 90.0)).unwrap_err();
+        assert!(err.to_string().contains("at least two"), "{err}");
+    }
+
+    /// A dec-axis rotation injected into one segment must be caught
+    /// as a disagreement, not averaged into a wrong axis.
+    #[test]
+    fn test_axis_from_attitudes_rejects_a_dec_axis_move() {
+        let axis = unit_from_radec(15.0, 88.9);
+        let a0 = attitude_with_boresight(unit_from_radec(20.0, 84.0));
+        let a1 = Mat3::from_axis_angle(axis, 45.0_f64.to_radians()).mul_mat(a0);
+        let dec_bump = Mat3::from_axis_angle(unit_from_radec(105.0, 0.0), 3.0_f64.to_radians());
+        let a2 = dec_bump
+            .mul_mat(Mat3::from_axis_angle(axis, 90.0_f64.to_radians()))
+            .mul_mat(a0);
+        let err = axis_from_attitudes(&[a0, a1, a2], unit_from_radec(0.0, 90.0)).unwrap_err();
+        assert!(err.to_string().contains("disagree"), "{err}");
+    }
+
+    #[test]
+    fn test_wcs_from_attitude_round_trips_attitude_from_wcs() {
+        for frame in [
+            normal_parity_frame(52.0, 40.0),
+            flipped_parity_frame(52.0, 40.0),
+        ] {
+            let attitude = attitude_from_wcs(&frame).unwrap();
+            let synthesized = wcs_from_attitude(attitude, 2.9167e-4, (512.0, 384.0)).unwrap();
+            assert_close(
+                synthesized.center_ra_deg,
+                frame.center_ra_deg,
+                1e-9,
+                "center ra",
+            );
+            assert_close(
+                synthesized.center_dec_deg,
+                frame.center_dec_deg,
+                1e-9,
+                "center dec",
+            );
+            let back = attitude_from_wcs(&synthesized).unwrap();
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert_close(
+                        back.rows[i][j],
+                        attitude.rows[i][j],
+                        1e-9,
+                        "round-tripped attitude",
+                    );
+                }
+            }
+        }
+    }
+
+    /// End-to-end current-position synthetic measurement: attitudes
+    /// rotated about a misaligned axis from a mid-sky boresight must
+    /// recover the injected error — and agree with the plane fit of
+    /// their own boresights.
+    #[test]
+    fn test_synthetic_current_position_measurement_recovers_injected_errors() {
+        let pole_alt: f64 = 48.0;
+        let east_err_deg: f64 = 20.0 / 60.0;
+        let alt_err_deg: f64 = -12.0 / 60.0;
+        let axis_alt = pole_alt + alt_err_deg;
+        let axis_az = (east_err_deg.to_radians().sin() / axis_alt.to_radians().cos())
+            .asin()
+            .to_degrees();
+        let axis = horizontal_unit(axis_az, axis_alt);
+
+        // Boresight 35° from the axis — nowhere near the pole.
+        let offset = Mat3::from_axis_angle(
+            axis.cross(Vec3::new(0.0, 0.0, 1.0)).normalized().unwrap(),
+            35.0_f64.to_radians(),
+        );
+        let a0 = attitude_with_boresight(offset.mul_vec(axis));
+        let attitudes: Vec<Mat3> = [0.0_f64, 45.0, 90.0]
+            .iter()
+            .map(|deg| Mat3::from_axis_angle(axis, deg.to_radians()).mul_mat(a0))
+            .collect();
+
+        let toward = horizontal_unit(0.0, pole_alt);
+        let fitted = axis_from_attitudes(&attitudes, toward).unwrap();
+        let (az_fit, alt_fit) = {
+            let az = fitted.y.atan2(fitted.x).to_degrees();
+            let alt = fitted.z.clamp(-1.0, 1.0).asin().to_degrees();
+            (az, alt)
+        };
+        let errors = alignment_errors(az_fit, alt_fit, 0.0, pole_alt);
+        assert_close(
+            errors.azimuth_error_deg * 60.0,
+            20.0,
+            1e-6,
+            "recovered azimuth error (arcmin)",
+        );
+        assert_close(
+            errors.altitude_error_deg * 60.0,
+            -12.0,
+            1e-6,
+            "recovered altitude error (arcmin)",
+        );
+
+        let plane = axis_from_three_points(
+            attitudes[0].column(2),
+            attitudes[1].column(2),
+            attitudes[2].column(2),
+            toward,
+        )
+        .unwrap();
+        assert_vec_close(
+            plane,
+            fitted,
+            1e-9,
+            "plane fit agrees with the attitude fit",
         );
     }
 

@@ -21,6 +21,7 @@ Feature: Plate-solving polar alignment (end-to-end)
     And the adjustment is finished via the REST API
     Then the polar-align status should report an azimuth error within 2.0 arcminutes of 30.0
     And the polar-align status should report an altitude error within 2.0 arcminutes of -20.0
+    And the polar-align status should report an axis cross-check below 1.0 arcseconds
     And the stub plate solver should have received at least 3 solve requests
     And the session status should be "idle"
 
@@ -61,3 +62,29 @@ Feature: Plate-solving polar alignment (end-to-end)
     When an invocation without a workflow id is posted via the REST API
     Then the invoke request should be rejected with status 400
     And the polar-align workflow phase should be "idle"
+
+  Scenario: Measurement from the current pointing recovers a choreographed axis error
+    Given a running Alpaca simulator
+    And the simulator mount is synced to a mid-sky pointing west of the meridian
+    And a stub plate solver choreographed for an axis error of 30.0 arcminutes east and -20.0 arcminutes in altitude from a mid-sky pointing
+    And the measurement starts from the current mount position
+    And rp is running with a camera, a mount, the stub plate solver, and the polar-align orchestrator
+    When a session is started via the REST API
+    And the polar-align workflow reaches the "adjusting" phase
+    And the adjustment is finished via the REST API
+    Then the polar-align status should report an azimuth error within 2.0 arcminutes of 30.0
+    And the polar-align status should report an altitude error within 2.0 arcminutes of -20.0
+    And the polar-align status should report an axis cross-check below 1.0 arcseconds
+    And the first solve request should be hinted within 1.0 degrees of the synced pointing
+    And the session status should be "idle"
+
+  Scenario: A matrix-less solve aborts a measurement from the current pointing
+    Given a running Alpaca simulator
+    And the simulator mount is synced to a mid-sky pointing west of the meridian
+    And a stub plate solver whose solves stop carrying a WCS matrix after the second point
+    And the measurement starts from the current mount position
+    And rp is running with a camera, a mount, the stub plate solver, and the polar-align orchestrator
+    When a session is started via the REST API
+    And the polar-align workflow reaches the "error" phase
+    Then the polar-align status error should mention "full camera attitudes"
+    And the session status should be "idle"

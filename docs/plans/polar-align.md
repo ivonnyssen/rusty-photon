@@ -90,9 +90,9 @@ with 45° spacing is conditioned to ~3× the per-solve error (~10–15″
 with ordinary solves). The attitude-based formulation (extract the
 rotation axis of the relative rotation between full camera attitudes)
 works anywhere in the sky including arbitrary start positions, but
-requires roll + parity; it is deferred to P6 alongside
-start-from-current-position, and will then serve as a free cross-check
-on the plane-normal result.
+requires roll + parity; it landed in P6 (see D9) alongside
+start-from-current-position, and the method that is not primary for
+the configured mode now serves as a free cross-check on the other.
 
 The **adjustment phase**, however, needs full attitudes from day one
 (D4): a single solve must reveal how the axis moved since the
@@ -189,6 +189,53 @@ deadlines; the adjustment loop is additionally bounded by
 `adjustment.max_duration` so an abandoned session cannot hold the
 mount forever.
 
+### D9 — P6: attitude-based axis and current-position measurement (2026-08-01)
+
+`measurement.mode` selects the sweep: `near_pole` (the D1 default,
+unchanged) or `current_position` (TPPA-style start-from-anywhere).
+Decisions specific to the mode:
+
+- **Attitude extraction.** Each measurement solve's `wcs_matrix`
+  yields a full camera attitude; the relative rotation between
+  consecutive attitudes is a pure rotation about the RA axis
+  (commanded sweep + tracking, same physical axis), so its rotation
+  axis — skew-symmetric part, angle `atan2(|skew|/2, (tr−1)/2)` —
+  is the measured axis. Guards: each segment must rotate ≥ ~1° (a
+  smaller rotation means the mount ignored the slew and the
+  extraction would amplify solve noise); a rotation within numerical
+  noise of 180° has an ambiguous axis and is rejected (and is itself
+  flip-shaped); the two sign-aligned segment axes must agree within
+  1°, since a disagreement means something other than the RA axis
+  moved (meridian flip, bumped tripod). Survivors are averaged, sign
+  toward the visible pole.
+- **Mount-frame targets.** `get_mount_position` anchors the sweep;
+  all targets keep the mount's *reported* declination. Commanding
+  the dec the mount already believes is what makes the dec axis
+  provably stationary — anchoring on a solved position instead
+  would command a dec differing by the pointing error, moving the
+  dec axis by roughly the misalignment being measured.
+- **Sweep direction is automatic**: away from the meridian, on the
+  side the mount already stands (sign of the current hour angle), so
+  an RA-only sweep can never cross the meridian and invite a GoTo
+  flip. `direction`, `dec_deg`, and `first_point_ha_deg` are unused
+  in this mode.
+- **First point in place.** The first exposure is taken where the
+  mount stands; only points 2 and 3 slew.
+- **Full WCS required.** A matrix-less measurement solve aborts in
+  this mode (no attitude, no axis) with an error naming the point.
+- **Horizon guard, both modes.** Any measurement target below 10°
+  observed altitude aborts before any motion — near-horizon solves
+  are refraction-dominated garbage. (Near-pole sweeps at temperate
+  latitudes sit far above this; the guard mostly protects arbitrary
+  current-position sweeps and tropical near-pole geometry.)
+- **Cross-check surfaced.** Both methods run whenever their inputs
+  exist; the non-primary axis's angular separation from the primary
+  is published as `measurement.cross_check_arcsec` (omitted when
+  unavailable, warned above 2′). The BDD choreography synthesizes
+  attitude-consistent per-point CD matrices via `wcs_from_attitude`
+  (the exact inverse of `attitude_from_wcs`), so the cross-check is
+  asserted end-to-end, not just in unit tests.
+
 ## MVP scope (this PR)
 
 - Plan + design docs.
@@ -216,8 +263,6 @@ Deferred:
 
 - **P5 — ui-htmx page**: live SVG overlay (circles/arrow), phase
   display, finish button, driven from `/status`.
-- **P6 — attitude-based axis + start-from-current-position** (and the
-  plane-normal/attitude cross-check).
 - **P7 — hardware validation on the rig** (GTi + SV605CC), then a
   README recipe.
 - Sourcing site coordinates from rp (D7). Manual-rotation mode for
@@ -277,7 +322,7 @@ suite.
 
 ### Phase 5 — ui-htmx polar-alignment page (separate PR)
 
-### Phase 6 — attitude math + arbitrary start position (separate PR)
+### Phase 6 — attitude math + arbitrary start position (landed; D9)
 
 ### Phase 7 — rig validation (GTi), README recipe, plan archive
 
