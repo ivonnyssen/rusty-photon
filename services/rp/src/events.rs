@@ -847,9 +847,14 @@ mod tests {
         hits.load(Ordering::SeqCst) >= expected
     }
 
-    /// Long enough that a loaded CI runner does not fail a delivery that
-    /// is merely slow.
-    const DELIVERY_BUDGET: Duration = Duration::from_secs(2);
+    /// Comfortably past [`WEBHOOK_TIMEOUT`], the budget the production
+    /// client gives one delivery, so only a delivery that never arrives
+    /// fails these tests — a merely slow one on a loaded runner cannot.
+    /// Derived from that constant rather than hand-picked, so raising the
+    /// production timeout cannot leave the tests waiting less than the
+    /// code is allowed to take. Costs nothing when the delivery lands:
+    /// [`wait_for_count`] polls and returns early.
+    const DELIVERY_BUDGET: Duration = Duration::from_secs(WEBHOOK_TIMEOUT.as_secs() * 2);
 
     fn bus_with_subscriber(webhook_url: &str, auth: Option<Value>) -> EventBus {
         let mut entry = json!({
