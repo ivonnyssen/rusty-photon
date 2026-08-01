@@ -281,6 +281,31 @@ struct ConfiguredDevice {
     unique_id: String,
 }
 
+/// The warn for a probe client that could not be built. With a CA to
+/// load, the failure is the missing-trust-root story and the pki fix
+/// applies; with none to load (ACME install, plain-HTTP probe) it is not
+/// a pki problem, and the pki suggestion would mislead.
+fn client_build_warn(service: Option<String>, had_ca: bool, e: &impl std::fmt::Display) -> Check {
+    if had_ca {
+        Check::warn(
+            "service.devices",
+            service,
+            format!(
+                "the service serves TLS but doctor could not load its trust root: {e} \
+                 — the probe was skipped"
+            ),
+            Some("run `rusty-photon-doctor tls issue` to (re)create the pki tree".to_string()),
+        )
+    } else {
+        Check::warn(
+            "service.devices",
+            service,
+            format!("doctor could not build its probe client: {e} — the probe was skipped"),
+            None,
+        )
+    }
+}
+
 /// Ask an active Alpaca service for its configured devices, following the
 /// service's own config: HTTPS when its `server.tls` is set, the
 /// observatory credential when its `server.auth` is on. The dialled host
@@ -302,28 +327,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
     });
     let client = match rusty_photon_tls::client::build_reqwest_client(ca_path.as_deref()) {
         Ok(client) => client,
-        // Only the Some(ca_path) failure is the missing-trust-root story;
-        // with no CA to load (ACME install, plain-HTTP probe) a builder
-        // failure is not a pki problem and the pki suggestion would mislead.
-        Err(e) if ca_path.is_some() => {
-            return Check::warn(
-                "service.devices",
-                service,
-                format!(
-                    "the service serves TLS but doctor could not load its trust root: {e} \
-                     — the probe was skipped"
-                ),
-                Some("run `rusty-photon-doctor tls issue` to (re)create the pki tree".to_string()),
-            );
-        }
-        Err(e) => {
-            return Check::warn(
-                "service.devices",
-                service,
-                format!("doctor could not build its probe client: {e} — the probe was skipped"),
-                None,
-            );
-        }
+        Err(e) => return client_build_warn(service, ca_path.is_some(), &e),
     };
     let credential = if auth_on {
         crate::provision::read_credential(&ctx.config_dir)
@@ -643,6 +647,36 @@ mod tests {
                 && text.contains("Focuser \"EAF\" (#1)"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn test_client_build_warn_with_a_ca_suggests_the_pki_tree() {
+        let check = client_build_warn(Some("ppba-driver".to_string()), true, &"boom");
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(check.service.as_deref(), Some("ppba-driver"));
+        assert!(
+            check.detail.contains("could not load its trust root: boom"),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check.suggestion.unwrap().contains("pki tree"),
+            "the CA-loading failure keeps the pki suggestion"
+        );
+    }
+
+    #[test]
+    fn test_client_build_warn_without_a_ca_gives_no_pki_guidance() {
+        let check = client_build_warn(Some("ppba-driver".to_string()), false, &"boom");
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check
+                .detail
+                .contains("could not build its probe client: boom"),
+            "{}",
+            check.detail
+        );
+        assert_eq!(check.suggestion, None);
     }
 
     #[test]
