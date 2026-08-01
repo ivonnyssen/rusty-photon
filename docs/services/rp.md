@@ -534,6 +534,16 @@ Plugins register a callback URL and subscribed events in the configuration.
 `rp` POSTs events to each registered URL. All plugins use the same
 asynchronous request-response pattern.
 
+**A `type: "event"` registration must be deliverable.** `name`,
+`webhook_url`, and a `subscribes_to` list holding at least one
+event-name string are all required. Each is checked at config load with
+the offending entry named (`plugins.0.subscribes_to`), and `rp` refuses
+to start when one is missing or mistyped. Accepting such a registration
+as inert is the more dangerous reading: a `subscribe_to` typo would leave
+a plugin that looks registered, logs nothing, and receives nothing for
+the whole night. There is deliberately no "registered but idle" state —
+to stop delivering to a plugin, remove its registration.
+
 **A subscriber may serve TLS and require authentication.** A
 `webhook_url` may be `https://` when the plugin's own service is
 TLS-enabled; `rp` verifies that certificate against the top-level

@@ -3116,12 +3116,14 @@ mod tests {
         }
     }
 
-    // rp's `EventBus` drops an event registration that carries no
-    // `subscribes_to` array — it receives nothing regardless of its
-    // `webhook_url` — so joining it would report a mismatch and offer a
-    // credential for deliveries that never happen.
+    // doctor joins by registration type alone and does not re-implement
+    // rp's deliverability rule: rp refuses to start on an event
+    // registration carrying no `subscribes_to`, so an entry doctor meets
+    // on a running rig is one rp dials. A second copy of that rule here
+    // could only drift from it — and did, before rp made the state
+    // impossible.
     #[test]
-    fn test_rp_event_plugin_without_subscriptions_is_not_joined() {
+    fn test_rp_event_plugin_is_joined_without_re_checking_deliverability() {
         let dir = tempfile::tempdir().unwrap();
         stage_pki(dir.path(), "s3cret-pw");
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
@@ -3140,7 +3142,17 @@ mod tests {
                                "webhook_url": "http://localhost:11170/webhook" } ] }),
         );
         let ctx = config_only_ctx(dir.path());
-        assert!(rp_client_joins(&ctx).is_empty());
+        let checks = rp_client_joins(&ctx);
+
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("an event registration is joined on its type alone");
+        assert!(
+            transport.detail.contains("plugins.0.webhook_url"),
+            "{}",
+            transport.detail
+        );
     }
 
     #[test]
