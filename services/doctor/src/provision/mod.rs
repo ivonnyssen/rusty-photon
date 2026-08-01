@@ -205,13 +205,25 @@ pub fn pki_ownership(config_dir: &Path) -> Option<PkiOwnership> {
             continue;
         }
         ownership.examined += 1;
-        if meta.uid() != uid || meta.gid() != gid {
-            ownership
-                .mismatched
-                .push(OwnershipMismatch { path, essential });
-        }
+        ownership
+            .mismatched
+            .extend(foreign_entry(path, essential, &meta, uid, gid));
     }
     Some(ownership)
+}
+
+/// The ownership comparison itself: `Some` when the entry does not belong
+/// to the owner the sweep aligns everything to.
+#[cfg(unix)]
+fn foreign_entry(
+    path: PathBuf,
+    essential: bool,
+    meta: &std::fs::Metadata,
+    uid: u32,
+    gid: u32,
+) -> Option<OwnershipMismatch> {
+    use std::os::unix::fs::MetadataExt;
+    (meta.uid() != uid || meta.gid() != gid).then_some(OwnershipMismatch { path, essential })
 }
 
 #[cfg(not(unix))]
@@ -772,6 +784,70 @@ mod tests {
             err.contains("chown"),
             "the error must name the repair: {err}"
         );
+    }
+
+    /// The chown the sweep performs, exercised directly against an owner
+    /// this process cannot hand a file to. Unprivileged that is EPERM —
+    /// the arm the fatal/best-effort split hangs on; privileged the chown
+    /// really happens and the entry is simply aligned.
+    #[cfg(unix)]
+    #[test]
+    fn test_align_entry_reports_a_chown_it_cannot_perform() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ca-key.pem");
+        std::fs::write(&file, "key material").unwrap();
+        const NOBODY: u32 = 65534;
+        match align_entry(&file, NOBODY, NOBODY) {
+            Err(problem) => {
+                assert!(problem.contains("ca-key.pem"), "{problem}");
+                assert!(problem.contains("could not chown"), "{problem}");
+            }
+            Ok(()) => {
+                use std::os::unix::fs::MetadataExt;
+                let meta = std::fs::metadata(&file).unwrap();
+                assert_eq!(meta.uid(), NOBODY, "a privileged run must have chowned it");
+            }
+        }
+    }
+
+    /// The comparison `tls.ownership` reports on, judged against an owner
+    /// that is not this process's — the packaged service user next to
+    /// material an earlier `sudo` left behind. Testable as a function
+    /// because a sandbox cannot create a cross-owned file to point at.
+    #[cfg(unix)]
+    #[test]
+    fn test_an_entry_owned_by_someone_else_is_a_mismatch() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sentinel-key.pem");
+        std::fs::write(&file, "key material").unwrap();
+        let meta = std::fs::symlink_metadata(&file).unwrap();
+
+        let foreign =
+            foreign_entry(file.clone(), true, &meta, meta.uid() + 1, meta.gid()).expect("mismatch");
+        assert!(foreign.path.ends_with("sentinel-key.pem"));
+        assert!(foreign.essential, "a key file is material something reads");
+        // A group it does not share counts too: the services' access is
+        // owner *and* group.
+        assert!(foreign_entry(file.clone(), false, &meta, meta.uid(), meta.gid() + 1).is_some());
+        assert!(
+            foreign_entry(file, true, &meta, meta.uid(), meta.gid()).is_none(),
+            "an entry that already belongs to the config root's owner is not a finding"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_logs_the_strays_it_leaves_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some((dir, pki)) = tree_whose_entries_cannot_be_stat_ed("ca.srl") else {
+            return;
+        };
+        // The logging wrapper the provisioning paths call: a stray it
+        // cannot align is a log line, never a failed provisioning run.
+        let aligned = align_pki_ownership(dir.path());
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        aligned.unwrap();
     }
 
     #[cfg(unix)]

@@ -852,6 +852,37 @@ mod tests {
         );
     }
 
+    /// Material the sweep cannot align still fails the renewal — a key no
+    /// service can read is not a state to exit 0 on. The unalignable state
+    /// is a pki directory that lists but cannot be traversed, which leaves
+    /// nothing for the legs to renew (`ca.pem` is never a renewable pair)
+    /// and puts the failure squarely on the sweep.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_material_the_sweep_cannot_align_fails_the_renewal() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, pki) = stage_tree();
+        std::fs::remove_file(pki.join("ca-key.pem")).unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o400)).unwrap();
+        if std::fs::symlink_metadata(pki.join("ca.pem")).is_ok() {
+            std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!(
+                "running privileged; the unalignable-material path needs an unprivileged run"
+            );
+            return;
+        }
+
+        let result = renew(dir.path(), false).await;
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let err = result.unwrap_err();
+        assert!(err.message.contains("ca.pem"), "{}", err.message);
+        assert!(
+            err.applied.is_empty(),
+            "nothing was renewed, so nothing is claimed: {:?}",
+            err.applied
+        );
+    }
+
     #[test]
     fn test_an_alignment_failure_says_the_certificate_work_survived() {
         let problem = "could not chown ca-key.pem".to_string();

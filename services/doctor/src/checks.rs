@@ -2171,6 +2171,10 @@ mod tests {
             pki_ownership(&config_only_ctx(dir.path())).is_empty(),
             "a host that has never been provisioned has no ownership story"
         );
+        // Nor about a config root that is not there at all: there is no
+        // owner to compare against, which is silence, not a verdict.
+        let absent = dir.path().join("never-created");
+        assert!(pki_ownership(&config_only_ctx(&absent)).is_empty());
     }
 
     #[test]
