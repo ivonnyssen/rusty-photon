@@ -206,6 +206,43 @@ jobs:
             --test_output=all \
             //...
 
+      # Where a doc test's dependency paths actually live decides whether the
+      # runfiles-manifest resolver can reach them at all: argv elements go
+      # through RF() in the generated .ps1, but Bazel spills a long argument
+      # list into a params file, and the writer copies THAT through with only
+      # the exec-root prefixes stripped. The spill threshold is per-OS and the
+      # Windows argv is the longest, so this can differ from what a local Linux
+      # run shows. Reported on every Windows run, not just failures: a doc test
+      # that silently moves from argv to the params file would otherwise look
+      # exactly like the resolver working.
+      - name: Report doc-test argument routing (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $scripts = Get-Item -Path 'bazel-out/x64_windows-fastbuild/bin/*/*/*.rustdoc_test.ps1' -ErrorAction SilentlyContinue
+          if (-not $scripts) { Write-Output 'no rustdoc_test runner scripts found'; return }
+          foreach ($script in $scripts) {
+            Write-Output "=== $($script.Name) ==="
+            $body = Get-Content -LiteralPath $script.FullName -Raw
+            $inArgv = ([regex]::Matches($body, "--extern=[^=']+=")).Count
+            $ldirs = ([regex]::Matches($body, "-L[a-z]*=")).Count
+            Write-Output ("  argv: --extern={0} -L={1}" -f $inArgv, $ldirs)
+            $params = $script.FullName -replace '\.rustdoc_test\.ps1$', '.rustdoc_opt_params'
+            if (-not (Test-Path -LiteralPath $params)) {
+              Write-Output '  params file: (absent)'
+              continue
+            }
+            $text = Get-Content -LiteralPath $params -Raw
+            if ($text -eq 'unused') {
+              Write-Output '  params file: unused - the whole argv went through RF()'
+            } else {
+              $spilled = ([regex]::Matches($text, '--extern=[^=\r\n]+=')).Count
+              Write-Output ("  params file: SPILLED, --extern={0} -L={1} - these BYPASS RF()" -f `
+                $spilled, ([regex]::Matches($text, '-L[a-z]*=')).Count)
+            }
+          }
+
       # Windows post-mortem for the rust_doc_test dependency-resolution family
       # (E0463 "can't find crate" / "extern location does not exist"): a doc
       # test is the only kind of target that reads dependency rlibs out of a
