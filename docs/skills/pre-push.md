@@ -218,19 +218,39 @@ unescaped, so the child's CRT parser strips them — the runner's `CRT()`
 function re-encodes them as `\"` per MSVCRT rules just before that hop. Both
 together are what let the qhyccd-rs sim doctest target run on Windows.
 
-**The runner also resolves its `--arg-file` paths through the runfiles
-manifest.** windows-latest intermittently leaves a build-script
-`_bs.linksearchpaths` runfiles-tree entry as a *dangling symlink* (the #587
-family-2 flake: `file=false symlink=true len=0` with a real parent directory),
-which no open-retry can outlast. The manifest's execroot target is a real file
-— `build:windows --remote_download_outputs=all` outranks `build:ci`'s
-`toplevel` because platform config appends last — so RF() substitutes it and
-sidesteps the tree. That covers both spellings: `external/…/_bs.linksearchpaths`
-for a crates.io build script (#752), and bare workspace-relative
+**The runner also resolves its dependency paths through the runfiles
+manifest.** windows-latest intermittently leaves a runfiles-tree entry as a
+*dangling symlink* (the #587 family-2 flake: `file=false symlink=true len=0`
+with a real parent directory), which no open-retry can outlast. The manifest's
+execroot target is a real file — `build:windows --remote_download_outputs=all`
+outranks `build:ci`'s `toplevel` because platform config appends last — so
+RF() substitutes it and sidesteps the tree. That covers the `--arg-file`
+values in both spellings: `external/…/_bs.linksearchpaths` for a crates.io
+build script (#752), and bare workspace-relative
 `crates/…/build_script.linksearchpaths` for a first-party path dependency's
 (#781 — the qhyccd-rs real/sim doc-test pair shares that runfile and raced on
 it whenever both executed on the same runner, exactly one failing per
-attempt).
+attempt). It also covers the paths carried *inside* a flag — `--extern=`,
+`-L…=`, `--sysroot=` — which are the bulk of a doc test's argv and the rlibs
+rustdoc itself opens (#796).
+
+**Reading a doc-test dependency failure on Windows.** rustdoc reports a lost
+rlib two different ways, and which one you get says *where* the loss happened,
+not what was lost:
+
+| Message | What it proves |
+|---------|----------------|
+| `error: extern location for X does not exist: <path>` | the first of rustc's two stats of that path failed |
+| `error[E0463]: can't find crate for X`, with **no** `note:` lines | the first stat succeeded and the second (inside the metadata loader) did not — `MetadataError::NotPresent` is swallowed without recording a rejection, so nothing names the file |
+| `error[E0432]: unresolved import` | genuinely no `--extern` for that crate — an argv problem, not a filesystem one |
+| `error[E0786]: found invalid metadata files` | the file is there but truncated or corrupt |
+
+The first two mean the same defect; only the second is easy to misread as a
+missing dependency edge. Both appeared for the same crate across two
+occurrences on 2026-07-31. When one recurs, the job's "Dump doc-test runfiles
+state (Windows diagnostic)" step reports, per doc test, the `_main\external`
+link and every manifest-named `.rlib` that is unreachable by either spelling —
+read that before theorising.
 
 Two things generalise. The job's "Enable long paths" step does **not** cover
 this: `LongPathsEnabled` is opt-in per binary via a `longPathAware` manifest, and

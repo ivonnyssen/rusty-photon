@@ -159,34 +159,6 @@ jobs:
           # it here too.
           bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
 
-      # TEMP DIAGNOSTIC (see PR #474): windows-latest deterministically fails
-      # a couple of ppba-driver rust_test targets (bdd, conformu_integration)
-      # with E0463 "can't find crate", reproducing byte-identically across
-      # reruns and even with remote-cache reads disabled -- so it's neither
-      # flakiness nor a stale cache entry. Dump the actual generated .params
-      # file for the two known-bad targets on failure so we can see the real
-      # --extern paths Bazel computed instead of inferring from rustc's error.
-      - name: Dump failing params files (Windows diagnostic)
-        if: failure() && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $files = @(
-            "bazel-out/x64_windows-fastbuild/bin/services/ppba-driver/bdd.exe-0.params",
-            "bazel-out/x64_windows-fastbuild/bin/services/ppba-driver/conformu_integration.exe-0.params"
-          )
-          foreach ($f in $files) {
-            Write-Output "=== $f ==="
-            if (Test-Path $f) {
-              $content = Get-Content $f -Raw
-              Write-Output $content
-              Write-Output "--- total chars: $($content.Length) ---"
-              Write-Output "--- extern lines ---"
-              Get-Content $f | Select-String -Pattern '^--extern'
-            } else {
-              Write-Output "(not found)"
-            }
-          }
-
       - name: bazel test (fast)
         # The .bazelrc default filter includes bdd (for the local loop);
         # exclude it here explicitly to keep the fast unit + integration
@@ -233,3 +205,57 @@ jobs:
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...
+
+      # Windows post-mortem for the rust_doc_test dependency-resolution family
+      # (E0463 "can't find crate" / "extern location does not exist"): a doc
+      # test is the only kind of target that reads dependency rlibs out of a
+      # RUNFILES TREE at test time, and every failure in this family is that
+      # tree disagreeing with the manifest it was built from. rustdoc cannot
+      # tell the three possible causes apart -- it reports a dangling entry, an
+      # absent one, and one whose stat transiently failed with the same two
+      # messages -- so dump the state directly: the `_main\external` link the
+      # generated runner creates, and for every .rlib the manifest names, both
+      # spellings of it. Cheap and silent unless something is actually wrong.
+      - name: Dump doc-test runfiles state (Windows diagnostic)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Globbed, not -Recurse: bazel-out is enormous and walking into the
+          # runfiles trees themselves would dominate the step's runtime.
+          $trees = Get-Item -Path 'bazel-out/x64_windows-fastbuild/bin/*/*/*.rustdoc_test.bat.runfiles' -ErrorAction SilentlyContinue
+          if (-not $trees) { Write-Output 'no rustdoc_test runfiles trees found'; return }
+          foreach ($tree in $trees) {
+            Write-Output "=== $($tree.FullName) ==="
+            $ext = Join-Path $tree.FullName '_main\external'
+            $link = Get-Item -LiteralPath $ext -Force -ErrorAction SilentlyContinue
+            if ($link) {
+              Write-Output ("  _main\external: linkType={0} target={1} attrs={2}" -f $link.LinkType, $link.Target, $link.Attributes)
+            } else {
+              Write-Output '  _main\external: MISSING (the runner creates it; rlib paths resolve through it)'
+            }
+            $mf = "$($tree.FullName)_manifest"
+            if (-not (Test-Path -LiteralPath $mf)) { Write-Output "  manifest MISSING: $mf"; continue }
+            $checked = 0
+            $bad = 0
+            foreach ($line in Get-Content -LiteralPath $mf) {
+              $sep = $line.IndexOf(' ')
+              if ($sep -lt 1) { continue }
+              $key = $line.Substring(0, $sep)
+              $target = $line.Substring($sep + 1)
+              if (-not $key.EndsWith('.rlib')) { continue }
+              $checked++
+              $treePath = Join-Path $tree.FullName $key
+              $targetOk = Test-Path -LiteralPath $target
+              $treeOk = Test-Path -LiteralPath $treePath
+              if ($targetOk -and $treeOk) { continue }
+              $bad++
+              $entry = Get-Item -LiteralPath $treePath -Force -ErrorAction SilentlyContinue
+              Write-Output ("  UNREACHABLE {0}" -f $key)
+              Write-Output ("    manifest target: exists={0} path={1}" -f $targetOk, $target)
+              Write-Output ("    runfiles entry : exists={0} linkType={1} target={2} pathLen={3}" -f `
+                $treeOk, $(if ($entry) { $entry.LinkType } else { '(no entry)' }), `
+                $(if ($entry) { $entry.Target } else { '' }), $treePath.Length)
+            }
+            Write-Output ("  rlibs in manifest={0} unreachable={1}" -f $checked, $bad)
+          }

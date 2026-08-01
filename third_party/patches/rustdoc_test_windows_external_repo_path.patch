@@ -79,7 +79,7 @@
  
      let argv_str = argv
          .iter()
-@@ -226,20 +261,178 @@
+@@ -226,20 +261,222 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -106,15 +106,32 @@
 +        // naming the exact gap — except main-repo lookups, where a bare
 +        // element may simply not be a path, so a miss stays silent.
 +        //
-+        // RF also rewrites `--sysroot=<dir>` (via RFD). rustc expands that
-+        // directory into the std rlib paths it hands the linker, and spelled
-+        // relative to the runfiles tree those exceed MAX_PATH: the tree prefix
-+        // alone costs ~123 chars, putting `libpanic_unwind-<hash>.rlib` at 261
-+        // and failing `LNK1181: cannot open input file` while `libstd-<hash>`
-+        // at 252 in the same directory resolves. link.exe carries no
-+        // `longPathAware` manifest, so a host's LongPathsEnabled opt-in does
-+        // not reach it. Resolving the directory through the manifest yields
-+        // the execroot target (~155 chars), which puts every std rlib
++        // The bulk of the argv is not bare paths but paths carried INSIDE a
++        // flag: `--extern=<name>=<rlib>` per direct dependency,
++        // `-L[<kind>]=<dir>` per transitive one, and `--sysroot=<dir>`. Those
++        // are the rlibs and search directories rustdoc itself opens, and they
++        // outnumber the bare elements by roughly five to one, so RF splits the
++        // flag off and resolves the value the same way. Leaving them
++        // tree-relative left every dependency of a doctest riding the tree,
++        // where rustdoc reports a lost rlib in one of two ways depending on
++        // which of its two stats of the path failed: `extern location for X
++        // does not exist` when the first one did, and a bare
++        // `E0463: can't find crate for X` when the first succeeded and the
++        // second did not — the metadata loader treats a file that vanished
++        // between the two as simply absent and falls back, silently, to the
++        // search directories.
++        //
++        // Resolving them also buys MAX_PATH headroom, the same win the
++        // `--sysroot=` rewrite was added for. rustc expands that directory
++        // into the std rlib paths it hands the linker, and spelled relative to
++        // the runfiles tree those exceed MAX_PATH: the tree prefix alone costs
++        // ~123 chars, putting `libpanic_unwind-<hash>.rlib` at 261 and failing
++        // `LNK1181: cannot open input file` while `libstd-<hash>` at 252 in
++        // the same directory resolves. link.exe carries no `longPathAware`
++        // manifest, so a host's LongPathsEnabled opt-in does not reach it.
++        // Dependency rlibs sit in the same budget — the longest measured on CI
++        // reached exactly 260 through the tree against 150 through the
++        // manifest — so the execroot target keeps both them and every std rlib
 +        // comfortably under the limit.
 +        //
 +        // CRT() wraps every resolved value because PowerShell 5.1's native
@@ -127,10 +144,17 @@
 -    let content = [
 -        "@ECHO OFF".to_owned(),
 -        "".to_owned(),
-+    let resolver = r#"# Parse the runfiles MANIFEST into $script:RFM once (key -> absolute target).
++    let resolver = r#"# Parse the runfiles MANIFEST once into $script:RFM (file key -> absolute
++# target) and $script:RFMD (directory key -> absolute target directory). The
++# manifest maps files only, so directories are derived: for each entry, walk up
++# while key and target still share their trailing component and register every
++# shared parent. Deriving them in this single pass rather than scanning the
++# manifest per lookup matters because a doc test resolves one `-L` directory
++# per transitive dependency — dozens of them against a manifest of hundreds.
 +function RFI {
 +    if ($null -ne $script:RFM) { return }
 +    $script:RFM = @{}
++    $script:RFMD = @{}
 +    $mf = $env:RUNFILES_MANIFEST_FILE
 +    if ((-not $mf -or -not (Test-Path $mf)) -and $env:TEST_SRCDIR) { $mf = Join-Path $env:TEST_SRCDIR 'MANIFEST' }
 +    if ($mf -and (Test-Path $mf)) {
@@ -139,39 +163,48 @@
 +            if ($i -gt 0) { $script:RFM[$l.Substring(0, $i)] = $l.Substring($i + 1) }
 +        }
 +    }
-+}
-+
-+# Resolve a runfiles-relative FILE key to its absolute manifest target, or
-+# $null when the manifest has no live entry for it.
-+function RFF($rel) {
-+    RFI
-+    $t = $script:RFM[$rel]
-+    if ($t) {
-+        if (Test-Path $t) { return $t }
-+        Write-Warning ('runfiles manifest maps ' + $rel + ' to missing ' + $t)
-+    }
-+    return $null
-+}
-+
-+# Resolve a runfiles-relative DIRECTORY to its absolute target. The manifest
-+# maps files only, so match any entry beneath the directory and trim the
-+# shared suffix off its target.
-+function RFD($d) {
-+    $rel = $d -replace '\\','/'
-+    if ($rel.StartsWith('../')) { $rel = $rel.Substring(3) }
-+    elseif ($rel.StartsWith('external/')) { $rel = $rel.Substring(9) }
-+    else { return $d }
-+    RFI
-+    $pfx = $rel + '/'
 +    foreach ($k in $script:RFM.Keys) {
-+        if ($k.StartsWith($pfx)) {
-+            $v = $script:RFM[$k] -replace '\\','/'
-+            $sfx = $k.Substring($rel.Length)
-+            if ($v.EndsWith($sfx)) { return $v.Substring(0, $v.Length - $sfx.Length) }
++        $kp = $k
++        $tp = $script:RFM[$k] -replace '\\','/'
++        while ($true) {
++            $ki = $kp.LastIndexOf('/')
++            $ti = $tp.LastIndexOf('/')
++            if ($ki -lt 0 -or $ti -lt 0 -or $kp.Substring($ki) -ne $tp.Substring($ti)) { break }
++            $kp = $kp.Substring(0, $ki)
++            $tp = $tp.Substring(0, $ti)
++            if (-not $script:RFMD.ContainsKey($kp)) { $script:RFMD[$kp] = $tp }
 +        }
 +    }
-+    Write-Warning ('no runfiles manifest entry under directory ' + $rel)
-+    return $d
++}
++
++# Strip the runfiles spelling off a path and return its MANIFEST key. Bazel
++# uses three: `../` (cross-repo short_path), `external/` (a generated
++# cross-repo file after root-stripping) and bare workspace-relative (main
++# repo, under `_main` with Bzlmod). $null for an absolute path, which is not a
++# runfiles path at all.
++function RFK($p) {
++    $rel = $p -replace '\\','/'
++    if ($rel.StartsWith('../')) { return $rel.Substring(3) }
++    if ($rel.StartsWith('external/')) { return $rel.Substring(9) }
++    if ($rel -match '^([A-Za-z]:|/)') { return $null }
++    $ws = $env:TEST_WORKSPACE
++    if (-not $ws) { $ws = '_main' }
++    return $ws + '/' + $rel
++}
++
++# Resolve a runfiles-relative path to its absolute execroot target, as a file
++# first and then as a directory. $null when the manifest has no live entry.
++function RFR($p) {
++    $k = RFK $p
++    if (-not $k) { return $null }
++    RFI
++    $t = $script:RFM[$k]
++    if ($t) {
++        if (Test-Path $t) { return $t }
++        Write-Warning ('runfiles manifest maps ' + $k + ' to missing ' + $t)
++        return $null
++    }
++    return $script:RFMD[$k]
 +}
 +
 +# Windows PowerShell 5.1 marshals arguments to native commands by pasting the
@@ -187,34 +220,45 @@
 +    return $s
 +}
 +
-+# Resolve one argv element: --sysroot= via RFD, runfiles-relative paths via
-+# the manifest, anything else untouched.
++# Resolve one argv element: the path half of a path-carrying flag, or a bare
++# runfiles-relative path, via the manifest; anything else untouched.
 +function RF($p) {
-+    if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) }
++    # Flags whose value is a path: `--extern=<name>=<rlib>` (one per direct
++    # dependency), `-L[<kind>]=<dir>` (one per transitive dependency, plus the
++    # toolchain's) and `--sysroot=<dir>`. Keep the flag, rewrite the value.
++    if ($p -match '^(--extern=[^=]+=|--sysroot=|-L[a-z]*=)(.+)$') {
++        $v = $matches[2]
++        $t = RFR $v
++        if ($t) { return $matches[1] + $t }
++        if (-not ($v -match '^([A-Za-z]:|[\\/])')) { Write-Warning ('runfile not found via manifest: ' + $v) }
++        return $p
++    }
++    # The documented crate's own rlib arrives as the VALUE of a bare `--extern`
++    # flag, spelled `<name>=<path>`. A miss stays silent: a `<name>=<value>`
++    # element need not be a path (`--cfg` takes `feature="simulation"`).
++    if ($p -match '^([A-Za-z_][A-Za-z0-9_]*=)(.+[\\/].+)$') {
++        $t = RFR $matches[2]
++        if ($t) { return $matches[1] + $t }
++    }
 +    if ($p -match '^\.\.[\\/]') {
-+        $rel = $p.Substring(3) -replace '\\','/'
-+        $t = RFF $rel
++        $t = RFR $p
 +        if ($t) { return $t }
-+        $fb = 'external/' + $rel
-+        if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $rel) }
++        $fb = 'external/' + ($p.Substring(3) -replace '\\','/')
++        if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $p) }
 +        return $fb
 +    }
 +    if ($p -match '^external[\\/]') {
-+        $rel = $p.Substring(9) -replace '\\','/'
-+        $t = RFF $rel
++        $t = RFR $p
 +        if ($t) { return $t }
-+        if (-not (Test-Path $p)) { Write-Warning ('runfile not found via manifest or tree: ' + $rel) }
++        if (-not (Test-Path $p)) { Write-Warning ('runfile not found via manifest or tree: ' + $p) }
 +        return $p
 +    }
-+    # Main-repo files arrive as bare workspace-relative paths; their manifest
-+    # keys sit under the workspace runfiles directory (`_main` under Bzlmod).
-+    # The match skips flags and name=path pairs, and a bare element may still
-+    # not be a path at all, so a manifest miss falls through untouched and
-+    # silent.
++    # Main-repo files arrive as bare workspace-relative paths, which RFK maps
++    # under the workspace runfiles directory. The match skips flags, and a bare
++    # element may still not be a path at all, so a miss falls through untouched
++    # and silent.
 +    if ($p -match '^[^-][^=]*[\\/]') {
-+        $ws = $env:TEST_WORKSPACE
-+        if (-not $ws) { $ws = '_main' }
-+        $t = RFF ($ws + '/' + ($p -replace '\\','/'))
++        $t = RFR $p
 +        if ($t) { return $t }
 +    }
 +    return $p
@@ -265,7 +309,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +459,29 @@
+@@ -266,14 +503,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -296,7 +340,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +495,11 @@
+@@ -287,5 +539,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  
