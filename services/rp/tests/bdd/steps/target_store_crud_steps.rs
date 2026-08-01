@@ -53,6 +53,16 @@ pub(crate) fn write_target_store_config(world: &mut RpWorld, filters: Option<Vec
     if let Some(target_store) = &world.target_store_config {
         config["target_store"] = target_store.clone();
     }
+    // Progress scenarios need the naming templates configured — they are
+    // what the frame scan parses the on-disk layout with (rp.md §
+    // Progress derivation). `directory_pattern` is left unset so the
+    // documented default applies, exactly as in production.
+    if let Some(pattern) = &world.file_naming_pattern {
+        config["session"]["file_naming_pattern"] = Value::String(pattern.clone());
+    }
+    if let Some(pattern) = &world.directory_pattern {
+        config["session"]["directory_pattern"] = Value::String(pattern.clone());
+    }
     let path = dir.path().join("rp.json");
     std::fs::write(
         &path,

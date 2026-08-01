@@ -1,27 +1,27 @@
-//! Per-target / per-filter exposure counters — the state behind the
-//! `record_exposure` / `get_session_progress` MCP tools and rp.md
-//! §"Dynamic Planner" decision-logic bullets 3–4 plus the
-//! exhausted-targets half of bullet 6.
+//! Planner progress: the derived snapshot the decision logic ranks
+//! against, plus the one scrap of session runtime state that cannot be
+//! derived from disk.
 //!
-//! The store is plain data with pure methods so `decision::next_target`
-//! stays a pure function of its arguments; the shared
-//! `Arc<Mutex<SessionProgress>>` lives on `McpHandler` (one per rp
-//! process — counters survive across MCP connections and orchestrator
-//! re-invocations, and `SessionManager::start` clears them when a
-//! fresh session begins). The counters are also part of rp's persisted
-//! session state (rp.md §"Session Persistence"): `SessionManager`
-//! serializes the store into the session state file and restores it on
-//! startup recovery — hence the serde derives.
+//! `rp` keeps **no** frame counters. A target's actuals are the frames
+//! `capture` wrote, so [`super::progress_scan`] derives them per read
+//! and the result is handed to `decision::next_target` as a
+//! [`PlanProgress`] snapshot. Deriving at the tool boundary rather than
+//! inside the ranking keeps `next_target` a pure function of its
+//! arguments (rp.md §"Dynamic Planner" → Decision Logic) and keeps its
+//! tests free of the filesystem.
 //!
-//! Counters are keyed by target name and *filter key*: the filter
-//! name, with `None` / `""` (an unfiltered rig) normalised to the
-//! empty string. Goals come from the target's `exposures[]` plan
-//! (`count` per entry); the store itself never sees the plan except
-//! through the methods that take a [`PlannerTarget`].
+//! [`SessionProgress`] is what remains of the old counter store: the
+//! filter of the most recent `record_exposure`, feeding rp.md
+//! §"Dynamic Planner" bullet 4's filter-batching tie-break. It is
+//! genuinely session-scoped — "which filter is in the wheel right now"
+//! is not a fact any pile of files can answer — so it stays in the
+//! persisted session state (rp.md §"Session Persistence"), hence the
+//! serde derives. Losing it costs at most one avoidable filter change.
 
 use std::collections::HashMap;
 
 use super::decision::{ExposureSpec, PlannerTarget};
+use super::progress_scan::GoalProgress;
 
 /// Normalise an optional filter name to the map key: the unfiltered
 /// slot (absent, `null`, or `""` in tool parameters and target plans)
@@ -30,49 +30,19 @@ pub fn filter_key(filter: Option<&str>) -> String {
     filter.unwrap_or("").to_string()
 }
 
-/// The in-memory `record_exposure` counters plus the last recorded
-/// filter (rp.md §"Dynamic Planner" bullet 4's "previous frame").
+/// Session runtime state the filesystem cannot supply.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SessionProgress {
-    /// target name → filter key → completed frame count.
-    completed: HashMap<String, HashMap<String, u32>>,
     /// Filter key of the most recently recorded frame, `None` before
     /// the first `record_exposure` of the session.
     last_filter_key: Option<String>,
 }
 
 impl SessionProgress {
-    /// Record one completed frame; returns the updated count for that
-    /// (target, filter) slot.
-    pub fn record(&mut self, target: &str, filter: Option<&str>) -> u32 {
-        let key = filter_key(filter);
-        let slot = self
-            .completed
-            .entry(target.to_string())
-            .or_default()
-            .entry(key.clone())
-            .or_insert(0);
-        *slot = slot.saturating_add(1);
-        self.last_filter_key = Some(key);
-        *slot
-    }
-
-    /// Completed frames recorded for a (target, filter) slot.
-    pub fn completed_for(&self, target: &str, filter: Option<&str>) -> u32 {
-        self.completed
-            .get(target)
-            .and_then(|by_filter| by_filter.get(&filter_key(filter)))
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// All filter keys recorded for a target (for the progress views;
-    /// plans contribute their own keys separately).
-    pub fn recorded_filter_keys(&self, target: &str) -> Vec<&str> {
-        self.completed
-            .get(target)
-            .map(|by_filter| by_filter.keys().map(String::as_str).collect())
-            .unwrap_or_default()
+    /// Note the filter of a completed frame. Nothing is counted — the
+    /// frame itself is the count.
+    pub fn record(&mut self, filter: Option<&str>) {
+        self.last_filter_key = Some(filter_key(filter));
     }
 
     /// Filter key of the most recently recorded frame.
@@ -80,38 +50,77 @@ impl SessionProgress {
         self.last_filter_key.as_deref()
     }
 
-    /// Reset every counter — a fresh session is a fresh night.
+    /// Reset — a fresh session is a fresh night.
     pub fn clear(&mut self) {
-        self.completed.clear();
         self.last_filter_key = None;
     }
+}
 
-    /// The first `exposures[]` entry that has not met its `count`, in
-    /// plan order — the entry `get_next_target` recommends. An entry
-    /// without a `count` has no finite goal and is never complete, so
-    /// the walk stops there. Duplicate-filter plans share one counter
-    /// per filter, so completed frames are allocated to entries in
-    /// plan order. `None` means the plan is empty or fully complete.
-    pub fn next_incomplete_entry<'a>(&self, target: &'a PlannerTarget) -> Option<&'a ExposureSpec> {
-        let mut remaining: HashMap<String, u32> = self
-            .completed
-            .get(&target.name)
-            .cloned()
-            .unwrap_or_default();
-        for entry in &target.exposures {
-            let Some(goal) = entry.count else {
-                return Some(entry);
-            };
-            let have = remaining
-                .entry(filter_key(entry.filter.as_deref()))
-                .or_insert(0);
-            let used = (*have).min(goal);
-            *have -= used;
-            if used < goal {
-                return Some(entry);
-            }
+/// Per-goal counts for the targets under consideration, plus the
+/// session's last filter — everything `decision::next_target` needs to
+/// rank candidates, gathered before the pure call.
+///
+/// Counts are positional: `counts[i]` belongs to `target.exposures[i]`,
+/// because both project from the same `Target::goals` list in order
+/// (`PlannerTarget::from` and
+/// [`super::progress_scan::scan_target`] respectively). A target with
+/// no entry, or an entry shorter than its plan, reads as zero rather
+/// than panicking.
+#[derive(Debug, Default)]
+pub struct PlanProgress {
+    per_target: HashMap<String, Vec<GoalProgress>>,
+    last_filter_key: Option<String>,
+}
+
+impl PlanProgress {
+    /// An empty snapshot carrying only the session's last filter.
+    #[must_use]
+    pub fn new(last_filter_key: Option<String>) -> Self {
+        Self {
+            per_target: HashMap::new(),
+            last_filter_key,
         }
-        None
+    }
+
+    /// Record one target's derived per-goal counts, in goal order.
+    pub fn insert(&mut self, target_name: &str, counts: Vec<GoalProgress>) {
+        self.per_target.insert(target_name.to_string(), counts);
+    }
+
+    /// Filter key of the most recently recorded frame.
+    #[must_use]
+    pub fn last_filter_key(&self) -> Option<&str> {
+        self.last_filter_key.as_deref()
+    }
+
+    /// This target's derived counts for plan entry `index`.
+    fn counts_at(&self, target: &PlannerTarget, index: usize) -> GoalProgress {
+        self.per_target
+            .get(&target.name)
+            .and_then(|counts| counts.get(index))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The first `exposures[]` entry whose goal the good frames on disk
+    /// have not met, in plan order — the entry `get_next_target`
+    /// recommends. An entry without a `count` has no finite goal and is
+    /// never complete, so the walk stops there. `None` means the plan is
+    /// empty or fully complete.
+    ///
+    /// Goals are met on `good`, not `total`: a rejected frame does not
+    /// advance a plan, so a night of poor seeing keeps recommending the
+    /// same entry rather than retiring it.
+    pub fn next_incomplete_entry<'a>(&self, target: &'a PlannerTarget) -> Option<&'a ExposureSpec> {
+        target
+            .exposures
+            .iter()
+            .enumerate()
+            .find(|(index, entry)| match entry.count {
+                None => true,
+                Some(goal) => self.counts_at(target, *index).good < goal,
+            })
+            .map(|(_, entry)| entry)
     }
 
     /// Whether every entry of the target's plan has met its `count`.
@@ -121,50 +130,23 @@ impl SessionProgress {
         !target.exposures.is_empty() && self.next_incomplete_entry(target).is_none()
     }
 
-    /// Completed-to-goal fraction across the target's counted entries
-    /// (clamped per entry, so over-recorded frames don't inflate it).
-    /// A target with no counted entries reports 0.0 — it has no goal
-    /// to progress toward, so bullet 3 keeps preferring it.
+    /// Good-to-desired fraction across the target's counted entries
+    /// (clamped per entry, so an over-shot goal doesn't inflate it).
+    /// A target with no counted entries reports 0.0 — it has no goal to
+    /// progress toward, so bullet 3 keeps preferring it.
     pub fn fraction(&self, target: &PlannerTarget) -> f64 {
-        let mut remaining: HashMap<String, u32> = self
-            .completed
-            .get(&target.name)
-            .cloned()
-            .unwrap_or_default();
         let mut done: u32 = 0;
         let mut goal_total: u32 = 0;
-        for entry in &target.exposures {
+        for (index, entry) in target.exposures.iter().enumerate() {
             let Some(goal) = entry.count else { continue };
             goal_total = goal_total.saturating_add(goal);
-            let have = remaining
-                .entry(filter_key(entry.filter.as_deref()))
-                .or_insert(0);
-            let used = (*have).min(goal);
-            *have -= used;
-            done = done.saturating_add(used);
+            done = done.saturating_add(self.counts_at(target, index).good.min(goal));
         }
         if goal_total == 0 {
             0.0
         } else {
             f64::from(done) / f64::from(goal_total)
         }
-    }
-
-    /// The summed `count` of a target's plan entries matching a filter
-    /// key — the `goal` field of `record_exposure` /
-    /// `get_session_progress`. `None` when the filter is not in the
-    /// plan, or when any matching entry is uncounted (no finite goal).
-    pub fn goal_for(target: &PlannerTarget, key: &str) -> Option<u32> {
-        let mut total: u32 = 0;
-        let mut matched = false;
-        for entry in &target.exposures {
-            if filter_key(entry.filter.as_deref()) != key {
-                continue;
-            }
-            matched = true;
-            total = total.saturating_add(entry.count?);
-        }
-        matched.then_some(total)
     }
 }
 
@@ -192,6 +174,14 @@ mod tests {
         }
     }
 
+    /// `good == total` — the common ungraded case.
+    fn good(counts: &[u32]) -> Vec<GoalProgress> {
+        counts
+            .iter()
+            .map(|&n| GoalProgress { good: n, total: n })
+            .collect()
+    }
+
     #[test]
     fn filter_key_normalises_the_unfiltered_slot() {
         assert_eq!(filter_key(None), "");
@@ -200,28 +190,31 @@ mod tests {
     }
 
     #[test]
-    fn record_increments_and_reads_back() {
+    fn session_progress_remembers_only_the_last_filter() {
         let mut p = SessionProgress::default();
-        assert_eq!(p.completed_for("M31", Some("Red")), 0);
-        assert_eq!(p.record("M31", Some("Red")), 1);
-        assert_eq!(p.record("M31", Some("Red")), 2);
-        assert_eq!(p.record("M31", None), 1);
-        assert_eq!(p.completed_for("M31", Some("Red")), 2);
+        assert_eq!(p.last_filter_key(), None);
+        p.record(Some("Red"));
+        assert_eq!(p.last_filter_key(), Some("Red"));
+        p.record(None);
         assert_eq!(
-            p.completed_for("M31", Some("")),
-            1,
+            p.last_filter_key(),
+            Some(""),
             "None and \"\" share the slot"
         );
-        assert_eq!(p.last_filter_key(), Some(""));
+        p.clear();
+        assert_eq!(p.last_filter_key(), None);
     }
 
     #[test]
-    fn clear_resets_counters_and_last_filter() {
-        let mut p = SessionProgress::default();
-        p.record("M31", Some("Red"));
-        p.clear();
-        assert_eq!(p.completed_for("M31", Some("Red")), 0);
-        assert_eq!(p.last_filter_key(), None);
+    fn a_target_with_no_derived_counts_reads_as_zero() {
+        let t = target("M31", vec![entry(Some("L"), Some(2))]);
+        let p = PlanProgress::default();
+        assert_eq!(
+            p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
+            Some("L")
+        );
+        assert!(!p.is_exhausted(&t));
+        assert_eq!(p.fraction(&t), 0.0);
     }
 
     #[test]
@@ -230,24 +223,40 @@ mod tests {
             "M31",
             vec![entry(Some("L"), Some(2)), entry(Some("R"), Some(1))],
         );
-        let mut p = SessionProgress::default();
+        let mut p = PlanProgress::default();
+
+        p.insert("M31", good(&[1, 0]));
         assert_eq!(
             p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
             Some("L")
         );
-        p.record("M31", Some("L"));
+
+        p.insert("M31", good(&[2, 0]));
         assert_eq!(
             p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
-            Some("L")
+            Some("R"),
+            "a met goal rotates the recommendation"
         );
-        p.record("M31", Some("L"));
-        assert_eq!(
-            p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
-            Some("R")
-        );
-        p.record("M31", Some("R"));
+
+        p.insert("M31", good(&[2, 1]));
         assert!(p.next_incomplete_entry(&t).is_none());
         assert!(p.is_exhausted(&t));
+    }
+
+    #[test]
+    fn rejected_frames_do_not_meet_a_goal() {
+        let t = target("M31", vec![entry(Some("L"), Some(1))]);
+        let mut p = PlanProgress::default();
+        // One frame captured, graded out: total advances, good doesn't.
+        p.insert("M31", vec![GoalProgress { good: 0, total: 1 }]);
+        assert!(
+            !p.is_exhausted(&t),
+            "a rejected frame must not retire the target"
+        );
+        assert_eq!(
+            p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
+            Some("L")
+        );
     }
 
     #[test]
@@ -256,105 +265,78 @@ mod tests {
             "M31",
             vec![entry(Some("L"), Some(1)), entry(Some("R"), None)],
         );
-        let mut p = SessionProgress::default();
-        p.record("M31", Some("L"));
-        for _ in 0..3 {
-            assert_eq!(
-                p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
-                Some("R"),
-                "an uncounted entry recommends forever"
-            );
-            p.record("M31", Some("R"));
-        }
+        let mut p = PlanProgress::default();
+        p.insert("M31", good(&[1, 99]));
+        assert_eq!(
+            p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
+            Some("R"),
+            "an uncounted entry recommends forever"
+        );
         assert!(!p.is_exhausted(&t));
     }
 
     #[test]
-    fn duplicate_filter_entries_allocate_completed_frames_in_plan_order() {
-        // Two Luminance entries with different durations share the L
-        // counter; 3 recorded frames complete the first (goal 2) and
-        // half-fill the second.
+    fn duplicate_filter_entries_track_their_own_goals() {
+        // Two Luminance entries with different durations are distinct
+        // goals with distinct sub-specs, so the scan counts them
+        // separately — the old filter-keyed counters could not.
         let mut first = entry(Some("L"), Some(2));
         first.duration_secs = 300.0;
         let mut second = entry(Some("L"), Some(2));
         second.duration_secs = 60.0;
         let t = target("M31", vec![first, second]);
-        let mut p = SessionProgress::default();
-        for _ in 0..3 {
-            p.record("M31", Some("L"));
-        }
+        let mut p = PlanProgress::default();
+        p.insert("M31", good(&[2, 1]));
         let next = p.next_incomplete_entry(&t).unwrap();
         assert_eq!(next.duration_secs, 60.0, "the first entry is complete");
         assert!(!p.is_exhausted(&t));
-        p.record("M31", Some("L"));
+        p.insert("M31", good(&[2, 2]));
         assert!(p.is_exhausted(&t));
     }
 
     #[test]
     fn a_planless_target_is_never_exhausted() {
         let t = target("M31", Vec::new());
-        let mut p = SessionProgress::default();
-        p.record("M31", Some("L"));
+        let p = PlanProgress::default();
         assert!(p.next_incomplete_entry(&t).is_none());
         assert!(!p.is_exhausted(&t), "no plan means no goal to meet");
     }
 
     #[test]
-    fn fraction_counts_allocated_frames_against_the_summed_goals() {
+    fn fraction_counts_good_frames_against_the_summed_goals() {
         let t = target(
             "M31",
             vec![entry(Some("L"), Some(3)), entry(Some("R"), Some(1))],
         );
-        let mut p = SessionProgress::default();
+        let mut p = PlanProgress::default();
         assert_eq!(p.fraction(&t), 0.0);
-        p.record("M31", Some("L"));
+        p.insert("M31", good(&[1, 0]));
         assert!((p.fraction(&t) - 0.25).abs() < 1e-12);
-        // Over-recording beyond the goal clamps: 5 L frames still
-        // count as 3 of the 4-frame total.
-        for _ in 0..4 {
-            p.record("M31", Some("L"));
-        }
-        assert!((p.fraction(&t) - 0.75).abs() < 1e-12);
-        // Frames on a filter outside the plan don't move the fraction.
-        p.record("M31", Some("Ha"));
+        // Over-shooting a goal clamps: 5 L frames still count as 3 of
+        // the 4-frame total.
+        p.insert("M31", good(&[5, 0]));
         assert!((p.fraction(&t) - 0.75).abs() < 1e-12);
     }
 
     #[test]
     fn fraction_is_zero_when_the_plan_has_no_counted_entries() {
         let t = target("M31", vec![entry(Some("L"), None)]);
-        let mut p = SessionProgress::default();
-        p.record("M31", Some("L"));
+        let mut p = PlanProgress::default();
+        p.insert("M31", good(&[7]));
         assert_eq!(p.fraction(&t), 0.0);
     }
 
     #[test]
-    fn goal_for_sums_matching_counted_entries() {
+    fn a_short_counts_vector_reads_as_zero_rather_than_panicking() {
         let t = target(
             "M31",
-            vec![
-                entry(Some("L"), Some(2)),
-                entry(Some("L"), Some(3)),
-                entry(Some("R"), Some(1)),
-                entry(None, Some(4)),
-            ],
+            vec![entry(Some("L"), Some(1)), entry(Some("R"), Some(1))],
         );
-        assert_eq!(SessionProgress::goal_for(&t, "L"), Some(5));
-        assert_eq!(SessionProgress::goal_for(&t, "R"), Some(1));
-        assert_eq!(SessionProgress::goal_for(&t, ""), Some(4));
-        assert_eq!(SessionProgress::goal_for(&t, "Ha"), None, "not in the plan");
-    }
-
-    #[test]
-    fn goal_for_is_none_when_any_matching_entry_is_uncounted() {
-        let t = target(
-            "M31",
-            vec![entry(Some("L"), Some(2)), entry(Some("L"), None)],
-        );
+        let mut p = PlanProgress::default();
+        p.insert("M31", good(&[1]));
         assert_eq!(
-            SessionProgress::goal_for(&t, "L"),
-            None,
-            "an uncounted entry makes the filter's goal infinite"
+            p.next_incomplete_entry(&t).unwrap().filter.as_deref(),
+            Some("R")
         );
     }
 }

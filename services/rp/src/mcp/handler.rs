@@ -161,7 +161,8 @@ impl McpHandler {
                 + Self::tool_router_guider()
                 + Self::tool_router_center_on_target()
                 + Self::tool_router_planner()
-                + Self::tool_router_targets(),
+                + Self::tool_router_targets()
+                + Self::tool_router_plan_schema(),
         }
     }
 

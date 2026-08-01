@@ -14,6 +14,8 @@ pub mod focuser;
 pub mod guider;
 pub mod imaging;
 pub mod mount;
+pub mod plan_schema;
+pub mod plan_validation;
 pub mod planner;
 pub mod plate_solve;
 pub mod rotator;

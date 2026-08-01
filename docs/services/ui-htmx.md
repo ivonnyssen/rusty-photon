@@ -630,11 +630,11 @@ Behavioral contract:
   `503` while conditions are unsafe (rp.md § Safety), and the gate
   reads the same as an outage from out here. No stale data is rendered
   beneath it.
-- **Progress is not rendered.** `list_targets` reports per-goal
-  `good`/`total`, but the values are hard-coded `0` until rp's on-disk
-  frame scan lands (rp.md § Progress derivation) — a permanent "0/12"
-  column would be false precision. The goals summary shows
-  `desired_count`; progress columns arrive when the derivation does.
+- **Progress is not rendered yet.** `list_targets` reports real
+  per-goal `good`/`total` now that rp's on-disk frame scan has landed
+  (rp.md § Progress derivation). The goals summary still shows only
+  `desired_count`; surfacing the progress columns is a follow-up on
+  this page, not a gap in the data.
 
 ### The review page (`GET /targets/{slug}`)
 
@@ -964,12 +964,13 @@ combined with the subcommand (the mixed form would silently ignore them).
   deferred** — it renders as a checkbox group (see
   [Schema-driven rendering](#schema-driven-rendering-fieldmodel)); scalar
   `enum` leaves and `oneOf` forms remain follow-ups.
-- **Targets-inbox follow-ups**: per-goal progress columns (blocked on rp's
-  frame-scan progress derivation — today's derived `good`/`total` are
-  hard-coded `0`, so rendering them would be false precision); per-target
+- **Targets-inbox follow-ups**: per-goal progress columns (rp's
+  frame-scan derivation now supplies real `good`/`total`; the page has
+  yet to render them); per-target
   `scheduling` editing (a composite with replace-whole-object semantics —
-  edited over MCP when needed); `grading` overrides (rp does not accept
-  them yet); and distinguishing the safety-gated `503` from rp-down in the
+  edited over MCP when needed); `grading` overrides (rp accepts them on
+  `add_target`/`update_target`, but this form does not offer them);
+  and distinguishing the safety-gated `503` from rp-down in the
   unavailable card (one honest card covers both today).
 - The **LCARS theme** and **i18n**.
 

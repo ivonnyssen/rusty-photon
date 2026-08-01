@@ -251,6 +251,9 @@ impl ServerBuilder {
                     ))
                 })?
                 .map(Arc::new);
+        if let Some(warning) = crate::config::progress_derivation_warning(&config.session) {
+            tracing::warn!("{}", warning);
+        }
 
         // Build the guider HTTP client when the operator configured
         // one (`equipment.mount.guiding`) — same aborts-loud posture

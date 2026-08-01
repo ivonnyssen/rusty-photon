@@ -1,8 +1,9 @@
 //! The `target_store` config block (`docs/services/rp.md` § Target Store →
-//! Configuration): `db_path`, `default_goals`, and `default_scheduling`
-//! today (Decision 9's altitude-gating parity,
-//! `docs/plans/planetarium-target-import.md`); `default_grading` lands with
-//! the on-disk frame scan.
+//! Configuration): `db_path`, `default_goals`, `default_scheduling`
+//! (Decision 9's altitude-gating parity,
+//! `docs/plans/planetarium-target-import.md`), `import`, and
+//! `default_grading` — the thresholds the on-disk frame scan judges each
+//! frame's sidecar metrics against (rp.md § Progress derivation).
 //!
 //! Typed on [`crate::config::Config`] as [`TargetStoreConfigWire`] rather
 //! than an untyped `Value`: the block is now the *only* meaning of the key
@@ -39,6 +40,11 @@ pub struct TargetStoreConfig {
     /// Tunables for `add_target`'s `source` import form (rp.md § Target
     /// Store → Import form).
     pub import: ImportConfig,
+    /// Fallback grading thresholds a target's `None` `grading` override
+    /// fields fall back to (rp.md § Progress derivation). `None` — the
+    /// out-of-the-box default — means no metric is judged, so no frame
+    /// is ever rejected and `good == total`.
+    pub default_grading: Option<rp_targets::GradingThresholds>,
 }
 
 /// Validated import tunables (`target_store.import`): all three are
@@ -86,6 +92,37 @@ pub struct TargetStoreConfigWire {
     pub default_scheduling: SchedulingWire,
     /// See [`TargetStoreConfig::import`]; wire shape is [`ImportWire`].
     pub import: ImportWire,
+    /// See [`TargetStoreConfig::default_grading`]; wire shape is
+    /// [`GradingWire`]. Absent (the default) means no metric is judged.
+    pub default_grading: Option<GradingWire>,
+}
+
+/// JsonSchema-able wire projection of [`rp_targets::GradingThresholds`],
+/// for the same reason [`SchedulingWire`] exists: the store leaf is
+/// deliberately schemars-free. Field-for-field identical; each `None`
+/// means "don't judge this metric".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct GradingWire {
+    /// Maximum half-flux radius, in pixels.
+    pub max_hfr_pixels: Option<f64>,
+    /// Minimum detected star count.
+    pub min_star_count: Option<u32>,
+    /// Maximum PSF eccentricity.
+    pub max_eccentricity: Option<f64>,
+    /// Minimum signal-to-noise ratio.
+    pub min_snr: Option<f64>,
+}
+
+impl From<GradingWire> for rp_targets::GradingThresholds {
+    fn from(w: GradingWire) -> Self {
+        Self {
+            max_hfr_pixels: w.max_hfr_pixels,
+            min_star_count: w.min_star_count,
+            max_eccentricity: w.max_eccentricity,
+            min_snr: w.min_snr,
+        }
+    }
 }
 
 /// The `target_store.import` block as it appears on the wire — mirrors
@@ -153,7 +190,8 @@ impl From<SchedulingWire> for rp_targets::SchedulingConstraints {
 ///
 /// Returns a human-readable message if a `default_goals` entry fails
 /// its `TryFrom<&GoalWire>` conversion into [`rp_targets::AcquisitionGoal`],
-/// or an `import` field is not a finite positive number.
+/// an `import` field is not a finite positive number, or a supplied
+/// `default_grading` threshold is not a finite non-negative number.
 pub fn parse_target_store_config(
     wire: &TargetStoreConfigWire,
 ) -> Result<TargetStoreConfig, String> {
@@ -178,6 +216,24 @@ pub fn parse_target_store_config(
             ));
         }
     }
+    if let Some(grading) = &wire.default_grading {
+        for (field, value) in [
+            ("max_hfr_pixels", grading.max_hfr_pixels),
+            ("max_eccentricity", grading.max_eccentricity),
+            ("min_snr", grading.min_snr),
+        ] {
+            // `None` is "don't judge this metric"; a supplied value has
+            // to be a number a comparison can mean something against.
+            if let Some(value) = value {
+                if !value.is_finite() || value < 0.0 {
+                    return Err(format!(
+                        "target_store.default_grading.{field} must be a finite \
+                         non-negative number, got {value}"
+                    ));
+                }
+            }
+        }
+    }
     Ok(TargetStoreConfig {
         db_path: wire.db_path.clone(),
         default_goals,
@@ -187,6 +243,7 @@ pub fn parse_target_store_config(
             naming_tolerance_arcmin: wire.import.naming_tolerance_arcmin,
             star_naming_tolerance_arcmin: wire.import.star_naming_tolerance_arcmin,
         },
+        default_grading: wire.default_grading.map(Into::into),
     })
 }
 
@@ -287,6 +344,70 @@ mod tests {
         .unwrap();
         let err = parse_target_store_config(&wire).unwrap_err();
         assert!(err.contains("target_store.import.dedup_arcsec"), "{err}");
+    }
+
+    #[test]
+    fn default_grading_is_absent_out_of_the_box() {
+        let config = parse_target_store_config(&TargetStoreConfigWire::default()).unwrap();
+        assert_eq!(
+            config.default_grading, None,
+            "no thresholds configured means no frame is ever rejected"
+        );
+    }
+
+    #[test]
+    fn default_grading_parses_a_partial_block() {
+        let wire: TargetStoreConfigWire = serde_json::from_value(serde_json::json!({
+            "default_grading": { "max_hfr_pixels": null, "min_star_count": 20 }
+        }))
+        .unwrap();
+        let grading = parse_target_store_config(&wire)
+            .unwrap()
+            .default_grading
+            .unwrap();
+        assert_eq!(grading.min_star_count, Some(20));
+        assert_eq!(grading.max_hfr_pixels, None, "null means don't judge it");
+    }
+
+    #[test]
+    fn default_grading_rejects_a_non_finite_threshold() {
+        let wire = TargetStoreConfigWire {
+            default_grading: Some(GradingWire {
+                max_hfr_pixels: Some(f64::NAN),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = parse_target_store_config(&wire).unwrap_err();
+        assert!(
+            err.contains("target_store.default_grading.max_hfr_pixels"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn default_grading_rejects_a_negative_threshold() {
+        let wire = TargetStoreConfigWire {
+            default_grading: Some(GradingWire {
+                min_snr: Some(-1.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = parse_target_store_config(&wire).unwrap_err();
+        assert!(
+            err.contains("target_store.default_grading.min_snr"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn default_grading_rejects_unknown_field() {
+        let err = serde_json::from_value::<TargetStoreConfigWire>(serde_json::json!({
+            "default_grading": { "max_fwhm_pixels": 3.0 }
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("max_fwhm_pixels"), "{err}");
     }
 
     #[test]

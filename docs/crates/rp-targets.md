@@ -192,17 +192,34 @@ pub struct GradingThresholds {
 ### Identity: the slug
 
 `TargetSlug` is a parse-don't-validate newtype (see
-[development-workflow.md](../skills/development-workflow.md#parse-dont-validate-for-config)):
-constructed via `TargetSlug::new(&str)`, it lower-cases, **strips all
-whitespace** (mirroring `rp-catalog`'s name normalization, so
-`"NGC 7000"` → `ngc7000`), and rejects anything still outside `[a-z0-9-]`
-(so it is always a safe directory and filename token). The slug is **immutable** once created — it is the
+[development-workflow.md](../skills/development-workflow.md#parse-dont-validate-for-config)).
+It has **two constructors and exactly one derivation**:
+
+- `TargetSlug::from_display_name(&str)` is the only way a human-readable
+  name becomes a slug. Whitespace runs collapse to a single `-`, the
+  result is lower-cased, and anything outside `[a-z0-9-]` is rejected:
+  `"NGC 7000"` → `ngc-7000`, `"Comet Test"` → `comet-test`. It is
+  idempotent, since a valid slug contains no whitespace to collapse.
+- `TargetSlug::new(&str)` parses an already-canonical token. It
+  lower-cases and validates, but **rejects whitespace** rather than
+  normalizing it — the error names the slug `from_display_name` would
+  have produced, so a caller who passed a display name to a `slug`
+  parameter is told what to use instead.
+
+Splitting them this way is deliberate. When both constructors accepted a
+name and answered *differently* — one stripping whitespace, one
+hyphenating it — a target stored under one spelling was invisible to any
+lookup that used the other, and the symptom was a silent `progress:
+null` rather than an error. One lossy step, in one place, is what keeps
+the stored spelling and the looked-up spelling in agreement.
+
+The slug is **immutable** once created — it is the
 on-disk acquisition identity (the `{target}` token in every frame's path
 and name), so changing it would orphan existing frames. Renames change
 `display_name`, never the slug. Slug collisions on add are the caller's
 (`rp`'s) responsibility to resolve before `upsert` (see
-[Slug allocation](#slug-allocation-add-time) — e.g. `ngc7000` →
-`ngc7000-2`); `upsert` of an existing slug is an in-place update, never
+[Slug allocation](#slug-allocation-add-time) — e.g. `ngc-7000` →
+`ngc-7000-2`); `upsert` of an existing slug is an in-place update, never
 a silent second row.
 
 This mirrors `rp-catalog`, which already keys objects by a normalized
@@ -383,23 +400,22 @@ matching Rule-2 update. The authoritative home for these contracts is
 
 `rp` derives and resolves the slug before calling `upsert_target`:
 
-1. Base = `TargetSlug::new(catalog_ref.unwrap_or(kebab(display_name)))`
-   (a catalog add bases on `"NGC 7000"` → `ngc7000`, `TargetSlug::new`'s
-   own whitespace-*stripping* normalization; a custom add bases on the
-   operator's name, kebab-cased first — `"Comet Test"` → `comet-test` —
-   since an operator-typed name reads better hyphenated than stripped).
+1. Base = `TargetSlug::from_display_name(catalog_ref.unwrap_or(display_name))`
+   — the same derivation for every form, so a catalog add bases on
+   `"NGC 7000"` → `ngc-7000` and a custom add on the operator's name,
+   `"Comet Test"` → `comet-test`.
 2. Probe `get_target(base)`. **Absent** → use `base`.
 3. **Present and the same object** (same `catalog_ref`, or coordinates
    within a small tolerance) → treat as an in-place edit: reuse the slug
    and `upsert` (the rename / re-add path).
 4. **Present and a different object** → allocate the lowest unused
-   `"{base}-{n}"` for `n` from 2 (`ngc7000-2`, `ngc7000-3`, …), taking
+   `"{base}-{n}"` for `n` from 2 (`ngc-7000-2`, `ngc-7000-3`, …), taking
    the first free suffix. By the pigeonhole principle a free suffix is
    guaranteed within `list_targets().len() + 1` probes, so the search
    always terminates — no arbitrary cap or exhaustion error is needed.
 
-Contract: adding NGC 7000 twice with different framing yields `ngc7000`
-and `ngc7000-2`; re-adding the same object updates it in place. This is
+Contract: adding NGC 7000 twice with different framing yields `ngc-7000`
+and `ngc-7000-2`; re-adding the same object updates it in place. This is
 rp policy — the crate only enforces that `upsert` of an existing slug is
 an in-place overwrite, never a duplicate row.
 
@@ -422,9 +438,10 @@ below), **`session.directory_pattern`, and `capture`'s
 both patterns.** `capture` renders the full path (replacing
 `<doc_uuid_8>.fits`) whenever `frame_type` is supplied, and calls
 `parse` to derive each new frame's `{frame_number}` by scanning its
-target directory. **Not yet landed:** the on-disk frame scan behind
-full target *progress* derivation (`get_target`/`list_targets`/
-`get_session_progress`) — see rp.md § Persistence.
+target directory. The same two compiled templates drive the multi-night
+frame scan behind target *progress* derivation
+(`get_target`/`list_targets`/`get_session_progress`/`get_target_status`
+and the planner itself) — see rp.md § Progress derivation.
 
 **Calibration frames (`Dark`/`Flat`/`Bias`) and the `{target}` token.**
 These frames don't image a sky object, so `capture` uses a **reserved
@@ -520,9 +537,11 @@ is rejected. Unknown tokens are rejected with the offending token named.
 
 `rp` computes progress on demand; nothing is stored:
 
-1. **Total per sub-spec** — scan `<data_directory>/<slug>/<night>/Light/`,
-   parse each filename via the template, bucket by
-   `(filter, binning, exposure_duration)`. Cheap: `readdir` + regex, no file
+1. **Total per sub-spec** — walk the night directories under the
+   target's slug (the layout `directory_pattern` defines, e.g.
+   `<data_directory>/<slug>/<night>/Light/`), parse each filename via
+   the template, bucket by `(filter, binning, exposure_duration)`.
+   Cheap: `readdir` + regex, no file
    opens. Filenames that don't match the compiled template are skipped
    (`debug!`-logged with the path) — they count toward neither total nor
    any sub-spec and never fail the scan. An absent or empty slug
@@ -531,7 +550,12 @@ is rejected. Unknown tokens are rejected with the offending token named.
 2. **Good vs rejected** — for each frame, read its sidecar's grading
    section (metrics written once by the grading plugin), apply the
    **effective** thresholds (`target.grading` field-wise over the config
-   default), and classify. The verdict is dynamic: changing a threshold
+   default), and classify. A frame is rejected only on evidence: with no
+   sidecar, no grading section, or no value for the metric a threshold
+   judges, it counts as good, so progress still advances on a rig with
+   no grading plugin installed. When the effective thresholds are empty
+   there is nothing to contradict, and the sidecar reads are skipped
+   entirely. The verdict is dynamic: changing a threshold
    re-partitions good/rejected with nothing renamed or moved. The
    grading plugin may cache `(verdict, thresholds_version)` in the
    sidecar to avoid re-evaluating unchanged frames — a cache only,
@@ -539,7 +563,11 @@ is rejected. Unknown tokens are rejected with the offending token named.
    never authoritative on disk and stays fully reversible (consistent
    with the no-fixed-verdict rule).
 3. **Progress** — compare good-count to `AcquisitionGoal.desired_count`
-   per sub-spec.
+   per sub-spec. The mapping is one-to-one: `validate_goals` rejects a
+   goal set that repeats a `(filter, binning, exposure_duration)`
+   triple, so no two goals can claim the same frames. The planner judges
+   a goal met on `good`, not `total`, so rejected frames keep a target
+   in the rotation instead of retiring it.
 
 **Night-date rollover.** `{night_date}` is the date the *observing night*
 began — it rolls at local noon, so a frame captured at 01:30 belongs to
@@ -558,23 +586,24 @@ culls. This hand-off mechanism is deferred and out of scope for the MVP.
 
 ### `record_exposure` and progress tools
 
-Because actuals are filesystem-derived, the design-doc-but-unbuilt
-`record_exposure(target, filter)` tool (rp.md § Planner Tools) no longer
-increments a stored counter — capture already wrote the frame. It
-collapses to a no-op or a progress-cache-invalidation hook.
-`get_session_progress` and `get_target_status.progress` (today `null`;
-rp.md § Planner Tools) are computed from the store (goals) + the
+Because actuals are filesystem-derived, `record_exposure(target, filter)`
+(rp.md § Planner Tools) does not increment a stored counter — capture
+already wrote the frame. It survives as the orchestrator's per-frame
+progress readback, and as the carrier of the one planner fact the
+filesystem cannot supply: which filter the last frame used, the input
+to the filter-batching tie-break. `get_session_progress` and
+`get_target_status.progress` are computed from the store (goals) + the
 derivation above (actuals).
 
-**Progress shape supersedes the filter-only map.** rp.md § Planner Tools
-documents progress keyed by filter alone
-(`{"Luminance": {completed, goal}}`), which would collapse two goals that
-share a filter (e.g. Ha@2m and Ha@5m). Because an `AcquisitionGoal`
-is keyed by the full `(filter, binning, exposure_duration)` triple, the
-progress shape becomes, per target, a list of
+**Progress shape supersedes the filter-only map.** Progress keyed by
+filter alone (`{"Luminance": {completed, goal}}`) collapses two goals
+that share a filter (e.g. Ha@2m and Ha@5m). Because an
+`AcquisitionGoal` is keyed by the full
+`(filter, binning, exposure_duration)` triple, the progress shape is,
+per target, a list of
 `{filter, binning, exposure_duration, desired_count, good, total}` (the JSON
-key is `exposure_duration` on the wire). The Rule-2 rp.md update must replace the
-filter-only shape accordingly.
+key is `exposure_duration` on the wire) — landed on every progress
+surface, rp.md § Progress derivation.
 
 ### Constraint evaluation
 
@@ -609,18 +638,24 @@ are bare decimal degrees):
       "min_moon_separation_degrees": 30.0,
       "max_moon_illumination_fraction": 1.0,     // 1.0 ⇒ no moon-brightness limit
       "meridian_window_hours": null              // null ⇒ no meridian window
+    },
+    "default_grading": {                         // optional; omitted ⇒ nothing is ever rejected
+      "max_hfr_pixels": null,
+      "min_star_count": 20,
+      "max_eccentricity": 0.6,
+      "min_snr": null
     }
-    // `default_grading` is not yet an accepted key — the typed `target_store`
-    // config (deny_unknown_fields) rejects it until the on-disk frame scan lands.
   }
 }
 ```
 
 `target_store.default_*` are the global defaults a `Target`'s `None`
-override fields fall back to. `default_goals` (the `add_target`
-no-goals fallback) and `default_scheduling` are accepted today;
-`default_grading` — owned by the grading plugin's contract — lands with
-the on-disk frame scan.
+override fields fall back to: `default_goals` (the `add_target`
+no-goals fallback), `default_scheduling`, and `default_grading`. All
+three are optional. An absent `default_grading`, with no per-target
+`grading`, means no metric is judged and every captured frame counts as
+good — see rp.md § Progress derivation for why an ungraded frame counts
+as good rather than as not-good.
 
 ## MVP scope
 

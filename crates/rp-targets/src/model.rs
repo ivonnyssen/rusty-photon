@@ -13,12 +13,19 @@ use crate::error::TargetStoreError;
 ///
 /// Parse-don't-validate (see
 /// `docs/skills/development-workflow.md#parse-dont-validate-for-config`):
-/// [`TargetSlug::new`] lower-cases, strips all whitespace, and rejects any
-/// remaining character outside `[a-z0-9-]`, so a valid `TargetSlug` is
-/// always a safe directory and filename token. The slug is the `{target}`
-/// token in every frame's on-disk path, so it must never change once
-/// frames exist under it — renames go through `Target::display_name`
-/// instead.
+/// a valid `TargetSlug` is always a safe directory and filename token.
+/// The slug is the `{target}` token in every frame's on-disk path, so it
+/// must never change once frames exist under it — renames go through
+/// `Target::display_name` instead.
+///
+/// Two constructors, one derivation. [`TargetSlug::from_display_name`] is
+/// the **only** way a human-readable name becomes a slug (whitespace runs
+/// collapse to `-`, so `"NGC 7000"` → `ngc-7000`); [`TargetSlug::new`]
+/// parses an already-canonical token and *rejects* whitespace rather than
+/// silently normalizing it. Keeping the lossy step in exactly one place is
+/// deliberate: when both constructors accepted a name and answered
+/// differently, a target stored under one spelling was invisible to a
+/// lookup that used the other.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, derive_more::Display,
 )]
@@ -26,24 +33,33 @@ use crate::error::TargetStoreError;
 pub struct TargetSlug(String);
 
 impl TargetSlug {
-    /// Normalizes `input` (lower-case, strip whitespace) and validates the
-    /// result is non-empty and entirely `[a-z0-9-]`.
+    /// Parses an already-canonical slug token: lower-cases `input` and
+    /// validates the result is non-empty and entirely `[a-z0-9-]`.
+    ///
+    /// Whitespace is rejected, not stripped — deriving a slug from a
+    /// human-readable name is [`TargetSlug::from_display_name`]'s job, and
+    /// having only one function make that choice is what keeps the stored
+    /// spelling and the looked-up spelling in agreement.
     ///
     /// # Errors
     ///
-    /// Returns [`TargetSlugError::Empty`] if normalization leaves nothing,
-    /// or [`TargetSlugError::InvalidChars`] if a character outside
-    /// `[a-z0-9-]` remains.
+    /// Returns [`TargetSlugError::Empty`] if `input` is blank,
+    /// [`TargetSlugError::Whitespace`] if it contains any whitespace, or
+    /// [`TargetSlugError::InvalidChars`] if a character outside
+    /// `[a-z0-9-]` remains after lower-casing.
     pub fn new(input: &str) -> Result<Self, TargetSlugError> {
-        let normalized: String = input
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .flat_map(char::to_lowercase)
-            .collect();
-
-        if normalized.is_empty() {
+        if input.trim().is_empty() {
             return Err(TargetSlugError::Empty);
         }
+
+        if input.chars().any(char::is_whitespace) {
+            return Err(TargetSlugError::Whitespace {
+                input: input.to_string(),
+                suggestion: hyphenate(input),
+            });
+        }
+
+        let normalized: String = input.chars().flat_map(char::to_lowercase).collect();
 
         if !normalized
             .chars()
@@ -57,11 +73,44 @@ impl TargetSlug {
         Ok(Self(normalized))
     }
 
+    /// Derives a slug from a human-readable display or catalog name:
+    /// whitespace runs collapse to a single `-`, then the result is parsed
+    /// by [`TargetSlug::new`]. `"NGC 7000"` → `ngc-7000`, `"Comet Test"` →
+    /// `comet-test`.
+    ///
+    /// Idempotent — an already-valid slug contains no whitespace, so
+    /// re-deriving one is a no-op. This is the single lossy name→slug step
+    /// in the system; every caller that starts from a name uses it.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`TargetSlug::new`], less [`TargetSlugError::Whitespace`]
+    /// (which hyphenation has already resolved).
+    pub fn from_display_name(display_name: &str) -> Result<Self, TargetSlugError> {
+        Self::new(&hyphenate(display_name))
+    }
+
     /// The normalized slug string, e.g. `"ngc7000-2"`.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Words of `input`, lower-cased and joined with `-`. Shared by
+/// [`TargetSlug::from_display_name`] and the [`TargetSlugError::Whitespace`]
+/// suggestion so the hint always names the slug the caller would actually
+/// get.
+fn hyphenate(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Errors constructing a [`TargetSlug`]. Caller-side (rp) validation before
@@ -71,8 +120,18 @@ pub enum TargetSlugError {
     /// `input` was empty, or contained only whitespace.
     #[error("target slug cannot be empty")]
     Empty,
+    /// `input` contained whitespace, which a slug token never does. The
+    /// error carries the derived form so a caller who passed a display
+    /// name by mistake is told the slug to use instead.
+    #[error("target slug {input:?} contains whitespace — use {suggestion:?}")]
+    Whitespace {
+        /// The original input that failed validation.
+        input: String,
+        /// What [`TargetSlug::from_display_name`] would derive from it.
+        suggestion: String,
+    },
     /// `input` contained a character outside `[a-z0-9-]` after
-    /// lower-casing and whitespace stripping.
+    /// lower-casing.
     #[error("target slug {input:?} contains characters outside [a-z0-9-]")]
     InvalidChars {
         /// The original, unnormalized input that failed validation.
@@ -293,8 +352,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slug_lowercases_and_strips_whitespace() {
-        let slug = TargetSlug::new("NGC 7000").unwrap();
+    fn slug_lowercases() {
+        let slug = TargetSlug::new("NGC7000").unwrap();
         assert_eq!(slug.as_str(), "ngc7000");
     }
 
@@ -308,6 +367,66 @@ mod tests {
     fn slug_rejects_empty_input() {
         let err = TargetSlug::new("   ").unwrap_err();
         assert_eq!(err, TargetSlugError::Empty);
+    }
+
+    #[test]
+    fn slug_rejects_whitespace_and_suggests_the_derived_form() {
+        let err = TargetSlug::new("NGC 7000").unwrap_err();
+        assert_eq!(
+            err,
+            TargetSlugError::Whitespace {
+                input: "NGC 7000".to_string(),
+                suggestion: "ngc-7000".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn display_name_derivation_hyphenates_whitespace_runs() {
+        assert_eq!(
+            TargetSlug::from_display_name("NGC 7000").unwrap().as_str(),
+            "ngc-7000"
+        );
+        assert_eq!(
+            TargetSlug::from_display_name("  Comet   Test  ")
+                .unwrap()
+                .as_str(),
+            "comet-test"
+        );
+    }
+
+    /// A doubled space is a typo, not a different target: a run of
+    /// whitespace collapses to one hyphen, so the accidental spelling
+    /// lands on the same slug — and therefore the same stored row and
+    /// the same on-disk directory — as the intended one.
+    #[test]
+    fn a_doubled_space_derives_the_same_slug_as_a_single_one() {
+        let intended = TargetSlug::from_display_name("M 31").unwrap();
+        assert_eq!(TargetSlug::from_display_name("M  31").unwrap(), intended);
+        assert_eq!(TargetSlug::from_display_name(" M 31 ").unwrap(), intended);
+        assert_eq!(TargetSlug::from_display_name("M\t31").unwrap(), intended);
+        assert_eq!(intended.as_str(), "m-31");
+    }
+
+    /// The property that makes one derivation safe: re-deriving a slug
+    /// that already exists cannot move it, so a stored row stays
+    /// reachable no matter how many times a name round-trips.
+    #[test]
+    fn display_name_derivation_is_idempotent() {
+        let once = TargetSlug::from_display_name("M 31").unwrap();
+        let twice = TargetSlug::from_display_name(once.as_str()).unwrap();
+        assert_eq!(once, twice);
+        assert_eq!(once.as_str(), "m-31");
+    }
+
+    /// The bug this shape exists to prevent: the derivation and the
+    /// parser must never disagree about what a name means. `new` refuses
+    /// to guess instead of answering differently.
+    #[test]
+    fn the_parser_never_answers_a_name_differently_than_the_derivation() {
+        let derived = TargetSlug::from_display_name("M 31").unwrap();
+        assert!(TargetSlug::new("M 31").is_err());
+        assert_eq!(TargetSlug::new(derived.as_str()).unwrap(), derived);
     }
 
     #[test]

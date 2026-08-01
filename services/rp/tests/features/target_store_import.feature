@@ -16,6 +16,11 @@ Feature: Target store import form (P3)
   (created_by / updated_by = source.kind) and a human-readable
   provenance line in notes.
 
+  The slug is derived from the naming hit by the one name-to-slug rule
+  the whole system shares (rp-targets.md § Identity): whitespace runs
+  collapse to a hyphen, so the catalog name "M 31" imports as m-31 and
+  a second framing of it allocates m-31-2.
+
   Scenario: The source form rejects naming, activation, notes, and framing parameters
     Given rp is running with a target store
     And an MCP client connected to rp
@@ -49,7 +54,7 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "m31"
+    And the target slug should be "m-31"
     And the imported target display_name should be "M 31"
     And the imported target catalog_ref should be "M 31"
     And the imported target should be paused
@@ -74,7 +79,7 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates offset east 8.0 north -4.0 arcmin
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "m31"
+    And the target slug should be "m-31"
     And the imported target display_name should be "M 31 +8′E −4′N"
 
   Scenario: A second framing of the same object is a new target beside the first
@@ -85,9 +90,9 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates offset east 8.0 north -4.0 arcmin
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "m31-2"
+    And the target slug should be "m-31-2"
     And the imported target display_name should be "M 31 +8′E −4′N"
-    When the MCP client calls "get_target" for slug "m31"
+    When the MCP client calls "get_target" for slug "m-31"
     Then the tool call should succeed
     And the fetched target should have display_name "M 31"
 
@@ -99,7 +104,7 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates offset east 0.2 north 0.1 arcmin
     Then the tool call should succeed
     And the target result should be an in-place update
-    And the target slug should be "m31"
+    And the target slug should be "m-31"
     And the imported target display_name should be "M 31"
     And the imported target coordinates should be the resolved coordinates offset east 0.2 north 0.1 arcmin
     When the MCP client calls "list_targets"
@@ -115,8 +120,8 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates offset east 0.2 north 0.1 arcmin
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "m31-2"
-    When the MCP client calls "get_target" for slug "m31"
+    And the target slug should be "m-31-2"
+    When the MCP client calls "get_target" for slug "m-31"
     Then the tool call should succeed
     And the fetched target should be active
 
@@ -129,9 +134,9 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates offset east 0.2 north 0.1 arcmin
     Then the tool call should succeed
     And the target result should be created
-    And the target slug should be "m31-2"
+    And the target slug should be "m-31-2"
     And the imported target created_by should be "planetarium-bridge"
-    When the MCP client calls "get_target" for slug "m31"
+    When the MCP client calls "get_target" for slug "m-31"
     Then the tool call should succeed
     And the fetched target should have display_name "Andromeda mosaic A"
     And the fetched target created_by should be "planetarium-bridge"
@@ -144,7 +149,7 @@ Feature: Target store import form (P3)
     When the MCP client imports a target at the resolved coordinates
     Then the tool call should succeed
     And the imported target display_name should be "HD 170881"
-    And the target slug should be "hd170881"
+    And the target slug should be "hd-170881"
 
   Scenario: An import with no catalog neighbor gets the coordinate name
     Given rp is running with a target store

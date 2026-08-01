@@ -227,7 +227,86 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
 /// charsets.
 pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
+    // A file pattern names one file inside the directory
+    // `directory_pattern` selected; the progress scan reads `.fits`
+    // entries directly out of that directory. A `/` here would nest the
+    // frame a level deeper, where the scan would never see it — silently
+    // deriving 0 for every goal. Directory structure is
+    // `directory_pattern`'s job, and saying so at load beats a night of
+    // frames that do not count.
+    if pattern.contains('/') {
+        return Err(format!(
+            "file_naming_pattern {pattern:?} contains '/' — it names a single file within \
+             directory_pattern's directory; put path structure in session.directory_pattern"
+        ));
+    }
+    check_no_platform_separators(pattern, "file_naming_pattern")?;
     validate_segments(&segments)
+}
+
+/// Rejects the characters that are path syntax on *some* platform but
+/// not on the host: `\` (a separator on Windows, an ordinary filename
+/// character on Unix) and `:` (a drive prefix on Windows).
+///
+/// Both patterns get this check, and it is deliberately
+/// platform-independent — a config that loads on Linux must mean the
+/// same thing on Windows, and rp validates config on whichever host it
+/// happens to run on. Left unchecked, `{target}\{night_date}` writes a
+/// nested directory on Windows while the scan counts one component and
+/// walks the wrong depth (silently 0/N everywhere), and a `C:\…` or
+/// `C:/…` prefix is drive-absolute — `PathBuf::join` discards the base
+/// and frames land outside `data_directory`, the same escape a leading
+/// `/` opens on Unix.
+///
+/// Neither character is legal in a Windows filename anyway, so rejecting
+/// them also stops a pattern that simply could not be written there.
+///
+/// The check generalizes past those two, because they are instances of
+/// one rule rather than a list: **`capture` must be able to create
+/// exactly the name the scan will look for, on every supported
+/// platform.** Anything the OS would silently rewrite or refuse breaks
+/// that, so this also rejects the rest of Windows' illegal filename set
+/// (`<>"|?*` and control characters) and a component with a trailing
+/// `.` or space — which Windows strips, so `capture` would create
+/// `night.` as `night` while the scan kept looking for `night.`.
+///
+/// A rendered token can never introduce these: no token's shape admits
+/// them, and none can end in `.` or a space. So checking the pattern
+/// text is exact, not an approximation — every occurrence came from a
+/// literal the operator typed.
+fn check_no_platform_separators(pattern: &str, field: &str) -> Result<(), String> {
+    if pattern.contains('\\') {
+        return Err(format!(
+            "{field} {pattern:?} contains '\\' — a path separator on Windows, so the pattern \
+             would mean different things on different hosts; use '/' in session.directory_pattern \
+             for path structure"
+        ));
+    }
+    if pattern.contains(':') {
+        return Err(format!(
+            "{field} {pattern:?} contains ':' — a Windows drive prefix (and illegal in a Windows \
+             filename); a pattern must stay relative to data_directory"
+        ));
+    }
+    if let Some(bad) = pattern
+        .chars()
+        .find(|c| matches!(c, '<' | '>' | '"' | '|' | '?' | '*') || c.is_control())
+    {
+        return Err(format!(
+            "{field} {pattern:?} contains {bad:?}, which is not legal in a Windows filename — \
+             capture could not create the path the progress scan expects"
+        ));
+    }
+    for component in pattern.split('/') {
+        if component.ends_with('.') || component.ends_with(' ') {
+            return Err(format!(
+                "{field} {pattern:?} has a path component ending in '.' or a space — Windows \
+                 strips those when creating the path, so capture and the progress scan would \
+                 disagree about the name"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validates a `session.directory_pattern` value: every token must be
@@ -239,7 +318,71 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
 /// single frame).
 pub fn validate_directory_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
+    check_relative_path_shape(pattern)?;
     check_unambiguous(&segments)
+}
+
+/// A `directory_pattern` must render a **canonical, relative** path:
+/// exactly one `/` between components, no leading or trailing `/`, and
+/// no `.` or `..` component.
+///
+/// This is a correctness rule, not tidiness. `capture` joins the
+/// rendered directory onto `data_directory` and the progress scan walks
+/// `data_directory` to the pattern's component depth, so the two must
+/// agree on what that depth means:
+///
+/// - A **leading `/`** makes the rendered path absolute, and
+///   `PathBuf::join` with an absolute path *discards the base* — frames
+///   would be written outside `data_directory` entirely.
+/// - `..` components escape `data_directory` the slower way.
+/// - A **doubled or trailing `/`** is normalized away by the OS when
+///   `capture` creates the directory, but still counts toward the
+///   pattern's component depth, so the scan walks one level too deep and
+///   matches nothing. Every target would silently derive `0/N`.
+///
+/// Rejected at load rather than canonicalized: silently rewriting what
+/// an operator wrote is how the two sides drift apart in the first
+/// place, and no token's shape admits `/`, so every separator here came
+/// from a literal the operator typed.
+fn check_relative_path_shape(pattern: &str) -> Result<(), String> {
+    // Empty means *unset*, not malformed: the config UI round-trips an
+    // absent `directory_pattern` as `""` (the same convention
+    // `session_state_file` uses for "derive the default"), and
+    // [`NamingTemplates::from_session_config`] resolves it to the
+    // documented default. Reading it as a path here would reject a form
+    // the operator never edited.
+    if pattern.is_empty() {
+        return Ok(());
+    }
+    if pattern.starts_with('/') {
+        return Err(format!(
+            "directory_pattern must be relative to data_directory, but {pattern:?} starts with \
+             '/' — an absolute path would place frames outside data_directory"
+        ));
+    }
+    if pattern.ends_with('/') {
+        return Err(format!(
+            "directory_pattern {pattern:?} ends with '/' — a trailing separator adds an empty \
+             path component the progress scan would walk into and never match"
+        ));
+    }
+    for component in pattern.split('/') {
+        if component.is_empty() {
+            return Err(format!(
+                "directory_pattern {pattern:?} contains an empty path component (a repeated \
+                 '/') — the filesystem collapses it but the progress scan would not"
+            ));
+        }
+        if component == "." || component == ".." {
+            return Err(format!(
+                "directory_pattern {pattern:?} contains a {component:?} component — a \
+                 directory_pattern may not traverse outside data_directory"
+            ));
+        }
+    }
+    // Last, so a `..` component is diagnosed as traversal rather than by
+    // the trailing-`.` rule it also happens to trip.
+    check_no_platform_separators(pattern, "directory_pattern")
 }
 
 /// The body of [`validate_pattern`], operating on already-parsed
@@ -554,6 +697,28 @@ impl CompiledTemplate {
         Ok(out)
     }
 
+    /// How many `/`-separated path components this pattern renders to —
+    /// 1 for a pattern with no separator, 3 for the documented
+    /// `directory_pattern` default `{target}/{night_date}/{frame_type}`.
+    ///
+    /// The progress frame scan (rp.md § Progress derivation) uses this
+    /// to know how deep to walk below `data_directory` before a
+    /// directory is a candidate to [`Self::parse`]. No token's shape
+    /// admits `/`, so every separator in the rendered output comes from
+    /// a literal — counting them here is exact, not a heuristic.
+    #[must_use]
+    pub fn path_component_count(&self) -> usize {
+        let separators: usize = self
+            .parts
+            .iter()
+            .map(|part| match part {
+                TemplatePart::Literal(text) => text.matches('/').count(),
+                TemplatePart::Token(_) => 0,
+            })
+            .sum();
+        separators + 1
+    }
+
     /// Parses a rendered filename base back into fields, or `None` if
     /// it doesn't match the pattern at all. A non-match is not an
     /// error: the on-disk frame scan's job (rp-targets.md § Progress
@@ -613,9 +778,15 @@ impl NamingTemplates {
         let Some(file_pattern) = config.file_naming_pattern.as_deref() else {
             return Ok(None);
         };
+        // Absent *or* empty falls back to the documented default: the
+        // config UI serializes an unset pattern as `""`, and compiling
+        // that literally would yield a zero-component directory
+        // template the progress scan could never match — every target
+        // silently deriving 0.
         let directory_pattern = config
             .directory_pattern
             .as_deref()
+            .filter(|p| !p.is_empty())
             .unwrap_or(Self::DEFAULT_DIRECTORY_PATTERN);
         Ok(Some(Self {
             directory: CompiledTemplate::compile_directory(directory_pattern)?,
@@ -632,6 +803,38 @@ mod tests {
 
     const DEFAULT_PATTERN: &str =
         "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+
+    #[test]
+    fn path_component_count_counts_the_pattern_separators() {
+        // What the progress frame scan walks to (rp.md § Progress
+        // derivation): the documented directory default is three deep,
+        // a filename is one, and a flat directory layout is one.
+        assert_eq!(
+            CompiledTemplate::compile_directory(NamingTemplates::DEFAULT_DIRECTORY_PATTERN)
+                .unwrap()
+                .path_component_count(),
+            3
+        );
+        assert_eq!(
+            CompiledTemplate::compile_directory("{target}")
+                .unwrap()
+                .path_component_count(),
+            1
+        );
+        assert_eq!(
+            CompiledTemplate::compile_directory("{target}/{night_date}")
+                .unwrap()
+                .path_component_count(),
+            2
+        );
+        assert_eq!(
+            CompiledTemplate::compile(DEFAULT_PATTERN)
+                .unwrap()
+                .path_component_count(),
+            1,
+            "a filename pattern has no separators"
+        );
+    }
 
     #[test]
     fn default_pattern_is_valid() {
@@ -953,6 +1156,114 @@ mod tests {
             err.contains("target") && err.contains("night_date"),
             "{err}"
         );
+    }
+
+    /// `capture` joins the rendered directory onto `data_directory`
+    /// while the progress scan walks to the pattern's component depth,
+    /// so a non-canonical pattern makes the two disagree. Each of these
+    /// used to load cleanly and then derive 0 for every goal — and the
+    /// absolute form was worse than that, since `PathBuf::join` with an
+    /// absolute path discards the base and would write frames outside
+    /// `data_directory`.
+    #[test]
+    fn directory_pattern_must_be_a_canonical_relative_path() {
+        for (pattern, expected) in [
+            ("/{target}/{night_date}/{frame_type}", "relative"),
+            ("{target}/{night_date}/{frame_type}/", "trailing"),
+            (
+                "{target}//{night_date}/{frame_type}",
+                "empty path component",
+            ),
+            ("../{target}/{night_date}/{frame_type}", "traverse"),
+            ("./{target}/{night_date}/{frame_type}", "traverse"),
+        ] {
+            let err = validate_directory_pattern(pattern).unwrap_err();
+            assert!(
+                err.contains(expected),
+                "pattern {pattern:?} should be rejected mentioning {expected:?}, got: {err}"
+            );
+        }
+    }
+
+    /// `/` is not the only path syntax in play: rp validates config on
+    /// whichever host it runs on, but a config that loads on Linux has
+    /// to mean the same thing on Windows. `\` separates there (so the
+    /// scan would count one component and walk the wrong depth) and
+    /// `C:` is drive-absolute (so `PathBuf::join` discards the base and
+    /// frames escape `data_directory`).
+    #[test]
+    fn patterns_reject_windows_path_syntax_on_every_host() {
+        for pattern in [
+            r"{target}\{night_date}\{frame_type}",
+            r"C:\frames\{target}\{night_date}",
+            "C:/frames/{target}/{night_date}",
+        ] {
+            validate_directory_pattern(pattern)
+                .expect_err(&format!("directory_pattern {pattern:?} must be rejected"));
+        }
+
+        let err = validate_pattern(&format!(r"sub\{DEFAULT_PATTERN}")).unwrap_err();
+        assert!(err.contains('\\') || err.contains("Windows"), "{err}");
+    }
+
+    /// The general rule behind the `\` and `:` cases: `capture` must be
+    /// able to create exactly the name the scan looks for, on every
+    /// supported platform. A character Windows refuses, or one it
+    /// silently strips, breaks that the same way a stray separator
+    /// does.
+    #[test]
+    fn patterns_reject_names_windows_would_refuse_or_rewrite() {
+        for pattern in [
+            "{target}/{night_date}?/{frame_type}",
+            "{target}/night<{night_date}>/{frame_type}",
+            r#"{target}/"{night_date}"/{frame_type}"#,
+            "{target}/{night_date}./{frame_type}",
+            "{target}/{night_date} /{frame_type}",
+        ] {
+            validate_directory_pattern(pattern)
+                .expect_err(&format!("directory_pattern {pattern:?} must be rejected"));
+        }
+        // A trailing space on the whole file pattern is the same fault.
+        validate_pattern(&format!("{DEFAULT_PATTERN} ")).unwrap_err();
+        // ...but the documented defaults must still pass unchanged.
+        validate_pattern(DEFAULT_PATTERN).unwrap();
+        validate_directory_pattern("{target}/{night_date}/{frame_type}").unwrap();
+    }
+
+    /// `""` is how the config UI round-trips an unset pattern, so it
+    /// must validate *and* resolve to the documented default rather
+    /// than compiling a zero-component directory template the scan
+    /// could never match.
+    #[test]
+    fn an_empty_directory_pattern_means_unset_not_malformed() {
+        validate_directory_pattern("").unwrap();
+
+        let session = crate::config::session::SessionConfig {
+            data_directory: "/tmp/x".to_string(),
+            session_state_file: String::new(),
+            file_naming_pattern: Some(DEFAULT_PATTERN.to_string()),
+            directory_pattern: Some(String::new()),
+        };
+        let templates = NamingTemplates::from_session_config(&session)
+            .unwrap()
+            .expect("a configured file pattern builds templates");
+        assert_eq!(
+            templates.directory.path_component_count(),
+            3,
+            "an empty directory_pattern must resolve to the 3-component default"
+        );
+    }
+
+    /// The sibling rule: a file pattern names one file inside that
+    /// directory, so a `/` would nest the frame where the scan does not
+    /// look.
+    #[test]
+    fn file_naming_pattern_rejects_path_separators() {
+        let err = validate_pattern(
+            "{target}/{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}",
+        )
+        .unwrap_err();
+        assert!(err.contains("directory_pattern"), "{err}");
     }
 
     #[test]
