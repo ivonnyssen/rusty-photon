@@ -9,13 +9,14 @@ applyTo: "**/*.rs"
 `cargo clippy --all-targets --all-features -- -D warnings` and a
 three-platform Bazel build have already passed on this diff. Never
 raise a borrow, move, lifetime, trait-resolution, import or lint
-concern — you cannot add information the compiler has not already
-settled, and every such comment in this repo's history has been wrong.
+concern — you cannot add information the compiler has already settled,
+and no such comment here has ever produced an improvement.
 
 In particular, these are all valid and have each been wrongly reported:
 
-- `format!`, `json!`, `tracing` fields and `assert!` take their
-  arguments **by reference**; interpolating a `String` field of a
+- `format!` and `assert!` bind their arguments by reference through
+  `format_args!`, and `serde_json`'s `json!` serializes interpolated
+  values via `to_value(&…)`; interpolating a `String` field of a
   borrowed struct moves nothing.
 - `matches!(x, Variant)` and `if let Variant = x` with no bindings do
   not move the scrutinee.

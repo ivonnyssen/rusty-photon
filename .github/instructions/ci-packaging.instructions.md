@@ -21,9 +21,13 @@ POSIX shell redirection order, and which flags a platform's `shasum`,
 If a finding depends on such behavior, quote the specific manual page
 or documentation section. If you cannot, do not raise it.
 
-Note also that GitHub Actions expression equality is loose: comparing
-a boolean input against the string `'true'` is a real source of bugs,
-so do not recommend it as a fix.
+Note one such rule, with its citation. GitHub Actions expressions cast
+operands of different types to a number before comparing, and a
+non-numeric string casts to `NaN`, which compares unequal to
+everything (Actions docs, "Evaluate expressions in workflows and
+actions" — Operators). So `inputs.flag != 'true'` is true even when
+the boolean input is true. Do not recommend comparing a boolean input
+against a quoted string.
 
 ## What to look for
 
