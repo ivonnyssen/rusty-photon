@@ -39,8 +39,9 @@
 > `bazel / {ubuntu,macos,windows}-latest` (build + test), `bazel coverage`, and
 > the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel does not run
 > rustfmt/clippy). `bazel/cargo target parity`, plus the Cargo build / test /
-> coverage / hack / msrv jobs, run nightly and do not gate PRs. So the
-> authoritative pre-push is:
+> hack / msrv jobs, run nightly and do not gate PRs — none of them collects
+> coverage; `bazel coverage` is the sole source. So the authoritative pre-push
+> is:
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
@@ -48,6 +49,10 @@
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy`
 > ```
+>
+> `bazel coverage` produces a report, not a verdict. To find out whether the
+> lines you are about to push are actually tested — which is what the
+> `codecov/patch` check gates on — see [coverage.md](coverage.md).
 >
 > The first two commands ARE the fast local inner loop: Bazel rebuilds/retests only
 > the targets your change affects, backed by the local `--disk_cache` (see "Change
