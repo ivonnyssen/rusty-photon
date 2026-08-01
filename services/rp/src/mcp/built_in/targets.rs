@@ -253,6 +253,21 @@ impl McpHandler {
             return self.add_target_import(&params, source).await;
         }
 
+        // Every payload rule, in one place, shared with `validate_plan`
+        // (rp.md § Plan schema and validation). A writer stops at the
+        // first offending field; the structured list is what the
+        // read-only tool reports. The per-field parsing below re-runs
+        // the same checks as it produces values — belt and braces, and
+        // the reason those branches are unreachable rather than dead.
+        let payload_errors = super::plan_validation::validate_add_target(
+            &params,
+            &self.target_store_defaults.default_goals,
+            &self.equipment,
+        );
+        if !payload_errors.is_empty() {
+            return Ok(tool_error!("{}", render_first(&payload_errors)));
+        }
+
         let (
             display_name,
             ra_hours,
@@ -347,13 +362,14 @@ impl McpHandler {
             },
         };
 
-        let goals = match parse_goals(&params.goals, &self.target_store_defaults.default_goals) {
+        let goals = match parse_goals(
+            &params.goals,
+            &self.target_store_defaults.default_goals,
+            &self.equipment,
+        ) {
             Ok(g) => g,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
-        if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
-            return Ok(tool_error!("{}", e));
-        }
         let position_angle_degrees = match validate_position_angle(params.position_angle_degrees) {
             Ok(v) => v,
             Err(e) => return Ok(tool_error!("{}", e)),
@@ -490,6 +506,10 @@ impl McpHandler {
             target.priority = v;
         }
         if let Some(v) = params.scheduling {
+            let errors = super::plan_validation::validate_scheduling(&v, "scheduling");
+            if !errors.is_empty() {
+                return Ok(tool_error!("{}", render_first(&errors)));
+            }
             target.scheduling = Some(v.into());
         }
         if params.notes.is_some() {
@@ -508,6 +528,12 @@ impl McpHandler {
         // cleared back to inherit `target_store.default_grading`, an
         // object → replaces the overrides wholesale.
         if let Some(v) = params.grading {
+            if let Some(g) = &v {
+                let errors = super::plan_validation::validate_grading(g, "grading");
+                if !errors.is_empty() {
+                    return Ok(tool_error!("{}", render_first(&errors)));
+                }
+            }
             target.grading = v.map(Into::into);
         }
         target.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -552,16 +578,14 @@ impl McpHandler {
             Ok(s) => s,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
-        let mut goals = Vec::with_capacity(params.goals.len());
-        for g in &params.goals {
-            match AcquisitionGoal::try_from(g) {
-                Ok(pg) => goals.push(pg),
-                Err(e) => return Ok(tool_error!("{}", e)),
-            }
-        }
-        if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
-            return Ok(tool_error!("{}", e));
-        }
+        let goals = match super::plan_validation::validate_goals(
+            &params.goals,
+            &super::plan_validation::filter_roster(&self.equipment),
+            "goals",
+        ) {
+            Ok(g) => g,
+            Err(errors) => return Ok(tool_error!("{}", render_first(&errors))),
+        };
         let stamp = WriteStamp {
             updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             updated_by: OPERATOR_WRITER.to_string(),
@@ -632,13 +656,14 @@ impl McpHandler {
             Ok(c) => c,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
-        let goals = match parse_goals(&params.goals, &self.target_store_defaults.default_goals) {
+        let goals = match parse_goals(
+            &params.goals,
+            &self.target_store_defaults.default_goals,
+            &self.equipment,
+        ) {
             Ok(g) => g,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
-        if let Err(e) = validate_goal_filters(&self.equipment, &goals) {
-            return Ok(tool_error!("{}", e));
-        }
 
         let import = &self.target_store_defaults.import;
         let all = match store.list_targets().await {
@@ -784,12 +809,22 @@ impl McpHandler {
 /// ([`crate::config::PositionAngleDegrees`]), with the error naming
 /// the tool parameter.
 fn validate_position_angle(value: Option<f64>) -> Result<Option<f64>, String> {
-    match value {
-        None => Ok(None),
-        Some(v) => crate::config::PositionAngleDegrees::try_new(v)
-            .map(|a| Some(a.value()))
-            .map_err(|e| format!("position_angle_degrees: {e}")),
+    let errors = super::plan_validation::validate_position_angle(value, "position_angle_degrees");
+    if errors.is_empty() {
+        Ok(value)
+    } else {
+        Err(render_first(&errors))
     }
+}
+
+/// Renders the first [`FieldError`] of a validation pass into the flat
+/// string the write tools have always returned. The structured list is
+/// what `validate_plan` reports; a writer stops at the first offending
+/// field, so it only ever needs this one.
+fn render_first(errors: &[rusty_photon_config::actions::FieldError]) -> String {
+    errors
+        .first()
+        .map_or_else(String::new, |e| format!("{}: {}", e.path, e.msg))
 }
 
 fn same_object(ra1_hours: f64, dec1_degrees: f64, ra2_hours: f64, dec2_degrees: f64) -> bool {
@@ -818,9 +853,15 @@ fn flat_separation_degrees(
 fn parse_goals(
     wire: &Option<Vec<GoalWire>>,
     defaults: &[AcquisitionGoal],
+    equipment: &EquipmentRegistry,
 ) -> Result<Vec<AcquisitionGoal>, String> {
     match wire {
-        Some(wire_goals) => wire_goals.iter().map(AcquisitionGoal::try_from).collect(),
+        Some(wire_goals) => super::plan_validation::validate_goals(
+            wire_goals,
+            &super::plan_validation::filter_roster(equipment),
+            "goals",
+        )
+        .map_err(|errors| render_first(&errors)),
         None => Ok(defaults.to_vec()),
     }
 }
@@ -904,34 +945,6 @@ async fn allocate_suffix(store: &dyn TargetStore, base: &TargetSlug) -> Result<T
             Err(e) => return Err(e.to_string()),
         }
     }
-}
-
-/// Every goal's filter must be in the union of every configured filter
-/// wheel's declared roster (rp.md § Target Store — validated against
-/// config, not live device state, so this never touches hardware). No
-/// filter wheel configured at all is permissive (nothing to validate
-/// against).
-fn validate_goal_filters(
-    equipment: &EquipmentRegistry,
-    goals: &[AcquisitionGoal],
-) -> Result<(), String> {
-    let roster: Vec<&str> = equipment
-        .filter_wheels
-        .iter()
-        .flat_map(|fw| fw.config.filters.iter().map(String::as_str))
-        .collect();
-    if roster.is_empty() {
-        return Ok(());
-    }
-    for g in goals {
-        if !roster.contains(&g.filter.as_str()) {
-            return Err(format!(
-                "goal filter {:?} is not in the configured filter roster {:?}",
-                g.filter, roster
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// The MCP wire shape of one target is [`Target`]'s **derived**

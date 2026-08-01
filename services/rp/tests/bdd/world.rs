@@ -183,6 +183,10 @@ pub struct RpWorld {
     /// Raw JSON array from the most recent `list_targets` call
     /// (Target Store scenarios).
     pub last_target_list: Option<Vec<Value>>,
+    /// The exact payload last handed to `validate_plan`, so the
+    /// agreement scenarios can replay the identical bytes through
+    /// `add_target` instead of restating them.
+    pub last_validated_payload: Option<Value>,
     /// Catalog centroid captured by "the MCP client has resolved
     /// catalog target ..." (import scenarios —
     /// `target_store_import.feature`), so later steps can import at or

@@ -30,6 +30,7 @@ pub mod motion_gate_steps;
 pub mod mount_steps;
 pub mod operation_event_steps;
 pub mod optical_trains_steps;
+pub mod plan_schema_validation_steps;
 pub mod plate_solve_steps;
 pub mod refocus_train_steps;
 pub mod rotator_steps;

@@ -370,8 +370,8 @@ contract.
   published schema cannot drift from the validator.
 - **`rp` provides**: the `schema`/`validate` MCP tools for targets, goals,
   and naming patterns, and the mapping from a constructor `Err` to a
-  dotted-path `FieldError { path, message }` (e.g.
-  `{ path: "ra_hours", message: "must be in [0, 24)" }`) — the same shape
+  dotted-path `FieldError { path, msg }` (e.g.
+  `{ path: "ra_hours", msg: "ra_hours 25 is outside [0, 24)" }`) — the same shape
   `config-actions` returns, so a UI renders the error next to the field.
 - **Surfaces consume**: Rust linkers (`rp`, future tools) get identical
   validation by construction; non-linking surfaces (the ui-htmx BFF, a
@@ -524,9 +524,15 @@ on the store-write path closed by construction; the round-trip tests moved
 with their types.
 
 **Deferred:** the `NamingPattern` grammar slice (stays in `rp` until a
-pattern editor exists); the full `schema`/`validate`/`apply` *MCP tools*
-on `rp` (the protocol machinery — this crate only supplies the typed
-vocabulary they speak).
+pattern editor exists).
+
+**Landed since:** `rp`'s `get_plan_schema` / `validate_plan` MCP tools
+and the `FieldError` mapping, built on this crate's validating
+constructors and `schema`-gated derives (rp.md § Plan schema and
+validation). There is no `apply` counterpart — the existing write tools
+(`add_target`, `update_target`, `set_goals`) are the apply step, and
+they now share their rules with `validate_plan` rather than restating
+them.
 
 ## Decision rationale (alternatives considered)
 

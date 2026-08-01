@@ -4013,6 +4013,66 @@ deriving: every stored field appears in responses — including `grading`,
 which is `null` on a target that inherits `target_store.default_grading`
 rather than overriding it.
 
+### Plan schema and validation
+
+The plan-data analogue of the `config.get` / `config.schema` /
+`config.apply` protocol (ADR-019, and
+[rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol-the-decision-1-role)):
+two read-only MCP tools that let any surface discover the shape of plan
+data and check a candidate against **the same rules the write tools
+enforce**, without writing anything.
+
+**MCP only — there is no REST counterpart.** rp's HTTP surface covers
+service-level concerns (health, config, session lifecycle, documents,
+events); plan data lives entirely on the MCP surface, so these tools add
+no routes. `config.schema` remains the REST-side config analogue and is
+unrelated to plan data.
+
+| Tool | Parameters | Returns | Notes |
+|---|---|---|---|
+| `get_plan_schema` | `entity` | entity, schema | The JSON Schema for one plan-data entity, generated from the same types the write tools deserialize — so it cannot drift from what they accept |
+| `validate_plan` | `entity`, `value` | valid, errors[] | Check `value` against every rule the corresponding write would apply. Writes nothing, touches no store, and never actuates |
+
+`entity` is one of:
+
+| `entity` | Shape | Validated the same way as |
+|---|---|---|
+| `target` | the `add_target` payload | `add_target` |
+| `goals` | a `goals[]` array | `set_goals` / `add_target`'s `goals` |
+| `naming_pattern` | `{file_naming_pattern?, directory_pattern?}` | config load |
+
+`errors[]` entries are `{path, msg}` — the identical `FieldError` shape
+`config-actions` returns, deliberately, so a surface renders a plan
+error next to its field with the code it already has for driver config.
+`path` is dotted and indexed into the submitted value
+(`goals[1].binning`, `scheduling.min_altitude_degrees`, `ra_hours`).
+`valid` is `errors.is_empty()`.
+
+**The one property that matters.** These tools are worth having only if
+they cannot disagree with the writers, so they do not re-implement any
+rule: `validate_plan` and `add_target` / `set_goals` call the *same*
+functions in `mcp::built_in::plan_validation`, which is the only place
+the rules exist. The write tools render the first `FieldError` into
+their existing error string; `validate_plan` returns the whole list
+structured. A payload `validate_plan` accepts is therefore accepted by
+`add_target`, and one it rejects is rejected with the same path —
+pinned by BDD rather than left to convention.
+
+Some rules deliberately sit outside this validator because they are
+**facts about the world, not about the payload**: whether a slug already
+exists (dedup and suffix allocation), whether a referenced slug is
+present, and whether a `catalog_ref` resolves against the embedded
+catalog. `validate_plan` reports a payload that is well-formed and
+rule-compliant; it does not predict which slug an `add_target` would land
+on, and says so rather than guessing.
+
+Consolidating the rules closed a real gap in the writers rather than
+merely exposing them: `add_target` and `update_target` never
+range-checked their `grading` and `scheduling` parameters, so a negative
+or `NaN` threshold was accepted as a per-target override while config
+load rejected the identical value for `target_store.default_grading`.
+Both now go through the shared validator.
+
 ### Progress derivation
 
 Progress is computed on demand, never stored (full rules in
