@@ -88,6 +88,7 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(name_joins(ctx));
     checks.extend(url_conventions(ctx));
     checks.extend(tls_and_auth(ctx));
+    checks.extend(pki_ownership(ctx));
     checks.extend(client_target_joins(ctx));
     checks.extend(fake_mount_join(ctx));
     checks.extend(rp_platform_defaults(ctx));
@@ -634,6 +635,106 @@ fn url_conventions(ctx: &Context) -> Vec<Check> {
 }
 
 // ---- TLS and auth ----
+
+/// `tls.ownership`: everything the install reads must belong to the config
+/// root's owner. The provisioning pass and every renewal end by aligning
+/// the tree (docs/services/doctor.md §Ownership under sudo), so a
+/// mismatch means a run that could not — an unprivileged doctor next to
+/// material an earlier `sudo` left behind. Material a service reads fails
+/// (a key it does not own is a handshake that never happens); anything
+/// else in the tree warns, because renewal skips it too. Unix only:
+/// Windows and a config root doctor cannot stat have no owner to compare.
+fn pki_ownership(ctx: &Context) -> Vec<Check> {
+    let Some(ownership) = crate::provision::pki_ownership(&ctx.config_dir) else {
+        return Vec::new();
+    };
+    ownership_checks(ctx, &ownership)
+}
+
+/// The judgment half of `tls.ownership`, over an already-gathered tree —
+/// which is what makes both the fail and the warn arm reachable without
+/// the privileges it takes to create a cross-owned file.
+fn ownership_checks(ctx: &Context, ownership: &crate::provision::PkiOwnership) -> Vec<Check> {
+    if ownership.examined == 0 {
+        return Vec::new();
+    }
+    let (uid, gid) = (ownership.uid, ownership.gid);
+    let (material, strays): (Vec<_>, Vec<_>) = ownership
+        .mismatched
+        .iter()
+        .partition(|entry| entry.essential);
+    if material.is_empty() && strays.is_empty() {
+        return vec![Check::ok(
+            "tls.ownership",
+            None,
+            format!(
+                "all {} pki entries belong to the config root's owner (uid {uid}, \
+                 gid {gid})",
+                ownership.examined
+            ),
+        )];
+    }
+
+    let mut checks = Vec::new();
+    if !material.is_empty() {
+        checks.push(Check::fail(
+            "tls.ownership",
+            None,
+            format!(
+                "material the services read does not belong to the config root's \
+                 owner (uid {uid}, gid {gid}): {} — a service cannot read a key it \
+                 does not own, so its next start serves no TLS, and the renewal \
+                 timer (which runs as that user) cannot renew it either",
+                relative_names(ctx, &material)
+            ),
+            Some(format!(
+                "run `sudo rusty-photon-doctor --fix` — its provisioning pass hands \
+                 the tree over — or `sudo chown {uid}:{gid} <path>` per entry"
+            )),
+        ));
+    }
+    if !strays.is_empty() {
+        checks.push(Check::warn(
+            "tls.ownership",
+            None,
+            format!(
+                "the pki tree also holds entries that belong to someone else and \
+                 that nothing reads (uid {uid}, gid {gid} expected): {} — renewal \
+                 leaves them alone rather than failing over them, so they are \
+                 reported here instead",
+                relative_names(ctx, &strays)
+            ),
+            Some(format!(
+                "`sudo chown {uid}:{gid} <path>` if they belong to the install, or \
+                 delete them; `ca.srl` is openssl's serial counter from a \
+                 hand-minted certificate and is safe to remove"
+            )),
+        ));
+    }
+    checks
+}
+
+/// Mismatching entries as config-root-relative paths, capped so a wholly
+/// foreign-owned tree names a few files instead of forty.
+fn relative_names(ctx: &Context, entries: &[&crate::provision::OwnershipMismatch]) -> String {
+    const SHOWN: usize = 5;
+    let mut names: Vec<String> = entries
+        .iter()
+        .take(SHOWN)
+        .map(|entry| {
+            entry
+                .path
+                .strip_prefix(&ctx.config_dir)
+                .unwrap_or(&entry.path)
+                .display()
+                .to_string()
+        })
+        .collect();
+    if entries.len() > SHOWN {
+        names.push(format!("and {} more", entries.len() - SHOWN));
+    }
+    names.join(", ")
+}
 
 fn tls_and_auth(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -1891,6 +1992,103 @@ mod tests {
             .expect("auth.absent");
         assert_eq!(auth.status, Status::Warn);
         assert!(auth.fixes.is_empty());
+    }
+
+    fn mismatch(path: &Path, essential: bool) -> crate::provision::OwnershipMismatch {
+        crate::provision::OwnershipMismatch {
+            path: path.to_path_buf(),
+            essential,
+        }
+    }
+
+    #[test]
+    fn test_pki_ownership_is_ok_on_a_tree_this_run_owns() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = dir.path().join("pki");
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("ca.pem"), "cert").unwrap();
+        let ctx = config_only_ctx(dir.path());
+
+        let checks = pki_ownership(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "tls.ownership");
+        assert_eq!(checks[0].status, Status::Ok);
+    }
+
+    #[test]
+    fn test_pki_ownership_says_nothing_without_material_to_judge() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            pki_ownership(&config_only_ctx(dir.path())).is_empty(),
+            "a host that has never been provisioned has no ownership story"
+        );
+    }
+
+    #[test]
+    fn test_pki_ownership_fails_on_material_and_warns_on_strays_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = dir.path().join("pki");
+        let ctx = config_only_ctx(dir.path());
+        let ownership = crate::provision::PkiOwnership {
+            uid: 109,
+            gid: 114,
+            examined: 4,
+            mismatched: vec![
+                mismatch(&pki.join("zwo-camera-key.pem"), true),
+                mismatch(&pki.join("ca.srl"), false),
+            ],
+        };
+
+        let checks = ownership_checks(&ctx, &ownership);
+        assert_eq!(checks.len(), 2, "{checks:?}");
+        let failure = checks.iter().find(|c| c.status == Status::Fail).unwrap();
+        assert!(
+            failure.detail.contains("pki/zwo-camera-key.pem"),
+            "the failure names the material, relative to the config root: {}",
+            failure.detail
+        );
+        assert!(!failure.detail.contains("ca.srl"), "{}", failure.detail);
+        assert!(
+            failure
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .contains("chown 109:114"),
+            "{:?}",
+            failure.suggestion
+        );
+
+        let stray = checks.iter().find(|c| c.status == Status::Warn).unwrap();
+        assert!(stray.detail.contains("pki/ca.srl"), "{}", stray.detail);
+        assert!(
+            !stray.detail.contains("zwo-camera-key.pem"),
+            "a stray warning must not restate the failure: {}",
+            stray.detail
+        );
+    }
+
+    #[test]
+    fn test_pki_ownership_caps_the_names_it_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = dir.path().join("pki");
+        let ctx = config_only_ctx(dir.path());
+        let mismatched: Vec<_> = (0..7)
+            .map(|i| mismatch(&pki.join(format!("service-{i}.pem")), true))
+            .collect();
+        let ownership = crate::provision::PkiOwnership {
+            uid: 0,
+            gid: 0,
+            examined: 7,
+            mismatched,
+        };
+
+        let checks = ownership_checks(&ctx, &ownership);
+        let detail = &checks[0].detail;
+        assert!(detail.contains("service-4.pem"), "{detail}");
+        assert!(
+            detail.contains("and 2 more") && !detail.contains("service-5.pem"),
+            "a wholly foreign-owned tree names a few files, not all of them: {detail}"
+        );
     }
 
     #[test]

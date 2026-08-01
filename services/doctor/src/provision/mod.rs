@@ -161,6 +161,64 @@ pub fn align_pki_ownership_with_warnings(_config_dir: &Path) -> Result<Vec<Strin
     Ok(Vec::new())
 }
 
+/// One entry the ownership sweep would have to hand over.
+#[derive(Debug, Clone)]
+pub struct OwnershipMismatch {
+    pub path: PathBuf,
+    /// Material a service or a renewal reads — the sweep's own split.
+    pub essential: bool,
+}
+
+/// What the ownership sweep sees: the owner it aligns to, how many
+/// entries exist to align, and which of them do not belong to that owner.
+#[derive(Debug, Clone)]
+pub struct PkiOwnership {
+    pub uid: u32,
+    pub gid: u32,
+    /// Entries that exist. Zero means there is no material to judge — a
+    /// host that has never been provisioned.
+    pub examined: usize,
+    pub mismatched: Vec<OwnershipMismatch>,
+}
+
+/// The read-only half of [`align_pki_ownership`], for `tls.ownership`:
+/// what a privileged `--fix` would chown, without touching anything.
+/// `None` where the question does not arise — a non-Unix host, or a
+/// config root doctor cannot stat. An entry doctor cannot stat is not
+/// reported: its ownership is unproven, not wrong.
+#[cfg(unix)]
+pub fn pki_ownership(config_dir: &Path) -> Option<PkiOwnership> {
+    use std::os::unix::fs::MetadataExt;
+    let root_meta = std::fs::metadata(config_dir).ok()?;
+    let (uid, gid) = (root_meta.uid(), root_meta.gid());
+    let mut ownership = PkiOwnership {
+        uid,
+        gid,
+        examined: 0,
+        mismatched: Vec::new(),
+    };
+    for (path, essential) in alignment_entries(config_dir) {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        ownership.examined += 1;
+        if meta.uid() != uid || meta.gid() != gid {
+            ownership
+                .mismatched
+                .push(OwnershipMismatch { path, essential });
+        }
+    }
+    Some(ownership)
+}
+
+#[cfg(not(unix))]
+pub fn pki_ownership(_config_dir: &Path) -> Option<PkiOwnership> {
+    None
+}
+
 /// Everything the ownership sweep covers, each paired with whether failing
 /// to align it is fatal. The pki directory itself is essential: renewal
 /// writes new pairs into it.
