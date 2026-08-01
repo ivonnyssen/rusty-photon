@@ -324,41 +324,173 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// is that author's business and must not fail rp's config load. The same
 /// scope decides which registration doctor offers to wire a credential
 /// into (`RpView::plugin_targets`).
+///
+/// How *many* orchestrators are registered is checked here too
+/// ([`second_orchestrator_error`]): rp invokes one, and picking it by
+/// array position would make a silently ignored registration —
+/// or a reordering by any writer that round-trips the config — a
+/// legal config.
 fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
-    plugins
+    // Each dialed registration is checked by running the very parse its
+    // runtime builds from — `EventSubscription::parse` for the bus's
+    // subscribers, `OrchestratorRegistration::parse` for the session
+    // manager's invoke target — so a config that loads is a config rp
+    // dials. There is no second implementation here to drift from the
+    // runtime's.
+    let mut errors: Vec<FieldError> = plugins
         .iter()
         .enumerate()
-        .filter_map(|(index, plugin)| Some((index, plugin, dialed_url_field(plugin)?)))
-        .flat_map(|(index, plugin, url_field)| {
-            // An event registration is checked by running the very parse
-            // `EventBus` builds its subscribers with, so a config that
-            // loads is a config that delivers — there is no second
-            // implementation here to drift from the runtime's.
-            if is_event_plugin(plugin) {
-                return Vec::from_iter(EventSubscription::parse(index, plugin).err());
+        .filter_map(|(index, plugin)| {
+            if is_orchestrator(plugin) {
+                OrchestratorRegistration::parse(index, plugin).err()
+            } else if is_event_plugin(plugin) {
+                EventSubscription::parse(index, plugin).err()
+            } else {
+                None
             }
-            let mut errors = Vec::new();
-            if let Some(auth) = plugin.get("auth").filter(|v| !v.is_null()) {
-                if let Err(e) =
-                    serde_json::from_value::<rp_auth::config::ClientAuthConfig>(auth.clone())
-                {
-                    errors.push(FieldError {
-                        path: format!("plugins.{index}.auth"),
-                        msg: e.to_string(),
-                    });
-                }
-            }
-            if let Some(url) = plugin.get(url_field).filter(|v| !v.is_null()) {
-                if let Err(msg) = validate_callback_url(url) {
-                    errors.push(FieldError {
-                        path: format!("plugins.{index}.{url_field}"),
-                        msg,
-                    });
-                }
-            }
-            errors
         })
-        .collect()
+        .collect();
+    errors.extend(second_orchestrator_error(plugins));
+    errors
+}
+
+/// One `type: "orchestrator"` registration, parsed into everything an
+/// invocation needs: who to POST a session start to, the opaque `config`
+/// to pass through, and the credential to present.
+///
+/// [`Self::parse`] is the single definition of what an orchestrator
+/// registration must carry and [`Self::sole`] of how many may be
+/// registered. [`plugin_registration_errors`] runs both to reject a
+/// faulty config at load, and [`crate::session::SessionManager`] runs
+/// them to build the registration it invokes, so the config rp accepts
+/// and the config rp acts on are the same by construction.
+#[derive(Debug)]
+pub struct OrchestratorRegistration {
+    /// The registration's position in `plugins[]` — the path an operator
+    /// edits, and what rp's startup errors name.
+    pub index: usize,
+    pub name: String,
+    pub invoke_url: String,
+    /// The registration's `config` object — opaque to rp, passed through
+    /// verbatim in the `/invoke` POST.
+    pub config: Option<Value>,
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
+}
+
+impl OrchestratorRegistration {
+    /// Parse `plugins[index]`, which the caller has already established
+    /// is an orchestrator registration ([`is_orchestrator`]).
+    ///
+    /// `invoke_url` is required. An entry declaring itself the
+    /// orchestrator with nothing to POST to is malformed, and read as
+    /// inert it degrades into "no orchestrator is configured" — which
+    /// reads as intentional, so `POST /api/session/start` would find
+    /// nothing to invoke and report no fault, night after night.
+    ///
+    /// `name` is optional, because rp only labels errors and logs with
+    /// it and the index is what identifies the entry; an unnamed
+    /// registration is reported as `orchestrator`. Every message carries
+    /// it beside the index anyway — nothing stops two registrations
+    /// sharing a `name`, but an operator reads the name first.
+    pub fn parse(index: usize, entry: &Value) -> std::result::Result<Self, FieldError> {
+        let name = registration_name(entry);
+        let at = |field: &str, msg: &str| FieldError {
+            path: format!("plugins.{index}.{field}"),
+            msg: format!("({name}) {msg}"),
+        };
+
+        let url_value = entry
+            .get(ORCHESTRATOR_URL_FIELD)
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| {
+                at(
+                    ORCHESTRATOR_URL_FIELD,
+                    "is required: an orchestrator registration carries the URL rp POSTs a \
+                     session start to",
+                )
+            })?;
+        let invoke_url =
+            validate_callback_url(url_value).map_err(|msg| at(ORCHESTRATOR_URL_FIELD, &msg))?;
+
+        let auth = match entry.get("auth") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value::<rp_auth::config::ClientAuthConfig>(value.clone())
+                    .map_err(|e| at("auth", &e.to_string()))?,
+            ),
+        };
+
+        Ok(Self {
+            index,
+            name: name.to_string(),
+            invoke_url: invoke_url.to_string(),
+            config: entry.get("config").cloned(),
+            auth,
+        })
+    }
+
+    /// The one orchestrator registered in `plugins`, or `None` when none
+    /// is — the lookup [`crate::session::SessionManager`] builds from.
+    ///
+    /// More than one is a configuration fault, not a tie to break by
+    /// position: `plugins[]` order is not identity, every writer that
+    /// round-trips the config (`PUT /api/config`, ui-htmx) may reorder
+    /// it, and the entry that loses is invoked never — with no error, no
+    /// warning, and an operator watching a session that simply does not
+    /// start.
+    /// Every orchestrator entry is parsed before the count is judged, and
+    /// in `plugins[]` order — the order [`plugin_registration_errors`]
+    /// reports in — so the runtime and the load path name the same field
+    /// on the same file. It is also the more useful of the two errors: a
+    /// stub with no `invoke_url` sitting beside a working registration
+    /// has to be named as the malformed entry, or "remove one" points an
+    /// operator at whichever of the two the message happens to name.
+    pub fn sole(plugins: &[Value]) -> std::result::Result<Option<Self>, FieldError> {
+        let registered = plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, plugin)| is_orchestrator(plugin))
+            .map(|(index, entry)| Self::parse(index, entry))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if let Some(error) = second_orchestrator_error(plugins) {
+            return Err(error);
+        }
+        Ok(registered.into_iter().next())
+    }
+}
+
+/// The error for a `plugins[]` that registers a second orchestrator, or
+/// `None` when at most one is registered. Names the later entry, since
+/// removing it restores the behaviour the config already had — rp
+/// invokes the first — and names the earlier one in the message, because
+/// which of the two is live is the whole question.
+fn second_orchestrator_error(plugins: &[Value]) -> Option<FieldError> {
+    let mut registered = plugins
+        .iter()
+        .enumerate()
+        .filter(|(_, plugin)| is_orchestrator(plugin));
+    let (first_index, first) = registered.next()?;
+    let (second_index, second) = registered.next()?;
+    Some(FieldError {
+        path: format!("plugins.{second_index}.type"),
+        msg: format!(
+            "({}) is a second orchestrator registration, and rp invokes exactly one: \
+             plugins.{first_index} ({}) comes first, so this one would never be invoked — \
+             no error, no warning, no work. Remove one.",
+            registration_name(second),
+            registration_name(first),
+        ),
+    })
+}
+
+/// The name a registration is reported under. Optional on an
+/// orchestrator entry (unlike an event subscriber's, which delivery logs
+/// by name), so an unnamed one reads as `orchestrator`.
+fn registration_name(entry: &Value) -> &str {
+    entry
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("orchestrator")
 }
 
 /// One `type: "event"` registration, parsed into everything a delivery
@@ -471,9 +603,9 @@ impl EventSubscription {
 
 /// The registration field naming the endpoint rp POSTs a session start
 /// to (rp.md § Orchestrator Registration). Read by
-/// [`crate::session::SessionManager`]'s registration lookup and validated
-/// by [`plugin_registration_errors`] through this one name, so the two
-/// cannot drift.
+/// [`OrchestratorRegistration::parse`], which both
+/// [`crate::session::SessionManager`]'s registration lookup and
+/// [`plugin_registration_errors`] run, so the two cannot drift.
 pub const ORCHESTRATOR_URL_FIELD: &str = "invoke_url";
 
 /// The registration field naming the endpoint rp POSTs each subscribed
@@ -481,22 +613,6 @@ pub const ORCHESTRATOR_URL_FIELD: &str = "invoke_url";
 /// [`crate::events::EventBus`]'s registration lookup and validated by
 /// [`plugin_registration_errors`] through this one name.
 pub const EVENT_URL_FIELD: &str = "webhook_url";
-
-/// The callback field rp POSTs to, for the two plugin types rp dials;
-/// `None` for every other type, whose keys rp never reads. The single
-/// place that mapping is written. doctor's `RpView::plugin_targets` has
-/// to restate it — it reads rp's config as opaque JSON from another
-/// crate — so the two are kept in step by their tests, not by the
-/// compiler.
-fn dialed_url_field(plugin: &Value) -> Option<&'static str> {
-    if is_orchestrator(plugin) {
-        Some(ORCHESTRATOR_URL_FIELD)
-    } else if is_event_plugin(plugin) {
-        Some(EVENT_URL_FIELD)
-    } else {
-        None
-    }
-}
 
 /// A callback URL must be an `http://` or `https://` URL rp can actually
 /// POST to. Rejected at load for the same reason `server.advertised_url`
@@ -573,7 +689,8 @@ fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
 
 /// Whether a plugin registration is the orchestrator kind — the single
 /// place that rule is written, shared by [`plugin_registration_errors`]
-/// and [`crate::session::SessionManager`]'s registration lookup.
+/// and [`OrchestratorRegistration::sole`], the lookup
+/// [`crate::session::SessionManager`] builds from.
 pub fn is_orchestrator(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
 }
@@ -1126,6 +1243,119 @@ mod tests {
             error.contains("plugins.0.subscribes_to"),
             "must name the field to fix: {error}"
         );
+    }
+
+    /// An orchestrator entry with nothing to POST to is malformed, not a
+    /// rig that runs without an orchestrator: read as inert it degrades
+    /// into "no orchestrator is configured", which reads as intentional,
+    /// and `POST /api/session/start` then finds nothing to invoke and
+    /// reports no fault.
+    #[test]
+    fn an_orchestrator_registration_without_an_invoke_url_fails_to_load() {
+        for entry in [
+            serde_json::json!({"name": "session-runner", "type": "orchestrator"}),
+            serde_json::json!({
+                "name": "session-runner", "type": "orchestrator", "invoke_url": null,
+            }),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "session": {"data_directory": "/tmp/rp-test"},
+                    "equipment": {},
+                    "plugins": [entry],
+                    "server": {"port": 0},
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            let error = load_config(&path).unwrap_err().to_string();
+            assert!(
+                error.contains("plugins.0.invoke_url") && error.contains("session-runner"),
+                "must name the entry to fix: {error}"
+            );
+        }
+    }
+
+    /// rp invokes one orchestrator, and `plugins[]` order is not
+    /// identity — so two registrations is a config mistake, refused at
+    /// load naming both. Resolving it by position would leave the later
+    /// entry fully validated, reported clean, and never invoked.
+    #[test]
+    fn a_second_orchestrator_registration_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": [
+                    {
+                        "name": "calibrator-flats",
+                        "type": "orchestrator",
+                        "invoke_url": "http://127.0.0.1:11170/invoke",
+                    },
+                    {
+                        "name": "session-runner",
+                        "type": "orchestrator",
+                        "invoke_url": "http://127.0.0.1:11171/invoke",
+                    },
+                ],
+                "server": {"port": 0},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("plugins.1.type")
+                && error.contains("session-runner")
+                && error.contains("plugins.0")
+                && error.contains("calibrator-flats"),
+            "must name both registrations: {error}"
+        );
+    }
+
+    /// The two rules together are what take `plugins[]` position out of
+    /// the question: a stub without an `invoke_url` sitting ahead of a
+    /// complete registration used to make rp report no orchestrator at
+    /// all, and moving it behind — a semantically meaningless edit —
+    /// used to make sessions work again. Now neither order loads, and
+    /// the message names the stub either way.
+    #[test]
+    fn an_incomplete_orchestrator_does_not_hide_a_complete_one() {
+        let stub = serde_json::json!({"name": "stub", "type": "orchestrator"});
+        let complete = serde_json::json!({
+            "name": "session-runner",
+            "type": "orchestrator",
+            "invoke_url": "http://127.0.0.1:11171/invoke",
+        });
+        for plugins in [vec![stub.clone(), complete.clone()], vec![complete, stub]] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "session": {"data_directory": "/tmp/rp-test"},
+                    "equipment": {},
+                    "plugins": plugins,
+                    "server": {"port": 0},
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            let error = load_config(&path).unwrap_err().to_string();
+            assert!(
+                error.contains("invoke_url") && error.contains("stub"),
+                "the incomplete registration must be named whichever order it sits in: {error}"
+            );
+        }
     }
 
     /// The callback URL is the registration's primary field, so it fails

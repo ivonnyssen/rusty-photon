@@ -54,6 +54,7 @@ pub const NON_ALPACA_SERVICES: &[&str] = &[
     "plate-solver",
     "session-runner",
     "calibrator-flats",
+    "polar-align",
     "phd2-guider",
     "ui-htmx",
 ];

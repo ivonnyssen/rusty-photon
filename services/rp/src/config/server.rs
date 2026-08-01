@@ -1,101 +1,17 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+//! rp's `server` block is the shared advertising shape — the plain-HTTP
+//! fields plus `advertised_url`, which rp uses to tell an orchestrator
+//! where its MCP endpoint is (the invocation's `mcp_server_url`).
+//!
+//! It is the shared type rather than an rp-local copy of it so that the
+//! shape rp accepts is by construction the shape `rusty-photon-doctor`
+//! validates rp's config against.
 
-use rp_auth::config::AuthConfig;
-use rusty_photon_tls::config::TlsConfig;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-/// rp's `server` block: the shared non-Alpaca shape
-/// (`rusty_photon_server_config::ServerConfig`) plus `advertised_url`.
-/// The shared fields are repeated rather than flattened because serde's
-/// `deny_unknown_fields` does not compose with `flatten` — the same
-/// trade the shared crate makes for its Alpaca shape. rp is the only
-/// service that advertises its own URL to another process (the
-/// orchestrator invocation's `mcp_server_url`), so the extra field
-/// lives here rather than in every service's config.
-///
-/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
-/// instead of being silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Interface to bind. `0.0.0.0` (the default) listens on all interfaces;
-    /// an `IpAddr` rather than a string so a malformed address fails at
-    /// config load, not at bind time.
-    #[serde(default = "default_bind_address")]
-    pub bind_address: IpAddr,
-    #[serde(default)]
-    pub tls: Option<TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<AuthConfig>,
-    /// Overrides the MCP endpoint URL advertised to orchestrators —
-    /// rp appends `/mcp` (rp.md § MCP Server). Unset, the URL is
-    /// derived from the listener; a wildcard bind advertises the
-    /// system hostname.
-    #[serde(default)]
-    pub advertised_url: Option<AdvertisedUrl>,
-}
-
-impl ServerConfig {
-    /// The address the listener binds to.
-    pub fn socket_addr(&self) -> SocketAddr {
-        SocketAddr::new(self.bind_address, self.port)
-    }
-}
-
-fn default_bind_address() -> IpAddr {
-    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-}
-
-/// An `http://` / `https://` base URL, validated at config load and
-/// held with any trailing `/` trimmed so appending `/mcp` cannot
-/// produce `//mcp`.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[serde(transparent)]
-pub struct AdvertisedUrl(String);
-
-impl AdvertisedUrl {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for AdvertisedUrl {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        let scheme_len = if value.starts_with("http://") {
-            "http://".len()
-        } else if value.starts_with("https://") {
-            "https://".len()
-        } else {
-            return Err(serde::de::Error::custom(format!(
-                "server.advertised_url must be an http:// or https:// URL, got {value:?}"
-            )));
-        };
-        let trimmed = value.trim_end_matches('/');
-        if trimmed.len() <= scheme_len {
-            return Err(serde::de::Error::custom(format!(
-                "server.advertised_url has no host: {value:?}"
-            )));
-        }
-        Ok(Self(trimmed.to_string()))
-    }
-}
+pub use rusty_photon_server_config::{AdvertisedUrl, AdvertisingServerConfig as ServerConfig};
 
 /// rp's default `server` block when the config file omits it: port 11115 on
 /// all interfaces, plain HTTP.
 pub(crate) fn default_server() -> ServerConfig {
-    ServerConfig {
-        port: 11115,
-        bind_address: default_bind_address(),
-        tls: None,
-        auth: None,
-        advertised_url: None,
-    }
+    ServerConfig::new(11115)
 }
 
 #[cfg(test)]
@@ -181,8 +97,9 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod doctor_toml_parity {
     use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
+    use rusty_photon_server_config::AdvertisingServerConfig;
 
-    use super::default_server;
+    use super::{default_server, ServerConfig};
 
     /// `pkg/doctor.toml` is this service's catalog entry for
     /// `rusty-photon-doctor` and must match the config defaults
@@ -191,6 +108,15 @@ mod doctor_toml_parity {
     fn pkg_doctor_toml_matches_config_defaults() {
         let meta = parse(include_str!("../../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, default_server().port);
-        assert_eq!(meta.class, ServerClass::Core);
+        assert_eq!(meta.class, ServerClass::Advertising);
+    }
+
+    /// The declared class says which shape doctor validates rp's `server`
+    /// block against; this pins it to the type rp actually deserializes,
+    /// so reintroducing a service-local shape is a compile error here
+    /// rather than a false `config.server-shape` failure on a rig.
+    #[test]
+    fn the_declared_class_is_the_shape_rp_uses() {
+        let _: ServerConfig = AdvertisingServerConfig::new(11115);
     }
 }

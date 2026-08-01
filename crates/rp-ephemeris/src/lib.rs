@@ -20,8 +20,8 @@ mod vocabulary;
 pub use erfars_impl::ErfarsEphemeris;
 pub use site::{Site, SiteError};
 pub use types::{
-    AltAz, EphemerisError, IcrsCoord, LocalSiderealTime, MoonInfo, RiseSet, SideOfPier, SunInfo,
-    TwilightKind, TwilightWindow,
+    AltAz, EphemerisError, IcrsCoord, LocalSiderealTime, MoonInfo, RefractionConditions, RiseSet,
+    SideOfPier, SunInfo, TwilightKind, TwilightWindow,
 };
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};

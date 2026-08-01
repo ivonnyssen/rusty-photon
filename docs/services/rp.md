@@ -275,7 +275,15 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
       "dec_center": 41.2690,
       "pixel_scale_arcsec": 1.05,
       "rotation_deg": 12.3,
-      "solver": "astap-0.9.1"
+      "solver": "astap-0.9.1",
+      "wcs_matrix": {
+        "crpix1": 512.0,
+        "crpix2": 384.0,
+        "cd1_1": -2.91e-4,
+        "cd1_2": 1.2e-6,
+        "cd2_1": 1.1e-6,
+        "cd2_2": 2.91e-4
+      }
     },
     "image_analysis": {
       "hfr": 2.3,
@@ -564,7 +572,10 @@ the plaintext credential `rp` presents as HTTP Basic on every delivery;
 omit it for a plugin that does not challenge. Both fields follow the
 [Orchestrator Registration](#orchestrator-registration) rules exactly —
 same shapes, same load-time validation naming the offending entry
-(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. Getting
+(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. What does
+not carry over is the count: any number of event subscribers may be
+registered, because `rp` delivers each event to all of them, while it
+invokes one orchestrator. Getting
 this wrong is quieter here than on the orchestrator path: delivery is
 fire-and-forget with no retry, so the event is simply lost and the night
 continues. A plugin that *answers* with a non-success status — a 401 from
@@ -1030,7 +1041,7 @@ accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `plate_solve` | document_id or image_path; optional pointing_hint, use_mount_hints, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
+| `plate_solve` | document_id or image_path; optional pointing_hint, use_mount_hints, fov_hint_deg, search_radius_deg, timeout | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver, wcs_matrix | Solve an image. Proxies to the plate-solver rp-managed service (which wraps ASTAP). Persists a `wcs` section to the exposure document. See [`plate_solve` Contract](#plate_solve-contract). |
 
 **Compound (built-in)**
 
@@ -1935,8 +1946,8 @@ At runtime, the plugin can call any tool on `rp`.
 
 #### Orchestrator Registration
 
-Exactly one orchestrator plugin is configured per session type. `rp`
-invokes it when a session starts:
+Exactly one orchestrator plugin is registered, and `rp` invokes it when a
+session starts:
 
 ```json
 {
@@ -1954,6 +1965,25 @@ The optional `config` object is opaque to `rp`: it is stored with the
 registration and passed through verbatim at invocation (see below).
 `calibrator-flats` carries its flat plan here; `session-runner` uses it to
 name the workflow document to execute and that document's parameters.
+Switching between orchestrators — a flats night, then a deep-sky night —
+is a change of *which one* is registered, not an extra entry beside the
+first.
+
+**One orchestrator, and it must carry an `invoke_url`.** Both are
+enforced at config load, so startup, `PUT /api/config` and `rp doctor`
+refuse the same file. A second `type: "orchestrator"` entry is rejected
+naming both (`plugins.1.type`, with `plugins.0` in the message): `rp`
+invokes one, and resolving that by array position would mean a
+registration that validates clean, is reported clean, and is never
+invoked — no error, no warning, no work — with any writer that
+round-trips `plugins[]` (`PUT /api/config`, `ui-htmx`) free to swap
+which one is live without touching a value. An orchestrator entry
+carrying no `invoke_url` is rejected the same way (`plugins.0.invoke_url`)
+rather than read as inert: read as inert it is indistinguishable from a
+rig that deliberately runs without an orchestrator, so
+`POST /api/session/start` would find nothing to invoke and report no
+fault, and a *stub* entry sitting ahead of a complete registration would
+disable orchestration entirely until the array was reordered.
 
 **A plugin may serve TLS and require authentication.** An `invoke_url`
 may be `https://` when the plugin's own service is TLS-enabled; `rp`
@@ -3379,6 +3409,13 @@ wrapper falls back to a blind solve.
 - `rotation_deg` (f64) — field rotation from `.wcs` `CROTA2`.
 - `solver` (String) — solver banner from the wrapper (e.g.
   `"astap-2026.05.03"`).
+- `wcs_matrix` (object or null) — the full WCS linear mapping,
+  passed through from the wrapper verbatim: `crpix1`/`crpix2` in
+  FITS 1-based pixels, `cd1_1`/`cd1_2`/`cd2_1`/`cd2_2` in degrees
+  per pixel. `null` when the wrapper's `.wcs` sidecar lacked a
+  complete six-key set — the wrapper never synthesizes a matrix
+  from CDELT/CROTA2 (that would fabricate the image parity the CD
+  determinant's sign encodes).
 
 **Persistence**:
 - `document_id` mode: writes a `wcs` section to the exposure
@@ -5022,12 +5059,13 @@ the URL is derived from the listener — a wildcard `bind_address`
 advertises the system hostname; see [MCP Server](#mcp-server). Setting
 it also admits that host to the MCP endpoint's `Host` allowlist, which
 is how a name `rp` cannot derive (a reverse proxy, an mDNS alias) is
-made acceptable to the endpoint as well as advertised. The
-`server` block is otherwise the shared server-config shape, except
-that `rp` carries this extra field in its own config type
-(`services/rp/src/config/server.rs`) — rp is the only service that
-advertises its own URL to another process, so the knob does not live
-in `rusty-photon-server-config`.
+made acceptable to the endpoint as well as advertised. The whole
+`server` block is `rusty-photon-server-config`'s
+`AdvertisingServerConfig` — the shared plain-HTTP shape plus this
+field — which `rp` uses directly rather than defining a copy of, so
+the shape `rp` accepts is by construction the one
+`rusty-photon-doctor` validates it against (`class = "advertising"`
+in `services/rp/pkg/doctor.toml`).
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present

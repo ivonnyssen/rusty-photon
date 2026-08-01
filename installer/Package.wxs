@@ -213,6 +213,9 @@
       <Feature Id="CalibratorFlats" Title="calibrator-flats (flat capture)" Description="Flat-field capture orchestrator; demand-start, needs a hand-written config (port 11170)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="CalibratorFlatsComponents" />
       </Feature>
+      <Feature Id="PolarAlign" Title="polar-align (polar alignment)" Description="Plate-solving polar alignment orchestrator; demand-start, needs a hand-written config (port 11172)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="PolarAlignComponents" />
+      </Feature>
       <Feature Id="PlanetariumBridge" Title="planetarium-bridge (target entry)" Description="Virtual Alpaca Telescope; planetarium Align gestures become paused rp targets (port 11126)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="PlanetariumBridgeComponents" />
       </Feature>

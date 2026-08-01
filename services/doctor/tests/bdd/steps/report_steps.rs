@@ -138,6 +138,19 @@ fn no_checks_named(world: &mut DoctorWorld, name: String) {
     );
 }
 
+#[then(expr = "the report has no checks named {string} for service {string}")]
+fn no_checks_named_for_service(world: &mut DoctorWorld, name: String, service: String) {
+    let offending: Vec<&Value> = world
+        .checks()
+        .iter()
+        .filter(|c| c["name"] == name.as_str() && c["service"] == service.as_str())
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "unexpected checks named {name} for {service}: {offending:?}"
+    );
+}
+
 #[then(expr = "the report has no checks named {string} with status {string}")]
 fn no_checks_named_with_status(world: &mut DoctorWorld, name: String, status: String) {
     let offending: Vec<&Value> = world

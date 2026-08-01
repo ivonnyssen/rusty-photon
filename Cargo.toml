@@ -27,6 +27,7 @@ members = [
   "services/pa-scops-oag",
   "services/phd2-guider",
   "services/planetarium-bridge",
+  "services/polar-align",
   "services/ppba-driver",
   "services/qhy-camera",
   "services/qhy-focuser",

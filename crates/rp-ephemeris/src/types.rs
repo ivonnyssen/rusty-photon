@@ -19,6 +19,28 @@ pub struct LocalSiderealTime {
     pub lst_hours: f64,
 }
 
+/// Atmospheric conditions for the refraction model in the
+/// observed-coordinate conversions that take them explicitly
+/// ([`crate::ErfarsEphemeris::alt_az_with_conditions`] /
+/// [`crate::ErfarsEphemeris::icrs_from_alt_az`]). Relative humidity
+/// and wavelength stay at the trait-documented amateur-rig values
+/// (50 %, 0.55 µm) — pressure and temperature dominate the visible-
+/// light refraction term.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RefractionConditions {
+    pub pressure_hpa: f64,
+    pub temperature_c: f64,
+}
+
+impl Default for RefractionConditions {
+    fn default() -> Self {
+        Self {
+            pressure_hpa: 1013.25,
+            temperature_c: 10.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RiseSet {
     pub rise_utc: DateTime<Utc>,

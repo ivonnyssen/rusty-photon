@@ -4,7 +4,7 @@
 //! implementation is in `astap.rs`; tests use `mockall`'s generated mock.
 
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
@@ -34,6 +34,25 @@ pub struct SolveOutcome {
     pub pixel_scale_arcsec: f64,
     pub rotation_deg: f64,
     pub solver: String,
+    /// Full CRPIX + CD-matrix mapping; `None` unless the `.wcs`
+    /// sidecar carries all six keys (see [`WcsMatrix`]).
+    pub wcs_matrix: Option<WcsMatrix>,
+}
+
+/// Full WCS linear mapping read verbatim from the `.wcs` sidecar:
+/// CRPIX in the FITS 1-based pixel convention, CD matrix in degrees
+/// per pixel. All-or-nothing — populated only when the sidecar
+/// carries all six keys, never synthesized from CDELT/CROTA2 (a
+/// synthesized matrix would fabricate parity; the CD determinant's
+/// sign is what encodes it).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct WcsMatrix {
+    pub crpix1: f64,
+    pub crpix2: f64,
+    pub cd1_1: f64,
+    pub cd1_2: f64,
+    pub cd2_1: f64,
+    pub cd2_2: f64,
 }
 
 #[derive(Debug, Error)]

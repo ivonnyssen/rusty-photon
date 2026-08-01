@@ -69,6 +69,12 @@ bdd_infra::bdd_main! {
             if tagged("wip", "@wip") {
                 return false;
             }
+            // File ownership is a Unix concept: the checks that judge it
+            // report nothing at all on Windows, so the scenarios asserting
+            // their rows have nothing to assert there.
+            if !cfg!(unix) && tagged("unix", "@unix") {
+                return false;
+            }
             pebble_available || !tagged("pebble", "@pebble")
         })
         .await;
