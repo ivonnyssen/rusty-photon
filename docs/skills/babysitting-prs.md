@@ -134,3 +134,50 @@ repo-specific facts (labels, conventions, what other files already do).
 Verify every claim against the code before acting on it — in both
 directions: don't dismiss a real bug because the comment reads pedantic,
 and don't "fix" working code because the comment sounds confident.
+
+### What the record shows
+
+Classifying all 1492 Copilot review threads across PRs #142–#808 (230
+PRs that drew comments) gives a per-category prior worth triaging by.
+Share of a category's comments that led to a real improvement:
+
+| Category                        |   n | useful | harmful |
+| ------------------------------- | --: | -----: | ------: |
+| Races, locking, task lifetime    |  51 |    86% |      0% |
+| Security                         |  57 |    83% |      2% |
+| Validation / missing mirror site | 149 |    80% |      2% |
+| Logic bugs                       | 213 |    78% |      9% |
+| Error handling                   | 133 |    72% |      3% |
+| Test quality                     | 161 |    58% |      6% |
+| Doc / comment drift              | 562 |     9% |      3% |
+| Style nits                       |  75 |     3% |      3% |
+| "This won't compile"             |  32 |     0% |     84% |
+
+(Performance and uncategorized comments, 59 threads, are omitted.)
+
+Read the first five rows closely — that is where review has caught
+defects nothing else could. Doc drift is 38% of all comment volume and
+the least productive; the useful minority is the subset where following
+the text would cause a wrong action (bad units, a contradicted
+contract, a recovery procedure missing a step).
+
+Never act on a compile, borrow, lint or format claim: the Bazel and
+clippy gates settled those before the review ran, and 27 of 32 such
+claims were flatly wrong. The same applies to any confident assertion
+about external tool behavior (udev precedence, systemd unit resolution,
+rootless podman, Actions contexts, `shasum` flags) — verify against the
+tool's manual before believing it.
+
+Roughly one comment in eight is a duplicate: the same finding on
+sibling files, or re-raised in a later round against a commit that
+already fixed it. Check whether an intervening SHA addressed it before
+writing a reply.
+
+### Steering Copilot
+
+`.github/copilot-instructions.md` and the path-scoped files in
+`.github/instructions/` encode the above as review instructions. Copilot
+code review reads **only the first 4000 characters** of each file, so
+keep them short; the budget is per file, which is why the guidance is
+split by `applyTo` path. Since July 2026 these are read from the PR's
+head branch, so changes can be tested on a feature branch before merge.
