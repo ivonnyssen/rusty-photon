@@ -358,7 +358,7 @@ explicit port, or one that doesn't parse, resolves to nothing.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no `ca_cert_path` pointed at it — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
+| `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
 | `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620, and — since issue #663 — every `equipment.<kind>[].auth` / `equipment.mount.auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
@@ -372,13 +372,20 @@ credential is written from `pki/credential` — the same material
 `plan_client_wiring` already distributes, following the same "absent gets
 it, present is operator intent, never overwritten" contract as every
 other D6a client fix. Sentinel's per-monitor entries carry `scheme` +
-`auth` (no per-monitor `ca_cert_path` — every monitor trusts sentinel's
-single top-level `ca_cert`, already wired unconditionally by
-`plan_client_wiring` once the CA exists), so the scheme and per-monitor
-credential are equally fix-eligible; `operation_watchdog.rp_url`'s scheme
-is fix-eligible too, but carries no separate `joins.client-auth` check —
-its credential is the shared `service_auth` pair, `auth.mismatch`'s
-territory already. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
+`auth` (no per-monitor `ca_cert_path` — every monitor, and the watchdog's
+`rp_url` alongside them, trusts sentinel's single top-level `ca_cert`, the
+same shape rp uses), so the scheme and per-monitor credential are equally
+fix-eligible, and a self-signed target with no `ca_cert` set is reported
+against that one field with `/ca_cert` as its fix
+([#801](https://github.com/ivonnyssen/rusty-photon/issues/801));
+`operation_watchdog.rp_url`'s scheme and CA trust are fix-eligible too,
+but it carries no separate `joins.client-auth` check — its credential is
+the shared `service_auth` pair, `auth.mismatch`'s territory already.
+`plan_client_wiring` writes that same `ca_cert` unconditionally, but only
+inside `--fix`; reporting it here is what makes a **plain, read-only
+`doctor` run** name the gap in the window between a target's TLS being
+provisioned and the next `--fix`, instead of leaving it to surface at
+night as monitor errors. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 and every `equipment.<kind>[].alpaca_url` entry — including the singular
 `equipment.mount.alpaca_url` (issue #663) — share rp's single top-level
 `ca_cert` field (issue #609 / PR #612, the `wire_auth: false` row of
@@ -1125,11 +1132,13 @@ the install-flow docs in the per-platform packaging guides, and the
 pki-ownership alignment under sudo (the #572 remainder).
 
 **Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607),
-[#620](https://github.com/ivonnyssen/rusty-photon/issues/620)):**
+[#620](https://github.com/ivonnyssen/rusty-photon/issues/620),
+[#801](https://github.com/ivonnyssen/rusty-photon/issues/801)):**
 `joins.client-transport` and `joins.client-auth` (§Diagnosis).
 `joins.client-transport` is fully fix-eligible for ui-htmx's
 `rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
-`operation_watchdog.rp_url` scheme, and rp's plate-solver/guider clients
+`operation_watchdog.rp_url` scheme, the shared top-level `ca_cert` both
+sentinel client families trust (#801), and rp's plate-solver/guider clients
 (rp's shared top-level `ca_cert`, closed by #609/PR #612). `joins.client-auth`
 is fully fix-eligible for ui-htmx's targets, sentinel's per-monitor
 `auth`, and (since #620 added `plate_solver.auth` /
@@ -1142,16 +1151,3 @@ pair — `auth.mismatch` already owns it).
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.
-- `joins.client-transport` does not evaluate CA trust for sentinel's
-  downstream targets (`operation_watchdog.rp_url`, per-monitor
-  `host`/`port`) at all — both pass `ca_cert: None` into `transport_check`
-  because sentinel's single top-level `ca_cert` is already unconditionally
-  wired by `plan_client_wiring` (D6a) whenever `pki/ca.pem` exists. That
-  pass runs only inside `--fix`, though, and checks field-presence
-  directly (not whole-block-absence, so it is not #607's original
-  ui-htmx bug) — so between a self-signed target's TLS being provisioned
-  and the next `--fix`, a **plain, read-only `doctor` run gives no
-  warning** that sentinel's requests to it will fail the handshake.
-  Self-heals on the next `--fix`; wiring `/ca_cert` presence into both
-  transport checks (mirroring rp's fix above) would close the
-  visibility gap.

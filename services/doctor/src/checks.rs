@@ -1508,9 +1508,12 @@ fn rp_one_target(
 }
 
 /// sentinel's other client targets: the operation watchdog's `rp_url`
-/// (scheme only — its credential is the shared `service_auth` pair,
-/// already covered by `auth.mismatch`) and each Alpaca monitor (scheme
-/// plus its own `auth`, which `auth.mismatch` does not see).
+/// (scheme and CA trust only — its credential is the shared `service_auth`
+/// pair, already covered by `auth.mismatch`) and each Alpaca monitor
+/// (scheme, CA trust, plus its own `auth`, which `auth.mismatch` does not
+/// see). Every one of them trusts sentinel's single top-level `ca_cert`,
+/// so both call sites carry the same pointer — the same shape rp's targets
+/// share.
 fn sentinel_client_joins(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some(sentinel) = ctx
@@ -1519,20 +1522,21 @@ fn sentinel_client_joins(ctx: &Context) -> Vec<Check> {
     else {
         return checks;
     };
+    let ca_cert_present = sentinel.ca_cert.as_deref().is_some_and(|p| !p.is_empty());
     if let Some(rp_url) = sentinel
         .operation_watchdog
         .as_ref()
         .and_then(|w| w.rp_url.as_deref())
     {
-        checks.extend(sentinel_watchdog_target(ctx, rp_url));
+        checks.extend(sentinel_watchdog_target(ctx, rp_url, ca_cert_present));
     }
     for (idx, monitor) in sentinel.monitors.iter().enumerate() {
-        checks.extend(sentinel_monitor_target(ctx, idx, monitor));
+        checks.extend(sentinel_monitor_target(ctx, idx, monitor, ca_cert_present));
     }
     checks
 }
 
-fn sentinel_watchdog_target(ctx: &Context, rp_url: &str) -> Vec<Check> {
+fn sentinel_watchdog_target(ctx: &Context, rp_url: &str, ca_cert_present: bool) -> Vec<Check> {
     let Some((scheme, host, port)) = parse_target_url(rp_url) else {
         return Vec::new();
     };
@@ -1556,13 +1560,18 @@ fn sentinel_watchdog_target(ctx: &Context, rp_url: &str) -> Vec<Check> {
         &scheme,
         resolved,
         scheme_fix,
-        None,
+        Some(("/ca_cert".to_string(), ca_cert_present)),
     )
     .into_iter()
     .collect()
 }
 
-fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> Vec<Check> {
+fn sentinel_monitor_target(
+    ctx: &Context,
+    idx: usize,
+    monitor: &MonitorView,
+    ca_cert_present: bool,
+) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some(resolved) = resolve_join_target(ctx, &monitor.host, monitor.port) else {
         return checks;
@@ -1577,9 +1586,8 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
             pointer: format!("/monitors/{idx}/scheme"),
             value: expected.to_string(),
         });
-    // No per-monitor ca_cert_path: monitors trust sentinel's single
-    // top-level `ca_cert`, which the existing client-wiring pass already
-    // provisions unconditionally once the CA exists.
+    // No per-monitor ca_cert_path: every monitor trusts sentinel's single
+    // top-level `ca_cert`, so that is the field this join reports and fixes.
     checks.extend(transport_check(
         ctx,
         "sentinel",
@@ -1587,7 +1595,7 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
         &monitor.scheme,
         resolved,
         scheme_fix,
-        None,
+        Some(("/ca_cert".to_string(), ca_cert_present)),
     ));
     checks.extend(credential_check(
         ctx,
@@ -3007,6 +3015,163 @@ mod tests {
         assert!(
             checks.iter().all(|c| c.name != "joins.client-auth"),
             "{checks:?}"
+        );
+    }
+
+    #[test]
+    fn test_sentinel_monitor_flags_missing_ca_trust_for_a_self_signed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112,
+                "tls": { "cert": "/pki/ppba-driver.pem", "key": "/pki/ppba-driver-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                                 "host": "localhost", "port": 11112, "scheme": "https" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = sentinel_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a read-only run must report the monitor's missing CA trust");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("self-signed"),
+            "{}",
+            transport.detail
+        );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "sentinel");
+                assert_eq!(pointer, "/ca_cert");
+                assert!(
+                    std::path::Path::new(value).ends_with("pki/ca.pem"),
+                    "{value}"
+                );
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sentinel_watchdog_flags_missing_ca_trust_for_a_self_signed_rp() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                "operation_watchdog": { "rp_url": "https://localhost:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = sentinel_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a read-only run must report the watchdog's missing CA trust");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service, pointer, ..
+            }] => {
+                assert_eq!(service, "sentinel");
+                assert_eq!(pointer, "/ca_cert");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sentinel_ca_cert_already_present_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112,
+                "tls": { "cert": "/pki/ppba-driver.pem", "key": "/pki/ppba-driver-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 }, "ca_cert": "/pki/ca.pem",
+                "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                                 "host": "localhost", "port": 11112, "scheme": "https" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(sentinel_client_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_sentinel_empty_ca_cert_is_treated_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112,
+                "tls": { "cert": "/pki/ppba-driver.pem", "key": "/pki/ppba-driver-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 }, "ca_cert": "",
+                "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                                 "host": "localhost", "port": 11112, "scheme": "https" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = sentinel_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("an empty ca_cert must not be mistaken for a working one");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, .. }] => {
+                assert_eq!(pointer, "/ca_cert");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sentinel_acme_target_needs_no_ca_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                                 "host": "localhost", "port": 11112, "scheme": "https" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(
+            sentinel_client_joins(&ctx).is_empty(),
+            "a publicly-trusted wildcard needs no ca_cert"
         );
     }
 

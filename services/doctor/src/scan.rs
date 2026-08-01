@@ -260,7 +260,9 @@ fn default_monitor_scheme() -> String {
 
 /// sentinel: the blocks doctor joins across. The retired `services` map is
 /// read only to diagnose it (`config.retired-keys`) — since D3s sentinel
-/// discovers its services from the platform service manager.
+/// discovers its services from the platform service manager. `ca_cert` is
+/// the single top-level CA every sentinel client trusts — the watchdog's
+/// `rp_url` and each monitor alike, the same shape as `RpView::ca_cert`.
 #[derive(Debug, Deserialize, Default)]
 pub struct SentinelView {
     #[serde(default)]
@@ -271,6 +273,8 @@ pub struct SentinelView {
     pub service_auth: Option<ClientAuthView>,
     #[serde(default)]
     pub monitors: Vec<MonitorView>,
+    #[serde(default)]
+    pub ca_cert: Option<String>,
 }
 
 /// rp: the session block field doctor checks.
@@ -733,6 +737,15 @@ mod tests {
         assert_eq!(view.ca_cert.as_deref(), Some("/pki/ca.pem"));
 
         let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
+        assert!(view.ca_cert.is_none());
+    }
+
+    #[test]
+    fn test_sentinel_view_reads_the_top_level_ca_cert() {
+        let view: SentinelView = serde_json::from_str(r#"{ "ca_cert": "/pki/ca.pem" }"#).unwrap();
+        assert_eq!(view.ca_cert.as_deref(), Some("/pki/ca.pem"));
+
+        let view: SentinelView = serde_json::from_str(r#"{ "monitors": [] }"#).unwrap();
         assert!(view.ca_cert.is_none());
     }
 
