@@ -2402,14 +2402,27 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
 
+        // Wait for the poll loop to be entered rather than sleeping a fixed
+        // span and asserting afterwards. The claim under test is that the
+        // driver polls the camera's counter at all, not that a loaded host
+        // schedules the spawned exposure within any particular budget — and
+        // the mock reports a CONSTANT 500 ms remaining, so once the loop is
+        // entered it stays entered and this cannot overshoot into a later
+        // state.
+        let entered = tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.remaining_calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
         assert!(
-            handle.remaining_calls.load(Ordering::SeqCst) > 0,
+            entered,
             "the driver must have entered its poll loop, not passed straight \
              through on host-side timing"
         );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
 
         device.abort_exposure().await.unwrap();
         assert_eq!(

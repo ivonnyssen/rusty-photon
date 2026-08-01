@@ -425,6 +425,21 @@ test:windows --local_test_jobs=HOST_CPUS
 # stable across push vs pull_request events.
 build:ci --test_env=OMNISIM_PATH
 
+# The Windows rust_doc_test runner can trace the argv it hands rustdoc (the
+# vendored rustdoc_test_windows_external_repo_path patch resolves runfiles
+# paths at TEST time, so what rustdoc actually received is otherwise
+# unobservable — not from the generated script on disk, and not from rustdoc,
+# which reports an argument it could not use exactly like one it never got).
+# Deliberately NOT enabled here: --test_env is part of every test's action key,
+# so switching it on globally re-executes the whole suite on every platform,
+# and the load of a full re-execution surfaces unrelated timing flakes. Turn it
+# on for the invocation that needs it instead:
+#
+#   bazel test --test_env=RUSTDOC_TEST_TRACE_ARGV=1 //crates/qhyccd-rs:all
+#
+# Output rides stderr into the test log, which Bazel prints only for a FAILING
+# test. Windows-only; the Linux/macOS runner is a plain shell script.
+
 # Forward the install-pebble action's pinned binary paths the same way and
 # for the same reason (doctor's @pebble ACME BDD scenarios). Unset outside
 # the workflows that install Pebble, which is harmless — the suite skips
