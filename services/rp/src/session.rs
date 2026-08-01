@@ -137,7 +137,13 @@ fn build_invoke_client(
 /// a registration whose `auth` block does not parse, or whose client
 /// cannot be built (an unreadable `ca_cert`), fails startup loud rather
 /// than surfacing as a dead `/invoke` on the first session of the night.
-#[derive(Clone)]
+///
+/// Held behind an `Arc` (rather than derived `Clone`): every
+/// [`SessionManager::spawn_invoke`] hands one to a background task, and
+/// the registration's `config` is an arbitrarily large opaque object —
+/// a workflow plan for `session-runner`, a full flat plan for
+/// `calibrator-flats`. Sharing it keeps that off the per-invocation path,
+/// leaving exactly one deep clone: the one the POST body needs.
 struct Orchestrator {
     invoke_url: String,
     /// The registration's `config` object — opaque to rp, passed
@@ -199,7 +205,7 @@ pub struct SessionManager {
     event_bus: Arc<EventBus>,
     /// The orchestrator plugin a session start invokes; `None` when none
     /// is registered, which makes every start a no-op invocation.
-    orchestrator: Option<Orchestrator>,
+    orchestrator: Option<Arc<Orchestrator>>,
     mcp_base_url: RwLock<String>,
     /// The planner's `record_exposure` counters, shared with
     /// `McpHandler` (see `lib.rs`). A fresh `start()` clears them — a
@@ -233,7 +239,7 @@ impl SessionManager {
         plugins: &[Value],
         ca_cert_path: Option<&Path>,
     ) -> Result<Self, String> {
-        let orchestrator = Orchestrator::from_plugins(plugins, ca_cert_path)?;
+        let orchestrator = Orchestrator::from_plugins(plugins, ca_cert_path)?.map(Arc::new);
 
         debug!(
             orchestrator_url = ?orchestrator.as_ref().map(|o| &o.invoke_url),
