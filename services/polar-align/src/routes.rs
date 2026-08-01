@@ -194,6 +194,13 @@ async fn post_failure(
     post_to_rp(mcp_server_url, workflow_id, &body, config).await;
 }
 
+/// The rp API base for an MCP endpoint URL, tolerating a trailing
+/// slash (an operator-configured advertised URL may carry one).
+fn rp_base_url(mcp_server_url: &str) -> &str {
+    let trimmed = mcp_server_url.trim_end_matches('/');
+    trimmed.strip_suffix("/mcp").unwrap_or(trimmed)
+}
+
 /// POST a completion body to `rp`, trusting and authenticating per
 /// the ADR-017 policy — the same legs the MCP client uses.
 async fn post_to_rp(
@@ -202,7 +209,7 @@ async fn post_to_rp(
     body: &Value,
     config: &PolarAlignConfig,
 ) {
-    let base_url = mcp_server_url.trim_end_matches("/mcp");
+    let base_url = rp_base_url(mcp_server_url);
     let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
 
     let client = match rusty_photon_tls::client::build_reqwest_client(config.rp_ca()) {
@@ -222,4 +229,18 @@ async fn post_to_rp(
         request = request.header(reqwest::header::AUTHORIZATION, header);
     }
     let _ = request.send().await;
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rp_base_url_strips_the_mcp_suffix_with_and_without_a_trailing_slash() {
+        assert_eq!(rp_base_url("https://rig:11170/mcp"), "https://rig:11170");
+        assert_eq!(rp_base_url("https://rig:11170/mcp/"), "https://rig:11170");
+        assert_eq!(rp_base_url("https://rig:11170"), "https://rig:11170");
+    }
 }

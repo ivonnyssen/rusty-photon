@@ -227,7 +227,7 @@ async fn run_inner(
         let lst_hours = eph.lst_hours(Utc::now());
         let ra_deg = (lst_hours * 15.0 - ha_deg).rem_euclid(360.0);
 
-        info!(
+        debug!(
             point = i + 1,
             ra_deg, dec_deg, ha_deg, "slewing to measurement point"
         );
