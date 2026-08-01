@@ -5022,12 +5022,13 @@ the URL is derived from the listener — a wildcard `bind_address`
 advertises the system hostname; see [MCP Server](#mcp-server). Setting
 it also admits that host to the MCP endpoint's `Host` allowlist, which
 is how a name `rp` cannot derive (a reverse proxy, an mDNS alias) is
-made acceptable to the endpoint as well as advertised. The
-`server` block is otherwise the shared server-config shape, except
-that `rp` carries this extra field in its own config type
-(`services/rp/src/config/server.rs`) — rp is the only service that
-advertises its own URL to another process, so the knob does not live
-in `rusty-photon-server-config`.
+made acceptable to the endpoint as well as advertised. The whole
+`server` block is `rusty-photon-server-config`'s
+`AdvertisingServerConfig` — the shared plain-HTTP shape plus this
+field — which `rp` uses directly rather than defining a copy of, so
+the shape `rp` accepts is by construction the one
+`rusty-photon-doctor` validates it against (`class = "advertising"`
+in `services/rp/pkg/doctor.toml`).
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present

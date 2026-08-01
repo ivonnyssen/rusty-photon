@@ -492,6 +492,35 @@ starting D1.
    the BFF matches a roster device's `alpaca_url` port (same-host guarded)
    to find the service its restart button names.
 
+7. **Three `ServerConfig` shapes, and no service may define its own**
+   (2026-08-01; modifies amendment 1 —
+   [#812](https://github.com/ivonnyssen/rusty-photon/issues/812), found on
+   the rig). The shared crate gains `AdvertisingServerConfig` (the core
+   shape plus `advertised_url`) for services that advertise their own URL
+   to another process — rp alone today, handing an orchestrator its MCP
+   endpoint. Amendment 1's reasoning is why this is a third shape rather
+   than a field on the core one: `advertised_url` on ui-htmx or sentinel
+   would be exactly the accepted-but-inert knob that argument rejects.
+
+   The stronger half of the amendment is the prohibition. rp had been
+   carrying its own copy of the core shape plus the extra field, and the
+   copy is what caused the bug: doctor validated rp against the shared
+   `ServerConfig`, so it hard-`fail`ed a config rp accepts and started
+   fine on — and, because an unparseable block makes every TLS/auth check
+   self-limit, it silently stopped diagnosing TLS and auth for **rp
+   specifically**, the one service that talks to everything. The failure
+   presented as one complaint about a field name, not as eight missing
+   checks, and survived long enough on the rig to be misfiled as a stale
+   binary. A service-local shape is therefore not a local choice: it
+   makes doctor wrong about that service. Every `server` block is one of
+   the three shared types, declared by `class` in `pkg/doctor.toml`, and
+   a service needing a field none of them carries adds a fourth shape
+   here.
+
+   Independently, doctor now reports what a shape failure costs
+   (`config.checks-skipped`) instead of letting the missing rows pass for
+   a clean bill of health.
+
 ## References
 
 - Plan (phases, verification matrix, flagged unknowns):

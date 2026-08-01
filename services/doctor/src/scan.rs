@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rusty_photon_server_config::doctor_toml::ServerClass;
-use rusty_photon_server_config::{AlpacaServerConfig, ServerConfig};
+use rusty_photon_server_config::{AdvertisingServerConfig, AlpacaServerConfig, ServerConfig};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -136,6 +136,13 @@ fn parse_server_block(block: &Value, class: ServerClass) -> ServerBlock {
         ServerClass::Core => match ServerConfig::deserialize(block) {
             Ok(server) => ServerBlock::Parsed {
                 server,
+                discovery_port: None,
+            },
+            Err(e) => ServerBlock::Invalid(e.to_string()),
+        },
+        ServerClass::Advertising => match AdvertisingServerConfig::deserialize(block) {
+            Ok(config) => ServerBlock::Parsed {
+                server: config.core(),
                 discovery_port: None,
             },
             Err(e) => ServerBlock::Invalid(e.to_string()),

@@ -213,9 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn test_catalog_knows_both_classes() {
+    fn test_catalog_knows_every_class() {
         assert_eq!(entry("qhy-focuser").unwrap().class, ServerClass::Alpaca);
-        assert_eq!(entry("rp").unwrap().class, ServerClass::Core);
+        assert_eq!(entry("sentinel").unwrap().class, ServerClass::Core);
+        assert_eq!(entry("rp").unwrap().class, ServerClass::Advertising);
         assert_eq!(entry("qhy-focuser").unwrap().default_port, 11113);
     }
 

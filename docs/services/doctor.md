@@ -64,7 +64,8 @@ is **derived from the packaging tree, not typed into doctor**
 ```toml
 # Catalog metadata for rusty-photon-doctor (docs/services/doctor.md).
 # This service's own unit tests assert these values match its config defaults.
-class = "alpaca"  # "alpaca" | "core" — which shared server shape its config uses
+class = "alpaca"  # "alpaca" | "core" | "advertising" — which shared server shape
+                  # its config uses
 port = 11113      # default port when the config file or server block is absent
 
 # Optional: the unit has no sensible default config and never self-creates
@@ -99,7 +100,13 @@ Three guards keep the catalog honest:
 1. **Each service tests its own file.** A unit test in each service crate
    (`include_str!("../pkg/doctor.toml")`) asserts the declared port equals its
    own `Config::default()` server port and the class matches the shape it
-   embeds (`AlpacaServerConfig` vs `ServerConfig`). Services declaring serial
+   embeds (`AlpacaServerConfig`, `ServerConfig`, or
+   `AdvertisingServerConfig`). Every service's `server` block **is** one of
+   those three shared types rather than a service-local copy of one, so the
+   shape a service accepts cannot drift from the shape doctor validates it
+   against — the divergence that made doctor false-`fail` rp's
+   `advertised_url` and, worse, silently skip rp's whole TLS/auth diagnosis
+   with it. Services declaring serial
    metadata extend the same test: the pointer resolves in their own default
    config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
    constants. The four config-gated services (below) assert `config_gated`
@@ -135,7 +142,7 @@ The catalog today (20 packaged services):
 | ppba-driver | alpaca | 11112 |
 | qhy-focuser | alpaca | 11113 |
 | sentinel | core | 11114 |
-| rp | core | 11115 |
+| rp | advertising | 11115 |
 | sky-survey-camera | alpaca | 11116 |
 | star-adventurer-gti | alpaca | 11117 |
 | pa-falcon-rotator | alpaca | 11118 |
@@ -276,7 +283,8 @@ report groups naturally.
 |---|---|---|
 | `config.unreadable` | fail | `<svc>.json` exists but could not be read (permissions, I/O) — a different operator problem than bad JSON, diagnosed under its own name. |
 | `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
-| `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a core service, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
+| `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca, `AdvertisingServerConfig` for advertising): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a non-Alpaca service, `advertised_url` on a service that advertises nothing, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
+| `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch` and every client-target join resolving to this service all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
 | `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) or ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source). The remedy is deletion — no replacement config exists. |
 
