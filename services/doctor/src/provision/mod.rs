@@ -221,16 +221,21 @@ pub fn pki_ownership(_config_dir: &Path) -> Option<PkiOwnership> {
 
 /// Everything the ownership sweep covers, each paired with whether failing
 /// to align it is fatal. The pki directory itself is essential: renewal
-/// writes new pairs into it.
+/// writes new pairs into it. It is listed whether or not it can be
+/// *listed* — a tree this run cannot read is the ownership problem most
+/// worth reporting, so dropping it here would hide exactly the case the
+/// sweep exists for. An absent one costs nothing: it fails the
+/// `symlink_metadata` lookup later and is skipped like any other absent
+/// entry.
 #[cfg(unix)]
 fn alignment_entries(config_dir: &Path) -> Vec<(PathBuf, bool)> {
+    let pki = pki_dir(config_dir);
     let mut entries = vec![
         (config_dir.join("acme.json"), true),
         (config_dir.join("renew.env"), true),
+        (pki.clone(), true),
     ];
-    let pki = pki_dir(config_dir);
     if let Ok(listing) = std::fs::read_dir(&pki) {
-        entries.push((pki, true));
         entries.extend(listing.flatten().map(|e| {
             let path = e.path();
             let essential = is_essential_pki_entry(&path);
@@ -766,6 +771,26 @@ mod tests {
         assert!(
             err.contains("chown"),
             "the error must name the repair: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_pki_tree_that_cannot_be_listed_is_still_judged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("ca.pem"), "cert").unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let ownership = pki_ownership(dir.path()).unwrap();
+        std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            ownership.examined >= 1,
+            "the directory itself must be judged even when its contents cannot be \
+             listed — an unreadable tree is the ownership problem, not an excuse \
+             to say nothing"
         );
     }
 
