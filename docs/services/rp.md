@@ -513,9 +513,14 @@ omit it for a plugin that does not challenge. Both fields follow the
 same shapes, same load-time validation naming the offending entry
 (`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. Getting
 this wrong is quieter here than on the orchestrator path: delivery is
-fire-and-forget, so a rejected POST is logged at `debug!` and the night
-continues, and nothing surfaces until someone notices the plugin did no
-work. `rp` reads a callback URL and `auth` only on the registrations it
+fire-and-forget with no retry, so the event is simply lost and the night
+continues. A plugin that *answers* and refuses — a 401 from a wrong
+credential, say — is logged at `warn!` (`plugin rejected the event`),
+because that line is the only signal an operator gets that a subscriber
+is silently doing nothing; a plugin that cannot be reached at all stays
+at `debug!`, since an unreachable subscriber is the ordinary case for a
+plugin that is simply not running.
+`rp` reads a callback URL and `auth` only on the registrations it
 dials — the orchestrator and event kinds — so a tool provider's own
 differently-shaped `auth` key is left alone. One client, built once at
 startup, serves every subscriber; a `ca_cert` it cannot be built from
