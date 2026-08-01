@@ -107,7 +107,10 @@ The plugin acknowledges with timing estimates: `estimated_duration` =
 `recovery` is accepted and ignored (a polar-alignment session is
 re-run from scratch; there is no state worth resuming).
 
-A second `/invoke` while a workflow is running is rejected with
+An invocation missing `workflow_id` or `mcp_server_url` is rejected
+with `400 Bad Request` before the workflow slot is reserved — a
+malformed request must not flip the service into an error state. A
+second `/invoke` while a workflow is running is rejected with
 `409 Conflict` — the plugin drives a single mount and camera; two
 concurrent alignments are meaningless.
 

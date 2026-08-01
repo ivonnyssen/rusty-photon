@@ -79,6 +79,17 @@ async fn invoke_handler(
         .unwrap_or("")
         .to_string();
 
+    // Reject before reserving the workflow slot: a malformed request
+    // must not flip the service into an error state.
+    if workflow_id.is_empty() || mcp_server_url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "workflow_id and mcp_server_url are required"
+            })),
+        );
+    }
+
     debug!(
         workflow_id = %workflow_id,
         mcp_server_url = %mcp_server_url,

@@ -182,6 +182,20 @@ async fn workflow_reaches_phase(world: &mut PolarAlignWorld, expected: String) {
     );
 }
 
+#[when("an invocation without a workflow id is posted via the REST API")]
+async fn post_invocation_missing_workflow_id(world: &mut PolarAlignWorld) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/invoke", world.polar_align_url());
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "mcp_server_url": "http://localhost:1/mcp" }))
+        .send()
+        .await
+        .expect("failed to POST /invoke");
+    world.last_api_status = Some(resp.status().as_u16());
+    world.last_api_body = resp.json().await.ok();
+}
+
 #[when("the adjustment is finished via the REST API")]
 async fn finish_adjustment(world: &mut PolarAlignWorld) {
     let client = reqwest::Client::new();
@@ -270,6 +284,30 @@ async fn finish_rejected(world: &mut PolarAlignWorld, expected: u16) {
         "unexpected /adjust/finish status (body: {:?})",
         world.last_api_body
     );
+}
+
+#[then(expr = "the invoke request should be rejected with status {int}")]
+async fn invoke_rejected(world: &mut PolarAlignWorld, expected: u16) {
+    assert_eq!(
+        world.last_api_status,
+        Some(expected),
+        "unexpected /invoke status (body: {:?})",
+        world.last_api_body
+    );
+}
+
+#[then(expr = "the polar-align workflow phase should be {string}")]
+async fn polar_align_phase_is(world: &mut PolarAlignWorld, expected: String) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/status", world.polar_align_url());
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("failed to GET /status");
+    let body: serde_json::Value = resp.json().await.expect("failed to parse /status");
+    let phase = body.get("phase").and_then(|p| p.as_str()).unwrap_or("");
+    assert_eq!(phase, expected, "unexpected phase (body: {body})");
 }
 
 // ---------------------------------------------------------------------------
