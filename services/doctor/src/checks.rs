@@ -282,9 +282,9 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
                     svc(scan),
                     format!(
                         "{} was not diagnosed for TLS or auth — tls.absent, \
-                         auth.absent, tls.paths, tls.expiry, auth.mismatch and \
-                         every client-target join that resolves here need a \
-                         parsed server block",
+                         auth.absent, tls.paths, tls.expiry, tls.auth-without-tls, \
+                         auth.mismatch and every client-target join that resolves \
+                         here need a parsed server block",
                         scan.entry.name
                     ),
                     Some(
