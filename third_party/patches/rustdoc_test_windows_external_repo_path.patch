@@ -82,7 +82,7 @@
          .iter()
          // Remove any substrings found in the argument
          .map(|arg| {
-@@ -226,20 +261,238 @@
+@@ -226,20 +261,250 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -148,17 +148,10 @@
 +    let argv_arr = argv_terms.join(", ");
 +    let argv_str = argv_terms.join(" ");
 +
-+    let resolver = r#"# Parse the runfiles MANIFEST once into $script:RFM (file key -> absolute
-+# target) and $script:RFMD (directory key -> absolute target directory). The
-+# manifest maps files only, so directories are derived: for each entry, walk up
-+# while key and target still share their trailing component and register every
-+# shared parent. Deriving them in this single pass rather than scanning the
-+# manifest per lookup matters because a doc test resolves one `-L` directory
-+# per transitive dependency — dozens of them against a manifest of hundreds.
++    let resolver = r#"# Parse the runfiles MANIFEST into $script:RFM once (key -> absolute target).
 +function RFI {
 +    if ($null -ne $script:RFM) { return }
 +    $script:RFM = @{}
-+    $script:RFMD = @{}
 +    $mf = $env:RUNFILES_MANIFEST_FILE
 +    if ((-not $mf -or -not (Test-Path $mf)) -and $env:TEST_SRCDIR) { $mf = Join-Path $env:TEST_SRCDIR 'MANIFEST' }
 +    if ($mf -and (Test-Path $mf)) {
@@ -167,23 +160,50 @@
 +            if ($i -gt 0) { $script:RFM[$l.Substring(0, $i)] = $l.Substring($i + 1) }
 +        }
 +    }
-+    foreach ($k in $script:RFM.Keys) {
-+        $kp = $k
-+        $tp = $script:RFM[$k] -replace '\\','/'
-+        while ($true) {
-+            $ki = $kp.LastIndexOf('/')
-+            $ti = $tp.LastIndexOf('/')
-+            if ($ki -lt 0 -or $ti -lt 0 -or $kp.Substring($ki) -ne $tp.Substring($ti)) { break }
-+            $kp = $kp.Substring(0, $ki)
-+            $tp = $tp.Substring(0, $ti)
-+            if (-not $script:RFMD.ContainsKey($kp)) { $script:RFMD[$kp] = $tp }
-+        }
-+    }
 +}
  
 -    let content = [
 -        "@ECHO OFF".to_owned(),
 -        "".to_owned(),
++# Resolve a runfiles-relative FILE key to its absolute manifest target, or
++# $null when the manifest has no live entry for it.
++function RFF($rel) {
++    RFI
++    $t = $script:RFM[$rel]
++    if ($t) {
++        if (Test-Path $t) { return $t }
++        Write-Warning ('runfiles manifest maps ' + $rel + ' to missing ' + $t)
++    }
++    return $null
++}
++
++# Resolve a runfiles-relative DIRECTORY to its absolute target. The manifest
++# maps files only, so match any entry beneath the directory and trim the
++# shared suffix off its target. Used for --sysroot= alone: a directory key is
++# genuinely ambiguous when a repo contributes both source files and generated
++# outputs to the runfiles, since both walk up to the same repo directory while
++# their targets live in different trees (`<output_base>/external/<repo>` vs
++# `<output_base>/execroot/.../bazel-out/<cfg>/bin/external/<repo>`). The
++# toolchain repo this is called for contributes only one, so the match is
++# unambiguous there; do not reuse it for dependency search paths.
++function RFD($d) {
++    $rel = $d -replace '\\','/'
++    if ($rel.StartsWith('../')) { $rel = $rel.Substring(3) }
++    elseif ($rel.StartsWith('external/')) { $rel = $rel.Substring(9) }
++    else { return $d }
++    RFI
++    $pfx = $rel + '/'
++    foreach ($k in $script:RFM.Keys) {
++        if ($k.StartsWith($pfx)) {
++            $v = $script:RFM[$k] -replace '\\','/'
++            $sfx = $k.Substring($rel.Length)
++            if ($v.EndsWith($sfx)) { return $v.Substring(0, $v.Length - $sfx.Length) }
++        }
++    }
++    Write-Warning ('no runfiles manifest entry under directory ' + $rel)
++    return $d
++}
++
 +# Strip the runfiles spelling off a path and return its MANIFEST key. Bazel
 +# uses three: `../` (cross-repo short_path), `external/` (a generated
 +# cross-repo file after root-stripping) and bare workspace-relative (main
@@ -199,22 +219,12 @@
 +    return $ws + '/' + $rel
 +}
 +
-+# Resolve a runfiles-relative path to its absolute execroot target, as a file
-+# first and then as a directory, and confirm the target is really there.
-+# $null when the manifest has no live entry, so the caller keeps the original
-+# spelling; a mapped-but-missing target warns on the way out, because a
-+# manifest whose target does not exist is the one failure this resolver cannot
-+# route around and the least visible from rustdoc's own diagnostics.
++# Resolve a runfiles-relative FILE path, in any of the three spellings, to its
++# absolute execroot target. $null when the manifest has no live entry.
 +function RFR($p) {
 +    $k = RFK $p
 +    if (-not $k) { return $null }
-+    RFI
-+    $t = $script:RFM[$k]
-+    if (-not $t) { $t = $script:RFMD[$k] }
-+    if (-not $t) { return $null }
-+    if (Test-Path $t) { return $t }
-+    Write-Warning ('runfiles manifest maps ' + $k + ' to missing ' + $t)
-+    return $null
++    return RFF $k
 +}
 +
 +# Windows PowerShell 5.1 marshals arguments to native commands by pasting the
@@ -230,25 +240,27 @@
 +    return $s
 +}
 +
-+# Resolve one argv element: the path half of a path-carrying flag, or a bare
-+# runfiles-relative path, via the manifest; anything else untouched.
++# Resolve one argv element: --sysroot= via RFD, the rlib carried by an
++# --extern, and bare runfiles-relative paths; anything else untouched.
 +function RF($p) {
-+    # Flags whose value is a path: `--extern=<name>=<rlib>` (one per direct
-+    # dependency), `-L[<kind>]=<dir>` (one per transitive dependency, plus the
-+    # toolchain's) and `--sysroot=<dir>`. Keep the flag, rewrite the value.
-+    if ($p -match '^(--extern=[^=]+=|--sysroot=|-L[a-z]*=)(.+)$') {
-+        $v = $matches[2]
-+        $t = RFR $v
-+        if ($t) { return $matches[1] + $t }
-+        if (-not ($v -match '^([A-Za-z]:|[\\/])')) { Write-Warning ('runfile not found via manifest: ' + $v) }
++    if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) }
++    # `--extern=<name>=<rlib>`, one per direct dependency: the rlibs rustdoc
++    # opens itself. An exact FILE key, so unlike a search directory there is
++    # exactly one manifest entry and no ambiguity.
++    if ($p -match '^(--extern=[^=]+=)(.+)$') {
++        $v = $matches[1]
++        $t = RFR $matches[2]
++        if ($t) { return $v + $t }
++        if (-not ($matches[2] -match '^([A-Za-z]:|[\\/])')) { Write-Warning ('runfile not found via manifest: ' + $matches[2]) }
 +        return $p
 +    }
 +    # The documented crate's own rlib arrives as the VALUE of a bare `--extern`
 +    # flag, spelled `<name>=<path>`. A miss stays silent: a `<name>=<value>`
 +    # element need not be a path (`--cfg` takes `feature="simulation"`).
 +    if ($p -match '^([A-Za-z_][A-Za-z0-9_]*=)(.+[\\/].+)$') {
++        $v = $matches[1]
 +        $t = RFR $matches[2]
-+        if ($t) { return $matches[1] + $t }
++        if ($t) { return $v + $t }
 +    }
 +    if ($p -match '^\.\.[\\/]') {
 +        $t = RFR $p
@@ -303,7 +315,7 @@
 +        // FAILING test, and evaluated separately from the invocation below so
 +        // the proven quoting path is untouched when the trace is off.
 +        format!(
-+            "if ($env:RUSTDOC_TEST_TRACE_ARGV) {{ @({argv_arr}) | ForEach-Object {{ Write-Warning ('RUSTDOC-ARGV ' + $_) }} }}"
++            "if ($env:RUSTDOC_TEST_TRACE_ARGV) {{ @({argv_arr}) | ForEach-Object {{ [Console]::Error.WriteLine('RUSTDOC-ARGV ' + $_) }} }}"
 +        ),
 +        format!("& {argv_str}"),
 +        // `powershell -File` exits 0 unless the script exits explicitly, and
@@ -311,8 +323,7 @@
 +        // both must fail the test rather than pass it.
 +        "if ($null -eq $LASTEXITCODE) { exit 1 }".to_owned(),
 +        "exit $LASTEXITCODE".to_owned(),
-         "".to_owned(),
--        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
++        "".to_owned(),
 +    ]);
 +
 +    fs::write(ps1_path, ps1_lines.join("\n")).expect("Failed to write test runner script");
@@ -324,13 +335,14 @@
 +
 +    let content = [
 +        "@ECHO OFF".to_owned(),
-+        "".to_owned(),
+         "".to_owned(),
+-        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
 +        format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{ps1_name}\""),
 +        "exit /b %ERRORLEVEL%".to_owned(),
          "".to_owned(),
      ];
  
-@@ -266,14 +519,29 @@
+@@ -266,14 +531,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -361,7 +373,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +555,11 @@
+@@ -287,5 +567,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  

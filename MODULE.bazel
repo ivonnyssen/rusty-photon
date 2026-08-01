@@ -141,27 +141,40 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    through the manifest's execroot targets as well; a lookup miss falls
 #    through silently, since a bare element may not be a path at all.
 #
-#    Those three spellings all describe BARE argv elements, which are the
-#    minority (issue #796): about five sixths of a doc test's paths ride
-#    inside a flag — `--extern=<name>=<rlib>` per direct dependency,
-#    `-L[<kind>]=<dir>` per transitive one, plus the crate's own rlib as the
-#    `<name>=<path>` value of a bare `--extern`. Those are the rlibs and search
-#    directories rustdoc itself opens, and until now every one of them stayed
-#    tree-relative, so the dependency graph of every doctest still rode the
-#    surface the paragraphs above exist to get off. RF therefore splits the
-#    flag off and resolves the value the same way. The failure this closes is
-#    hard to read from the logs alone, because rustdoc reports a lost rlib two
-#    different ways depending on which of its two stats of the path lost:
-#    `extern location for X does not exist` when the first did, and a bare
-#    `E0463: can't find crate for X` when the first succeeded and the second
-#    did not — rustc's metadata loader treats a file that vanished in between
-#    as simply absent (locator.rs `MetadataError::NotPresent`) and falls back
-#    to the search directories without recording a rejection, so no note ever
-#    names the file. Both messages appeared, for the same crate, across two
-#    occurrences 15 minutes apart. Resolving through the manifest also buys
-#    MAX_PATH headroom on the same budget `--sysroot=` needed: the longest
-#    dependency rlib measured reached exactly 260 characters through the tree
-#    against 150 through the manifest.
+#    Those three spellings all describe BARE argv elements, and the rlibs
+#    rustdoc opens are not among them (issue #796): a direct dependency arrives
+#    as `--extern=<name>=<rlib>`, and the documented crate's own rlib as the
+#    `<name>=<path>` value of a bare `--extern`. Both stayed tree-relative, so
+#    every doctest's direct dependencies still rode the surface the paragraphs
+#    above exist to get off. RF therefore splits the flag off and resolves the
+#    value the same way. Reading the failure from logs alone is hard, because
+#    rustdoc reports a lost rlib two different ways depending on which of its
+#    two stats of the path lost: `extern location for X does not exist` when
+#    the first did, and a bare `E0463: can't find crate for X` when the first
+#    succeeded and the second did not — rustc's metadata loader treats a file
+#    that vanished in between as simply absent (locator.rs
+#    `MetadataError::NotPresent`) and falls back to the search directories
+#    without recording a rejection, so no note ever names the file. Both
+#    messages appeared, for the same crate, across two occurrences 15 minutes
+#    apart. Resolving through the manifest also buys MAX_PATH headroom on the
+#    same budget `--sysroot=` needed: the longest dependency rlib measured
+#    reached exactly 260 characters through the tree against 150 through the
+#    manifest.
+#
+#    `-L[<kind>]=<dir>` search paths are deliberately NOT rewritten. A
+#    directory has no manifest entry of its own — RFD infers one by matching
+#    any file beneath it — and that inference is ambiguous exactly when a repo
+#    contributes both source files and generated outputs to the runfiles,
+#    because both walk up to the same repo directory while their targets live
+#    in different trees: `<output_base>/external/<repo>` holds the sources,
+#    `<output_base>/execroot/.../bazel-out/<cfg>/bin/external/<repo>` the
+#    rlibs. Rewriting them picked the source directory for whichever repos
+#    enumerated that way, which holds no rlib at all — CI-proven, via the
+#    runner's own argv trace (see .bazelrc RUSTDOC_TEST_TRACE_ARGV):
+#    `-Ldependency=C:/b/external/rules_rust++crate+cr__owo-colors-4.3.0`.
+#    `--extern=` values carry no such ambiguity: they name a FILE, which has
+#    exactly one manifest entry. `--sysroot=` keeps using RFD because the
+#    toolchain repo contributes only one of the two trees.
 #
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that

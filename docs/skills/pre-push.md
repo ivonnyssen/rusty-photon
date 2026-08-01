@@ -230,9 +230,18 @@ build script (#752), and bare workspace-relative
 `crates/…/build_script.linksearchpaths` for a first-party path dependency's
 (#781 — the qhyccd-rs real/sim doc-test pair shares that runfile and raced on
 it whenever both executed on the same runner, exactly one failing per
-attempt). It also covers the paths carried *inside* a flag — `--extern=`,
-`-L…=`, `--sysroot=` — which are the bulk of a doc test's argv and the rlibs
-rustdoc itself opens (#796).
+attempt). It also covers the rlibs rustdoc itself opens, which arrive inside a
+flag rather than bare: `--extern=<name>=<rlib>` per direct dependency, and the
+documented crate's own rlib as the `<name>=<path>` value of a bare `--extern`
+(#796).
+
+`-L…=<dir>` search paths are deliberately left alone. A directory has no
+manifest entry of its own, and inferring one from a file beneath it is
+ambiguous whenever a repo contributes both sources and generated outputs to
+the runfiles — `<output_base>/external/<repo>` versus
+`<output_base>/execroot/…/bazel-out/<cfg>/bin/external/<repo>`. Rewriting them
+resolved to the source directory, which contains no rlib. If you ever need to
+resolve a directory here, prove which tree it lands in first.
 
 **Reading a doc-test dependency failure on Windows.** rustdoc reports a lost
 rlib two different ways, and which one you get says *where* the loss happened,
