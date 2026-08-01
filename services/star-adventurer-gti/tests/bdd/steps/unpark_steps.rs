@@ -1,8 +1,7 @@
 //! Steps for unpark_from_ap_position.feature.
 
-use crate::world::StarAdventurerWorld;
+use crate::world::{CommandLogTimeout, StarAdventurerWorld, DEBUG_RETRY_WINDOW};
 use cucumber::{given, then, when};
-use std::time::Duration;
 
 /// Resolve an `ap_park_N` feature-file token to the typed [`ApPark`]
 /// via its canonical `FromStr`; a bad token fails the scenario.
@@ -41,17 +40,20 @@ async fn run_unpark_action(world: &mut StarAdventurerWorld, park: String) {
 async fn received_encoder_seed_both_axes(world: &mut StarAdventurerWorld) {
     // `:E1` / `:E2` (SetPosition) carry a hex payload, so match on the
     // frame prefix. Poll because CI runners can lag behind the wire.
-    for _ in 0..60 {
-        let log = world.command_log().await;
-        let e1 = log.iter().any(|c| c.starts_with(":E1"));
-        let e2 = log.iter().any(|c| c.starts_with(":E2"));
-        if e1 && e2 {
-            return;
+    match world
+        .wait_for_command_log(DEBUG_RETRY_WINDOW, |log| {
+            log.iter().any(|c| c.starts_with(":E1")) && log.iter().any(|c| c.starts_with(":E2"))
+        })
+        .await
+    {
+        Ok(_) => {}
+        Err(CommandLogTimeout::NoMatch(log)) => {
+            panic!("expected :E1 and :E2 encoder-seed frames; saw {log:?}")
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err(CommandLogTimeout::Unreachable(e)) => {
+            panic!("could not read the command log while waiting for encoder seeds: {e}")
+        }
     }
-    let log = world.command_log().await;
-    panic!("expected :E1 and :E2 encoder-seed frames; saw {log:?}");
 }
 
 #[then("the mount should not have received an encoder-seed command")]

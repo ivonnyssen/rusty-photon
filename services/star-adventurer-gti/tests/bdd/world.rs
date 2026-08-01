@@ -10,7 +10,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::TypedDevice;
@@ -26,6 +26,55 @@ use star_adventurer_gti::{
 };
 use tempfile::TempDir;
 use tokio::time::sleep;
+
+/// Whole-request budget — connect, headers and response body — for one
+/// call to a `/debug/v1/*` mock-introspection endpoint.
+const DEBUG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the mock-introspection helpers keep retrying before they give
+/// up and fail the scenario.
+pub const DEBUG_RETRY_WINDOW: Duration = Duration::from_secs(20);
+
+/// Gap between mock-introspection polls.
+const DEBUG_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Suite-wide HTTP client for the `/debug/v1/*` mock-introspection
+/// endpoints.
+///
+/// One pooled client for the whole test process rather than one per call:
+/// the command-log steps poll in a loop, so a client per call would
+/// rebuild a connection pool — and pay a fresh TCP connect — on every
+/// poll. The timeout is a whole-request deadline, sized for a CPU-starved
+/// runner: cucumber keeps up to 64 scenarios in flight and each one owns a
+/// service process, so dozens of this suite's binaries can be competing
+/// for a few cores and a loopback round-trip can stall for seconds.
+fn debug_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(DEBUG_REQUEST_TIMEOUT)
+                .build()
+                .expect("reqwest client builds")
+        })
+        .clone()
+}
+
+/// Why a [`StarAdventurerWorld::wait_for_command_log`] wait ended without
+/// a match.
+///
+/// The two are worth telling apart in a panic message: `NoMatch` means the
+/// driver really never emitted the frame, `Unreachable` means the
+/// assertion never got the chance to run.
+#[derive(Debug)]
+pub enum CommandLogTimeout {
+    /// The endpoint answered, but the predicate never accepted the log.
+    /// Carries the last log read.
+    NoMatch(Vec<String>),
+    /// The endpoint never answered within the window. Carries the last
+    /// transport error.
+    Unreachable(String),
+}
 
 #[derive(Debug, Default, World)]
 pub struct StarAdventurerWorld {
@@ -206,17 +255,31 @@ impl StarAdventurerWorld {
             .expect("service not started — cannot apply seed");
         let url = format!("http://127.0.0.1:{}/debug/v1/mock-state", handle.port);
         let body = serde_json::Value::Object(self.pending_seed.clone());
-        let resp = reqwest::Client::new()
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .expect("seed endpoint reachable");
-        assert!(
-            resp.status().is_success(),
-            "seed POST failed: {}",
-            resp.status()
-        );
+        // Retry transport failures for the same reason
+        // `wait_for_command_log` does: a request that loses the scheduler
+        // race on a loaded runner must not fail the scenario. A 4xx is the
+        // mock rejecting the seed itself — deterministic, so it surfaces
+        // immediately instead.
+        let deadline = Instant::now() + DEBUG_RETRY_WINDOW;
+        let mut last_err;
+        loop {
+            match debug_client().post(&url).json(&body).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        return;
+                    }
+                    assert!(!status.is_client_error(), "seed POST rejected: {status}");
+                    last_err = format!("seed POST failed: {status}");
+                }
+                Err(e) => last_err = format!("{e:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "seed endpoint unreachable within {DEBUG_RETRY_WINDOW:?}: {last_err}"
+            );
+            sleep(DEBUG_POLL_INTERVAL).await;
+        }
     }
 
     /// Queue a single seed value to be POSTed to `/debug/v1/mock-state`.
@@ -233,39 +296,90 @@ impl StarAdventurerWorld {
         }
     }
 
-    /// Fetch the mock-mode wire-command log from the running service's
-    /// `/debug/v1/mock-commands` endpoint. Returns each frame as a
-    /// `String` (the wire protocol is ASCII, so the conversion is
-    /// lossless).
-    pub async fn command_log(&self) -> Vec<String> {
+    /// One attempt at reading the mock-mode wire-command log from the
+    /// running service's `/debug/v1/mock-commands` endpoint. Returns each
+    /// frame as a `String` (the wire protocol is ASCII, so the conversion
+    /// is lossless).
+    ///
+    /// Transport and status failures come back as `Err` so callers can
+    /// retry them. A body that parses but has the wrong shape still
+    /// panics: that is a contract break, and retrying it would only
+    /// convert a clear failure into a timeout.
+    pub async fn try_command_log(&self) -> Result<Vec<String>, String> {
         let handle = self
             .service_handle
             .as_ref()
             .expect("service not started — call start_service first");
         let url = format!("http://127.0.0.1:{}/debug/v1/mock-commands", handle.port);
-        // Short timeout + explicit status check so a hung or 5xx
-        // service surfaces as a test failure here rather than as a
-        // confusing assertion failure further down the scenario.
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("reqwest client builds");
-        let body: Value = client
+        let body: Value = debug_client()
             .get(&url)
             .send()
             .await
-            .expect("debug endpoint reachable")
+            .map_err(|e| format!("{e:?}"))?
             .error_for_status()
-            .expect("debug endpoint returns 2xx")
+            .map_err(|e| format!("{e:?}"))?
             .json()
             .await
-            .expect("debug endpoint returns JSON");
-        body["commands"]
+            .map_err(|e| format!("{e:?}"))?;
+        Ok(body["commands"]
             .as_array()
             .expect("commands is an array")
             .iter()
             .map(|v| v.as_str().expect("frame is a string").to_string())
-            .collect()
+            .collect())
+    }
+
+    /// Poll the mock-mode wire-command log until `pred` accepts it,
+    /// tolerating transient fetch failures throughout, and return the
+    /// matching log.
+    ///
+    /// Retrying the fetch — not just the assertion — is what keeps a
+    /// scenario alive on a loaded runner. A single loopback request can
+    /// lose the scheduler race and blow its deadline while the driver
+    /// behaviour under test is perfectly fine, so one hiccup must not
+    /// fail an assertion that the next poll would have satisfied.
+    pub async fn wait_for_command_log(
+        &self,
+        timeout: Duration,
+        pred: impl Fn(&[String]) -> bool,
+    ) -> Result<Vec<String>, CommandLogTimeout> {
+        let deadline = Instant::now() + timeout;
+        let mut last_log: Option<Vec<String>> = None;
+        let mut last_err = "no request completed".to_string();
+        loop {
+            match self.try_command_log().await {
+                Ok(log) => {
+                    if pred(&log) {
+                        return Ok(log);
+                    }
+                    last_log = Some(log);
+                }
+                Err(e) => last_err = e,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            sleep(DEBUG_POLL_INTERVAL).await;
+        }
+        Err(match last_log {
+            Some(log) => CommandLogTimeout::NoMatch(log),
+            None => CommandLogTimeout::Unreachable(last_err),
+        })
+    }
+
+    /// Fetch the mock-mode wire-command log, retrying transient fetch
+    /// failures. Fails the scenario only if the endpoint never answers.
+    pub async fn command_log(&self) -> Vec<String> {
+        match self
+            .wait_for_command_log(DEBUG_RETRY_WINDOW, |_| true)
+            .await
+        {
+            Ok(log) => log,
+            Err(CommandLogTimeout::Unreachable(e)) => {
+                panic!("mock-commands endpoint never answered within {DEBUG_RETRY_WINDOW:?}: {e}")
+            }
+            Err(CommandLogTimeout::NoMatch(_)) => unreachable!("the predicate accepts any log"),
+        }
     }
 
     pub fn clear_error(&mut self) {

@@ -1,9 +1,8 @@
 //! Steps for connection_lifecycle.feature.
 
-use crate::world::StarAdventurerWorld;
+use crate::world::{CommandLogTimeout, StarAdventurerWorld, DEBUG_RETRY_WINDOW};
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use std::time::Duration;
 
 #[given("a running star-adventurer service")]
 async fn running_service(world: &mut StarAdventurerWorld) {
@@ -173,20 +172,23 @@ async fn param_cache_tmr_freq(world: &mut StarAdventurerWorld, _expected: u32) {
 
 #[then(expr = "the mount should have received command {word}")]
 async fn mount_received_command(world: &mut StarAdventurerWorld, command: String) {
-    // Wait briefly for any in-flight watcher iteration to issue its
-    // commands; CI runners can be slow.
+    // Wait for any in-flight watcher iteration to issue its commands;
+    // CI runners can be slow.
     let want = format!("{command}\r");
-    for _ in 0..60 {
-        let log = world.command_log().await;
-        if log.iter().any(|c| c == &want) {
-            return;
+    match world
+        .wait_for_command_log(DEBUG_RETRY_WINDOW, |log| log.iter().any(|c| c == &want))
+        .await
+    {
+        Ok(_) => {}
+        Err(CommandLogTimeout::NoMatch(log)) => {
+            let len = log.len();
+            let tail: Vec<&String> = log.iter().rev().take(20).collect();
+            panic!(
+                "expected wire frame {command:?} in command log (size {len}); last 20 (newest-first): {tail:?}"
+            );
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err(CommandLogTimeout::Unreachable(e)) => {
+            panic!("could not read the command log while waiting for {command:?}: {e}")
+        }
     }
-    let log = world.command_log().await;
-    let len = log.len();
-    let tail: Vec<&String> = log.iter().rev().take(20).collect();
-    panic!(
-        "expected wire frame {command:?} in command log (size {len}); last 20 (newest-first): {tail:?}"
-    );
 }

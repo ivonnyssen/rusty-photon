@@ -1,6 +1,6 @@
 //! Steps for slew.feature.
 
-use crate::world::StarAdventurerWorld;
+use crate::world::{CommandLogTimeout, StarAdventurerWorld};
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use std::time::Duration;
@@ -219,17 +219,19 @@ async fn mount_eventually_tracking_g1(world: &mut StarAdventurerWorld, secs: u64
     // **first** payload nibble (DB1) bit-0 set (`Tracking`, vs. Goto).
     // The wire form is `:G1<DB1><DB2>\r` — see
     // `skywatcher_motor_protocol::MotionMode` for the full encoding.
-    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-    loop {
-        let log = world.command_log().await;
-        if log.iter().any(|c| is_tracking_g1(c)) {
-            return;
+    match world
+        .wait_for_command_log(Duration::from_secs(secs), |log| {
+            log.iter().any(|c| is_tracking_g1(c))
+        })
+        .await
+    {
+        Ok(_) => {}
+        Err(CommandLogTimeout::NoMatch(log)) => {
+            panic!("no tracking-mode :G1 within {secs}s; log {log:?}")
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no tracking-mode :G1 within {secs}s; log {log:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err(CommandLogTimeout::Unreachable(e)) => {
+            panic!("could not read the command log while waiting for a tracking-mode :G1: {e}")
+        }
     }
 }
 
