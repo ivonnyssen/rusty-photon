@@ -240,7 +240,41 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
              directory_pattern's directory; put path structure in session.directory_pattern"
         ));
     }
+    check_no_platform_separators(pattern, "file_naming_pattern")?;
     validate_segments(&segments)
+}
+
+/// Rejects the characters that are path syntax on *some* platform but
+/// not on the host: `\` (a separator on Windows, an ordinary filename
+/// character on Unix) and `:` (a drive prefix on Windows).
+///
+/// Both patterns get this check, and it is deliberately
+/// platform-independent — a config that loads on Linux must mean the
+/// same thing on Windows, and rp validates config on whichever host it
+/// happens to run on. Left unchecked, `{target}\{night_date}` writes a
+/// nested directory on Windows while the scan counts one component and
+/// walks the wrong depth (silently 0/N everywhere), and a `C:\…` or
+/// `C:/…` prefix is drive-absolute — `PathBuf::join` discards the base
+/// and frames land outside `data_directory`, the same escape a leading
+/// `/` opens on Unix.
+///
+/// Neither character is legal in a Windows filename anyway, so rejecting
+/// them also stops a pattern that simply could not be written there.
+fn check_no_platform_separators(pattern: &str, field: &str) -> Result<(), String> {
+    if pattern.contains('\\') {
+        return Err(format!(
+            "{field} {pattern:?} contains '\\' — a path separator on Windows, so the pattern \
+             would mean different things on different hosts; use '/' in session.directory_pattern \
+             for path structure"
+        ));
+    }
+    if pattern.contains(':') {
+        return Err(format!(
+            "{field} {pattern:?} contains ':' — a Windows drive prefix (and illegal in a Windows \
+             filename); a pattern must stay relative to data_directory"
+        ));
+    }
+    Ok(())
 }
 
 /// Validates a `session.directory_pattern` value: every token must be
@@ -288,6 +322,7 @@ fn check_relative_path_shape(pattern: &str) -> Result<(), String> {
     if pattern.is_empty() {
         return Ok(());
     }
+    check_no_platform_separators(pattern, "directory_pattern")?;
     if pattern.starts_with('/') {
         return Err(format!(
             "directory_pattern must be relative to data_directory, but {pattern:?} starts with \
@@ -1115,6 +1150,27 @@ mod tests {
                 "pattern {pattern:?} should be rejected mentioning {expected:?}, got: {err}"
             );
         }
+    }
+
+    /// `/` is not the only path syntax in play: rp validates config on
+    /// whichever host it runs on, but a config that loads on Linux has
+    /// to mean the same thing on Windows. `\` separates there (so the
+    /// scan would count one component and walk the wrong depth) and
+    /// `C:` is drive-absolute (so `PathBuf::join` discards the base and
+    /// frames escape `data_directory`).
+    #[test]
+    fn patterns_reject_windows_path_syntax_on_every_host() {
+        for pattern in [
+            r"{target}\{night_date}\{frame_type}",
+            r"C:\frames\{target}\{night_date}",
+            "C:/frames/{target}/{night_date}",
+        ] {
+            validate_directory_pattern(pattern)
+                .expect_err(&format!("directory_pattern {pattern:?} must be rejected"));
+        }
+
+        let err = validate_pattern(&format!(r"sub\{DEFAULT_PATTERN}")).unwrap_err();
+        assert!(err.contains('\\') || err.contains("Windows"), "{err}");
     }
 
     /// `""` is how the config UI round-trips an unset pattern, so it

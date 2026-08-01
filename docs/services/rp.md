@@ -348,7 +348,13 @@ filesystem collapses the empty component when `capture` creates the
 directory, but the scan would still walk a level too deep and match
 nothing), and no `.` or `..` component. `file_naming_pattern` may not
 contain `/` at all: it names one file inside that directory, and
-nesting it deeper puts the frame where the scan does not look. Each is
+nesting it deeper puts the frame where the scan does not look. Both
+patterns additionally reject `\` and `:` on **every** host, not just
+Windows: a config that loads on Linux has to mean the same thing on
+Windows, where `\` separates paths (the scan would count one component
+and walk the wrong depth) and `C:` is drive-absolute (`PathBuf::join`
+discards the base, so frames escape `data_directory`). Neither
+character is legal in a Windows filename regardless. Each is
 rejected at load rather than quietly canonicalized — rewriting what the
 operator wrote is how the writer and the scanner drift apart in the
 first place, and the symptom otherwise is a night of frames that
