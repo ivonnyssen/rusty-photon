@@ -169,12 +169,11 @@ the workflow enables after unparking.
 ### D7 — Site coordinates come from the plugin's own config in v1
 
 The measurement needs site latitude (pole altitude, refraction) and
-longitude (LST for slew targets). rp does not currently expose a
-site-information MCP tool, so `site.latitude_deg` /
-`site.longitude_deg` are required plugin config. Sourcing them from
-the mount via rp (and a doctor `--fix` join) is future work; the
-config shape will not change (a tool would only fill the same
-numbers).
+longitude (LST for slew targets). rp did not expose a
+site-information MCP tool at MVP time, so `site.latitude_deg` /
+`site.longitude_deg` were required plugin config. Sourcing them from
+rp landed in Phase 8 — see D10; the config shape did not change (the
+tool only fills the same numbers, and an explicit block still wins).
 
 ### D8 — Tenets
 
@@ -236,6 +235,93 @@ Decisions specific to the mode:
   (the exact inverse of `attitude_from_wcs`), so the cross-check is
   asserted end-to-end, not just in unit tests.
 
+### D10 — Site coordinates resolve config-first, then from rp (2026-08-01)
+
+D7 carried the site in required plugin config because rp exposed no
+site-information tool. That gap closes from the rp side:
+
+- rp gains a **`get_site`** MCP tool (planner category, where every
+  other site-consuming tool lives) returning the configured `site`
+  block — `latitude_degrees`, `longitude_degrees` — or the planner
+  tools' existing structured "site not configured" error when rp has
+  no site. rp's site is already validated against the mount's
+  reported `SiteLatitude`/`SiteLongitude` on connect (hard error
+  above 0.01°, rp.md §Site Validation Against the ASCOM Mount), so a
+  mount-backed rig gets mount-vetted numbers with no new mount read.
+- The plugin's `site` block becomes **optional**. Resolution happens
+  once per workflow, config first: an explicit `site` wins (a
+  portable rig whose plugin config travels with the tripod), else
+  `get_site`. rp-sourced values pass the exact same newtype
+  validation as config values (range plus the ≥1°-from-the-equator
+  rule), with the error naming rp as the source; no site on either
+  side aborts the workflow naming both fixes.
+- D7's shape promise holds: a configured `site` block is unchanged,
+  and sourcing only fills the same two numbers. The declination
+  hemisphere fold and LST move from config-load time to workflow
+  start, where the resolved site lives.
+
+### D11 — Manual-rotation mode for non-GoTo trackers (2026-08-01)
+
+`measurement.mode = "manual_rotation"`: the operator rotates the RA
+axis by hand between exposures — for trackers with no GoTo (plain
+Star Adventurer, sky trackers) where rp has no mount at all.
+
+- **No mount tool is called in this mode** — no park/tracking
+  preflight, no slew, no `get_mount_position`, and no `abort_slew`
+  cleanup (the plugin never commanded motion, so there is nothing
+  stop-class to stop). A manual-only registration needs only the
+  camera, solve, and site tools.
+- Flow: capture point 1 where the tracker points → publish
+  `awaiting_point: 2` on `/status` → the operator rotates the RA
+  axis (15–45° recommended) and posts **`/measure/continue`** →
+  capture → `awaiting_point: 3` → rotate → post → capture → the
+  P6 attitude-based axis with the same guards as
+  `current_position` (`wcs_matrix` required per point; the ≥1°
+  segment guard doubles as "the operator actually rotated"; near-180°
+  and segment-disagreement and parity guards unchanged; plane-normal
+  cross-check best-effort).
+- Each wait is bounded by `measurement.manual_timeout` (default
+  10 m); expiry aborts the workflow naming the point, so an
+  abandoned session cannot hold the camera forever.
+- `/measure/continue` returns 202 while a wait is active, 409
+  otherwise. The wait signal is re-armed per wait, so a stale or
+  double-clicked post cannot skip the next point.
+- **All three solves are blind** (`use_mount_hints: false`, no
+  pointing hint): the plugin has no trustworthy prediction of where
+  the operator left the axis, and a wrong hint is worse than none.
+  Manual rigs should budget `solve.timeout` for blind solves.
+- No horizon guard: the plugin commands no motion, and the operator
+  standing at the tripod owns the pointing. Tracking is neither read
+  nor set — a running tracker only adds rotation about the very axis
+  being measured, which the attitude extraction absorbs.
+- `dec_deg`, `first_point_ha_deg`, `sweep_deg`, and `direction` are
+  unused in this mode.
+
+### D12 — PNG preview endpoint (2026-08-01)
+
+`GET /preview.png` renders the most recent captured frame
+(measurement or adjustment) as an 8-bit grayscale PNG, so the P5 UI
+can put the actual sky behind the star/target overlay:
+
+- Stride subsample to the requested `?width` (default 1024, clamped
+  to [64, native]); linear percentile stretch (0.5–99.9%, computed
+  on the preview pixels); a constant frame maps to mid-gray instead
+  of dividing by zero. 404 before any capture and when the frame no
+  longer exists on disk.
+- This supersedes the MVP's "no image re-encoding in the plugin"
+  line deliberately: rp's only pixel route is ASCOM
+  `application/imagebytes` (for programmatic clients, not browsers),
+  ui-htmx may run on a different host than the shared filesystem,
+  and the plugin already sits next to the frames it captured.
+  The boundary that stays is image *analysis*: star detection
+  remains rp's `detect_stars`; the preview is presentation only.
+- Pure Rust (`rp-fits` reader + the `png` encoder crate) — no native
+  library, no new platform concerns.
+- Downscaling is transparent to overlay accuracy: the UI draws the
+  overlay in native pixel coordinates (`/status` star pairs) over a
+  bitmap scaled to the same viewBox, so the preview's resolution
+  never enters the math.
+
 ## MVP scope (this PR)
 
 - Plan + design docs.
@@ -265,8 +351,6 @@ Deferred:
   display, finish button, driven from `/status`.
 - **P7 — hardware validation on the rig** (GTi + SV605CC), then a
   README recipe.
-- Sourcing site coordinates from rp (D7). Manual-rotation mode for
-  non-GoTo trackers. PNG preview endpoint.
 
 ## Phases
 
@@ -326,6 +410,8 @@ suite.
 
 ### Phase 7 — rig validation (GTi), README recipe, plan archive
 
+### Phase 8 — site from rp, manual rotation, PNG preview (landed; D10–D12)
+
 ## Module structure
 
 ```
@@ -340,6 +426,7 @@ services/polar-align/src/
   math.rs            vec3/rot3 helpers, plane-normal axis, attitude from WCS,
                      alt/az error decomposition, target-pixel projection
   ephemeris.rs       ICRS→observed via rp-ephemeris; LST; refracted pole
+  preview.rs         FITS → stretched grayscale PNG for GET /preview.png
 ```
 
 ## References

@@ -1,16 +1,20 @@
 //! HTTP routes: POST /invoke for orchestrator invocation, GET /status
-//! for the live alignment state, POST /adjust/finish to end the
-//! adjustment loop.
+//! for the live alignment state, POST /measure/continue to confirm a
+//! manual rotation, POST /adjust/finish to end the adjustment loop,
+//! GET /preview.png for the latest frame rendered for the UI.
 
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Query, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::config::PolarAlignConfig;
+use crate::config::{MeasurementMode, PolarAlignConfig};
 use crate::mcp_client::McpClient;
+use crate::preview::{self, PreviewError};
 use crate::workflow::{self, Phase, WorkflowShared};
 
 #[derive(Clone)]
@@ -28,7 +32,9 @@ pub fn build_router(config: PolarAlignConfig) -> Router {
         .route("/health", get(health))
         .route("/invoke", post(invoke_handler))
         .route("/status", get(status_handler))
+        .route("/measure/continue", post(continue_handler))
         .route("/adjust/finish", post(finish_handler))
+        .route("/preview.png", get(preview_handler))
         .with_state(state)
 }
 
@@ -46,6 +52,80 @@ async fn status_handler(State(state): State<AppState>) -> (StatusCode, Json<Valu
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": "status serialization failed" })),
             )
+        }
+    }
+}
+
+/// Confirms a manual rotation: 202 while a `manual_rotation` wait is
+/// active, 409 otherwise (including in the other modes, which never
+/// wait). Gating on `awaiting_point` means a duplicate post lands
+/// 409 instead of banking a permit for the next wait.
+async fn continue_handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let awaiting = state.shared.status.read().await.awaiting_point;
+    match awaiting {
+        Some(point) => {
+            debug!(point, "operator confirmed the manual rotation");
+            state.shared.signal_proceed().await;
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "point": point })),
+            )
+        }
+        None => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "no manual-rotation wait is active"
+            })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PreviewParams {
+    width: Option<u32>,
+}
+
+/// The most recent captured frame as a grayscale PNG. 404 before any
+/// capture or when the frame vanished from disk; rendering runs on a
+/// blocking thread (frames are tens of megabytes).
+async fn preview_handler(
+    State(state): State<AppState>,
+    Query(params): Query<PreviewParams>,
+) -> Response {
+    let Some(path) = state.shared.latest_image.read().await.clone() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no frame has been captured yet" })),
+        )
+            .into_response();
+    };
+    let width = params.width.unwrap_or(preview::DEFAULT_PREVIEW_WIDTH);
+    let rendered = tokio::task::spawn_blocking(move || preview::render_png(&path, width)).await;
+    match rendered {
+        Ok(Ok(png)) => ([(header::CONTENT_TYPE, "image/png")], png).into_response(),
+        Ok(Err(e @ PreviewError::NoFrameOnDisk(_))) => {
+            debug!(error = %e, "preview frame missing");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "preview rendering failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            warn!(error = %e, "preview rendering task failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "preview rendering task failed" })),
+            )
+                .into_response()
         }
     }
 }
@@ -157,8 +237,9 @@ async fn invoke_handler(
     });
 
     // Acknowledge with timing estimates: three slew/capture/solve
-    // legs plus the adjustment window. Saturating arithmetic so a
-    // pathological config cannot crash the ack.
+    // legs plus the adjustment window, plus the two operator waits in
+    // manual-rotation mode (halved for the estimate). Saturating
+    // arithmetic so a pathological config cannot crash the ack.
     let per_point = state
         .config
         .measurement
@@ -166,10 +247,14 @@ async fn invoke_handler(
         .saturating_add(state.config.measurement.settle)
         .saturating_add(std::time::Duration::from_secs(30));
     let measurement = per_point.saturating_mul(3);
-    let estimated = measurement.saturating_add(state.config.adjustment.max_duration / 2);
-    let max = measurement
+    let mut estimated = measurement.saturating_add(state.config.adjustment.max_duration / 2);
+    let mut max = measurement
         .saturating_add(state.config.adjustment.max_duration)
         .saturating_add(std::time::Duration::from_secs(60));
+    if state.config.measurement.mode == MeasurementMode::ManualRotation {
+        estimated = estimated.saturating_add(state.config.measurement.manual_timeout);
+        max = max.saturating_add(state.config.measurement.manual_timeout.saturating_mul(2));
+    }
 
     let ack = serde_json::json!({
         "estimated_duration": humantime::format_duration(estimated).to_string(),

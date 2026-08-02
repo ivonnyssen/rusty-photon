@@ -99,6 +99,14 @@ pub struct MountPosition {
     pub dec_deg: f64,
 }
 
+/// rp's configured observer site (`get_site` tool), normalized to
+/// this module's `_deg` field convention (rp reports `_degrees`).
+#[derive(Debug, Clone, Copy)]
+pub struct RpSite {
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+}
+
 /// One star from the `detect_stars` tool. `x`/`y` are the flux-
 /// weighted centroid as 0-based pixel indices (rp reports ndarray
 /// indices, not FITS 1-based pixels).
@@ -149,28 +157,34 @@ impl McpClient {
         .await
     }
 
-    /// Solve a captured image, hinted with the expected pointing in
-    /// decimal degrees.
+    /// Solve a captured image. `hint` is the expected pointing in
+    /// decimal degrees; `None` solves blind (and pins
+    /// `use_mount_hints` off — a manual-rotation rig may have no
+    /// mount for rp to hint from, and a wrong hint is worse than
+    /// none).
     pub async fn plate_solve(
         &self,
         image_path: &str,
         document_id: &str,
-        hint_ra_deg: f64,
-        hint_dec_deg: f64,
+        hint: Option<(f64, f64)>,
         search_radius_deg: f64,
         timeout: Duration,
     ) -> Result<SolveResult> {
-        self.call_tool(
-            "plate_solve",
-            serde_json::json!({
-                "document_id": document_id,
-                "image_path": image_path,
-                "pointing_hint": { "ra_deg": hint_ra_deg, "dec_deg": hint_dec_deg },
-                "search_radius_deg": search_radius_deg,
-                "timeout": humantime::format_duration(timeout).to_string(),
-            }),
-        )
-        .await
+        let mut args = serde_json::json!({
+            "document_id": document_id,
+            "image_path": image_path,
+            "timeout": humantime::format_duration(timeout).to_string(),
+        });
+        match hint {
+            Some((ra_deg, dec_deg)) => {
+                args["pointing_hint"] = serde_json::json!({ "ra_deg": ra_deg, "dec_deg": dec_deg });
+                args["search_radius_deg"] = serde_json::json!(search_radius_deg);
+            }
+            None => {
+                args["use_mount_hints"] = serde_json::json!(false);
+            }
+        }
+        self.call_tool("plate_solve", args).await
     }
 
     /// Slew to RA/dec in decimal degrees (converted here to the
@@ -228,6 +242,22 @@ impl McpClient {
     pub async fn unpark(&self) -> Result<()> {
         let _: Value = self.call_tool("unpark", serde_json::json!({})).await?;
         Ok(())
+    }
+
+    /// rp's configured observer site. rp's own "site not configured"
+    /// error message passes through untouched — it names the fix on
+    /// the rp side.
+    pub async fn get_site(&self) -> Result<RpSite> {
+        #[derive(Deserialize)]
+        struct Payload {
+            latitude_degrees: f64,
+            longitude_degrees: f64,
+        }
+        let payload: Payload = self.call_tool("get_site", serde_json::json!({})).await?;
+        Ok(RpSite {
+            latitude_deg: payload.latitude_degrees,
+            longitude_deg: payload.longitude_degrees,
+        })
     }
 
     /// Detect stars on a captured frame. Area bounds are fixed at

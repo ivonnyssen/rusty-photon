@@ -2,14 +2,16 @@
 //! live adjustment loop. Publishes progress into the shared status
 //! the HTTP layer serves on `GET /status`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, warn};
 
-use crate::config::{MeasurementMode, PolarAlignConfig};
+use crate::config::{MeasurementMode, PolarAlignConfig, SiteConfig};
 use crate::ephemeris::EphemerisCtx;
 use crate::error::{PolarAlignError, Result};
 use crate::math::{
@@ -86,6 +88,12 @@ pub struct AdjustmentStatus {
 pub struct StatusState {
     pub phase: Phase,
     pub workflow_id: Option<String>,
+    /// The measurement point (2 or 3) a `manual_rotation` workflow is
+    /// waiting on; the workflow is paused until `POST
+    /// /measure/continue` or `measurement.manual_timeout`. Never set
+    /// in the other modes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awaiting_point: Option<u8>,
     pub measurement: Option<MeasurementStatus>,
     pub adjustment: Option<AdjustmentStatus>,
     pub error: Option<String>,
@@ -96,6 +104,7 @@ impl Default for StatusState {
         Self {
             phase: Phase::Idle,
             workflow_id: None,
+            awaiting_point: None,
             measurement: None,
             adjustment: None,
             error: None,
@@ -108,11 +117,19 @@ impl Default for StatusState {
 /// The finish signal is per-invocation: `Notify` stores a permit, so
 /// a `/adjust/finish` that races the end of one run must not end the
 /// next run's adjustment the instant it starts. Re-arming installs a
-/// fresh `Notify`, and any stale permit dies with the old one.
+/// fresh `Notify`, and any stale permit dies with the old one. The
+/// proceed signal works the same way but is re-armed per *wait*: a
+/// duplicate `/measure/continue` must not skip the next manual
+/// point.
 #[derive(Clone, Default)]
 pub struct WorkflowShared {
     pub status: Arc<RwLock<StatusState>>,
+    /// The most recent captured frame, measurement or adjustment —
+    /// what `GET /preview.png` renders. Kept across invocations (a
+    /// completed run's last frame stays viewable).
+    pub latest_image: Arc<RwLock<Option<PathBuf>>>,
     finish: Arc<RwLock<Arc<Notify>>>,
+    proceed: Arc<RwLock<Arc<Notify>>>,
 }
 
 impl WorkflowShared {
@@ -129,6 +146,24 @@ impl WorkflowShared {
     /// Signals the current invocation's adjustment loop to end.
     pub async fn signal_finish(&self) {
         self.finish.read().await.notify_one();
+    }
+
+    /// Installs and returns a fresh proceed signal for one manual
+    /// wait, killing any permit a stale `/measure/continue` stored.
+    pub async fn arm_proceed(&self) -> Arc<Notify> {
+        let fresh = Arc::new(Notify::new());
+        *self.proceed.write().await = fresh.clone();
+        fresh
+    }
+
+    /// Signals the active manual wait to proceed.
+    pub async fn signal_proceed(&self) {
+        self.proceed.read().await.notify_one();
+    }
+
+    /// Records the most recent captured frame for `GET /preview.png`.
+    pub async fn record_latest_image(&self, path: &str) {
+        *self.latest_image.write().await = Some(PathBuf::from(path));
     }
 }
 
@@ -173,70 +208,110 @@ pub async fn run(
     config: &PolarAlignConfig,
     shared: &WorkflowShared,
 ) -> Result<WorkflowSummary> {
-    let eph = EphemerisCtx::from_config(config)?;
-
-    let result = run_inner(mcp, config, shared, &eph).await;
+    let result = run_inner(mcp, config, shared).await;
 
     if let Err(ref e) = result {
         warn!(error = %e, "polar alignment workflow failed");
         // Stop-class cleanup only (tenet 3): halt any in-flight
         // motion, leave the mount tracking where it stands. abort_slew
         // is a no-op error when nothing is slewing; that is fine.
-        if let Err(abort_err) = mcp.abort_slew().await {
-            debug!(error = %abort_err, "cleanup abort_slew reported (expected when no slew is in flight)");
+        // Manual rotation never commands motion (and its rig may
+        // register no mount tools at all), so there is nothing to
+        // stop.
+        if config.measurement.mode != MeasurementMode::ManualRotation {
+            if let Err(abort_err) = mcp.abort_slew().await {
+                debug!(error = %abort_err, "cleanup abort_slew reported (expected when no slew is in flight)");
+            }
         }
         let mut status = shared.status.write().await;
         status.phase = Phase::Error;
+        status.awaiting_point = None;
         status.error = Some(e.to_string());
     }
 
     result
 }
 
+/// The observer site a workflow runs against: the config's `site`
+/// block when present, else rp's `get_site`. rp-sourced coordinates
+/// pass the exact same newtype validation as configured ones.
+async fn resolve_site(mcp: &McpClient, config: &PolarAlignConfig) -> Result<SiteConfig> {
+    if let Some(site) = config.site {
+        return Ok(site);
+    }
+    let rp_site = mcp.get_site().await.map_err(|e| {
+        PolarAlignError::Workflow(format!(
+            "no `site` in the polar-align config and rp reported none ({e}); \
+             set the polar-align `site` block or configure rp's"
+        ))
+    })?;
+    debug!(
+        latitude_deg = rp_site.latitude_deg,
+        longitude_deg = rp_site.longitude_deg,
+        "site resolved from rp"
+    );
+    serde_json::from_value(serde_json::json!({
+        "latitude_deg": rp_site.latitude_deg,
+        "longitude_deg": rp_site.longitude_deg,
+    }))
+    .map_err(|e| {
+        PolarAlignError::Workflow(format!(
+            "rp's configured site is unusable for polar alignment ({e}); \
+             set a usable `site` in the polar-align config or fix rp's"
+        ))
+    })
+}
+
 async fn run_inner(
     mcp: &McpClient,
     config: &PolarAlignConfig,
     shared: &WorkflowShared,
-    eph: &EphemerisCtx,
 ) -> Result<WorkflowSummary> {
+    let site = resolve_site(mcp, config).await?;
+    let eph = &EphemerisCtx::new(site, &config.refraction)?;
+
     // Preflight: sensor bounds for the overlay, park and tracking
-    // state before any motion.
+    // state before any motion. Manual rotation drives no mount and
+    // skips the mount preflight entirely.
     let camera = mcp.get_camera_info(&config.camera_id).await?;
 
-    let park = mcp.get_park_state().await?;
-    if park.at_park {
-        if !park.can_unpark {
-            return Err(PolarAlignError::Workflow(
-                "mount is parked and does not support unparking; unpark it manually first"
-                    .to_string(),
-            ));
+    if config.measurement.mode != MeasurementMode::ManualRotation {
+        let park = mcp.get_park_state().await?;
+        if park.at_park {
+            if !park.can_unpark {
+                return Err(PolarAlignError::Workflow(
+                    "mount is parked and does not support unparking; unpark it manually first"
+                        .to_string(),
+                ));
+            }
+            debug!("mount is parked; unparking");
+            mcp.unpark().await?;
         }
-        debug!("mount is parked; unparking");
-        mcp.unpark().await?;
-    }
 
-    let tracking = mcp.get_tracking().await?;
-    if !tracking.tracking {
-        if !tracking.can_set_tracking {
-            return Err(PolarAlignError::Workflow(
-                "tracking is off and the mount does not support enabling it; slews would fail"
-                    .to_string(),
-            ));
+        let tracking = mcp.get_tracking().await?;
+        if !tracking.tracking {
+            if !tracking.can_set_tracking {
+                return Err(PolarAlignError::Workflow(
+                    "tracking is off and the mount does not support enabling it; slews would fail"
+                        .to_string(),
+                ));
+            }
+            debug!("enabling sidereal tracking");
+            mcp.set_tracking(true).await?;
         }
-        debug!("enabling sidereal tracking");
-        mcp.set_tracking(true).await?;
     }
 
     // Three-point measurement sweep. Targets are planned once up
     // front (the ~arcminute of sidereal drift while the sweep runs is
     // immaterial — the measurement uses solved positions, commanded
-    // ones only place the points on one pier side).
+    // ones only place the points on one pier side). Manual rotation
+    // plans nothing: the operator moves the axis between exposures.
     let planned_at = Utc::now();
-    let (targets, slew_first) = match config.measurement.mode {
+    let plan = match config.measurement.mode {
         MeasurementMode::NearPole => {
             // Equal-declination points on one side of the meridian,
             // hour angles first + i·sweep.
-            let dec_deg = config.measurement_dec_deg();
+            let dec_deg = config.measurement_dec_deg(eph.hemisphere_sign());
             let ha_sign = config.measurement.direction.ha_sign();
             let lst_deg = eph.lst_hours(planned_at) * 15.0;
             let targets = [0.0_f64, 1.0, 2.0].map(|i| {
@@ -245,7 +320,10 @@ async fn run_inner(
                         + i * config.measurement.sweep_deg.degrees());
                 ((lst_deg - ha_deg).rem_euclid(360.0), dec_deg)
             });
-            (targets, true)
+            MeasurementPlan::Commanded {
+                targets,
+                slew_first: true,
+            }
         }
         MeasurementMode::CurrentPosition => {
             let position = mcp.get_mount_position().await?;
@@ -258,45 +336,69 @@ async fn run_inner(
                 ha0_deg,
                 "measuring from the current mount position"
             );
-            let targets = current_position_targets(
-                position.ra_deg,
-                position.dec_deg,
-                ha0_deg,
-                config.measurement.sweep_deg.degrees(),
-            );
-            (targets, false)
+            MeasurementPlan::Commanded {
+                targets: current_position_targets(
+                    position.ra_deg,
+                    position.dec_deg,
+                    ha0_deg,
+                    config.measurement.sweep_deg.degrees(),
+                ),
+                slew_first: false,
+            }
         }
+        MeasurementMode::ManualRotation => MeasurementPlan::Manual,
     };
-    require_targets_above_horizon(eph, planned_at, &targets)?;
+    if let MeasurementPlan::Commanded { targets, .. } = &plan {
+        require_targets_above_horizon(eph, planned_at, targets)?;
+    }
 
     let mut centers: Vec<Vec3> = Vec::with_capacity(3);
     let mut attitudes: Vec<Option<Mat3>> = Vec::with_capacity(3);
     let mut last_solve: Option<SolveResult> = None;
     let mut last_capture_center = (0.0, 0.0);
 
-    for (i, &(ra_deg, dec_deg)) in targets.iter().enumerate() {
-        if i > 0 || slew_first {
-            debug!(
-                point = i + 1,
-                ra_deg, dec_deg, "slewing to measurement point"
-            );
-            mcp.slew(ra_deg, dec_deg, config.measurement.settle).await?;
-        } else {
-            debug!(
-                point = i + 1,
-                ra_deg, dec_deg, "capturing the first point in place"
-            );
-        }
+    for i in 0..3 {
+        let hint = match &plan {
+            MeasurementPlan::Commanded {
+                targets,
+                slew_first,
+            } => {
+                let (ra_deg, dec_deg) = targets[i];
+                if i > 0 || *slew_first {
+                    debug!(
+                        point = i + 1,
+                        ra_deg, dec_deg, "slewing to measurement point"
+                    );
+                    mcp.slew(ra_deg, dec_deg, config.measurement.settle).await?;
+                } else {
+                    debug!(
+                        point = i + 1,
+                        ra_deg, dec_deg, "capturing the first point in place"
+                    );
+                }
+                Some((ra_deg, dec_deg))
+            }
+            MeasurementPlan::Manual => {
+                if i > 0 {
+                    wait_for_manual_rotation(shared, config.measurement.manual_timeout, i).await?;
+                } else {
+                    debug!(point = i + 1, "capturing the first point in place");
+                }
+                // Blind solve: there is no trustworthy prediction of
+                // where the operator left the axis.
+                None
+            }
+        };
 
         let capture = mcp
             .capture(&config.camera_id, config.measurement.exposure)
             .await?;
+        shared.record_latest_image(&capture.image_path).await;
         let solve = mcp
             .plate_solve(
                 &capture.image_path,
                 &capture.document_id,
-                ra_deg,
-                dec_deg,
+                hint,
                 config.solve.search_radius_deg,
                 config.solve.timeout,
             )
@@ -331,7 +433,7 @@ async fn run_inner(
             };
             (primary, cross)
         }
-        MeasurementMode::CurrentPosition => {
+        MeasurementMode::CurrentPosition | MeasurementMode::ManualRotation => {
             let list: Vec<Mat3> = attitudes.iter().copied().flatten().collect();
             let primary = axis_from_attitudes(&list, toward)?;
             let cross = match axis_from_three_points(centers[0], centers[1], centers[2], toward) {
@@ -434,6 +536,7 @@ async fn run_inner(
                 consecutive_failures = 0;
                 adjustment.consecutive_solve_failures = 0;
                 adjustment.iterations = iterations;
+                shared.record_latest_image(&adjustment.image_path).await;
                 // The cross-check is a measurement-phase result;
                 // adjustment solves refresh the errors, not it.
                 measurement.cross_check_arcsec = cross_check_arcsec;
@@ -485,10 +588,67 @@ async fn run_inner(
     })
 }
 
+/// How the three measurement points come about: commanded slew
+/// targets, or the operator rotating the axis by hand between
+/// exposures.
+enum MeasurementPlan {
+    Commanded {
+        targets: [(f64, f64); 3],
+        slew_first: bool,
+    },
+    Manual,
+}
+
+/// Pauses a `manual_rotation` measurement until the operator posts
+/// `/measure/continue`, bounded by `measurement.manual_timeout`. The
+/// proceed signal is re-armed *before* `awaiting_point` is
+/// published, so a post can only land on the fresh signal — a stale
+/// or duplicate post from an earlier wait cannot skip this one.
+async fn wait_for_manual_rotation(
+    shared: &WorkflowShared,
+    timeout: Duration,
+    point_index: usize,
+) -> Result<()> {
+    let signal = shared.arm_proceed().await;
+    {
+        let mut status = shared.status.write().await;
+        status.awaiting_point = Some(point_index as u8 + 1);
+    }
+    debug!(
+        point = point_index + 1,
+        "waiting for the operator to rotate the RA axis and POST /measure/continue"
+    );
+    let waited = tokio::time::timeout(timeout, signal.notified()).await;
+    {
+        let mut status = shared.status.write().await;
+        status.awaiting_point = None;
+    }
+    match waited {
+        Ok(()) => {
+            debug!(point = point_index + 1, "operator confirmed the rotation");
+            Ok(())
+        }
+        Err(_) => Err(PolarAlignError::Workflow(format!(
+            "operator did not confirm the rotation to measurement point {} within {}; aborting",
+            point_index + 1,
+            humantime::format_duration(timeout)
+        ))),
+    }
+}
+
+/// Whether a mode's axis is extracted from full camera attitudes —
+/// which makes every measurement solve's `wcs_matrix` mandatory.
+fn requires_attitudes(mode: MeasurementMode) -> bool {
+    matches!(
+        mode,
+        MeasurementMode::CurrentPosition | MeasurementMode::ManualRotation
+    )
+}
+
 /// The camera attitude of a measurement solve. `near_pole` measures
 /// from centers alone, so a missing or degenerate `wcs_matrix` only
-/// costs the cross-check; `current_position` has no axis without
-/// full attitudes and must abort naming the point.
+/// costs the cross-check; the attitude-based modes have no axis
+/// without full attitudes and must abort naming the point.
 fn measurement_attitude(
     mode: MeasurementMode,
     point_index: usize,
@@ -497,14 +657,12 @@ fn measurement_attitude(
     match solved_frame(solve) {
         Some(frame) => match attitude_from_wcs(&frame) {
             Ok(attitude) => Ok(Some(attitude)),
-            Err(e) if mode == MeasurementMode::CurrentPosition => {
-                Err(PolarAlignError::Workflow(format!(
-                    "measurement point {} solve has an unusable wcs_matrix ({}); measuring \
-                     from the current position needs full camera attitudes",
-                    point_index + 1,
-                    e
-                )))
-            }
+            Err(e) if requires_attitudes(mode) => Err(PolarAlignError::Workflow(format!(
+                "measurement point {} solve has an unusable wcs_matrix ({}); this \
+                 measurement mode needs full camera attitudes",
+                point_index + 1,
+                e
+            ))),
             Err(e) => {
                 debug!(
                     point = point_index + 1,
@@ -514,13 +672,11 @@ fn measurement_attitude(
                 Ok(None)
             }
         },
-        None if mode == MeasurementMode::CurrentPosition => {
-            Err(PolarAlignError::Workflow(format!(
-                "measurement point {} solve carried no wcs_matrix; measuring from the current \
-                 position needs full camera attitudes",
-                point_index + 1
-            )))
-        }
+        None if requires_attitudes(mode) => Err(PolarAlignError::Workflow(format!(
+            "measurement point {} solve carried no wcs_matrix; this measurement mode \
+             needs full camera attitudes",
+            point_index + 1
+        ))),
         None => {
             debug!(
                 point = point_index + 1,
@@ -595,8 +751,7 @@ async fn adjustment_iteration(
         .plate_solve(
             &capture.image_path,
             &capture.document_id,
-            hint.0,
-            hint.1,
+            Some(*hint),
             config.solve.search_radius_deg,
             config.solve.timeout,
         )
@@ -709,8 +864,24 @@ mod tests {
         let status = StatusState::default();
         assert_eq!(status.phase, Phase::Idle);
         assert!(status.workflow_id.is_none());
+        assert!(status.awaiting_point.is_none());
         assert!(status.measurement.is_none());
         assert!(status.adjustment.is_none());
+    }
+
+    /// `awaiting_point` is a manual-mode-only field and must not
+    /// clutter the wire format of the other modes.
+    #[test]
+    fn test_awaiting_point_is_omitted_from_status_json_unless_set() {
+        let status = StatusState::default();
+        let json = serde_json::to_value(&status).unwrap();
+        assert!(json.get("awaiting_point").is_none());
+        let waiting = StatusState {
+            awaiting_point: Some(2),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&waiting).unwrap();
+        assert_eq!(json["awaiting_point"], 2);
     }
 
     #[test]
@@ -758,13 +929,21 @@ mod tests {
     }
 
     #[test]
-    fn test_measurement_attitude_matrixless_aborts_only_current_position() {
+    fn test_measurement_attitude_matrixless_aborts_the_attitude_based_modes() {
         let solve = matrixless_solve();
         let near_pole = measurement_attitude(MeasurementMode::NearPole, 2, &solve).unwrap();
         assert!(near_pole.is_none(), "near-pole degrades to no cross-check");
-        let err = measurement_attitude(MeasurementMode::CurrentPosition, 2, &solve).unwrap_err();
-        assert!(err.to_string().contains("point 3"), "{err}");
-        assert!(err.to_string().contains("full camera attitudes"), "{err}");
+        for mode in [
+            MeasurementMode::CurrentPosition,
+            MeasurementMode::ManualRotation,
+        ] {
+            let err = measurement_attitude(mode, 2, &solve).unwrap_err();
+            assert!(err.to_string().contains("point 3"), "{mode:?}: {err}");
+            assert!(
+                err.to_string().contains("full camera attitudes"),
+                "{mode:?}: {err}"
+            );
+        }
     }
 
     /// A matrix that exists but is degenerate must fail the same way
@@ -827,15 +1006,11 @@ mod tests {
     }
 
     fn test_eph() -> EphemerisCtx {
-        let config: PolarAlignConfig = serde_json::from_str(
-            r#"{
-                "camera_id": "c", "mount_id": "m",
-                "site": { "latitude_deg": 48.0, "longitude_deg": -122.8 },
-                "refraction": { "enabled": false }
-            }"#,
-        )
-        .unwrap();
-        EphemerisCtx::from_config(&config).unwrap()
+        let site: SiteConfig =
+            serde_json::from_str(r#"{ "latitude_deg": 48.0, "longitude_deg": -122.8 }"#).unwrap();
+        let refraction: crate::config::RefractionConfig =
+            serde_json::from_str(r#"{ "enabled": false }"#).unwrap();
+        EphemerisCtx::new(site, &refraction).unwrap()
     }
 
     #[test]
@@ -1003,5 +1178,67 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), signal.notified())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_manual_wait_publishes_the_point_and_ends_on_continue() {
+        let shared = WorkflowShared::default();
+        let waiter = shared.clone();
+        let wait = tokio::spawn(async move {
+            wait_for_manual_rotation(&waiter, Duration::from_secs(5), 1).await
+        });
+        // The wait publishes `awaiting_point` before it blocks; poll
+        // until it appears, then confirm.
+        for _ in 0..500 {
+            if shared.status.read().await.awaiting_point == Some(2) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(shared.status.read().await.awaiting_point, Some(2));
+        shared.signal_proceed().await;
+        wait.await.unwrap().unwrap();
+        assert!(
+            shared.status.read().await.awaiting_point.is_none(),
+            "the wait must clear awaiting_point on exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_manual_wait_timeout_names_the_point() {
+        let shared = WorkflowShared::default();
+        let err = wait_for_manual_rotation(&shared, Duration::from_millis(50), 2)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("point 3"), "{err}");
+        assert!(
+            shared.status.read().await.awaiting_point.is_none(),
+            "a timed-out wait must clear awaiting_point"
+        );
+    }
+
+    /// A `/measure/continue` from before the wait was armed (a
+    /// double-click on the previous point) must not skip this wait.
+    #[tokio::test]
+    async fn test_stale_continue_does_not_skip_the_next_manual_wait() {
+        let shared = WorkflowShared::default();
+        shared.signal_proceed().await;
+        let err = wait_for_manual_rotation(&shared, Duration::from_millis(50), 1)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("did not confirm"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_record_latest_image_stores_the_path() {
+        let shared = WorkflowShared::default();
+        assert!(shared.latest_image.read().await.is_none());
+        shared
+            .record_latest_image("/data/rp/images/pa-000042.fits")
+            .await;
+        assert_eq!(
+            shared.latest_image.read().await.as_deref(),
+            Some(std::path::Path::new("/data/rp/images/pa-000042.fits"))
+        );
     }
 }

@@ -13,12 +13,14 @@
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{AltAz, Ephemeris, ErfarsEphemeris, IcrsCoord, RefractionConditions, Site};
 
-use crate::config::PolarAlignConfig;
+use crate::config::{RefractionConfig, SiteConfig};
 use crate::error::{PolarAlignError, Result};
 use crate::math::{radec_from_unit, unit_from_radec, Vec3};
 
 /// Site- and refraction-bound conversion context, built once per
-/// workflow from the service config.
+/// workflow from the *resolved* site (the config's `site` block or
+/// rp's `get_site` — both arrive as an already-validated
+/// [`SiteConfig`]).
 pub struct EphemerisCtx {
     eph: ErfarsEphemeris,
     site: Site,
@@ -27,16 +29,16 @@ pub struct EphemerisCtx {
 }
 
 impl EphemerisCtx {
-    pub fn from_config(config: &PolarAlignConfig) -> Result<Self> {
+    pub fn new(site_config: SiteConfig, refraction_config: &RefractionConfig) -> Result<Self> {
         let site = Site::new(
-            config.site.latitude_deg.degrees(),
-            config.site.longitude_deg.degrees(),
+            site_config.latitude_deg.degrees(),
+            site_config.longitude_deg.degrees(),
         )
         .map_err(|e| PolarAlignError::Config(format!("site: {e}")))?;
-        let refraction = if config.refraction.enabled {
+        let refraction = if refraction_config.enabled {
             Some(RefractionConditions {
-                pressure_hpa: config.refraction.pressure_hpa,
-                temperature_c: config.refraction.temperature_c,
+                pressure_hpa: refraction_config.pressure_hpa,
+                temperature_c: refraction_config.temperature_c,
             })
         } else {
             None
@@ -45,7 +47,7 @@ impl EphemerisCtx {
             eph: ErfarsEphemeris::new(),
             site,
             refraction,
-            hemisphere_sign: config.site.latitude_deg.hemisphere_sign(),
+            hemisphere_sign: site_config.latitude_deg.hemisphere_sign(),
         })
     }
 
@@ -113,20 +115,18 @@ impl EphemerisCtx {
 mod tests {
     use super::*;
 
-    fn config_json(latitude: f64) -> PolarAlignConfig {
-        let json = format!(
-            r#"{{
-                "camera_id": "c", "mount_id": "m",
-                "site": {{ "latitude_deg": {latitude}, "longitude_deg": -122.8 }},
-                "refraction": {{ "enabled": false }}
-            }}"#
-        );
-        serde_json::from_str(&json).unwrap()
+    fn unrefracted_ctx(latitude: f64) -> EphemerisCtx {
+        let site: SiteConfig = serde_json::from_str(&format!(
+            r#"{{ "latitude_deg": {latitude}, "longitude_deg": -122.8 }}"#
+        ))
+        .unwrap();
+        let refraction: RefractionConfig = serde_json::from_str(r#"{ "enabled": false }"#).unwrap();
+        EphemerisCtx::new(site, &refraction).unwrap()
     }
 
     #[test]
     fn test_pole_target_faces_north_in_the_north() {
-        let ctx = EphemerisCtx::from_config(&config_json(48.1)).unwrap();
+        let ctx = unrefracted_ctx(48.1);
         let pole = ctx.pole_target_alt_az();
         assert_eq!(pole.azimuth_degrees, 0.0);
         assert_eq!(pole.altitude_degrees, 48.1);
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_pole_target_faces_south_in_the_south() {
-        let ctx = EphemerisCtx::from_config(&config_json(-33.9)).unwrap();
+        let ctx = unrefracted_ctx(-33.9);
         let pole = ctx.pole_target_alt_az();
         assert_eq!(pole.azimuth_degrees, 180.0);
         assert_eq!(pole.altitude_degrees, 33.9);
@@ -147,7 +147,7 @@ mod tests {
     /// celestial pole's observed altitude must be the site latitude.
     #[test]
     fn test_axis_target_round_trips_to_the_pole_target() {
-        let ctx = EphemerisCtx::from_config(&config_json(48.1)).unwrap();
+        let ctx = unrefracted_ctx(48.1);
         let t = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 1, 8, 0, 0).unwrap();
         let target_icrs = ctx.axis_target_icrs(t).unwrap();
         let observed = ctx.observed_of(target_icrs, t).unwrap();
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_lst_advances_with_time() {
-        let ctx = EphemerisCtx::from_config(&config_json(48.1)).unwrap();
+        let ctx = unrefracted_ctx(48.1);
         let t0 = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 1, 6, 0, 0).unwrap();
         let t1 = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 1, 7, 0, 0).unwrap();
         let advance = (ctx.lst_hours(t1) - ctx.lst_hours(t0)).rem_euclid(24.0);

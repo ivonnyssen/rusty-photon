@@ -120,7 +120,7 @@ impl TryFrom<f64> for SweepDeg {
 }
 
 /// How the three measurement points are chosen (design doc
-/// §Measurement phase; plan D1/D9).
+/// §Measurement phase; plan D1/D9/D11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementMode {
@@ -131,6 +131,12 @@ pub enum MeasurementMode {
     /// the meridian. Every measurement solve must carry a
     /// `wcs_matrix` — the axis comes from full camera attitudes.
     CurrentPosition,
+    /// The operator rotates a non-GoTo tracker's RA axis by hand
+    /// between exposures, confirming each rotation via
+    /// `POST /measure/continue`. No mount tool is called; solves are
+    /// blind; attitudes are required exactly as in
+    /// `current_position`.
+    ManualRotation,
 }
 
 /// Which side of the meridian the three measurement points sit on.
@@ -182,6 +188,11 @@ pub struct MeasurementConfig {
     pub exposure: Duration,
     #[serde(default = "default_settle", with = "humantime_serde")]
     pub settle: Duration,
+    /// `manual_rotation` only: ceiling on each wait for the
+    /// operator's `POST /measure/continue`; expiry aborts the
+    /// workflow naming the point.
+    #[serde(default = "default_manual_timeout", with = "humantime_serde")]
+    pub manual_timeout: Duration,
 }
 
 /// The live adjustment loop.
@@ -240,13 +251,17 @@ impl Default for RefractionConfig {
 #[serde(deny_unknown_fields)]
 pub struct PolarAlignConfig {
     /// The HTTP server for `/invoke`, `/health`, `/status`,
-    /// `/adjust/finish`. Files without a `server` block keep loading
-    /// via the default.
+    /// `/measure/continue`, `/adjust/finish`, `/preview.png`. Files
+    /// without a `server` block keep loading via the default.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     pub camera_id: String,
     pub mount_id: String,
-    pub site: SiteConfig,
+    /// Observer site. Optional since D10: when absent, each workflow
+    /// resolves the site from rp's `get_site` tool; an explicit
+    /// block wins.
+    #[serde(default)]
+    pub site: Option<SiteConfig>,
     #[serde(default = "default_measurement")]
     pub measurement: MeasurementConfig,
     #[serde(default = "default_adjustment")]
@@ -276,11 +291,12 @@ impl PolarAlignConfig {
         self.ca_cert.as_deref().map(std::path::Path::new)
     }
 
-    /// Measurement declination with its sign folded to the site
+    /// Measurement declination with its sign folded to the observer's
     /// hemisphere: a northern site measures at +|dec|, a southern one
-    /// at -|dec|.
-    pub fn measurement_dec_deg(&self) -> f64 {
-        self.measurement.dec_deg.abs() * self.site.latitude_deg.hemisphere_sign()
+    /// at -|dec|. The hemisphere sign comes from the *resolved* site
+    /// (config or rp), so the fold happens at workflow start.
+    pub fn measurement_dec_deg(&self, hemisphere_sign: f64) -> f64 {
+        self.measurement.dec_deg.abs() * hemisphere_sign.signum()
     }
 
     /// Cross-field rules that single-field newtypes cannot express.
@@ -341,6 +357,7 @@ fn default_measurement() -> MeasurementConfig {
         direction: default_direction(),
         exposure: default_exposure(),
         settle: default_settle(),
+        manual_timeout: default_manual_timeout(),
     }
 }
 
@@ -391,6 +408,10 @@ fn default_interval() -> Duration {
 
 fn default_max_duration() -> Duration {
     Duration::from_secs(30 * 60)
+}
+
+fn default_manual_timeout() -> Duration {
+    Duration::from_secs(10 * 60)
 }
 
 fn default_max_solve_failures() -> u32 {
@@ -471,6 +492,7 @@ mod tests {
         assert_eq!(config.measurement.sweep_deg.degrees(), 45.0);
         assert_eq!(config.measurement.direction, SweepDirection::West);
         assert_eq!(config.measurement.exposure, Duration::from_secs(2));
+        assert_eq!(config.measurement.manual_timeout, Duration::from_secs(600));
         assert_eq!(config.adjustment.max_duration, Duration::from_secs(1800));
         assert_eq!(config.adjustment.max_solve_failures, 10);
         assert_eq!(config.adjustment.star_count, 10);
@@ -482,12 +504,8 @@ mod tests {
 
     #[test]
     fn measurement_dec_folds_to_southern_hemisphere() {
-        let json = r#"{
-            "camera_id": "c", "mount_id": "m",
-            "site": { "latitude_deg": -33.9, "longitude_deg": 18.4 }
-        }"#;
-        let config = parse_with_cross_field(json).unwrap();
-        assert_eq!(config.measurement_dec_deg(), -85.0);
+        let config = parse_with_cross_field(&minimal_json()).unwrap();
+        assert_eq!(config.measurement_dec_deg(-1.0), -85.0);
     }
 
     #[test]
@@ -498,7 +516,25 @@ mod tests {
             "measurement": { "dec_deg": -85.0 }
         }"#;
         let config = parse_with_cross_field(json).unwrap();
-        assert_eq!(config.measurement_dec_deg(), 85.0);
+        assert_eq!(config.measurement_dec_deg(1.0), 85.0);
+    }
+
+    #[test]
+    fn site_block_is_optional_since_d10() {
+        let json = r#"{ "camera_id": "c", "mount_id": "m" }"#;
+        let config = parse_with_cross_field(json).unwrap();
+        assert!(config.site.is_none(), "absent site resolves from rp");
+    }
+
+    #[test]
+    fn measurement_mode_manual_rotation_parses_with_its_timeout() {
+        let json = r#"{
+            "camera_id": "c", "mount_id": "m",
+            "measurement": { "mode": "manual_rotation", "manual_timeout": "3m" }
+        }"#;
+        let config = parse_with_cross_field(json).unwrap();
+        assert_eq!(config.measurement.mode, MeasurementMode::ManualRotation);
+        assert_eq!(config.measurement.manual_timeout, Duration::from_secs(180));
     }
 
     #[test]
