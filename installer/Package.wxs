@@ -39,8 +39,8 @@
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit." />
     <MediaTemplate EmbedCab="yes" />
 
-    <Property Id="ARPHELPLINK" Value="https://github.com/ivonnyssen/rusty-photon" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ivonnyssen/rusty-photon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/rusty-photon/rusty-photon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/rusty-photon/rusty-photon" />
     <!-- The full version string (releases: x.y.z; nightlies: the
          +nightly.<datetime>.g<sha> string). ProductVersion renders a nightly's
          date as an opaque numeric 4th field, so this comment is what lets

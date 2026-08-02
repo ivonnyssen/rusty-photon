@@ -50,9 +50,15 @@ triggerable by a fork must never target self-hosted runners.
   clone registers one runner for one job; a compromised job cannot mint
   further registrations, and the GitHub-side runner entry disappears after
   the job.
-* The GitHub PAT (fine-grained, this repository only, "Administration: Read
-  and write", nothing else) lives root-only on the hypervisor at
-  `/etc/rp-runner/github-token`. It is never present inside any VM.
+* The GitHub PAT (fine-grained, resource owner: the `rusty-photon`
+  organization, sole permission "Self-hosted runners: Read and write") lives
+  root-only on the hypervisor at `/etc/rp-runner/github-token`. It is never
+  present inside any VM. Runners register at **org level** precisely because
+  that permission exists only there — repo-level registration would require
+  the far broader Administration permission (settings, deletion, teams).
+  Free-plan orgs have only the default runner group, so org runners are
+  usable by every repo in the org; the org is kept essentially
+  single-project for that reason.
 * Every job runs on a **fresh linked clone**; the clone powers off and is
   destroyed after its job. The only state shared between jobs is the build
   cache, whose writes are credential-gated.
@@ -80,8 +86,8 @@ triggerable by a fork must never target self-hosted runners.
 ## Bootstrapping a Runner Manually (no orchestrator)
 
 For one-off validation without the pool service: clone the template, start
-it, mint a JIT config (`POST
-/repos/<owner>/<repo>/actions/runners/generate-jitconfig` with the labels
-above), and write it to `/home/ci/actions-runner/.jitconfig` in the guest
+it, mint a JIT config (`POST /orgs/<org>/actions/runners/generate-jitconfig`
+with the labels above and the default runner group's id), and write it to
+`/home/ci/actions-runner/.jitconfig` in the guest
 (write to a temp file and `mv` — the service polls for the file). The clone
 registers, waits for one job, runs it, and powers off.

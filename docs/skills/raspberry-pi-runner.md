@@ -12,7 +12,7 @@
 
 - A Raspberry Pi 5 (Linux/ARM64) running Ubuntu 24.04 LTS or newer
 - SSH access to the Pi as a sudo-capable user
-- Owner or admin access to the `ivonnyssen/rusty-photon` GitHub repo
+- Owner or admin access to the `rusty-photon/rusty-photon` GitHub repo
 - A network position that lets the Pi reach `github.com` and `*.actions.githubusercontent.com` over HTTPS
 
 ## Why a Self-Hosted Runner (and Why It Is Safe Here)
@@ -114,7 +114,7 @@ sudo-less runner there is no `libusb-1.0-0-dev`, hence no unversioned
 link** step in `pi-nightly.yml` drops that linker-name symlink into
 `QHYCCD_SDK_DIR` (the one dir `build.rs` searches), pointing at the libusb-1.0
 *runtime* `.so.0`. Without it the build fails with `cannot find -lusb-1.0`
-(this was [issue #402](https://github.com/ivonnyssen/rusty-photon/issues/402)).
+(this was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402)).
 This mirrors the ZWO sudo-free symlink (next subsection); both share the one
 `libusb-1.0` runtime package installed in §1.
 
@@ -258,7 +258,7 @@ Then on the Pi:
 sudo -u gh-runner bash -c '
   cd $HOME/actions-runner
   ./config.sh \
-    --url https://github.com/ivonnyssen/rusty-photon \
+    --url https://github.com/rusty-photon/rusty-photon \
     --token <TOKEN_FROM_GITHUB_UI> \
     --name pi5-nightly \
     --labels raspberry-pi \
@@ -362,7 +362,7 @@ the Pi):
    sudo systemctl stop actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh remove --token <REMOVAL_TOKEN>'
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh \
-     --url https://github.com/ivonnyssen/rusty-photon \
+     --url https://github.com/rusty-photon/rusty-photon \
      --token <FRESH_REGISTRATION_TOKEN> \
      --name pi5-nightly \
      --labels raspberry-pi \
@@ -446,7 +446,7 @@ performed by setup.
 
 The static `libqhyccd.a` pulls in a dynamic `-lusb-1.0`, but the sudo-less
 runner has no `libusb-1.0-0-dev` (no unversioned `libusb-1.0.so` linker name).
-This was [issue #402](https://github.com/ivonnyssen/rusty-photon/issues/402).
+This was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402).
 The **Symlink libusb for the QHYCCD static link (sudo-free)** step in
 `pi-nightly.yml` fixes it by linking `libusb-1.0.so` → the runtime `.so.0`
 inside `QHYCCD_SDK_DIR`. Check, in order:
@@ -499,7 +499,7 @@ are provided per-run by the **Install SVBony SDK (sudo-free)** step
   Bazel — see docs/services/svbony-camera.md "Native dependency & build
   gating").
 - If this step is simply **missing** from the job (the original cause of
-  [issue #669](https://github.com/ivonnyssen/rusty-photon/issues/669)): the
+  [issue #669](https://github.com/rusty-photon/rusty-photon/issues/669)): the
   full-workspace build links `svbony-camera` unconditionally, so this step
   must run before `cargo build --workspace`, in the same place the ZWO SDK
   step does.
