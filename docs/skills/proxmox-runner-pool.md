@@ -70,6 +70,13 @@ triggerable by a fork must never target self-hosted runners.
 
 ## Operational Notes
 
+* **Org runner groups ship with "Allow public repositories" disabled.** A
+  freshly registered org runner then sits Idle while jobs from this (public)
+  repo stay queued forever — no error anywhere. The pool's own token can fix
+  it (`PATCH /orgs/<org>/actions/runner-groups/<id>` with
+  `{"allows_public_repositories": true}`), or check the box on the Default
+  group under the org's Actions → Runner groups settings. This is part of
+  the one-time setup contract.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
