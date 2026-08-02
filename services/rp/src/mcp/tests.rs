@@ -8333,3 +8333,18 @@ async fn every_guider_tool_reports_not_configured_without_a_guider_block() {
         "get_guiding_stats: guider not configured",
     );
 }
+
+/// The on-disk reverse-lookup key is written from the UUID's `time_low`
+/// field (`internals.rs` capture) but read back by slicing the document id's
+/// first eight characters (`persistence::cache::disk_resolve`). The two must
+/// agree or a captured frame becomes unresolvable from disk.
+#[test]
+fn test_uuid8_disk_key_matches_the_document_id_prefix() {
+    for _ in 0..1_000 {
+        let uuid = uuid::Uuid::new_v4();
+        let written = format!("{:08x}", uuid.as_fields().0);
+        let read_back = uuid.to_string();
+        let read_back = read_back.get(..8).unwrap();
+        assert_eq!(written, read_back, "uuid8 mismatch for {uuid}");
+    }
+}
