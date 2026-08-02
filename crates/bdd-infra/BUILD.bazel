@@ -132,7 +132,10 @@ rust_binary(
     srcs = ["src/bin/test_service.rs"],
     edition = "2021",
     visibility = ["//visibility:public"],
-    deps = [":bdd-infra"] + all_crate_deps(normal = True),
+    deps = [
+        ":bdd-infra",
+        "//crates/rusty-photon-service-lifecycle",
+    ] + all_crate_deps(normal = True),
 )
 
 rust_test(

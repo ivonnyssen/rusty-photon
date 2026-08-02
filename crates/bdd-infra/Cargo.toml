@@ -44,6 +44,11 @@ tls-auth = [
 
 [dependencies]
 libc = { workspace = true }
+# The `test_service` fixture's `--graceful-probe` mode shuts down through the
+# real `ServiceRunner`, so the shutdown-path regression test exercises the
+# workspace's actual signal watcher rather than a hand-rolled stand-in that
+# would pass no matter what the watcher handles.
+rusty-photon-service-lifecycle = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

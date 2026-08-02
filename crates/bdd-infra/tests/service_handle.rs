@@ -290,11 +290,59 @@ async fn test_stop_does_not_break_child_stderr_pipe() {
 // and would be a vacuous guard. `test_drop_cleans_up_process` covers `Drop`'s
 // process teardown; the `stop()` probes above guard the broken-pipe invariant.
 
+/// `stop()` must leave the service's own shutdown path *run*, not merely leave
+/// the process dead.
+///
+/// The probe child (test_service `--graceful-probe`) shuts down through the
+/// real `ServiceRunner` and writes `GRACEFUL` to the marker from inside its
+/// run closure, after the shutdown token fires. If the platform's stop event
+/// is not handled, the OS kills the process instead and the marker stays
+/// empty.
+///
+/// This is the guard `test_stop_completes_via_graceful_signal` below cannot
+/// be: an unhandled Windows CTRL_BREAK also terminates the child *promptly*,
+/// so a timing budget passes either way. Only observing an effect the
+/// shutdown path itself produces can tell the two apart — hence a marker
+/// written by the child, and hence no platform gate on this test.
+///
+/// `stop()` awaits the child's exit before returning, so the marker is
+/// already on disk when we read it; no settling sleep is needed.
+#[tokio::test]
+async fn test_stop_runs_the_service_shutdown_path() {
+    init_test_binary_env();
+    let config = empty_config();
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let marker_path = marker.path().to_path_buf();
+
+    let mut handle = ServiceHandle::start_with_args(
+        "test-service",
+        &[
+            "--config",
+            config.path().to_str().unwrap(),
+            "--graceful-probe",
+            marker_path.to_str().unwrap(),
+        ],
+    )
+    .await;
+
+    handle.stop().await;
+
+    let recorded = std::fs::read_to_string(&marker_path).unwrap();
+    assert_eq!(
+        recorded, "GRACEFUL",
+        "the service never reached its shutdown path — stop()'s signal was not \
+         handled and the OS terminated the process instead"
+    );
+}
+
 /// Graceful shutdown must complete well under the 5-second SIGKILL fallback
 /// timeout. If the shutdown signal is not delivered (e.g. a no-op
 /// `send_sigterm`), `stop()` would wait the full 5 seconds before hard-killing.
 /// A 2-second budget catches such regressions on any platform while leaving
 /// generous margin for slow CI runners.
+///
+/// Timing only — see `test_stop_runs_the_service_shutdown_path` for the guard
+/// that the shutdown path actually ran.
 #[tokio::test]
 async fn test_stop_completes_via_graceful_signal() {
     init_test_binary_env();

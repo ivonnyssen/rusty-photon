@@ -15,8 +15,8 @@ this doc covers the crate's own design.
 
 - Build the tokio runtime; invoke a user closure on it with a
   [`Shutdown`] handle.
-- Install OS signal handlers (Ctrl+C + SIGTERM on Unix; Ctrl+C on
-  Windows console) without panicking on install failure.
+- Install OS signal handlers (Ctrl+C + SIGTERM on Unix; Ctrl+C +
+  Ctrl+Break on Windows console) without panicking on install failure.
 - Optional: install a SIGHUP-driven reload notifier
   ([`ReloadSignal`]).
 - Optional (cargo feature `scm`, Windows-only): dispatch to the
@@ -152,39 +152,90 @@ signal source still works" rather than "the service panics during
 startup":
 
 ```rust
-async fn watch_signals(token: CancellationToken) {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
+// Registers on call, and hands back the future that resolves on first fire.
+#[cfg(unix)]
+fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut interrupt = install(name, "Ctrl+C", signal(SignalKind::interrupt()));
+    let mut terminate = install(name, TERMINATE_EVENT, signal(SignalKind::terminate()));
+    async move {
+        tokio::select! {
+            () = next_signal(&mut interrupt) => { /* Ctrl+C */ }
+            () = next_signal(&mut terminate) => { /* SIGTERM */ }
         }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::debug!("received Ctrl+C, shutting down"),
-        () = terminate => tracing::debug!("received SIGTERM, shutting down"),
     }
-    token.cancel();
 }
+// Windows is the same shape over `windows::ctrl_c()` and `windows::ctrl_break()`.
 ```
 
-This matches the no-panic pattern established workspace-wide by
-PR #289. One implementation; one log-message style; one place to
-fix bugs.
+`install` logs a failed registration via `tracing::warn!` and yields
+`None`, which `next_signal` awaits as a never-resolving future — so a
+misconfigured environment that cannot install one signal (e.g. an
+already-stolen handler) degrades to "the other source still works"
+rather than "the service panics during startup". This matches the
+no-panic pattern established workspace-wide by PR #289. One
+implementation; one log-message style; one place to fix bugs.
+
+`next_signal` is a generic function over a private `SignalHandler`
+trait, not a macro, because the platform handler types share no upstream
+trait (Windows has a distinct type per event). The choice also keeps the
+degraded `None` arm coverable: a macro expands into its caller, so a
+test exercising it would attribute the arm to the test module — which
+coverage excludes, leaving the path both untested and invisible.
+
+### Handlers install before the service starts
+
+`ServiceRunner` awaits handler registration before invoking the user
+closure. The watcher signals a `oneshot` the moment installation
+returns, and the runner's `block_on` waits on it:
+
+```rust
+let installed = spawn_shutdown_watcher(&rt, name, token.clone());
+rt.block_on(async move {
+    let _ = installed.await;
+    run_fn(Shutdown::from_token(token)).await
+})
+```
+
+This ordering is a correctness requirement, not a nicety. Until the
+handlers exist the platform default disposition applies, and on both
+platforms that default is fatal: SIGTERM terminates, and an
+unregistered Windows console control event falls through to a handler
+that terminates. A service that reached its own readiness handshake
+first — the `bound_addr=` line, a health endpoint answering — would be
+advertising itself as stoppable during a window in which being stopped
+kills it outright. Services do enough async setup that the window is
+narrow, but "narrow" is what the unhandled-Ctrl+Break bug was too.
+
+It is also why every constructor above registers **synchronously**.
+`tokio::signal::ctrl_c()` registers only when its future is first
+polled, so it cannot be sequenced ahead of anything; the platform
+constructors (`unix::signal`, `windows::ctrl_c`, `windows::ctrl_break`)
+return `io::Result<_>` on call and can. Splitting install-from-await is
+what makes the barrier expressible.
+
+`handlers_install_before_the_closure_runs` guards it by raising SIGTERM
+as the closure's first statement, with no delay — survivable only if
+the handler is already in place. A sleep there would let installation
+catch up and make the test vacuous.
+
+**Both Windows console events must be registered.** `ctrl_c()` covers
+CTRL_C_EVENT only; CTRL_BREAK_EVENT is a separate registration, and it
+is the event a supervisor sends to stop a console-mode service by
+process group (`GenerateConsoleCtrlEvent` — what `bdd-infra`'s
+`ServiceHandle::stop` uses). An *unregistered* console control event
+falls through to the OS default handler, which terminates the process
+outright: no cancellation, no shutdown path, no flush, and no error
+raised anywhere. The failure is silent by construction — the only
+evidence is the absence of the shutdown log line — so a test that
+asserts a service stopped *quickly* cannot detect it. `bdd-infra`'s
+`test_stop_runs_the_service_shutdown_path` guards this by requiring an
+effect the shutdown path itself produces.
+
+CTRL_CLOSE / CTRL_SHUTDOWN / CTRL_LOGOFF stay unregistered. They are
+session-teardown events with an OS-imposed handler deadline, and the
+deployed Windows path is a service, which receives `ServiceControl::Stop`
+instead (below) and never sees them.
 
 ### Reload (opt-in via `with_reload`)
 

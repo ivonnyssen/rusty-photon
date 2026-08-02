@@ -945,6 +945,38 @@ endpoint, a health probe, a status poll):
    (`wait_for_command_log`) and `services/phd2-guider/tests/bdd/world.rs`
    (`http_client`) are the reference shapes.
 
+#### 5.10 Assert the effect, not the timing, when a failure mode is "the OS killed it"
+
+A process that is hard-killed dies *faster* than one that shuts down
+gracefully. Any test that infers "we stopped it cleanly" from how long
+the stop took therefore passes most loudly in exactly the case it was
+meant to catch.
+
+That is not hypothetical: `bdd-infra` stops services with the platform's
+graceful signal, and on Windows `CTRL_BREAK_EVENT` went unregistered for
+as long as the runner only handled Ctrl+C. Windows' default handler
+terminated every service instead — promptly, with a normal-looking exit
+and no error anywhere. The timing guard
+(`test_stop_completes_via_graceful_signal`) was green throughout. The
+only visible trace was an *absence*: the runner's shutdown log line
+appeared 67 times in a local Linux run of one suite and 0 times across a
+27k-line Windows CI job.
+
+So when the thing under test is a shutdown, a cleanup, a flush, or a
+teardown, assert on something the path itself produces — a marker file
+the child writes from inside its stop handler, a persisted record, a
+final log line — and prefer a fixture that goes through the **real**
+production entry point. `bdd-infra`'s `test_service --graceful-probe`
+runs `ServiceRunner` itself for that reason: a hand-rolled
+`tokio::signal` await in the fixture would have kept passing no matter
+which events the runner registered.
+
+Corollary for cross-platform gaps: resist `#[cfg(unix)]` on a test whose
+contract is cross-platform. Gating is right when the *fixture* needs a
+Unix mechanism (see the `--epipe-probe` tests, which need a SIGTERM
+handler to keep writing during shutdown); it is wrong when it merely
+makes the suite green on the platform where the behaviour is broken.
+
 ---
 
 ### 6. Unit Test Rules

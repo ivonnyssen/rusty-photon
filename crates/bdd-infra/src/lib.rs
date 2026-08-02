@@ -454,9 +454,17 @@ impl ServiceHandle {
         self.child.is_some()
     }
 
-    /// Stop the service gracefully via SIGTERM, falling back to SIGKILL after 5 seconds.
+    /// Stop the service gracefully via the platform's shutdown signal
+    /// (SIGTERM on Unix, `CTRL_BREAK_EVENT` on Windows), falling back to a
+    /// forced kill after 5 seconds.
     ///
-    /// Graceful shutdown allows the process to flush coverage data (profraw files).
+    /// Graceful shutdown lets the service run its own stop path — flushing
+    /// coverage data (profraw files), draining in-flight work, and persisting
+    /// whatever its shutdown handlers persist. The signal only achieves that
+    /// if the service actually *handles* it: an unhandled `CTRL_BREAK_EVENT`
+    /// is fatal on Windows, and fatal quickly, so it looks like a clean stop
+    /// from out here. `test_stop_runs_the_service_shutdown_path` holds that
+    /// contract to an observable effect rather than to timing.
     pub async fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
             if let Some(pid) = child.id() {
@@ -465,7 +473,11 @@ impl ServiceHandle {
                 match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
                     Ok(_) => (),
                     Err(_) => {
-                        debug!("{} did not exit after SIGTERM, sending SIGKILL", self.name);
+                        debug!(
+                            "{} did not exit after {GRACEFUL_EVENT}, forcing it down with \
+                             {FORCED_STOP}",
+                            self.name
+                        );
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                     }
@@ -827,6 +839,22 @@ pub async fn parse_bound_port(
     }
     None
 }
+
+/// What [`send_sigterm`] actually delivers, and what the timeout escalates to.
+/// Named per platform so a shutdown log line points a reader at the mechanism
+/// that ran rather than at its Unix spelling.
+#[cfg(unix)]
+const GRACEFUL_EVENT: &str = "SIGTERM";
+#[cfg(unix)]
+const FORCED_STOP: &str = "SIGKILL";
+#[cfg(windows)]
+const GRACEFUL_EVENT: &str = "CTRL_BREAK_EVENT";
+#[cfg(windows)]
+const FORCED_STOP: &str = "TerminateProcess";
+#[cfg(not(any(unix, windows)))]
+const GRACEFUL_EVENT: &str = "the graceful-stop signal";
+#[cfg(not(any(unix, windows)))]
+const FORCED_STOP: &str = "a forced kill";
 
 /// Send a graceful-shutdown signal to a process.
 ///
