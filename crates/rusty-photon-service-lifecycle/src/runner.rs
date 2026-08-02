@@ -344,18 +344,48 @@ fn spawn_shutdown_watcher(
     installed_rx
 }
 
-/// Await a handler's next delivery, or never, if it failed to install.
-macro_rules! next_signal {
-    ($sig:expr) => {
-        async {
-            match $sig.as_mut() {
-                Some(sig) => {
-                    sig.recv().await;
-                }
-                None => std::future::pending::<()>().await,
-            }
-        }
-    };
+/// The one thing the watcher needs from a registered handler. Implemented per
+/// platform because the handler types differ and share no upstream trait —
+/// Windows alone has a distinct type per event.
+#[cfg(any(unix, windows))]
+trait SignalHandler {
+    /// Resolve on this handler's next delivery.
+    async fn delivered(&mut self);
+}
+
+#[cfg(unix)]
+impl SignalHandler for tokio::signal::unix::Signal {
+    async fn delivered(&mut self) {
+        self.recv().await;
+    }
+}
+
+#[cfg(windows)]
+impl SignalHandler for tokio::signal::windows::CtrlC {
+    async fn delivered(&mut self) {
+        self.recv().await;
+    }
+}
+
+#[cfg(windows)]
+impl SignalHandler for tokio::signal::windows::CtrlBreak {
+    async fn delivered(&mut self) {
+        self.recv().await;
+    }
+}
+
+/// Await a handler's next delivery, or never, if it failed to register.
+///
+/// A plain function rather than a macro so the `None` arm is real crate code:
+/// a macro expands into its caller, and a test calling it would attribute the
+/// arm to the test module — which coverage excludes, leaving the degraded
+/// path both untested and invisible.
+#[cfg(any(unix, windows))]
+async fn next_signal<H: SignalHandler>(handler: &mut Option<H>) {
+    match handler {
+        Some(handler) => handler.delivered().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Register the handlers **synchronously**, returning the future that resolves
@@ -374,10 +404,10 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
 
     async move {
         tokio::select! {
-            () = next_signal!(interrupt) => {
+            () = next_signal(&mut interrupt) => {
                 tracing::debug!("{name}: received Ctrl+C, shutting down");
             }
-            () = next_signal!(terminate) => {
+            () = next_signal(&mut terminate) => {
                 tracing::debug!("{name}: received {TERMINATE_EVENT}, shutting down");
             }
         }
@@ -400,10 +430,10 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
 
     async move {
         tokio::select! {
-            () = next_signal!(interrupt) => {
+            () = next_signal(&mut interrupt) => {
                 tracing::debug!("{name}: received Ctrl+C, shutting down");
             }
-            () = next_signal!(terminate) => {
+            () = next_signal(&mut terminate) => {
                 tracing::debug!("{name}: received {TERMINATE_EVENT}, shutting down");
             }
         }
@@ -829,6 +859,67 @@ mod tests {
 
         result.unwrap();
         assert_eq!(reached_shutdown.load(Ordering::SeqCst), 1);
+    }
+
+    /// Ctrl+C must still cancel after the move off `tokio::signal::ctrl_c()`.
+    ///
+    /// That wrapper *is* SIGINT on Unix, but it registers only when polled,
+    /// which the install-before-start barrier cannot allow — so the runner now
+    /// builds the same handler through `signal(SignalKind::interrupt())`.
+    /// Nothing covered Ctrl+C before, which is a poor thing to assume about a
+    /// mechanism one has just swapped out.
+    #[cfg(unix)]
+    #[test]
+    fn sigint_cancels_shutdown_token() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
+        let observed_cancel = Arc::new(AtomicU32::new(0));
+        let observed_for_closure = Arc::clone(&observed_cancel);
+
+        let result = ServiceRunner::new("test-sigint").run(move |shutdown| async move {
+            // Safety: raise() on the current process is the documented way to
+            // self-signal; libc::raise is unsafe only because it touches
+            // global process state.
+            unsafe {
+                libc::raise(libc::SIGINT);
+            }
+            shutdown.cancelled().await;
+            observed_for_closure.store(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        result.unwrap();
+        assert_eq!(observed_cancel.load(Ordering::SeqCst), 1);
+    }
+
+    /// A registration that failed degrades to "this source never fires".
+    ///
+    /// Resolving instead of parking would be the dangerous failure: the select
+    /// would complete immediately and shut the service down the moment it
+    /// finished starting.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_handler_that_failed_to_install_never_fires() {
+        let mut missing: Option<tokio::signal::unix::Signal> = None;
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            next_signal(&mut missing),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "an uninstalled handler resolved instead of parking — a service \
+             would shut down as soon as it started"
+        );
+    }
+
+    /// `install` keeps the no-panic contract: a failed registration is warned
+    /// about and becomes `None`, leaving the other signals working.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn install_degrades_a_failed_registration_to_none() {
+        let refused = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "handler refused");
+        assert!(install::<i32>("test-install", "Ctrl+C", Err(refused)).is_none());
+        assert_eq!(install("test-install", "Ctrl+C", Ok(7)), Some(7));
     }
 
     #[cfg(unix)]

@@ -160,8 +160,8 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
     let mut terminate = install(name, TERMINATE_EVENT, signal(SignalKind::terminate()));
     async move {
         tokio::select! {
-            () = next_signal!(interrupt) => { /* Ctrl+C */ }
-            () = next_signal!(terminate) => { /* SIGTERM */ }
+            () = next_signal(&mut interrupt) => { /* Ctrl+C */ }
+            () = next_signal(&mut terminate) => { /* SIGTERM */ }
         }
     }
 }
@@ -169,12 +169,19 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
 ```
 
 `install` logs a failed registration via `tracing::warn!` and yields
-`None`, which `next_signal!` awaits as a never-resolving future — so a
+`None`, which `next_signal` awaits as a never-resolving future — so a
 misconfigured environment that cannot install one signal (e.g. an
 already-stolen handler) degrades to "the other source still works"
 rather than "the service panics during startup". This matches the
 no-panic pattern established workspace-wide by PR #289. One
 implementation; one log-message style; one place to fix bugs.
+
+`next_signal` is a generic function over a private `SignalHandler`
+trait, not a macro, because the platform handler types share no upstream
+trait (Windows has a distinct type per event). The choice also keeps the
+degraded `None` arm coverable: a macro expands into its caller, so a
+test exercising it would attribute the arm to the test module — which
+coverage excludes, leaving the path both untested and invisible.
 
 ### Handlers install before the service starts
 
