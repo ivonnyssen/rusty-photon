@@ -410,6 +410,7 @@ dependencies = [
  "rp-ephemeris",
  "rp-fits",
  "rp-mcp-client",
+ "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
  "serde_json",
  "tempfile",

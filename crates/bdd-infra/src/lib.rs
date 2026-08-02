@@ -448,9 +448,17 @@ impl ServiceHandle {
         self.child.is_some()
     }
 
-    /// Stop the service gracefully via SIGTERM, falling back to SIGKILL after 5 seconds.
+    /// Stop the service gracefully via the platform's shutdown signal
+    /// (SIGTERM on Unix, `CTRL_BREAK_EVENT` on Windows), falling back to a
+    /// forced kill after 5 seconds.
     ///
-    /// Graceful shutdown allows the process to flush coverage data (profraw files).
+    /// Graceful shutdown lets the service run its own stop path — flushing
+    /// coverage data (profraw files), draining in-flight work, and persisting
+    /// whatever its shutdown handlers persist. The signal only achieves that
+    /// if the service actually *handles* it: an unhandled `CTRL_BREAK_EVENT`
+    /// is fatal on Windows, and fatal quickly, so it looks like a clean stop
+    /// from out here. `test_stop_runs_the_service_shutdown_path` holds that
+    /// contract to an observable effect rather than to timing.
     pub async fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
             if let Some(pid) = child.id() {

@@ -15,8 +15,8 @@ this doc covers the crate's own design.
 
 - Build the tokio runtime; invoke a user closure on it with a
   [`Shutdown`] handle.
-- Install OS signal handlers (Ctrl+C + SIGTERM on Unix; Ctrl+C on
-  Windows console) without panicking on install failure.
+- Install OS signal handlers (Ctrl+C + SIGTERM on Unix; Ctrl+C +
+  Ctrl+Break on Windows console) without panicking on install failure.
 - Optional: install a SIGHUP-driven reload notifier
   ([`ReloadSignal`]).
 - Optional (cargo feature `scm`, Windows-only): dispatch to the
@@ -171,12 +171,23 @@ async fn watch_signals(token: CancellationToken) {
         }
     };
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let terminate = async {
+        match tokio::signal::windows::ctrl_break() {
+            Ok(mut sig) => { sig.recv().await; }
+            Err(e) => {
+                tracing::warn!("failed to install Ctrl+Break handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(any(unix, windows)))]
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
         () = ctrl_c => tracing::debug!("received Ctrl+C, shutting down"),
-        () = terminate => tracing::debug!("received SIGTERM, shutting down"),
+        () = terminate => tracing::debug!("received {TERMINATE_EVENT}, shutting down"),
     }
     token.cancel();
 }
@@ -185,6 +196,24 @@ async fn watch_signals(token: CancellationToken) {
 This matches the no-panic pattern established workspace-wide by
 PR #289. One implementation; one log-message style; one place to
 fix bugs.
+
+**Both Windows console events must be registered.** `ctrl_c()` covers
+CTRL_C_EVENT only; CTRL_BREAK_EVENT is a separate registration, and it
+is the event a supervisor sends to stop a console-mode service by
+process group (`GenerateConsoleCtrlEvent` — what `bdd-infra`'s
+`ServiceHandle::stop` uses). An *unregistered* console control event
+falls through to the OS default handler, which terminates the process
+outright: no cancellation, no shutdown path, no flush, and no error
+raised anywhere. The failure is silent by construction — the only
+evidence is the absence of the shutdown log line — so a test that
+asserts a service stopped *quickly* cannot detect it. `bdd-infra`'s
+`test_stop_runs_the_service_shutdown_path` guards this by requiring an
+effect the shutdown path itself produces.
+
+CTRL_CLOSE / CTRL_SHUTDOWN / CTRL_LOGOFF stay unregistered. They are
+session-teardown events with an OS-imposed handler deadline, and the
+deployed Windows path is a service, which receives `ServiceControl::Stop`
+instead (below) and never sees them.
 
 ### Reload (opt-in via `with_reload`)
 

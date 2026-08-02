@@ -300,6 +300,14 @@ where
         .map_err(report_from_boxed)
 }
 
+/// The platform's "stop this process" event, for the shutdown log line.
+#[cfg(unix)]
+const TERMINATE_EVENT: &str = "SIGTERM";
+#[cfg(windows)]
+const TERMINATE_EVENT: &str = "Ctrl+Break";
+#[cfg(not(any(unix, windows)))]
+const TERMINATE_EVENT: &str = "a termination request";
+
 async fn watch_shutdown_signals(name: &'static str, token: tokio_util::sync::CancellationToken) {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
@@ -321,12 +329,33 @@ async fn watch_shutdown_signals(name: &'static str, token: tokio_util::sync::Can
         }
     };
 
-    #[cfg(not(unix))]
+    // Windows console mode's counterpart to SIGTERM, and the event a
+    // supervisor sends to stop a console-mode service by process group
+    // (`GenerateConsoleCtrlEvent`, as bdd-infra's `ServiceHandle::stop`
+    // does). `ctrl_c` above covers only CTRL_C_EVENT: CTRL_BREAK_EVENT is a
+    // distinct event needing its own registration, and an *unregistered*
+    // console control event falls through to the OS default handler, which
+    // terminates the process outright — no cancellation, no shutdown path,
+    // no flush, and no error anywhere to notice it by.
+    #[cfg(windows)]
+    let terminate = async {
+        match tokio::signal::windows::ctrl_break() {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!("{name}: failed to install Ctrl+Break handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(any(unix, windows)))]
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
         () = ctrl_c => tracing::debug!("{name}: received Ctrl+C, shutting down"),
-        () = terminate => tracing::debug!("{name}: received SIGTERM, shutting down"),
+        () = terminate => tracing::debug!("{name}: received {TERMINATE_EVENT}, shutting down"),
     }
     tracing::info!("{name}: shutdown signal received, terminating");
     token.cancel();

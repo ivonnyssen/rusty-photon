@@ -10,6 +10,9 @@
 //! `--epipe-probe <marker>` (stdout) / `--epipe-probe-stderr <marker>`
 //! (stderr) enable the broken-pipe regression probe used by the
 //! `ServiceHandle` shutdown tests — see [`run_epipe_probe`].
+//!
+//! `--graceful-probe <marker>` runs the real `ServiceRunner` and records
+//! that its shutdown path ran — see [`run_graceful_probe`].
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
@@ -28,6 +31,15 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+    }
+
+    // Graceful-probe mode owns its own bind and handshake because both must
+    // happen *inside* the runner — see `run_graceful_probe`.
+    if let Some(idx) = args.iter().position(|a| a == "--graceful-probe") {
+        if let Some(marker) = args.get(idx + 1).cloned() {
+            run_graceful_probe(marker);
+            return;
         }
     }
 
@@ -55,6 +67,53 @@ fn main() {
     // Block until killed (SIGTERM default disposition terminates the process).
     for stream in listener.incoming() {
         drop(stream);
+    }
+}
+
+/// The marker contents [`run_graceful_probe`] writes when the shutdown path
+/// runs. Absent means the process died without ever reaching it.
+const GRACEFUL_MARKER: &str = "GRACEFUL";
+
+/// Regression probe for the service shutdown path.
+///
+/// Shuts down through the **real** [`ServiceRunner`], so what it proves is
+/// that the workspace's own signal watcher handles the platform's graceful
+/// stop event — a hand-rolled `tokio::signal` await here would pass whatever
+/// the watcher does, which is exactly the vacuum that let an unhandled
+/// Windows CTRL_BREAK go unnoticed. On an unhandled event the OS default
+/// handler terminates the process, no cancellation is ever observed, and the
+/// marker stays empty.
+///
+/// Deliberately not platform-gated: the graceful-stop contract is
+/// cross-platform, and gating this to Unix would re-hide the Windows gap.
+///
+/// The bind and the `bound_addr=` handshake both happen *inside* the run
+/// closure, as they do in every real service. The handshake is what releases
+/// the harness to signal us, so emitting it before the runner exists — the
+/// shape of the other probe modes — would let a stop arrive while SIGTERM
+/// still had its default disposition and kill the process for reasons that
+/// have nothing to do with what this test measures.
+fn run_graceful_probe(marker: String) {
+    let result = rusty_photon_service_lifecycle::ServiceRunner::new("test-service").run(
+        move |shutdown| async move {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let addr = listener.local_addr()?;
+            // The runner spawns its signal watcher just before this closure,
+            // so the handlers install on another worker concurrently with us.
+            // Sleeping *before* the handshake is free of flake risk in the
+            // other direction: the harness cannot act until the line lands,
+            // so this can only ever make the fixture slower, never racier.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            println!("bound_addr={addr}");
+            shutdown.cancelled().await;
+            std::fs::write(&marker, GRACEFUL_MARKER.as_bytes())?;
+            drop(listener);
+            Ok(())
+        },
+    );
+    if let Err(e) = result {
+        eprintln!("graceful probe failed: {e}");
+        std::process::exit(1);
     }
 }
 
