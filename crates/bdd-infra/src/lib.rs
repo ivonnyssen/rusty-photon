@@ -473,7 +473,11 @@ impl ServiceHandle {
                 match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
                     Ok(_) => (),
                     Err(_) => {
-                        debug!("{} did not exit after SIGTERM, sending SIGKILL", self.name);
+                        debug!(
+                            "{} did not exit after {GRACEFUL_EVENT}, forcing it down with \
+                             {FORCED_STOP}",
+                            self.name
+                        );
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                     }
@@ -835,6 +839,22 @@ pub async fn parse_bound_port(
     }
     None
 }
+
+/// What [`send_sigterm`] actually delivers, and what the timeout escalates to.
+/// Named per platform so a shutdown log line points a reader at the mechanism
+/// that ran rather than at its Unix spelling.
+#[cfg(unix)]
+const GRACEFUL_EVENT: &str = "SIGTERM";
+#[cfg(unix)]
+const FORCED_STOP: &str = "SIGKILL";
+#[cfg(windows)]
+const GRACEFUL_EVENT: &str = "CTRL_BREAK_EVENT";
+#[cfg(windows)]
+const FORCED_STOP: &str = "TerminateProcess";
+#[cfg(not(any(unix, windows)))]
+const GRACEFUL_EVENT: &str = "the graceful-stop signal";
+#[cfg(not(any(unix, windows)))]
+const FORCED_STOP: &str = "a forced kill";
 
 /// Send a graceful-shutdown signal to a process.
 ///
