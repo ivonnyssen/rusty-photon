@@ -431,6 +431,15 @@ and an outer `#[allow]` on a `mod name;` declaration covers that module's file
 subtree. [docs/plans/workspace-lints.md](plans/workspace-lints.md) tracks the
 ladder that widens this set.
 
+**Stable gates, beta reports.** `check.yml` runs clippy on both channels with
+deliberately different policies: `stable / clippy` is the required PR gate at
+`-D warnings`, while the nightly `beta / clippy` job passes `--cap-lints warn`
+so it can never fail on a lint — not even one added upstream to a group this
+workspace denies. Its findings become one `beta-clippy`-labeled issue per lint,
+which closes itself once the lint stops firing. Widening the deny set here
+therefore costs nothing in nightly red; see
+[docs/skills/pre-push.md](skills/pre-push.md#checkyml).
+
 ### Duration Units
 
 **Durations are `std::time::Duration` system-wide.** Any field, parameter,

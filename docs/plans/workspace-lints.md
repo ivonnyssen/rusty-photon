@@ -136,7 +136,8 @@ Three scopes have to be resolved before a removal is safe:
 Cargo only. Bazel never runs clippy (`.bazelrc` mentions it once, in a
 comment), and `[lints.clippy]` is a Cargo feature that rules_rust does not
 read. Affected: the pre-commit hook, the required `stable / clippy` PR gate,
-and the nightly `beta / clippy` early-warning job.
+and the nightly `beta / clippy` early-warning job — the last of which reports
+rather than gates, so widening the deny set cannot make it red (L6a).
 
 ### Crates this does not reach
 
@@ -153,19 +154,27 @@ in the workspace. Phase 7.
 |-------|-------------|--------|-------------|
 | L0 | This plan | Complete | #827 |
 | L1 | `clippy.toml` + dead-allow sweep + the four free lints | Complete | #827 |
-| L3 | Deny `panic` — test-crate-root allows | Complete | `chore/workspace-lints-l3` |
-| L4 | Deny `string_slice`; leave `exit` alone | Complete | `chore/workspace-lints-l3` |
-| L6 | `pedantic` / `nursery` decision | Not started | |
+| L3 | Deny `panic` — test-crate-root allows | Complete | #831 |
+| L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
+| L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Not started | |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Not started | |
+| L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
-**L2 moved after L6.** L2 is a `--fix` sweep of ~3,521 sites, but most of what
-`--fix` rewrites is `pedantic` / `nursery` fallout — and L6's standing
-recommendation is `pedantic = "warn"` with `nursery` off. Running L2 first
-would pay for thousands of fixes to lints the workspace then never gates on.
-L6 is a policy call, not a code change; making it first scopes L2 to what is
-actually being enforced.
+**L6 split in two, and L2 moved back ahead of the policy half.** The original
+sequencing note put L2 after L6 because L6's standing recommendation was
+`pedantic = "warn"` with `nursery` off — under which L2's ~3,521-site `--fix`
+sweep would have paid for fixes to lints the workspace never gates on.
+
+That recommendation existed for one reason: both groups gain lints on the beta
+channel, so denying them made the nightly `beta / clippy` job recurrently red.
+That is a CI-policy problem, not a lint-policy one, and L6a fixes it directly —
+beta now reports instead of failing. With the objection removed, `pedantic` and
+`nursery` at `deny` on stable become viable (L6b), which restores the case for
+L2: it is work the workspace will actually enforce.
+
+L6a does not shrink the 7,643 sites. It removes the reason not to pay for them.
 
 ---
 
@@ -255,13 +264,51 @@ Real per-site judgment: `checked_*` / `TryFrom` / `get()`.
 
 Crate by crate, `rp` last — it carries 2,077 of the hand-fix residue on its own.
 
-## L6 — `pedantic` / `nursery`
+## L6a — split the CI channels
 
-Still 7,643 sites, wholly untouched by the knobs. Recommend `pedantic = "warn"`
-and leaving `nursery` off rather than both at `deny`: `nursery` is explicitly
-unstable, `needless_pass_by_ref_mut` alone is 1,172 mostly-test sites, and both
-groups gain lints on the beta channel — which the nightly `beta / clippy` job
-would then surface as recurring red.
+Being strict on stable and getting early warning from beta are two goals, and
+running one job for both forced a compromise on the stricter one. `check.yml`
+now runs them as separate jobs:
+
+- **`stable / clippy`** — unchanged required gate, `-D warnings`.
+- **`beta / clippy`** — report-only, and on the schedule plus
+  `workflow_dispatch` alone. Deliberately *not* on push to main: only the
+  scheduled run acts on the census, so a per-merge beta build would compute a
+  report nobody reads. `--cap-lints warn` on clippy's
+  argument line downgrades every lint, *including the ones
+  `[workspace.lints.clippy]` denies*, so the job exits 0 on lints and fails
+  only on a genuine compile break. The cap rides on the argument line rather
+  than `RUSTFLAGS` so it applies to the workspace packages being linted and
+  leaves dependency artifacts cached.
+
+`tools/ci/beta_clippy_census.py` aggregates the JSON diagnostics per lint
+(deduplicating on file/line/column — `--all-targets` reports each source line
+once per target, over-counting by ~40%), and a `github-script` step keeps one
+`beta-clippy`-labeled issue per lint: opened on first sighting, body rewritten
+each night, closed automatically once the lint stops firing. Above 20 distinct
+lints it opens nothing and fails instead — truncating the set would make the
+auto-close wrongly retire the lints left out, so a mass rename upstream goes to
+a human.
+
+The property that makes this cheap: because `stable / clippy` gates every PR at
+`-D warnings`, `main` is silent on stable, so **every** finding beta reports is
+new on the beta channel. No stable-vs-beta set differencing is needed.
+
+`notify-clippy-failure` now covers both jobs, and its body says a lint is *not*
+the likely cause — lints have their own issues.
+
+## L6b — `pedantic` / `nursery` at deny
+
+Still 7,643 sites, wholly untouched by the knobs. L6a removes the reason the
+earlier recommendation was `pedantic = "warn"` with `nursery` off: both groups
+gain lints on the beta channel, and under the old single-job setup that meant a
+recurrently red nightly. Beta no longer fails on lints, so `deny` on stable is
+viable for both.
+
+`nursery` still wants its own look before flipping — it is explicitly unstable,
+and `needless_pass_by_ref_mut` alone is 1,172 mostly-test sites. Run L2 and L5
+first; they remove most of the residue this rung would otherwise have to
+absorb.
 
 ## L7 — dual-homed FFI crates
 

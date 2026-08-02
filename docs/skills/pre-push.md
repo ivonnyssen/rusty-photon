@@ -142,18 +142,43 @@ still surfaces in the nightly `--workspace --all-features` build and the off-PR
 ### check.yml
 
 `fmt` and stable `clippy` run on every PR + push to main (required PR gates,
-because Bazel does not run rustfmt/clippy). The beta-clippy, `hack`, and `msrv`
-jobs run on push to main,
-the nightly schedule, and `workflow_dispatch` — skipped on PRs via
-`if: github.event_name != 'pull_request'`. ("Off-PR" below = that set.)
+because Bazel does not run rustfmt/clippy). The `hack` and `msrv` jobs run on
+push to main, the nightly schedule, and `workflow_dispatch` — skipped on PRs
+via `if: github.event_name != 'pull_request'`. ("Off-PR" below = that set.)
+`clippy (beta)` is narrower still: schedule and `workflow_dispatch` only, since
+only the scheduled run acts on its census.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
 | **fmt** | `cargo fmt --check` | stable rustfmt | **PR gate** |
 | **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy | **PR gate** |
-| **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- -D warnings` | beta toolchain | Off-PR |
+| **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Nightly |
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
 | **msrv** | `cargo msrv verify` | cargo-msrv | Off-PR |
+
+**The two clippy jobs answer different questions.** Stable is the gate and
+must be silent. Beta is a heads-up and must never block: `--cap-lints warn`
+downgrades every lint — including the ones `[workspace.lints.clippy]` denies —
+so an upstream release that adds a lint to a denied group reports instead of
+turning the nightly red. Because stable is green on `main` by construction,
+every finding beta reports is new on the beta channel, with no set-differencing
+needed.
+
+The scheduled beta run aggregates its findings per lint with
+[`tools/ci/beta_clippy_census.py`](../../tools/ci/beta_clippy_census.py) and
+keeps one `beta-clippy`-labeled issue per lint — opened on first sighting, body
+rewritten each night, closed automatically once the lint stops firing. To
+reproduce the census locally:
+
+```bash
+cargo +beta clippy --all-targets --all-features --message-format=json \
+  -- --cap-lints warn > /tmp/clippy.json
+python3 tools/ci/beta_clippy_census.py --root "$PWD" --summary /tmp/census.md \
+  < /tmp/clippy.json > /tmp/census.json
+```
+
+`--all-targets` compiles each source file once per target, so the script
+deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 
 The workspace uses a single MSRV (currently 1.94.1) declared in the root
 `Cargo.toml` via `[workspace.package]`. All members inherit it with
