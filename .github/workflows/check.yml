@@ -1,5 +1,9 @@
 # Lint & quality checks.
 #
+# The two clippy jobs answer different questions — be strict on stable, get a
+# heads-up on beta. Keeping them apart is what lets the stable deny set widen
+# without the nightly beta leg going red every time a group gains a lint.
+#
 # PR-gating (every pull_request + push to main) — these stay required because the
 # per-PR Bazel build/test gate (bazel.yml) does NOT run rustfmt or clippy:
 #   - fmt:    rustfmt formatting              (required check: `stable / fmt`)
@@ -7,13 +11,16 @@
 #
 # Nightly-only (schedule + push to main + workflow_dispatch; skipped on PRs via
 # `if: github.event_name != 'pull_request'`):
-#   - clippy (beta): early warning of new beta-channel lints
-#   - hack:          cargo-hack feature-powerset (feature additivity)
-#   - msrv:          verify the declared workspace MSRV
+#   - clippy-beta: report-only beta clippy (`--cap-lints warn`), one tracking
+#                  issue per lint. Never fails on a lint.
+#   - hack:        cargo-hack feature-powerset (feature additivity)
+#   - msrv:        verify the declared workspace MSRV
 #
 # notify-clippy-failure opens (or comments on) a `check-nightly`-labeled
-# tracking issue when the scheduled clippy run fails, same pattern as
+# tracking issue when a scheduled clippy job fails, same pattern as
 # safety.yml / conformu.yml / install-astap.yml / plate-solver-smoke.yml.
+# Since clippy-beta no longer fails on lints, reaching it now means a genuine
+# break rather than an upstream lint addition.
 permissions:
   contents: read
 # fmt + clippy run on every PR and on push to main. The heavier nightly jobs
@@ -28,6 +35,11 @@ on:
     # Cargo suites don't contend for the same hosted-runner pool minute.
     - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      report_beta_lints:
+        description: "Also open/update/close beta-clippy issues (normally schedule-only)"
+        type: boolean
+        default: false
 # If new code is pushed to a PR branch, then cancel in progress workflows for that PR. Ensures that
 # we don't waste CI time, and returns results quicker https://github.com/jonhoo/rust-ci-conf/pull/5
 concurrency:
@@ -48,37 +60,188 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
   clippy:
+    # Required PR gate. `-D warnings` here is what keeps `main` silent on
+    # stable — which is in turn what makes every finding in clippy-beta below
+    # new on the beta channel by construction, with no set-differencing needed.
     runs-on: ubuntu-latest
-    name: ${{ matrix.toolchain }} / clippy
-    strategy:
-      fail-fast: false
-      matrix:
-        # `stable / clippy` is a required PR gate, so it runs on every event.
-        # `beta / clippy` (early warning of new beta lints) is nightly-only: on a
-        # pull_request the matrix collapses to [stable] so PRs aren't gated on
-        # beta; otherwise it expands to [stable, beta].
-        toolchain: ${{ (github.event_name == 'pull_request') && fromJSON('["stable"]') || fromJSON('["stable", "beta"]') }}
+    name: stable / clippy
     steps:
       - uses: actions/checkout@v7
-      - name: Install ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@master
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.toolchain }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-${{ matrix.toolchain }}
-          save-if: ${{ matrix.toolchain == 'beta' }}
+          shared-key: linux-stable
+          save-if: false
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+  clippy-beta:
+    # Early warning, never a gate. `--cap-lints warn` downgrades every lint the
+    # workspace denies, so this job reports rather than fails — including for a
+    # lint added to a group we deny, which under `-D warnings` would have turned
+    # an upstream toolchain release into a red nightly. Findings are grouped by
+    # lint and tracked one issue each so they get fixed in current code, on our
+    # schedule, before the toolchain enforcing them reaches stable.
+    #
+    # A genuine compile break still fails the job; notify-clippy-failure catches
+    # that.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    name: beta / clippy
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install beta
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: beta
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-beta
+          save-if: true
+      - name: cargo clippy (report-only)
+        run: |
+          cargo clippy --version | tee toolchain.txt
+          # The cap goes on clippy's own argument line rather than in RUSTFLAGS
+          # so it applies to the workspace packages being linted and leaves
+          # dependency artifacts cached.
+          status=0
+          cargo clippy --all-targets --all-features --message-format=json \
+            -- --cap-lints warn > clippy.json || status=$?
+          # `--message-format=json` moves the rendered diagnostics into the
+          # JSON payload, so echo them back for anyone reading the run log.
+          # Never let this displace clippy's own verdict (`bash -e`).
+          jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' clippy.json || true
+          exit $status
+      - name: Aggregate findings per lint
+        run: |
+          python3 tools/ci/beta_clippy_census.py \
+            --root "$GITHUB_WORKSPACE" \
+            --toolchain "$(cat toolchain.txt)" \
+            --summary census.md \
+            < clippy.json > census.json
+          cat census.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Track each lint as an issue
+        # Schedule only by default: a push to main re-derives the same census
+        # and should not churn issues. `workflow_dispatch` can opt in, which is
+        # the only way to exercise this path outside the nightly window.
+        if: github.event_name == 'schedule' || inputs.report_beta_lints
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("fs");
+            const census = JSON.parse(fs.readFileSync("census.json", "utf8"));
+            const { owner, repo } = context.repo;
+            const label = "beta-clippy";
+            const prefix = "beta clippy: ";
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            // A toolchain that renames or splits many lints at once would open a
+            // flood of issues, and truncating the set would make the auto-close
+            // below wrongly retire the lints left out. Hand it to a human
+            // instead — failing here surfaces via notify-clippy-failure.
+            const maxLints = 20;
+            if (census.lints.length > maxLints) {
+              core.setFailed(
+                `beta clippy reported ${census.lints.length} distinct lints ` +
+                `(cap ${maxLints}); triage the census in the run summary rather ` +
+                `than opening an issue per lint.`
+              );
+              return;
+            }
+            // Created on first use so the workflow needs no manual label setup.
+            try {
+              await github.rest.issues.createLabel({
+                owner, repo, name: label, color: "ededed",
+                description: "a lint beta clippy reports that stable does not yet",
+              });
+            } catch (error) {
+              if (error.status !== 422) throw error; // 422 = already exists
+            }
+            const render = (entry) => {
+              const shown = entry.sites.slice(0, 20);
+              const lines = [
+                `\`${entry.lint}\` fires **${entry.count}×** under the beta toolchain.`,
+                ``,
+                `\`stable / clippy\` is a required gate running \`-D warnings\`, so`,
+                `\`main\` is silent on stable — this lint is new on the beta channel`,
+                `and will start failing that gate when beta becomes stable. Fixing`,
+                `it in current code now avoids a rushed sweep on the bump.`,
+                ``,
+                `> ${entry.example}`,
+                ``,
+              ];
+              if (entry.docs) {
+                lines.push(`Lint reference: ${entry.docs}`, ``);
+              }
+              lines.push(
+                `**Sites** (showing ${shown.length} of ${entry.count}):`,
+                ``,
+                ...shown.map((site) => `- \`${site}\``),
+                ``,
+                `Toolchain: \`${census.toolchain}\``,
+                `Last seen: ${runUrl}`,
+                ``,
+                `Opened automatically by the nightly \`beta / clippy\` job. This`,
+                `body is rewritten on every run, and the issue closes itself once`,
+                `the lint stops being reported.`,
+              );
+              return lines.join("\n");
+            };
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open", labels: label,
+            });
+            const existing = new Map(open.map((issue) => [issue.title, issue]));
+            const reported = new Set();
+            for (const entry of census.lints) {
+              const title = `${prefix}${entry.lint}`;
+              reported.add(title);
+              const body = render(entry);
+              const match = existing.get(title);
+              if (match) {
+                await github.rest.issues.update({
+                  owner, repo, issue_number: match.number, body,
+                });
+                core.info(`updated #${match.number} — ${title} (${entry.count} sites)`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner, repo, title, body, labels: [label, "check-nightly"],
+                });
+                core.info(`opened #${created.data.number} — ${title} (${entry.count} sites)`);
+              }
+            }
+            // A lint that stopped firing was either fixed here or dropped
+            // upstream; retire its issue rather than leaving stale ones to be
+            // triaged by hand. Only issues this job generated are eligible.
+            for (const issue of open) {
+              if (reported.has(issue.title) || !issue.title.startsWith(prefix)) {
+                continue;
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: `No longer reported by \`beta / clippy\` — closing.\n\nRun: ${runUrl}`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number,
+                state: "closed", state_reason: "completed",
+              });
+              core.info(`closed #${issue.number} — ${issue.title}`);
+            }
   notify-clippy-failure:
-    # Open or update a tracking issue when the nightly clippy run fails so a
-    # new stable or (more likely) beta-channel lint surfaces without depending
-    # on someone reading scheduled-workflow logs. Skipped on push,
-    # pull_request, and workflow_dispatch so manual debugging runs and
-    # required-PR-gate failures (already visible in the PR itself) don't
-    # churn an issue.
-    needs: clippy
+    # Open or update a tracking issue when a scheduled clippy job fails, so the
+    # failure surfaces without depending on someone reading scheduled-workflow
+    # logs. Skipped on push, pull_request, and workflow_dispatch so manual
+    # debugging runs and required-PR-gate failures (already visible in the PR
+    # itself) don't churn an issue.
+    #
+    # Note what this no longer covers: clippy-beta reports lints instead of
+    # failing on them, and each gets its own `beta-clippy` issue. Reaching here
+    # means something else broke.
+    needs: [clippy, clippy-beta]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -91,13 +254,15 @@ jobs:
             const title = `nightly: check clippy failing`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
-              `The nightly check workflow's clippy job failed on the stable and/or`,
-              `beta toolchain.`,
+              `The nightly check workflow's \`stable / clippy\` and/or`,
+              `\`beta / clippy\` job failed.`,
               ``,
-              `Likely cause: a new lint landed in the beta-channel clippy (the`,
-              `whole point of running that leg nightly is to catch these before`,
-              `they hit stable) or a warning was newly emitted by a stable toolchain`,
-              `bump. Inspect the failed matrix leg in the linked run for the lint.`,
+              `A *lint* is not the likely cause. \`beta / clippy\` runs with`,
+              `\`--cap-lints warn\` and files one \`beta-clippy\`-labeled issue per`,
+              `lint instead of failing, so what reached here is more likely a`,
+              `compile break, a warning newly emitted by a stable toolchain bump,`,
+              `or the reporting step itself. Inspect the failed job in the linked`,
+              `run.`,
               ``,
               `Run: ${runUrl}`,
               ``,

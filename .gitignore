@@ -36,3 +36,7 @@ user.bazelrc
 *_Cfg_A.bin
 *_Cfg_SAVE.bin
 crates/rp-catalog/scripts/build/
+
+# Python bytecode from the tools/ scripts
+__pycache__/
+*.pyc
