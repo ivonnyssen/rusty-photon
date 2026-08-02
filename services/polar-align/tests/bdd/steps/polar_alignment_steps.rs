@@ -15,18 +15,22 @@ use bdd_infra::rp_harness::{
 };
 use bdd_infra::ServiceHandle;
 use cucumber::{given, then, when};
-use polar_align::math::{radec_from_unit, unit_from_radec, Mat3, Vec3};
-use rp_ephemeris::{AltAz, ErfarsEphemeris, Site};
+use polar_align::math::{unit_from_radec, wcs_from_attitude, Mat3, Vec3};
+use rp_ephemeris::{AltAz, Ephemeris, ErfarsEphemeris, Site};
 
 use crate::world::{PolarAlignWorld, SITE_LATITUDE_DEG, SITE_LONGITUDE_DEG};
 
 /// Generate the three measurement solves (plus one adjustment solve
 /// the Sequence clamps on) for a mount whose RA axis sits at the
 /// given error from the pole: `east_arcmin` of true angle toward the
-/// east horizon, `alt_arcmin` above it. Pure geometry in the world's
-/// shared site, unrefracted — matching the service config's
+/// east horizon, `alt_arcmin` above it. The camera starts
+/// `off_axis_deg` from the axis and each point rotates the full
+/// attitude 45° about it, so the per-point `wcs_matrix` encodes the
+/// same rotation the centers trace — both axis methods must agree on
+/// these solves. Pure geometry in the world's shared site,
+/// unrefracted — matching the service config's
 /// `refraction.enabled = false`.
-fn choreograph_solves(east_arcmin: f64, alt_arcmin: f64) -> Vec<CannedWcs> {
+fn choreograph_solves(east_arcmin: f64, alt_arcmin: f64, off_axis_deg: f64) -> Vec<CannedWcs> {
     let site = Site::new(SITE_LATITUDE_DEG, SITE_LONGITUDE_DEG).expect("test site");
     let eph = ErfarsEphemeris::new();
     let now = chrono::Utc::now();
@@ -48,31 +52,39 @@ fn choreograph_solves(east_arcmin: f64, alt_arcmin: f64) -> Vec<CannedWcs> {
         .expect("axis observed→ICRS");
     let axis = unit_from_radec(axis_icrs.ra_hours * 15.0, axis_icrs.dec_degrees);
 
-    // Scope ~5° off-axis (the dec-85 sweep), three points 45° apart.
+    // Initial camera attitude: boresight off_axis_deg from the axis,
+    // pixel axes from the boresight's local frame (any rigid choice
+    // works — only relative rotations enter the axis extraction).
     let perp = axis
         .cross(Vec3::new(0.0, 0.0, 1.0))
         .normalized()
         .expect("axis is not the celestial pole");
-    let start = Mat3::from_axis_angle(perp, 5.0_f64.to_radians()).mul_vec(axis);
+    let boresight = Mat3::from_axis_angle(perp, off_axis_deg.to_radians()).mul_vec(axis);
+    let x = Vec3::new(0.0, 0.0, 1.0)
+        .cross(boresight)
+        .normalized()
+        .expect("boresight is not the celestial pole");
+    let initial_attitude = Mat3::from_columns(x, boresight.cross(x), boresight);
 
     (0..4)
         .map(|i| {
             let sweep = f64::from(i.min(2)) * 45.0_f64.to_radians();
-            let pointing = Mat3::from_axis_angle(axis, sweep).mul_vec(start);
-            let (ra_center, dec_center) = radec_from_unit(pointing);
+            let attitude = Mat3::from_axis_angle(axis, sweep).mul_mat(initial_attitude);
+            let frame = wcs_from_attitude(attitude, 2.9167e-4, (512.0, 384.0))
+                .expect("choreographed boresight stays away from the poles");
             CannedWcs {
-                ra_center,
-                dec_center,
+                ra_center: frame.center_ra_deg,
+                dec_center: frame.center_dec_deg,
                 pixel_scale_arcsec: 1.05,
                 rotation_deg: 0.0,
                 solver: "stub-astap".to_string(),
                 wcs_matrix: Some(CannedWcsMatrix {
-                    crpix1: 512.0,
-                    crpix2: 384.0,
-                    cd1_1: -2.9167e-4,
-                    cd1_2: 0.0,
-                    cd2_1: 0.0,
-                    cd2_2: 2.9167e-4,
+                    crpix1: frame.matrix.crpix1,
+                    crpix2: frame.matrix.crpix2,
+                    cd1_1: frame.matrix.cd1_1,
+                    cd1_2: frame.matrix.cd1_2,
+                    cd2_1: frame.matrix.cd2_1,
+                    cd2_2: frame.matrix.cd2_2,
                 }),
             }
         })
@@ -94,7 +106,26 @@ async fn running_alpaca_simulator(world: &mut PolarAlignWorld) {
     expr = "a stub plate solver choreographed for an axis error of {float} arcminutes east and {float} arcminutes in altitude"
 )]
 async fn stub_solver_choreographed(world: &mut PolarAlignWorld, east: f64, alt: f64) {
-    let stub = PlateSolverStub::start(StubBehavior::Sequence(choreograph_solves(east, alt))).await;
+    // Scope ~5° off-axis, as the dec-85 near-pole sweep produces.
+    let stub =
+        PlateSolverStub::start(StubBehavior::Sequence(choreograph_solves(east, alt, 5.0))).await;
+    world.plate_solver = Some(bdd_infra::rp_harness::PlateSolverConfig {
+        url: stub.url.clone(),
+        timeout: None,
+        default_search_radius_deg: None,
+    });
+    world.plate_solver_stub = Some(stub);
+    world.injected_error_arcmin = Some((east, alt));
+}
+
+#[given(
+    expr = "a stub plate solver choreographed for an axis error of {float} arcminutes east and {float} arcminutes in altitude from a mid-sky pointing"
+)]
+async fn stub_solver_choreographed_mid_sky(world: &mut PolarAlignWorld, east: f64, alt: f64) {
+    // Boresight 35° from the axis — the start-from-anywhere case the
+    // attitude-based measurement exists for.
+    let stub =
+        PlateSolverStub::start(StubBehavior::Sequence(choreograph_solves(east, alt, 35.0))).await;
     world.plate_solver = Some(bdd_infra::rp_harness::PlateSolverConfig {
         url: stub.url.clone(),
         timeout: None,
@@ -107,10 +138,11 @@ async fn stub_solver_choreographed(world: &mut PolarAlignWorld, east: f64, alt: 
 #[given("a stub plate solver whose solves stop carrying a WCS matrix after the second point")]
 async fn stub_solver_loses_matrix(world: &mut PolarAlignWorld) {
     // Points 1–2 carry the matrix; point 3 and the clamped adjustment
-    // entry do not. Measurement needs only centers, so it succeeds
-    // with no attitude seed, and every adjustment solve then fails
-    // the iteration ("solve carried no wcs_matrix").
-    let mut solves = choreograph_solves(30.0, -20.0);
+    // entry do not. A near-pole measurement needs only centers, so it
+    // succeeds with no attitude seed and every adjustment solve then
+    // fails the iteration ("solve carried no wcs_matrix"); a
+    // current-position measurement aborts at point 3.
+    let mut solves = choreograph_solves(30.0, -20.0, 5.0);
     for solve in solves.iter_mut().skip(2) {
         solve.wcs_matrix = None;
     }
@@ -121,6 +153,40 @@ async fn stub_solver_loses_matrix(world: &mut PolarAlignWorld) {
         default_search_radius_deg: None,
     });
     world.plate_solver_stub = Some(stub);
+}
+
+#[given("the simulator mount is synced to a mid-sky pointing west of the meridian")]
+async fn sync_mount_mid_sky(world: &mut PolarAlignWorld) {
+    if world.omnisim.is_none() {
+        world.omnisim = Some(OmniSimHandle::start().await);
+    }
+    // OmniSim refuses a sync with tracking off.
+    OmniSimHandle::set_telescope_tracking(true)
+        .await
+        .expect("enable simulator tracking");
+    let site = Site::new(SITE_LATITUDE_DEG, SITE_LONGITUDE_DEG).expect("test site");
+    let eph = ErfarsEphemeris::new();
+    let lst_hours = eph.sidereal_time(&site, chrono::Utc::now()).lst_hours;
+    // Hour angle +2h (30° west of the meridian) at declination 60:
+    // circumpolar at the test latitude, so every sweep target clears
+    // the workflow's altitude floor whatever the wall clock says.
+    let ra_hours = (lst_hours - 2.0).rem_euclid(24.0);
+    OmniSimHandle::sync_telescope_to(ra_hours, 60.0)
+        .await
+        .expect("sync the simulator mount");
+    world.synced_ra_deg = Some(ra_hours * 15.0);
+}
+
+#[given("the measurement starts from the current mount position")]
+async fn measurement_from_current_position(world: &mut PolarAlignWorld) {
+    world
+        .measurement_overrides
+        .insert("mode".to_string(), serde_json::json!("current_position"));
+    // A short sweep keeps the two OmniSim slews cheap; the canned
+    // solves do not depend on the commanded sweep.
+    world
+        .measurement_overrides
+        .insert("sweep_deg".to_string(), serde_json::json!(15.0));
 }
 
 #[given(expr = "the workflow tolerates at most {int} consecutive failed solves")]
@@ -295,6 +361,51 @@ async fn status_altitude_error(world: &mut PolarAlignWorld, tolerance: f64, expe
     );
 }
 
+#[then(expr = "the polar-align status should report an axis cross-check below {float} arcseconds")]
+async fn status_cross_check(world: &mut PolarAlignWorld, max_arcsec: f64) {
+    let value = measurement_field(world, "cross_check_arcsec").await;
+    assert!(
+        value < max_arcsec,
+        "axis cross-check {value}″ is not below {max_arcsec}″"
+    );
+}
+
+#[then(
+    expr = "the first solve request should be hinted within {float} degrees of the synced pointing"
+)]
+async fn first_solve_hint_near_synced_pointing(world: &mut PolarAlignWorld, tolerance: f64) {
+    let synced_ra_deg = world
+        .synced_ra_deg
+        .expect("no synced pointing recorded by a Given step");
+    let stub = world
+        .plate_solver_stub
+        .as_ref()
+        .expect("plate solver stub not started");
+    let requests = stub.requests().await;
+    let first = requests.first().expect("no solve requests recorded");
+    let ra_hint = first
+        .get("ra_hint")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| panic!("first solve request carries no ra_hint: {first}"));
+    let dec_hint = first
+        .get("dec_hint")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| panic!("first solve request carries no dec_hint: {first}"));
+    // The first point of a current-position measurement is captured
+    // in place, so its hint must be the mount's own position — which
+    // pins the tool's hours→degrees normalization too. Tracking
+    // holds RA still between the sync and the capture.
+    let ra_diff = (ra_hint - synced_ra_deg + 180.0).rem_euclid(360.0) - 180.0;
+    assert!(
+        ra_diff.abs() <= tolerance,
+        "first solve ra_hint {ra_hint}° is {ra_diff:.3}° from the synced RA {synced_ra_deg}°"
+    );
+    assert!(
+        (dec_hint - 60.0).abs() <= tolerance,
+        "first solve dec_hint {dec_hint}° is not the synced declination 60°"
+    );
+}
+
 #[then(expr = "the stub plate solver should have received at least {int} solve requests")]
 async fn stub_received_requests(world: &mut PolarAlignWorld, count: usize) {
     let stub = world
@@ -421,6 +532,14 @@ async fn start_polar_align_service(world: &mut PolarAlignWorld) {
     if let Some(adjustment) = config.get_mut("adjustment").and_then(|a| a.as_object_mut()) {
         for (key, value) in &world.adjustment_overrides {
             adjustment.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(measurement) = config
+        .get_mut("measurement")
+        .and_then(|m| m.as_object_mut())
+    {
+        for (key, value) in &world.measurement_overrides {
+            measurement.insert(key.clone(), value.clone());
         }
     }
     let config_path = write_temp_config_file("polar-align-config", &config).await;

@@ -45,6 +45,15 @@ pub struct PolarAlignWorld {
     /// starts, e.g. a short `max_duration` for deadline scenarios).
     pub adjustment_overrides: serde_json::Map<String, Value>,
 
+    /// Per-scenario overrides merged into the service config's
+    /// `measurement` block (e.g. `mode: current_position`).
+    pub measurement_overrides: serde_json::Map<String, Value>,
+
+    /// Where the simulator mount was synced to, in degrees — the
+    /// anchor a current-position measurement must hint its first
+    /// solve near.
+    pub synced_ra_deg: Option<f64>,
+
     // --- TLS + auth smoke test (`auth.feature`) ---
     pub tls_auth: TlsAuthState,
 

@@ -119,6 +119,20 @@ impl TryFrom<f64> for SweepDeg {
     }
 }
 
+/// How the three measurement points are chosen (design doc
+/// §Measurement phase; plan D1/D9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementMode {
+    /// The near-pole sweep at the configured declination.
+    #[default]
+    NearPole,
+    /// Sweep the RA axis from wherever the mount points, away from
+    /// the meridian. Every measurement solve must carry a
+    /// `wcs_matrix` — the axis comes from full camera attitudes.
+    CurrentPosition,
+}
+
 /// Which side of the meridian the three measurement points sit on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -151,8 +165,11 @@ pub struct SiteConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementConfig {
-    /// Measurement declination in degrees. The magnitude is what
-    /// matters; the sign is folded to the site hemisphere at load.
+    #[serde(default)]
+    pub mode: MeasurementMode,
+    /// Measurement declination in degrees, `near_pole` mode only.
+    /// The magnitude is what matters; the sign is folded to the site
+    /// hemisphere at load.
     #[serde(default = "default_measurement_dec")]
     pub dec_deg: f64,
     #[serde(default = "default_first_point_ha")]
@@ -317,6 +334,7 @@ impl CliOverrides {
 
 fn default_measurement() -> MeasurementConfig {
     MeasurementConfig {
+        mode: MeasurementMode::default(),
         dec_deg: default_measurement_dec(),
         first_point_ha_deg: default_first_point_ha(),
         sweep_deg: default_sweep(),
@@ -448,6 +466,7 @@ mod tests {
     fn minimal_config_gets_documented_defaults() {
         let config = parse_with_cross_field(&minimal_json()).unwrap();
         assert_eq!(config.server.port, 11172);
+        assert_eq!(config.measurement.mode, MeasurementMode::NearPole);
         assert_eq!(config.measurement.dec_deg, 85.0);
         assert_eq!(config.measurement.first_point_ha_deg.degrees(), 15.0);
         assert_eq!(config.measurement.sweep_deg.degrees(), 45.0);
@@ -566,6 +585,28 @@ mod tests {
         }"#;
         let err = serde_json::from_str::<PolarAlignConfig>(json).unwrap_err();
         assert!(err.to_string().contains("polar_scope"), "{err}");
+    }
+
+    #[test]
+    fn measurement_mode_current_position_parses() {
+        let json = r#"{
+            "camera_id": "c", "mount_id": "m",
+            "site": { "latitude_deg": 48.0, "longitude_deg": 0.0 },
+            "measurement": { "mode": "current_position" }
+        }"#;
+        let config = parse_with_cross_field(json).unwrap();
+        assert_eq!(config.measurement.mode, MeasurementMode::CurrentPosition);
+    }
+
+    #[test]
+    fn measurement_mode_unknown_variant_is_rejected() {
+        let json = r#"{
+            "camera_id": "c", "mount_id": "m",
+            "site": { "latitude_deg": 48.0, "longitude_deg": 0.0 },
+            "measurement": { "mode": "somewhere_nice" }
+        }"#;
+        let err = serde_json::from_str::<PolarAlignConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("somewhere_nice"), "{err}");
     }
 
     #[test]

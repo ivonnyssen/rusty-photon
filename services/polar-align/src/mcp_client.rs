@@ -89,6 +89,16 @@ pub struct ParkState {
     pub can_unpark: bool,
 }
 
+/// The mount's own reported pointing, normalized to degrees (the
+/// `get_mount_position` tool reports RA in decimal hours). This is
+/// the mount-frame position — off from the sky by the pointing
+/// error, which is exactly what anchoring an RA-only sweep needs.
+#[derive(Debug, Clone, Copy)]
+pub struct MountPosition {
+    pub ra_deg: f64,
+    pub dec_deg: f64,
+}
+
 /// One star from the `detect_stars` tool. `x`/`y` are the flux-
 /// weighted centroid as 0-based pixel indices (rp reports ndarray
 /// indices, not FITS 1-based pixels).
@@ -198,6 +208,21 @@ impl McpClient {
     pub async fn get_park_state(&self) -> Result<ParkState> {
         self.call_tool("get_park_state", serde_json::json!({}))
             .await
+    }
+
+    pub async fn get_mount_position(&self) -> Result<MountPosition> {
+        #[derive(Deserialize)]
+        struct Payload {
+            ra: f64,
+            dec: f64,
+        }
+        let payload: Payload = self
+            .call_tool("get_mount_position", serde_json::json!({}))
+            .await?;
+        Ok(MountPosition {
+            ra_deg: payload.ra * 15.0,
+            dec_deg: payload.dec,
+        })
     }
 
     pub async fn unpark(&self) -> Result<()> {
