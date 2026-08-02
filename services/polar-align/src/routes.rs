@@ -101,13 +101,15 @@ async fn preview_handler(
     };
     let width = params.width.unwrap_or(preview::DEFAULT_PREVIEW_WIDTH);
     let rendered = tokio::task::spawn_blocking(move || preview::render_png(&path, width)).await;
+    // Error bodies stay generic: the path and decoder detail go to
+    // the logs, not to HTTP clients.
     match rendered {
         Ok(Ok(png)) => ([(header::CONTENT_TYPE, "image/png")], png).into_response(),
         Ok(Err(e @ PreviewError::NoFrameOnDisk(_))) => {
             debug!(error = %e, "preview frame missing");
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": e.to_string() })),
+                Json(serde_json::json!({ "error": "the captured frame no longer exists on disk" })),
             )
                 .into_response()
         }
@@ -115,7 +117,7 @@ async fn preview_handler(
             warn!(error = %e, "preview rendering failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
+                Json(serde_json::json!({ "error": "failed to render the preview" })),
             )
                 .into_response()
         }
@@ -123,7 +125,7 @@ async fn preview_handler(
             warn!(error = %e, "preview rendering task failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "preview rendering task failed" })),
+                Json(serde_json::json!({ "error": "failed to render the preview" })),
             )
                 .into_response()
         }

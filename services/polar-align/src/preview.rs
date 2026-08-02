@@ -88,10 +88,14 @@ fn render_pixels_png(
     let high = percentile(STRETCH_HIGH_PERCENTILE);
 
     let bytes: Vec<u8> = if high > low {
-        let range = f64::from(high - low);
+        // Widen before subtracting: pixels can span the full i32
+        // range (the reader saturates to it), where `high - low`
+        // overflows i32.
+        let low = i64::from(low);
+        let range = (i64::from(high) - low) as f64;
         sampled
             .iter()
-            .map(|&v| ((f64::from(v - low) / range) * 255.0).clamp(0.0, 255.0) as u8)
+            .map(|&v| (((i64::from(v) - low) as f64 / range) * 255.0).clamp(0.0, 255.0) as u8)
             .collect()
     } else {
         // A constant frame (cover closed, test pattern) renders
@@ -161,6 +165,18 @@ mod tests {
         // Absurdly small → the 64-px floor.
         let (w, _, _) = decode(&render_pixels_png(&pixels, 128, 96, 1).unwrap());
         assert_eq!(w, 64);
+    }
+
+    /// The reader saturates pixels to the full i32 range; the
+    /// stretch must widen before subtracting or `high - low`
+    /// overflows.
+    #[test]
+    fn test_extreme_pixel_range_does_not_overflow_the_stretch() {
+        let mut pixels = vec![i32::MIN; 32 * 64];
+        pixels.extend(vec![i32::MAX; 32 * 64]);
+        let (_, _, gray) = decode(&render_pixels_png(&pixels, 64, 64, 64).unwrap());
+        assert_eq!(*gray.iter().min().unwrap(), 0);
+        assert_eq!(*gray.iter().max().unwrap(), 255);
     }
 
     #[test]
