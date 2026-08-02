@@ -59,6 +59,7 @@ struct MountState {
     site_elevation_m: f64,
 }
 
+#[derive(Debug)]
 pub struct BridgeTelescope {
     unique_id: String,
     state: Mutex<MountState>,
@@ -251,12 +252,6 @@ fn validate_coords(ra_hours: f64, dec_degrees: f64) -> ASCOMResult<()> {
         )));
     }
     Ok(())
-}
-
-impl std::fmt::Debug for BridgeTelescope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BridgeTelescope").finish_non_exhaustive()
-    }
 }
 
 #[async_trait]
