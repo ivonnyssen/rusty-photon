@@ -896,8 +896,9 @@ new defaults to that bar: something a failing step cannot explain without.
 
 #### 5.9 Steps that poll a service over HTTP must tolerate a failed fetch
 
-§5.7 is the reason a loopback request from a step can stall for seconds:
-a blocking step freezes the one poll loop every scenario shares, and an
+[§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop) is
+the reason a loopback request from a step can stall for seconds: a
+blocking step freezes the one poll loop every scenario shares, and an
 in-flight response that had already delivered its headers sits unread
 until the loop resumes. Concurrency compounds it — up to 64 scenarios,
 most suites spawning a service process each, several suites at once via
