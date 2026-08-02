@@ -418,7 +418,11 @@ the packaged systemd unit gates on the file with
 
 Range rules are enforced parse-don't-validate style (newtypes with
 serde `try_from`, per `development-workflow.md`), so a bad config
-fails at load naming the field.
+fails at load naming the field. All range and cross-field rules
+apply in every mode — including to fields the configured mode
+ignores. The mode is a per-session choice: a latent near-pole
+geometry error must fail at load, not on the night the operator
+switches back to `near_pole`.
 
 The rp-side plugin registration:
 

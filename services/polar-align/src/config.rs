@@ -300,6 +300,11 @@ impl PolarAlignConfig {
     }
 
     /// Cross-field rules that single-field newtypes cannot express.
+    /// Deliberately mode-unconditional — near-pole geometry is
+    /// checked even in modes that ignore it: the mode is a
+    /// per-session choice, and a latent config error should fail at
+    /// load, not on the night the operator switches back to
+    /// `near_pole`.
     fn validate_cross_field(&self) -> Result<()> {
         let dec = self.measurement.dec_deg;
         if !dec.is_finite() || !(60.0..90.0).contains(&dec.abs()) {
