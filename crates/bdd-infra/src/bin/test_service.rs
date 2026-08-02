@@ -98,12 +98,6 @@ fn run_graceful_probe(marker: String) {
         move |shutdown| async move {
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
             let addr = listener.local_addr()?;
-            // The runner spawns its signal watcher just before this closure,
-            // so the handlers install on another worker concurrently with us.
-            // Sleeping *before* the handshake is free of flake risk in the
-            // other direction: the harness cannot act until the line lands,
-            // so this can only ever make the fixture slower, never racier.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             println!("bound_addr={addr}");
             shutdown.cancelled().await;
             std::fs::write(&marker, GRACEFUL_MARKER.as_bytes())?;

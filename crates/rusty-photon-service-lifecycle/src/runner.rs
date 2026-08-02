@@ -280,9 +280,12 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
-    rt.spawn(watch_shutdown_signals(name, token.clone()));
-    rt.block_on(run_fn(Shutdown::from_token(token)))
-        .map_err(report_from_boxed)
+    let installed = spawn_shutdown_watcher(&rt, name, token.clone());
+    rt.block_on(async move {
+        let _ = installed.await;
+        run_fn(Shutdown::from_token(token)).await
+    })
+    .map_err(report_from_boxed)
 }
 
 fn run_console_with_reload<F, Fut>(name: &'static str, run_fn: F) -> ServiceResult
@@ -293,11 +296,14 @@ where
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
     let reload = ReloadSignal::new();
-    rt.spawn(watch_shutdown_signals(name, token.clone()));
+    let installed = spawn_shutdown_watcher(&rt, name, token.clone());
     #[cfg(unix)]
     rt.spawn(watch_reload_signal(reload.clone()));
-    rt.block_on(run_fn(Shutdown::from_token(token), reload))
-        .map_err(report_from_boxed)
+    rt.block_on(async move {
+        let _ = installed.await;
+        run_fn(Shutdown::from_token(token), reload).await
+    })
+    .map_err(report_from_boxed)
 }
 
 /// The platform's "stop this process" event, for the shutdown log line.
@@ -308,57 +314,119 @@ const TERMINATE_EVENT: &str = "Ctrl+Break";
 #[cfg(not(any(unix, windows)))]
 const TERMINATE_EVENT: &str = "a termination request";
 
-async fn watch_shutdown_signals(name: &'static str, token: tokio_util::sync::CancellationToken) {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!("{name}: failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
+/// Spawn the shutdown watcher and hand back a receiver that fires **once the
+/// OS handlers are installed**.
+///
+/// Callers must await it before invoking the user closure. Installation is
+/// not something a service may race: until the handlers exist, the platform
+/// default disposition applies, and on both platforms that default is fatal —
+/// SIGTERM terminates, and an unregistered Windows console control event
+/// falls through to a handler that terminates. A service that reached its own
+/// readiness handshake first would advertise itself as stoppable during a
+/// window where being stopped kills it outright.
+///
+/// A failed install still releases the barrier: the service starts in the
+/// degraded state the no-panic policy calls for, rather than hanging.
+fn spawn_shutdown_watcher(
+    rt: &tokio::runtime::Runtime,
+    name: &'static str,
+    token: tokio_util::sync::CancellationToken,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
+    rt.spawn(async move {
+        // Installs synchronously, so the send below cannot outrun it.
+        let signalled = install_shutdown_signals(name);
+        let _ = installed_tx.send(());
+        signalled.await;
+        tracing::info!("{name}: shutdown signal received, terminating");
+        token.cancel();
+    });
+    installed_rx
+}
+
+/// Await a handler's next delivery, or never, if it failed to install.
+macro_rules! next_signal {
+    ($sig:expr) => {
+        async {
+            match $sig.as_mut() {
+                Some(sig) => {
+                    sig.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
         }
     };
+}
 
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                tracing::warn!("{name}: failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
+/// Register the handlers **synchronously**, returning the future that resolves
+/// when one of them fires.
+///
+/// The two-step shape is what lets [`spawn_shutdown_watcher`] order
+/// installation ahead of service startup: every constructor used here
+/// registers on call, unlike `tokio::signal::ctrl_c()`, which registers only
+/// when its future is first polled and so cannot be sequenced.
+#[cfg(unix)]
+fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
+    use tokio::signal::unix::{signal, SignalKind};
 
-    // Windows console mode's counterpart to SIGTERM, and the event a
-    // supervisor sends to stop a console-mode service by process group
-    // (`GenerateConsoleCtrlEvent`, as bdd-infra's `ServiceHandle::stop`
-    // does). `ctrl_c` above covers only CTRL_C_EVENT: CTRL_BREAK_EVENT is a
-    // distinct event needing its own registration, and an *unregistered*
-    // console control event falls through to the OS default handler, which
-    // terminates the process outright — no cancellation, no shutdown path,
-    // no flush, and no error anywhere to notice it by.
-    #[cfg(windows)]
-    let terminate = async {
-        match tokio::signal::windows::ctrl_break() {
-            Ok(mut sig) => {
-                sig.recv().await;
+    let mut interrupt = install(name, "Ctrl+C", signal(SignalKind::interrupt()));
+    let mut terminate = install(name, TERMINATE_EVENT, signal(SignalKind::terminate()));
+
+    async move {
+        tokio::select! {
+            () = next_signal!(interrupt) => {
+                tracing::debug!("{name}: received Ctrl+C, shutting down");
             }
-            Err(e) => {
-                tracing::warn!("{name}: failed to install Ctrl+Break handler: {e}");
-                std::future::pending::<()>().await;
+            () = next_signal!(terminate) => {
+                tracing::debug!("{name}: received {TERMINATE_EVENT}, shutting down");
             }
         }
-    };
-
-    #[cfg(not(any(unix, windows)))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::debug!("{name}: received Ctrl+C, shutting down"),
-        () = terminate => tracing::debug!("{name}: received {TERMINATE_EVENT}, shutting down"),
     }
-    tracing::info!("{name}: shutdown signal received, terminating");
-    token.cancel();
+}
+
+/// Windows console mode. Both events need their **own** registration:
+/// CTRL_C_EVENT does not cover CTRL_BREAK_EVENT, which is what a supervisor
+/// sends to stop a console-mode service by process group
+/// (`GenerateConsoleCtrlEvent`, as bdd-infra's `ServiceHandle::stop` does).
+/// An unregistered console control event falls through to the OS default
+/// handler, which terminates the process outright — no cancellation, no
+/// shutdown path, no flush, and no error anywhere to notice it by.
+#[cfg(windows)]
+fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
+    use tokio::signal::windows::{ctrl_break, ctrl_c};
+
+    let mut interrupt = install(name, "Ctrl+C", ctrl_c());
+    let mut terminate = install(name, TERMINATE_EVENT, ctrl_break());
+
+    async move {
+        tokio::select! {
+            () = next_signal!(interrupt) => {
+                tracing::debug!("{name}: received Ctrl+C, shutting down");
+            }
+            () = next_signal!(terminate) => {
+                tracing::debug!("{name}: received {TERMINATE_EVENT}, shutting down");
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn install_shutdown_signals(_name: &'static str) -> impl Future<Output = ()> {
+    std::future::pending::<()>()
+}
+
+/// Unwrap a handler registration, degrading to "this source never fires"
+/// rather than panicking — a misconfigured environment that cannot install
+/// one signal keeps the others.
+#[cfg(any(unix, windows))]
+fn install<T>(name: &'static str, event: &str, result: std::io::Result<T>) -> Option<T> {
+    match result {
+        Ok(handler) => Some(handler),
+        Err(e) => {
+            tracing::warn!("{name}: failed to install the {event} handler: {e}");
+            None
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -724,6 +792,43 @@ mod tests {
 
         result.unwrap();
         assert_eq!(observed_cancel.load(Ordering::SeqCst), 1);
+    }
+
+    /// The handlers must be installed *before* the user closure gets to run.
+    ///
+    /// Raising SIGTERM as the closure's very first act is survivable only if
+    /// the handler is already in place; under the default disposition the
+    /// process dies right here and takes the test binary with it. There is
+    /// deliberately no sleep — any delay lets installation catch up and makes
+    /// the test vacuous, which is exactly what
+    /// `sigterm_cancels_shutdown_token`'s 50 ms head start does (it covers
+    /// delivery, not ordering).
+    ///
+    /// Without the barrier this is a race the service loses silently in
+    /// production too: a service that reaches its readiness handshake before
+    /// the handlers exist advertises itself as stoppable during a window
+    /// where being stopped kills it.
+    #[cfg(unix)]
+    #[test]
+    fn handlers_install_before_the_closure_runs() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
+        let reached_shutdown = Arc::new(AtomicU32::new(0));
+        let observed = Arc::clone(&reached_shutdown);
+
+        let result = ServiceRunner::new("test-install-order").run(move |shutdown| async move {
+            // Safety: raise() on the current process is the documented way to
+            // self-signal; libc::raise is unsafe only because it touches
+            // global process state.
+            unsafe {
+                libc::raise(libc::SIGTERM);
+            }
+            shutdown.cancelled().await;
+            observed.store(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        result.unwrap();
+        assert_eq!(reached_shutdown.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(unix)]

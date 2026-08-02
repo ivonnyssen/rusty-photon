@@ -152,50 +152,65 @@ signal source still works" rather than "the service panics during
 startup":
 
 ```rust
-async fn watch_signals(token: CancellationToken) {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!("failed to wait for Ctrl+C: {e}");
-            std::future::pending::<()>().await;
+// Registers on call, and hands back the future that resolves on first fire.
+#[cfg(unix)]
+fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut interrupt = install(name, "Ctrl+C", signal(SignalKind::interrupt()));
+    let mut terminate = install(name, TERMINATE_EVENT, signal(SignalKind::terminate()));
+    async move {
+        tokio::select! {
+            () = next_signal!(interrupt) => { /* Ctrl+C */ }
+            () = next_signal!(terminate) => { /* SIGTERM */ }
         }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::warn!("failed to install SIGTERM handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(windows)]
-    let terminate = async {
-        match tokio::signal::windows::ctrl_break() {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::warn!("failed to install Ctrl+Break handler: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(any(unix, windows)))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::debug!("received Ctrl+C, shutting down"),
-        () = terminate => tracing::debug!("received {TERMINATE_EVENT}, shutting down"),
     }
-    token.cancel();
 }
+// Windows is the same shape over `windows::ctrl_c()` and `windows::ctrl_break()`.
 ```
 
-This matches the no-panic pattern established workspace-wide by
-PR #289. One implementation; one log-message style; one place to
-fix bugs.
+`install` logs a failed registration via `tracing::warn!` and yields
+`None`, which `next_signal!` awaits as a never-resolving future — so a
+misconfigured environment that cannot install one signal (e.g. an
+already-stolen handler) degrades to "the other source still works"
+rather than "the service panics during startup". This matches the
+no-panic pattern established workspace-wide by PR #289. One
+implementation; one log-message style; one place to fix bugs.
+
+### Handlers install before the service starts
+
+`ServiceRunner` awaits handler registration before invoking the user
+closure. The watcher signals a `oneshot` the moment installation
+returns, and the runner's `block_on` waits on it:
+
+```rust
+let installed = spawn_shutdown_watcher(&rt, name, token.clone());
+rt.block_on(async move {
+    let _ = installed.await;
+    run_fn(Shutdown::from_token(token)).await
+})
+```
+
+This ordering is a correctness requirement, not a nicety. Until the
+handlers exist the platform default disposition applies, and on both
+platforms that default is fatal: SIGTERM terminates, and an
+unregistered Windows console control event falls through to a handler
+that terminates. A service that reached its own readiness handshake
+first — the `bound_addr=` line, a health endpoint answering — would be
+advertising itself as stoppable during a window in which being stopped
+kills it outright. Services do enough async setup that the window is
+narrow, but "narrow" is what the unhandled-Ctrl+Break bug was too.
+
+It is also why every constructor above registers **synchronously**.
+`tokio::signal::ctrl_c()` registers only when its future is first
+polled, so it cannot be sequenced ahead of anything; the platform
+constructors (`unix::signal`, `windows::ctrl_c`, `windows::ctrl_break`)
+return `io::Result<_>` on call and can. Splitting install-from-await is
+what makes the barrier expressible.
+
+`handlers_install_before_the_closure_runs` guards it by raising SIGTERM
+as the closure's first statement, with no delay — survivable only if
+the handler is already in place. A sleep there would let installation
+catch up and make the test vacuous.
 
 **Both Windows console events must be registered.** `ctrl_c()` covers
 CTRL_C_EVENT only; CTRL_BREAK_EVENT is a separate registration, and it
