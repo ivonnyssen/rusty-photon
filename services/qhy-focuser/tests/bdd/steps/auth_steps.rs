@@ -8,7 +8,7 @@ use crate::world::QhyFocuserWorld;
 use bdd_infra::ServiceHandle;
 
 fn pki(world: &QhyFocuserWorld) -> &PkiFixture {
-    world.pki.as_ref().expect("TLS certs not generated")
+    world.pki.as_deref().expect("TLS certs not generated")
 }
 
 fn management_url(world: &QhyFocuserWorld) -> String {

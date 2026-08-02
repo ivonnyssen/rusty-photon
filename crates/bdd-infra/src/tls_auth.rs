@@ -10,7 +10,9 @@
 //! [`TlsAuthSmokeWorld`]. Deep suites (ppba-driver, ui-htmx, …) keep their own
 //! scenario sets but build on the same fixture and probe helpers.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -125,11 +127,56 @@ impl PkiFixture {
     }
 }
 
+/// Per-suite cache behind [`shared_pki`], keyed by service name. A test
+/// process is one suite, so this holds one entry in almost every case.
+///
+/// The fixtures live for the process: their `TempDir`s are never dropped, so
+/// the PKI stays readable for scenarios still running at shutdown. Bazel gives
+/// each test action a private `TMPDIR` and reclaims it, so nothing outlives
+/// the run.
+#[allow(clippy::type_complexity)]
+static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>> = OnceLock::new();
+
+/// The suite's shared throwaway PKI for `service_name`, generated once per
+/// test process and off the poll loop.
+///
+/// Both halves matter, and a step should never call [`PkiFixture::generate`]
+/// directly instead:
+///
+/// *Once per process.* Generating per scenario meant a suite paid for five or
+/// more identical PKIs. `service_name` is the suite's own package name, so
+/// every one of them was interchangeable — the scenarios prove that a valid
+/// credential is accepted and an invalid one refused, and none needs a CA or
+/// password distinct from another scenario's.
+///
+/// *Off the poll loop.* Generation is CPU-bound and slow: two keypairs, a
+/// signature, and an Argon2id hash whose whole purpose is to be expensive —
+/// all of it built unoptimised under `bazel test`. Run inline it would stall
+/// every other scenario in the suite, since they share one poll loop (see
+/// `docs/skills/testing.md` §5.7). The lock is held across the generation so
+/// that concurrent first callers wait for one result rather than each
+/// computing their own.
+pub async fn shared_pki(service_name: &str) -> Arc<PkiFixture> {
+    let cache = SHARED_PKI.get_or_init(Default::default);
+    let mut entries = cache.lock().await;
+    if let Some(existing) = entries.get(service_name) {
+        return Arc::clone(existing);
+    }
+    let name = service_name.to_string();
+    let fixture = Arc::new(
+        tokio::task::spawn_blocking(move || PkiFixture::generate(&name))
+            .await
+            .unwrap_or_else(|e| panic!("PKI generation for {service_name} panicked: {e}")),
+    );
+    entries.insert(service_name.to_string(), Arc::clone(&fixture));
+    fixture
+}
+
 /// Per-scenario smoke-test state; embed one (via `#[derive(Default)]`) in the
 /// suite's `World`.
 #[derive(Debug, Default)]
 pub struct TlsAuthState {
-    pub pki: Option<PkiFixture>,
+    pub pki: Option<Arc<PkiFixture>>,
     /// Config JSON staged by the configure Given, consumed by the start When.
     pub staged_config: Option<serde_json::Value>,
     /// Owns the written config file for the default spawn path.
@@ -141,7 +188,7 @@ pub struct TlsAuthState {
 
 impl TlsAuthState {
     pub fn pki(&self) -> &PkiFixture {
-        self.pki.as_ref().expect("TLS certs not generated")
+        self.pki.as_deref().expect("TLS certs not generated")
     }
 
     pub fn port(&self) -> u16 {
@@ -255,11 +302,10 @@ pub async fn wait_until_ready(client: &reqwest::Client, url: &str, username: &st
 macro_rules! tls_auth_smoke_steps {
     ($world:ident) => {
         #[::cucumber::given("generated TLS certificates for the service")]
-        fn tls_auth_smoke_generate_certs(world: &mut $world) {
+        async fn tls_auth_smoke_generate_certs(world: &mut $world) {
             use $crate::tls_auth::TlsAuthSmokeWorld as _;
-            world.tls_auth().pki = Some($crate::tls_auth::PkiFixture::generate(env!(
-                "CARGO_PKG_NAME"
-            )));
+            let pki = $crate::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
+            world.tls_auth().pki = Some(pki);
         }
 
         #[::cucumber::given("the service is configured with TLS and auth enabled")]
@@ -363,6 +409,39 @@ mod tests {
             block["auth"]["password_hash"].as_str().unwrap(),
             pki.password_hash()
         );
+    }
+
+    #[tokio::test]
+    async fn shared_pki_returns_the_same_fixture_for_one_service() {
+        let first = shared_pki("shared-once").await;
+        let second = shared_pki("shared-once").await;
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a second call regenerated the PKI instead of reusing it"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_pki_keys_on_the_service_name() {
+        // session-runner asks for "rp" alongside its own package name, so two
+        // names in one process must not collide on a single certificate.
+        let one = shared_pki("keyed-a").await;
+        let other = shared_pki("keyed-b").await;
+        assert!(!Arc::ptr_eq(&one, &other));
+        assert!(one.cert_path().to_string_lossy().ends_with("keyed-a.pem"));
+        assert!(other.cert_path().to_string_lossy().ends_with("keyed-b.pem"));
+    }
+
+    #[tokio::test]
+    async fn shared_pki_is_usable_after_the_generating_scenario_drops_it() {
+        // Scenarios hold the fixture in their World and drop it at teardown;
+        // the files have to outlive that for scenarios still running.
+        let cert = {
+            let pki = shared_pki("outlives-scenario").await;
+            pki.cert_path()
+        };
+        assert!(cert.is_file(), "cert vanished with the first holder");
+        assert!(shared_pki("outlives-scenario").await.ca_path().is_file());
     }
 
     #[test]

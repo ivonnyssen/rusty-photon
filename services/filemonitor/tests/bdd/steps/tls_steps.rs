@@ -7,10 +7,8 @@ use crate::steps::infrastructure::ServiceHandle;
 use crate::world::FilemonitorWorld;
 
 #[given("generated TLS certificates for filemonitor")]
-fn generate_tls_certs(world: &mut FilemonitorWorld) {
-    world.pki = Some(bdd_infra::tls_auth::PkiFixture::generate(env!(
-        "CARGO_PKG_NAME"
-    )));
+async fn generate_tls_certs(world: &mut FilemonitorWorld) {
+    world.pki = Some(bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await);
 }
 
 #[given("filemonitor is configured with TLS enabled")]

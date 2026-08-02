@@ -6,10 +6,8 @@ use crate::steps::infrastructure::ServiceHandle;
 use crate::world::PpbaWorld;
 
 #[given("generated TLS certificates for ppba-driver")]
-fn generate_tls_certs(world: &mut PpbaWorld) {
-    world.pki = Some(bdd_infra::tls_auth::PkiFixture::generate(env!(
-        "CARGO_PKG_NAME"
-    )));
+async fn generate_tls_certs(world: &mut PpbaWorld) {
+    world.pki = Some(bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await);
 }
 
 #[given("ppba-driver is configured with TLS enabled and mock serial")]
