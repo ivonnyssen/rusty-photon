@@ -12,7 +12,7 @@
 
 - A Raspberry Pi 5 (Linux/ARM64) running Ubuntu 24.04 LTS or newer
 - SSH access to the Pi as a sudo-capable user
-- Owner or admin access to the `ivonnyssen/rusty-photon` GitHub repo
+- Owner or admin access to the `rusty-photon/rusty-photon` GitHub repo
 - A network position that lets the Pi reach `github.com` and `*.actions.githubusercontent.com` over HTTPS
 
 ## Why a Self-Hosted Runner (and Why It Is Safe Here)
@@ -114,7 +114,7 @@ sudo-less runner there is no `libusb-1.0-0-dev`, hence no unversioned
 link** step in `pi-nightly.yml` drops that linker-name symlink into
 `QHYCCD_SDK_DIR` (the one dir `build.rs` searches), pointing at the libusb-1.0
 *runtime* `.so.0`. Without it the build fails with `cannot find -lusb-1.0`
-(this was [issue #402](https://github.com/ivonnyssen/rusty-photon/issues/402)).
+(this was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402)).
 This mirrors the ZWO sudo-free symlink (next subsection); both share the one
 `libusb-1.0` runtime package installed in §1.
 
@@ -258,7 +258,7 @@ Then on the Pi:
 sudo -u gh-runner bash -c '
   cd $HOME/actions-runner
   ./config.sh \
-    --url https://github.com/ivonnyssen/rusty-photon \
+    --url https://github.com/rusty-photon/rusty-photon \
     --token <TOKEN_FROM_GITHUB_UI> \
     --name pi5-nightly \
     --labels raspberry-pi \
@@ -288,12 +288,20 @@ directory entry and the install:
 sudo bash -c 'cd /home/gh-runner/actions-runner && ./svc.sh install gh-runner && ./svc.sh start'
 ```
 
-The service is named `actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service`
-(or similar). Verify:
+`svc.sh` derives the unit name from the URL `config.sh` was given plus the
+runner name — `actions.runner.<owner>-<repo>.<runner>.service` — and
+freezes it at `svc.sh install` time. A fresh install against the org URL
+yields `actions.runner.rusty-photon-rusty-photon.pi5-nightly.service`; an
+installation configured before the org transfer keeps
+`actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service` (the
+currently deployed Pi is one) until `svc.sh uninstall` + `install` is
+re-run. List what is actually installed with
+`systemctl list-units 'actions.runner.*'`. Verify (substituting your
+installed unit name):
 
 ```bash
-systemctl status actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
-sudo journalctl -u actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service -f
+systemctl status actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
+sudo journalctl -u actions.runner.rusty-photon-rusty-photon.pi5-nightly.service -f
 ```
 
 From GitHub: Repo → Settings → Actions → Runners — the runner should show
@@ -316,8 +324,10 @@ Live job logs appear in the Actions tab as usual. The runner-side daemon
 log (start/stop, job pickup, deregistration events) is in journald:
 
 ```bash
-sudo journalctl -u actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service -f
+sudo journalctl -u actions.runner.rusty-photon-rusty-photon.pi5-nightly.service -f
 ```
+
+(Substitute your installed unit name — see §5's naming note.)
 
 The job's working tree lives under `~gh-runner/actions-runner/_work/rusty-photon/rusty-photon`
 between runs. The runner's default behaviour is to wipe the workspace
@@ -357,19 +367,24 @@ the Pi):
    page.
 3. On the Pi (the `sudo -u gh-runner bash -c '...'` wrapping is for the
    same `0750` home-directory reason as §5 — `config.sh` expects to run
-   from inside its own directory):
+   from inside its own directory). Use your installed unit name in the
+   stop/start lines (`systemctl list-units 'actions.runner.*'`; the
+   deployed Pi predates the org transfer, so today that is the
+   `ivonnyssen-` form). Re-registering via `config.sh` does **not**
+   rename the unit — the install-time name persists and keeps working;
+   only `svc.sh uninstall` + `install` re-derives it:
    ```bash
-   sudo systemctl stop actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
+   sudo systemctl stop actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh remove --token <REMOVAL_TOKEN>'
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh \
-     --url https://github.com/ivonnyssen/rusty-photon \
+     --url https://github.com/rusty-photon/rusty-photon \
      --token <FRESH_REGISTRATION_TOKEN> \
      --name pi5-nightly \
      --labels raspberry-pi \
      --work _work \
      --unattended \
      --replace'
-   sudo systemctl start actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
+   sudo systemctl start actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
    ```
 
 The removal token and registration token are different and are both shown
@@ -446,7 +461,7 @@ performed by setup.
 
 The static `libqhyccd.a` pulls in a dynamic `-lusb-1.0`, but the sudo-less
 runner has no `libusb-1.0-0-dev` (no unversioned `libusb-1.0.so` linker name).
-This was [issue #402](https://github.com/ivonnyssen/rusty-photon/issues/402).
+This was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402).
 The **Symlink libusb for the QHYCCD static link (sudo-free)** step in
 `pi-nightly.yml` fixes it by linking `libusb-1.0.so` → the runtime `.so.0`
 inside `QHYCCD_SDK_DIR`. Check, in order:
@@ -499,7 +514,7 @@ are provided per-run by the **Install SVBony SDK (sudo-free)** step
   Bazel — see docs/services/svbony-camera.md "Native dependency & build
   gating").
 - If this step is simply **missing** from the job (the original cause of
-  [issue #669](https://github.com/ivonnyssen/rusty-photon/issues/669)): the
+  [issue #669](https://github.com/rusty-photon/rusty-photon/issues/669)): the
   full-workspace build links `svbony-camera` unconditionally, so this step
   must run before `cargo build --workspace`, in the same place the ZWO SDK
   step does.

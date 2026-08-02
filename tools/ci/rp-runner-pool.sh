@@ -10,9 +10,12 @@
 # Deployment (on the Proxmox host, as root — see
 # docs/skills/proxmox-runner-pool.md):
 #   install -m 755 rp-runner-pool.sh /usr/local/sbin/
-#   put a fine-grained PAT in /etc/rp-runner/github-token (chmod 600); scope:
-#   this repository only, permission "Administration: Read and write", nothing
-#   else
+#   put a fine-grained PAT in /etc/rp-runner/github-token (chmod 600); resource
+#   owner: the rusty-photon org, sole permission "Self-hosted runners: Read
+#   and write" (organization permission) — runner registration and nothing
+#   else, which is why runners register at org level rather than repo level
+#   (repo-level registration would require the far broader Administration
+#   permission)
 #   run under a systemd unit with Restart=always
 #
 # Security properties this loop preserves:
@@ -24,12 +27,24 @@
 #     credential-gated.
 set -u
 
-REPO=ivonnyssen/rusty-photon
+ORG=rusty-photon
 TEMPLATE=902
 VMID=9100
 NAME=runner-eph
 TOKEN_FILE=/etc/rp-runner/github-token
 LABELS='["self-hosted","Linux","X64","proxmox-ephemeral"]'
+
+# Free-plan orgs have exactly one (default) runner group, but resolve its id
+# rather than assuming 1 so a plan change can't silently break registration.
+GROUP_ID=$(curl -fsS \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/orgs/$ORG/actions/runner-groups" \
+  | python3 -c 'import json,sys; gs=json.load(sys.stdin)["runner_groups"]; print(next(g["id"] for g in gs if g["default"]))')
+if [ -z "${GROUP_ID:-}" ]; then
+  echo "cannot resolve the default runner group — token invalid or lacking the org Self-hosted runners permission" >&2
+  exit 1
+fi
 
 while true; do
   if ! qm status $VMID >/dev/null 2>&1; then
@@ -53,8 +68,8 @@ while true; do
     JIT=$(curl -fsS -X POST \
       -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
       -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/$REPO/actions/runners/generate-jitconfig" \
-      -d "{\"name\":\"$NAME-$(date +%s)\",\"runner_group_id\":1,\"labels\":$LABELS,\"work_folder\":\"_work\"}" \
+      "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
+      -d "{\"name\":\"$NAME-$(date +%s)\",\"runner_group_id\":$GROUP_ID,\"labels\":$LABELS,\"work_folder\":\"_work\"}" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["encoded_jit_config"])')
     if [ -z "${JIT:-}" ]; then
       qm stop $VMID >/dev/null 2>&1
