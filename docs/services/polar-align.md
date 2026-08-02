@@ -411,7 +411,7 @@ the packaged systemd unit gates on the file with
 | `adjustment.max_duration` | humantime | `"30m"` | Hard ceiling on the adjustment phase |
 | `adjustment.max_solve_failures` | int | 10 | Consecutive failed solves that abort the workflow |
 | `adjustment.star_count` | int | 10 | Brightest stars published with target circles |
-| `solve.search_radius_deg` | float | 5.0 | Passed to `plate_solve` (hinted with commanded/previous pointing) |
+| `solve.search_radius_deg` | float | 5.0 | Passed to `plate_solve` alongside the pointing hint. Not sent with `manual_rotation`'s blind solves — the radius bounds the search around a hint, and a blind solve has none |
 | `solve.timeout` | humantime | `"30s"` | Per-solve timeout passed to `plate_solve` |
 | `refraction.enabled` | bool | true | Apply refraction to the pole target and the axis conversion |
 | `refraction.temperature_c` / `pressure_hpa` | float | 10.0 / 1010.0 | Refraction model inputs |

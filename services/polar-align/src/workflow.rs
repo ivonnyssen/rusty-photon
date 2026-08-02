@@ -242,7 +242,7 @@ async fn resolve_site(mcp: &McpClient, config: &PolarAlignConfig) -> Result<Site
     let rp_site = mcp.get_site().await.map_err(|e| {
         PolarAlignError::Workflow(format!(
             "no `site` in the polar-align config and rp reported none ({e}); \
-             set the polar-align `site` block or configure rp's"
+             set the polar-align `site` block or configure rp's `site` block"
         ))
     })?;
     debug!(
@@ -257,7 +257,7 @@ async fn resolve_site(mcp: &McpClient, config: &PolarAlignConfig) -> Result<Site
     .map_err(|e| {
         PolarAlignError::Workflow(format!(
             "rp's configured site is unusable for polar alignment ({e}); \
-             set a usable `site` in the polar-align config or fix rp's"
+             set a usable `site` in the polar-align config or fix rp's `site` block"
         ))
     })
 }

@@ -161,7 +161,8 @@ impl McpClient {
     /// decimal degrees; `None` solves blind (and pins
     /// `use_mount_hints` off — a manual-rotation rig may have no
     /// mount for rp to hint from, and a wrong hint is worse than
-    /// none).
+    /// none). A blind solve sends no `search_radius_deg` either: the
+    /// radius bounds the search around a hint, and there is none.
     pub async fn plate_solve(
         &self,
         image_path: &str,
