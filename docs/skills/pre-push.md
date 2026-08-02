@@ -142,16 +142,17 @@ still surfaces in the nightly `--workspace --all-features` build and the off-PR
 ### check.yml
 
 `fmt` and stable `clippy` run on every PR + push to main (required PR gates,
-because Bazel does not run rustfmt/clippy). The beta-clippy, `hack`, and `msrv`
-jobs run on push to main,
-the nightly schedule, and `workflow_dispatch` — skipped on PRs via
-`if: github.event_name != 'pull_request'`. ("Off-PR" below = that set.)
+because Bazel does not run rustfmt/clippy). The `hack` and `msrv` jobs run on
+push to main, the nightly schedule, and `workflow_dispatch` — skipped on PRs
+via `if: github.event_name != 'pull_request'`. ("Off-PR" below = that set.)
+`clippy (beta)` is narrower still: schedule and `workflow_dispatch` only, since
+only the scheduled run acts on its census.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
 | **fmt** | `cargo fmt --check` | stable rustfmt | **PR gate** |
 | **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy | **PR gate** |
-| **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Off-PR |
+| **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Nightly |
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
 | **msrv** | `cargo msrv verify` | cargo-msrv | Off-PR |
 

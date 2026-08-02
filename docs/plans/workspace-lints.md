@@ -271,7 +271,10 @@ running one job for both forced a compromise on the stricter one. `check.yml`
 now runs them as separate jobs:
 
 - **`stable / clippy`** — unchanged required gate, `-D warnings`.
-- **`beta / clippy`** — nightly, report-only. `--cap-lints warn` on clippy's
+- **`beta / clippy`** — report-only, and on the schedule plus
+  `workflow_dispatch` alone. Deliberately *not* on push to main: only the
+  scheduled run acts on the census, so a per-merge beta build would compute a
+  report nobody reads. `--cap-lints warn` on clippy's
   argument line downgrades every lint, *including the ones
   `[workspace.lints.clippy]` denies*, so the job exits 0 on lints and fails
   only on a genuine compile break. The cap rides on the argument line rather

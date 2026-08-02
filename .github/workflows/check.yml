@@ -9,10 +9,13 @@
 #   - fmt:    rustfmt formatting              (required check: `stable / fmt`)
 #   - clippy: stable clippy, `-D warnings`    (required check: `stable / clippy`)
 #
+# Nightly schedule + workflow_dispatch only:
+#   - clippy-beta: report-only beta clippy (`--cap-lints warn`), one tracking
+#                  issue per lint. Never fails on a lint. Only the scheduled
+#                  run acts on its census, so it skips push to main too.
+#
 # Nightly-only (schedule + push to main + workflow_dispatch; skipped on PRs via
 # `if: github.event_name != 'pull_request'`):
-#   - clippy-beta: report-only beta clippy (`--cap-lints warn`), one tracking
-#                  issue per lint. Never fails on a lint.
 #   - hack:        cargo-hack feature-powerset (feature additivity)
 #   - msrv:        verify the declared workspace MSRV
 #
@@ -23,9 +26,9 @@
 # break rather than an upstream lint addition.
 permissions:
   contents: read
-# fmt + clippy run on every PR and on push to main. The heavier nightly jobs
-# (beta clippy, hack, msrv) additionally run on a schedule + manual dispatch and
-# are guarded below so they no-op on pull_request events.
+# fmt + clippy run on every PR and on push to main. `hack` and `msrv` run on
+# push to main plus the schedule and manual dispatch; `clippy-beta` runs on the
+# schedule and manual dispatch alone. Each is guarded by its own `if:` below.
 on:
   push:
     branches: [main]
@@ -87,7 +90,11 @@ jobs:
     #
     # A genuine compile break still fails the job; notify-clippy-failure catches
     # that.
-    if: github.event_name != 'pull_request'
+    #
+    # Nightly + manual dispatch only — deliberately NOT on push to main. Only
+    # the scheduled run acts on the census, so a per-merge beta build would
+    # compute a report nobody reads.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: beta / clippy
     permissions:
@@ -127,9 +134,8 @@ jobs:
             < clippy.json > census.json
           cat census.md >> "$GITHUB_STEP_SUMMARY"
       - name: Track each lint as an issue
-        # Schedule only by default: a push to main re-derives the same census
-        # and should not churn issues. `workflow_dispatch` can opt in, which is
-        # the only way to exercise this path outside the nightly window.
+        # Schedule only by default; `workflow_dispatch` can opt in, which is the
+        # only way to exercise this path outside the nightly window.
         if: github.event_name == 'schedule' || inputs.report_beta_lints
         uses: actions/github-script@v9
         with:
