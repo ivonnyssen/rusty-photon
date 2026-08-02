@@ -57,6 +57,15 @@ test --test_env=OMNISIM_DIR
 test --test_env=PEBBLE_PATH
 test --test_env=PEBBLE_CHALLTESTSRV_PATH
 
+# ...but that skip is a dev-box affordance only. In CI the scenarios are the
+# only coverage of the ACME network path that isn't a mock, and a skip notice
+# in a green log is not something anyone reads — so a CI run with Pebble
+# missing must fail, not quietly drop six scenarios. Every workflow that runs
+# doctor's suite provisions Pebble today (.github/actions/install-pebble), so
+# this is inert until that stops being true: an install step that breaks, a
+# workflow that forgets it, or a new runner that can't fetch the release.
+test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
+
 # The `omnisim` resource pool. Every OmniSim-spawning BDD action (the four
 # suites rp:bdd / calibrator-flats:bdd / session-runner:bdd /
 # operation-watchdog-e2e:bdd, and each shard of a sharded suite) is tagged

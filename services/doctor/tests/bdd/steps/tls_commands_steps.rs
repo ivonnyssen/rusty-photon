@@ -10,13 +10,13 @@ use crate::world::{AcmeFlags, DoctorWorld};
 // ---------------------------------------------------------------------------
 
 #[when("I run doctor tls issue")]
-fn run_tls_issue(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue"], None);
+async fn run_tls_issue(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["tls", "issue"], None).await;
 }
 
 #[given("doctor tls issue has already run")]
-fn tls_issue_already_ran(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue"], None);
+async fn tls_issue_already_ran(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["tls", "issue"], None).await;
     let output = world.output.as_ref().expect("tls issue ran");
     assert!(
         output.status.success(),
@@ -27,13 +27,17 @@ fn tls_issue_already_ran(world: &mut DoctorWorld) {
 }
 
 #[when(expr = "I run doctor tls issue limited to the service {string}")]
-fn run_tls_issue_limited(world: &mut DoctorWorld, service: String) {
-    world.run_doctor_subcommand(&["tls", "issue", "--services", &service], None);
+async fn run_tls_issue_limited(world: &mut DoctorWorld, service: String) {
+    world
+        .run_doctor_subcommand(&["tls", "issue", "--services", &service], None)
+        .await;
 }
 
 #[when("I run doctor tls issue with --force")]
-fn run_tls_issue_force(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue", "--force"], None);
+async fn run_tls_issue_force(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "issue", "--force"], None)
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,40 +45,48 @@ fn run_tls_issue_force(world: &mut DoctorWorld) {
 // ---------------------------------------------------------------------------
 
 #[when("I run doctor tls issue with --acme but no --domain")]
-fn run_acme_no_domain(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue", "--acme"], None);
+async fn run_acme_no_domain(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "issue", "--acme"], None)
+        .await;
 }
 
 #[when("I run doctor tls issue with --domain but no --acme")]
-fn run_domain_no_acme(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue", "--domain", "example.org"], None);
+async fn run_domain_no_acme(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "issue", "--domain", "example.org"], None)
+        .await;
 }
 
 #[when("I run doctor tls issue with --acme and --domain but no --dns-provider")]
-fn run_acme_no_provider(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue", "--acme", "--domain", "example.org"], None);
+async fn run_acme_no_provider(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "issue", "--acme", "--domain", "example.org"], None)
+        .await;
 }
 
 #[when("I run doctor tls issue with --acme and --domain and --dns-provider but no --email")]
-fn run_acme_no_email(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(
-        &[
-            "tls",
-            "issue",
-            "--acme",
-            "--domain",
-            "example.org",
-            "--dns-provider",
-            "cloudflare",
-            "--dns-token",
-            "test-token",
-        ],
-        None,
-    );
+async fn run_acme_no_email(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(
+            &[
+                "tls",
+                "issue",
+                "--acme",
+                "--domain",
+                "example.org",
+                "--dns-provider",
+                "cloudflare",
+                "--dns-token",
+                "test-token",
+            ],
+            None,
+        )
+        .await;
 }
 
 #[when("I run doctor tls issue with --acme and all required flags pointing to staging")]
-fn run_acme_staging(world: &mut DoctorWorld) {
+async fn run_acme_staging(world: &mut DoctorWorld) {
     let flags = AcmeFlags {
         domain: "example.org".to_string(),
         email: "admin@example.org".to_string(),
@@ -83,23 +95,25 @@ fn run_acme_staging(world: &mut DoctorWorld) {
     // This fails at the DNS provider step (the token is fake), but the
     // acme.json configuration must be persisted first — that is the
     // contract renewal picks up from.
-    world.run_doctor_subcommand(
-        &[
-            "tls",
-            "issue",
-            "--acme",
-            "--domain",
-            &flags.domain.clone(),
-            "--dns-provider",
-            &flags.dns_provider.clone(),
-            "--dns-token",
-            "test-token",
-            "--email",
-            &flags.email.clone(),
-            "--staging",
-        ],
-        None,
-    );
+    world
+        .run_doctor_subcommand(
+            &[
+                "tls",
+                "issue",
+                "--acme",
+                "--domain",
+                &flags.domain.clone(),
+                "--dns-provider",
+                &flags.dns_provider.clone(),
+                "--dns-token",
+                "test-token",
+                "--email",
+                &flags.email.clone(),
+                "--staging",
+            ],
+            None,
+        )
+        .await;
     world.acme_flags = Some(flags);
 }
 
@@ -108,15 +122,17 @@ fn run_acme_staging(world: &mut DoctorWorld) {
 // ---------------------------------------------------------------------------
 
 #[when(expr = "I run doctor auth hash-password with {string} on stdin")]
-fn run_hash_password(world: &mut DoctorWorld, password: String) {
+async fn run_hash_password(world: &mut DoctorWorld, password: String) {
     let mut stdin = password.into_bytes();
     stdin.push(b'\n');
-    world.run_doctor_subcommand(&["auth", "hash-password", "--stdin"], Some(&stdin));
+    world
+        .run_doctor_subcommand(&["auth", "hash-password", "--stdin"], Some(&stdin))
+        .await;
 }
 
 #[when("I run doctor auth rotate")]
-fn run_auth_rotate(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["auth", "rotate"], None);
+async fn run_auth_rotate(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["auth", "rotate"], None).await;
     let output = world.output.as_ref().expect("auth rotate ran");
     assert!(
         output.status.success(),
@@ -126,18 +142,24 @@ fn run_auth_rotate(world: &mut DoctorWorld) {
 }
 
 #[when("I run doctor auth rotate with --json")]
-fn run_auth_rotate_json(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["auth", "rotate", "--json"], None);
+async fn run_auth_rotate_json(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["auth", "rotate", "--json"], None)
+        .await;
 }
 
 #[when("I run doctor tls issue with --json")]
-fn run_tls_issue_json(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["tls", "issue", "--json"], None);
+async fn run_tls_issue_json(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["tls", "issue", "--json"], None)
+        .await;
 }
 
 #[when("I run doctor auth hash-password with empty input on stdin")]
-fn run_hash_password_empty(world: &mut DoctorWorld) {
-    world.run_doctor_subcommand(&["auth", "hash-password", "--stdin"], Some(b"\n"));
+async fn run_hash_password_empty(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(&["auth", "hash-password", "--stdin"], Some(b"\n"))
+        .await;
 }
 
 // ---------------------------------------------------------------------------
