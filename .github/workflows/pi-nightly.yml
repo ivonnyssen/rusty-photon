@@ -8,8 +8,9 @@
 #
 # === Security model — DO NOT WEAKEN ===
 #
-# This is the only workflow that runs on a self-hosted runner, and the repo is
-# public. Self-hosted runners on public repos are dangerous specifically
+# This workflow runs on a self-hosted runner (as does
+# proxmox-runner-test.yml — see docs/skills/proxmox-runner-pool.md), and the
+# repo is public. Self-hosted runners on public repos are dangerous specifically
 # because a malicious PR can edit the workflow YAML and run arbitrary code on
 # the runner during PR validation. The safety property here is that this
 # workflow has NO `pull_request` and NO `push` trigger. Scheduled runs always
