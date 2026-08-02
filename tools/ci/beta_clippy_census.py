@@ -60,8 +60,13 @@ def primary_span(message: dict) -> dict | None:
     return next((s for s in spans if s.get("is_primary")), spans[0])
 
 
-def site_of(span: dict | None, root: Path) -> str | None:
-    """Repo-relative `file:line` for a span, or None if it has none usable."""
+def site_of(span: dict | None, root: Path) -> tuple[str, int, int] | None:
+    """Repo-relative (file, line, column) for a span, or None if unusable.
+
+    The column is carried because deduplication keys on it: two findings on
+    one line at different columns are two real sites, and dropping the column
+    here would list the same `file:line` twice.
+    """
     if span is None:
         return None
     name = span.get("file_name", "")
@@ -73,7 +78,7 @@ def site_of(span: dict | None, root: Path) -> str | None:
             path = path.relative_to(root)
         except ValueError:
             return None
-    return f"{path.as_posix()}:{span.get('line_start', 0)}"
+    return (path.as_posix(), span.get("line_start", 0), span.get("column_start", 0))
 
 
 def in_workspace(entry: dict, root: Path) -> bool:
@@ -137,12 +142,14 @@ def docs_url(lint: str) -> str | None:
 def census(lints: dict[str, dict], max_sites: int, toolchain: str) -> dict:
     entries = []
     for record in lints.values():
-        sites = sorted(record["sites"])
+        # Tuple order sorts by line and column numerically; formatting first
+        # would sort `file:10` ahead of `file:9`.
+        sites = sorted(record["sites"])[:max_sites]
         entries.append(
             {
                 "lint": record["lint"],
                 "count": len(record["seen"]),
-                "sites": sites[:max_sites],
+                "sites": [f"{path}:{line}:{column}" for path, line, column in sites],
                 "example": record["example"],
                 "docs": docs_url(record["lint"]),
             }
