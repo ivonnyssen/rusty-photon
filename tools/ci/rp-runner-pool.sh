@@ -48,8 +48,10 @@ while true; do
       continue
     fi
 
+    # The auth header arrives via process substitution (bash printf is a
+    # builtin), so the PAT never appears on any process command line.
     JIT=$(curl -fsS -X POST \
-      -H "Authorization: Bearer $(cat $TOKEN_FILE)" \
+      -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
       -H "Accept: application/vnd.github+json" \
       "https://api.github.com/repos/$REPO/actions/runners/generate-jitconfig" \
       -d "{\"name\":\"$NAME-$(date +%s)\",\"runner_group_id\":1,\"labels\":$LABELS,\"work_folder\":\"_work\"}" \
@@ -62,8 +64,18 @@ while true; do
     fi
 
     # .tmp + mv: the in-guest service polls for a non-empty .jitconfig, so the
-    # rename keeps it from ever reading a partial write.
-    qm guest exec $VMID -- /bin/bash -c "printf %s \"$JIT\" > /home/ci/actions-runner/.jitconfig.tmp && chown ci:ci /home/ci/actions-runner/.jitconfig.tmp && mv /home/ci/actions-runner/.jitconfig.tmp /home/ci/actions-runner/.jitconfig" >/dev/null
+    # rename keeps it from ever reading a partial write. An unverified
+    # injection would deadlock the loop — the guest waits for a config that
+    # never arrives while this loop waits for a poweroff that never comes —
+    # so check both qm's own exit and the in-guest exitcode it reports.
+    if ! qm guest exec $VMID -- /bin/bash -c "printf %s \"$JIT\" > /home/ci/actions-runner/.jitconfig.tmp && chown ci:ci /home/ci/actions-runner/.jitconfig.tmp && mv /home/ci/actions-runner/.jitconfig.tmp /home/ci/actions-runner/.jitconfig" \
+        | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("exitcode") == 0 else 1)'; then
+      echo "$(date -Is) jitconfig injection into $VMID failed; destroying"
+      qm stop $VMID >/dev/null 2>&1
+      qm destroy $VMID --purge >/dev/null 2>&1
+      sleep 30
+      continue
+    fi
     echo "$(date -Is) runner clone $VMID up and registered"
   fi
 
