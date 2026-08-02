@@ -527,13 +527,19 @@ fn build_probe_client(
                     Arc::new(client)
                 }
                 Err(e) => {
+                    // Advice only when a pin exists — with no ca_cert there
+                    // is nothing to fix or remove.
+                    let advice = if ca.is_some() {
+                        " Fix or remove ca_cert to restore authenticated probes."
+                    } else {
+                        ""
+                    };
                     tracing::error!(
                         "failed to build the authenticated probe client: {e}; \
                      probing unauthenticated with certificate verification \
                      off so the credential never rides an unverified \
                      connection — auth-on peers answer 401 (still proof of \
-                     life). Fix or remove ca_cert to restore authenticated \
-                     probes"
+                     life).{advice}"
                     );
                     insecure_probe_client()
                 }
