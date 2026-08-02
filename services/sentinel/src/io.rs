@@ -88,6 +88,21 @@ impl ReqwestHttpClient {
     }
 }
 
+/// Render a reqwest error with its full source chain. reqwest's `Display`
+/// stops at "error sending request", hiding the part an operator needs —
+/// whether a probe failed on DNS, a refused connection, or certificate
+/// verification.
+fn describe(e: reqwest::Error) -> String {
+    let mut message = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(inner) = source {
+        message.push_str(": ");
+        message.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    message
+}
+
 #[async_trait]
 impl HttpClient for ReqwestHttpClient {
     async fn get(&self, url: &str) -> crate::Result<HttpResponse> {
@@ -96,10 +111,9 @@ impl HttpClient for ReqwestHttpClient {
         if let Some((user, pass)) = self.credentials_for(url) {
             request = request.basic_auth(user, Some(pass));
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| crate::SentinelError::Http(format!("GET {} failed: {}", url, e)))?;
+        let response = request.send().await.map_err(|e| {
+            crate::SentinelError::Http(format!("GET {} failed: {}", url, describe(e)))
+        })?;
 
         let status = response.status().as_u16();
         let body = response
@@ -117,10 +131,9 @@ impl HttpClient for ReqwestHttpClient {
         if let Some((user, pass)) = self.credentials_for(url) {
             request = request.basic_auth(user, Some(pass));
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| crate::SentinelError::Http(format!("PUT {} failed: {}", url, e)))?;
+        let response = request.send().await.map_err(|e| {
+            crate::SentinelError::Http(format!("PUT {} failed: {}", url, describe(e)))
+        })?;
 
         let status = response.status().as_u16();
         let body = response
@@ -138,10 +151,9 @@ impl HttpClient for ReqwestHttpClient {
         if let Some((user, pass)) = self.credentials_for(url) {
             request = request.basic_auth(user, Some(pass));
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| crate::SentinelError::Http(format!("POST {} failed: {}", url, e)))?;
+        let response = request.send().await.map_err(|e| {
+            crate::SentinelError::Http(format!("POST {} failed: {}", url, describe(e)))
+        })?;
 
         let status = response.status().as_u16();
         let body = response
