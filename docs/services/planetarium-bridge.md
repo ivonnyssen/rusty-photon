@@ -12,8 +12,8 @@ The P3a verification-spike findings that ground it are preserved in the
 [P3b follow-up experiment](#appendix-p3b-horizon-experiment-findings-2026-07-30)
 (run 2026-07-30) overturned the below-horizon story and **flipped the
 import gesture from GoTo to Align** (Decision 2's second amendment).
-The [Testing](#testing) section's four feature files run live in the
-default suite (65 scenarios), the device passes ConformU (see
+The [Testing](#testing) section's six feature files run live in the
+default suite (69 scenarios), the device passes ConformU (see
 [ConformU](#conformu) for the harness specifics), and the throwaway
 P3a spike crate is deleted. What this service sends rp is final; the
 rp-side `source` semantics landed in rp as their own P3 slice
@@ -678,6 +678,8 @@ the real store.
 | `target_import.feature` | Align → `add_target` (both sync verbs); slews never import; epoch conversion under `assume_epoch: jnow`; below-horizon Align imported; repeated Aligns each submitted (rp dedup collapses) |
 | `position_policy.feature` | Floor snap to idle point; below-floor slew converges but reports idle; below-floor Align imports but reports idle; `null` floor reports raw pointing |
 | `spooling.feature` | rp down → spool; replay in order on recovery; replay after restart; overflow drops oldest with counter; corrupt line skipped; tool-error not spooled |
+| `doctor.feature` | The shared doctor smoke (testing.md § Doctor smoke): a valid config yields a clean report, an unknown key fails the report and is named. Rides `bdd_infra::doctor_smoke`; the world's `valid_config()` spells out all five config blocks, so the clean-report scenario covers the whole typed load path |
+| `auth.feature` | The shared TLS + auth smoke (testing.md § TLS/auth): with `server.tls` and `server.auth` configured the bridge serves HTTPS and answers 401 without credentials, 200 with them. Rides `bdd_infra::tls_auth`; the world's launch hook points `spool.path` at the scenario temp dir, since an absent path resolves to — and creates — the platform config dir |
 
 rp-side additions (rp's suite): import creates pending with writer
 identity; proximity upsert of a pending-unedited import; active /
