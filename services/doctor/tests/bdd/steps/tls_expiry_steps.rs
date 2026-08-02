@@ -38,10 +38,10 @@ fn pki_file_garbage(world: &mut DoctorWorld, name: String) {
 }
 
 #[when("I run doctor")]
-fn run_doctor(world: &mut DoctorWorld) {
+async fn run_doctor(world: &mut DoctorWorld) {
     // --json under the hood so the report assertions have a subject; the
     // exit code is the same either way.
-    world.run_doctor(true);
+    world.run_doctor(true).await;
 }
 
 #[then(expr = "the report has a/an {string} check named {string} for service {string}")]

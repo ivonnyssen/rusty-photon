@@ -5,22 +5,22 @@ use cucumber::when;
 use crate::world::DoctorWorld;
 
 #[when("I run doctor with --json")]
-fn run_json(world: &mut DoctorWorld) {
-    world.run_doctor(true);
+async fn run_json(world: &mut DoctorWorld) {
+    world.run_doctor(true).await;
 }
 
 #[when("I run doctor without --json")]
-fn run_text(world: &mut DoctorWorld) {
-    world.run_doctor(false);
+async fn run_text(world: &mut DoctorWorld) {
+    world.run_doctor(false).await;
 }
 
 #[when("I run doctor with --fix and --json")]
-fn run_fix_json(world: &mut DoctorWorld) {
-    world.run_doctor_args(true, true);
+async fn run_fix_json(world: &mut DoctorWorld) {
+    world.run_doctor_args(true, true).await;
 }
 
 #[when("I run doctor pointed at a config directory that does not exist")]
-fn run_against_missing_dir(world: &mut DoctorWorld) {
+async fn run_against_missing_dir(world: &mut DoctorWorld) {
     world.config_dir_override = Some(world.temp.path().join("no-such-dir"));
-    world.run_doctor(true);
+    world.run_doctor(true).await;
 }

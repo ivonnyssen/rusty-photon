@@ -41,11 +41,23 @@ bdd_infra::bdd_main! {
 
     let pebble_available = pebble::env_paths().is_some();
     if !pebble_available {
+        let dropped = pebble_scenario_count("tests/features");
+        // A run that declares itself a CI run has no business skipping the
+        // only unmocked coverage of the ACME network path: there the missing
+        // locators mean the provisioning broke, not that a dev box lacks a
+        // binary. `.bazelrc` sets this under --config=ci.
+        assert!(
+            std::env::var_os("RUSTY_PHOTON_REQUIRE_PEBBLE").is_none(),
+            "RUSTY_PHOTON_REQUIRE_PEBBLE is set but PEBBLE_PATH and/or \
+             PEBBLE_CHALLTESTSRV_PATH are not — this run would silently drop \
+             {dropped} @pebble scenarios. Provision Pebble (see \
+             .github/actions/install-pebble, or scripts/install-pebble.sh) \
+             or clear RUSTY_PHOTON_REQUIRE_PEBBLE."
+        );
         eprintln!(
-            "skipping {} @pebble scenarios: PEBBLE_PATH and/or \
+            "skipping {dropped} @pebble scenarios: PEBBLE_PATH and/or \
              PEBBLE_CHALLTESTSRV_PATH are not set (docs/skills/testing.md \
-             section 5.6 — download a Pebble release to run them locally)",
-            pebble_scenario_count("tests/features")
+             section 5.6 — run scripts/install-pebble.sh to get them locally)"
         );
     }
 

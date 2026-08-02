@@ -49,16 +49,17 @@ pub fn stage_config(state: &mut DoctorSmokeState, config: &serde_json::Value) {
 }
 
 /// Run `<binary> doctor --json --config <staged>` and record the output.
-pub fn run_doctor(state: &mut DoctorSmokeState, package_name: &str) {
+pub async fn run_doctor(state: &mut DoctorSmokeState, package_name: &str) {
     let path = state
         .config_path
         .clone()
         .expect("no config staged for the doctor run");
-    let output = crate::run_once(
+    let output = crate::run_once_async(
         package_name,
         &["doctor", "--json", "--config", path.to_str().unwrap()],
         None,
-    );
+    )
+    .await;
     state.output = Some(output);
 }
 
@@ -162,9 +163,9 @@ macro_rules! doctor_smoke_steps {
         }
 
         #[::cucumber::when("the doctor subcommand runs")]
-        fn doctor_smoke_run(world: &mut $world) {
+        async fn doctor_smoke_run(world: &mut $world) {
             use $crate::doctor_smoke::DoctorSmokeWorld as _;
-            $crate::doctor_smoke::run_doctor(world.doctor_smoke(), env!("CARGO_PKG_NAME"));
+            $crate::doctor_smoke::run_doctor(world.doctor_smoke(), env!("CARGO_PKG_NAME")).await;
         }
 
         #[::cucumber::then("the doctor report is clean")]
