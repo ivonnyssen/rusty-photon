@@ -894,6 +894,43 @@ serve by dropping it and saying why at `debug!`, which is otherwise the
 one failure the client cannot report — it just sees the socket die. Keep
 new defaults to that bar: something a failing step cannot explain without.
 
+#### 5.9 Steps that poll a service over HTTP must tolerate a failed fetch
+
+[§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop) is
+the reason a loopback request from a step can stall for seconds: a
+blocking step freezes the one poll loop every scenario shares, and an
+in-flight response that had already delivered its headers sits unread
+until the loop resumes. Concurrency compounds it — up to 64 scenarios,
+most suites spawning a service process each, several suites at once via
+`--local_test_jobs=HOST_CPUS*1.25`, on 4-vCPU Windows and macOS runners.
+
+Fixing the blocking step is the cure; this section is the client side of
+the same problem, and it holds regardless. Two rules for any step helper
+that reads service state over HTTP (a `/debug/v1/*` introspection
+endpoint, a health probe, a status poll):
+
+1. **Retry the fetch, not just the assertion.** A helper that polls for
+   a condition but panics on the first transport error is only half
+   resilient — and the half it is missing is the one a starved poll loop
+   exercises. Poll against a wall-clock deadline and treat a failed
+   fetch as "not yet", keeping the last error so the final panic can
+   report it. Distinguish *the condition never became true* from *the
+   endpoint never answered*: they point at completely different bugs,
+   and conflating them sends the next reader hunting for a product
+   defect that isn't there.
+2. **Share one client, and size its timeout for a starved runner.**
+   `reqwest`'s `Client::builder().timeout(..)` is a whole-request
+   deadline covering connect, headers *and* body, so a request that
+   spends its budget before the body arrives surfaces as a body-read
+   timeout even though nothing about the body was slow — which is how
+   this failure disguises itself. Build the client once per suite (a
+   `OnceLock`, or a field on the world) rather than per call: a fresh
+   client per poll rebuilds a connection pool and pays a fresh TCP
+   connect every iteration, which is exactly the cost that blows the
+   deadline. `services/star-adventurer-gti/tests/bdd/world.rs`
+   (`wait_for_command_log`) and `services/phd2-guider/tests/bdd/world.rs`
+   (`http_client`) are the reference shapes.
+
 ---
 
 ### 6. Unit Test Rules
