@@ -399,7 +399,7 @@ the packaged systemd unit gates on the file with
 | `site.latitude_deg` | float | — | Geodetic latitude, degrees, north positive. Range ±90; `abs(latitude) < 1°` is rejected (no meaningful pole altitude). rp-sourced values pass the same rules |
 | `site.longitude_deg` | float | — | Degrees, east positive, range ±180 |
 | `measurement.mode` | `"near_pole"`\|`"current_position"`\|`"manual_rotation"` | `"near_pole"` | `near_pole` sweeps the configured dec-85 arc; `current_position` sweeps the RA axis from wherever the mount points, away from the meridian; `manual_rotation` waits for the operator to rotate a non-GoTo tracker between exposures |
-| `measurement.dec_deg` | float | 85.0 | `near_pole` only. Measurement declination; sign is folded to the site hemisphere at load |
+| `measurement.dec_deg` | float | 85.0 | `near_pole` only. Measurement declination; the sign is folded to the resolved site's hemisphere at workflow start (the site may come from rp) |
 | `measurement.first_point_ha_deg` | float | 15.0 | `near_pole` only. Hour angle of the first point, degrees from the meridian (1–60) |
 | `measurement.sweep_deg` | float | 45.0 | Hour-angle step between points (10–60; total span ≤ 150° keeps one pier side) |
 | `measurement.direction` | `"east"`\|`"west"` | `"west"` | `near_pole` only. Which side of the meridian the three points sit on; `current_position` picks the side the mount is already on |

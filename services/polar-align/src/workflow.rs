@@ -241,8 +241,9 @@ async fn resolve_site(mcp: &McpClient, config: &PolarAlignConfig) -> Result<Site
     }
     let rp_site = mcp.get_site().await.map_err(|e| {
         PolarAlignError::Workflow(format!(
-            "no `site` in the polar-align config and rp reported none ({e}); \
-             set the polar-align `site` block or configure rp's `site` block"
+            "no `site` in the polar-align config and rp's `get_site` did not return one \
+             ({e}); set the polar-align `site` block, or make sure rp is reachable and \
+             has a `site` block"
         ))
     })?;
     debug!(
@@ -1189,13 +1190,14 @@ mod tests {
         });
         // The wait publishes `awaiting_point` before it blocks; poll
         // until it appears, then confirm.
-        for _ in 0..500 {
-            if shared.status.read().await.awaiting_point == Some(2) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while shared.status.read().await.awaiting_point != Some(2) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the wait never published awaiting_point"
+            );
+            tokio::task::yield_now().await;
         }
-        assert_eq!(shared.status.read().await.awaiting_point, Some(2));
         shared.signal_proceed().await;
         wait.await.unwrap().unwrap();
         assert!(
