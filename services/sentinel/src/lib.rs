@@ -496,6 +496,16 @@ impl Sentinel {
 /// peers the pin was for keep probing as alive rather than down. If even
 /// that client cannot be built, fall back to the `shared` (verifying)
 /// client loudly — self-signed TLS peers would then probe as down.
+/// The remediation to append when the authenticated probe client cannot
+/// be built — only a pinned install has a `ca_cert` to fix or remove.
+fn degraded_probe_advice(has_pin: bool) -> &'static str {
+    if has_pin {
+        " Fix or remove ca_cert to restore authenticated probes."
+    } else {
+        ""
+    }
+}
+
 fn build_probe_client(
     service_auth: Option<&rp_auth::config::ClientAuthConfig>,
     ca_path: Option<&std::path::Path>,
@@ -527,13 +537,7 @@ fn build_probe_client(
                     Arc::new(client)
                 }
                 Err(e) => {
-                    // Advice only when a pin exists — with no ca_cert there
-                    // is nothing to fix or remove.
-                    let advice = if ca.is_some() {
-                        " Fix or remove ca_cert to restore authenticated probes."
-                    } else {
-                        ""
-                    };
+                    let advice = degraded_probe_advice(ca.is_some());
                     tracing::error!(
                         "failed to build the authenticated probe client: {e}; \
                      probing unauthenticated with certificate verification \
@@ -622,6 +626,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (_ca, url, _stop) = spawn_tls_peer(dir.path()).await;
         let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        // Preflight through the verification-off client: the peer is up
+        // and answering, so the failure asserted below can only be the
+        // handshake — not a dead listener.
+        let insecure = build_probe_client(None, None, &shared);
+        assert_eq!(insecure.get(&url).await.unwrap().status, 200);
         let client = build_probe_client(Some(&observatory_auth()), None, &shared);
         // The peer's throwaway CA is not in the platform trust store, so
         // the handshake must be refused — verification stays on with no
@@ -631,6 +640,10 @@ mod tests {
         match &err {
             crate::SentinelError::Http(msg) => {
                 assert!(msg.starts_with(&format!("GET {url} failed:")), "{msg}");
+                assert!(
+                    msg.contains("certificate"),
+                    "expected a certificate verification error, got: {msg}"
+                );
             }
             other => panic!("expected SentinelError::Http, got {other:?}"),
         }
@@ -648,6 +661,15 @@ mod tests {
         let response = client.get(&url).await.unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "anonymous");
+    }
+
+    #[test]
+    fn degraded_probe_advice_names_ca_cert_only_when_pinned() {
+        assert_eq!(
+            degraded_probe_advice(true),
+            " Fix or remove ca_cert to restore authenticated probes."
+        );
+        assert_eq!(degraded_probe_advice(false), "");
     }
 
     #[tokio::test]
