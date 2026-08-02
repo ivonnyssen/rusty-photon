@@ -50,7 +50,7 @@ async fn received_encoder_seed_both_axes(world: &mut StarAdventurerWorld) {
         Err(CommandLogTimeout::NoMatch(log)) => {
             panic!("expected :E1 and :E2 encoder-seed frames; saw {log:?}")
         }
-        Err(CommandLogTimeout::Unreachable(e)) => {
+        Err(CommandLogTimeout::FetchFailed(e)) => {
             panic!("could not read the command log while waiting for encoder seeds: {e}")
         }
     }

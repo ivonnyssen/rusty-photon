@@ -229,7 +229,7 @@ async fn mount_eventually_tracking_g1(world: &mut StarAdventurerWorld, secs: u64
         Err(CommandLogTimeout::NoMatch(log)) => {
             panic!("no tracking-mode :G1 within {secs}s; log {log:?}")
         }
-        Err(CommandLogTimeout::Unreachable(e)) => {
+        Err(CommandLogTimeout::FetchFailed(e)) => {
             panic!("could not read the command log while waiting for a tracking-mode :G1: {e}")
         }
     }

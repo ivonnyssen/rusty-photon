@@ -187,7 +187,7 @@ async fn mount_received_command(world: &mut StarAdventurerWorld, command: String
                 "expected wire frame {command:?} in command log (size {len}); last 20 (newest-first): {tail:?}"
             );
         }
-        Err(CommandLogTimeout::Unreachable(e)) => {
+        Err(CommandLogTimeout::FetchFailed(e)) => {
             panic!("could not read the command log while waiting for {command:?}: {e}")
         }
     }

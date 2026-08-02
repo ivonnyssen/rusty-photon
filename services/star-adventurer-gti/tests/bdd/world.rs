@@ -65,16 +65,17 @@ fn debug_client() -> reqwest::Client {
 /// a match.
 ///
 /// The two are worth telling apart in a panic message: `NoMatch` means the
-/// driver really never emitted the frame, `Unreachable` means the
+/// driver really never emitted the frame, `FetchFailed` means the
 /// assertion never got the chance to run.
 #[derive(Debug)]
 pub enum CommandLogTimeout {
     /// The endpoint answered, but the predicate never accepted the log.
     /// Carries the last log read.
     NoMatch(Vec<String>),
-    /// The endpoint never answered within the window. Carries the last
-    /// transport error.
-    Unreachable(String),
+    /// No read of the log ever succeeded — the endpoint was unreachable,
+    /// answered non-2xx, or never finished inside the window. Carries the
+    /// last failure, whose text names which.
+    FetchFailed(String),
 }
 
 #[derive(Debug, Default, World)]
@@ -348,14 +349,21 @@ impl StarAdventurerWorld {
         let mut last_log: Option<Vec<String>> = None;
         let mut last_err = "no request completed".to_string();
         loop {
-            match self.try_command_log().await {
-                Ok(log) => {
+            // Clamp each attempt to what is left of the caller's window.
+            // `timeout` is the bound a step promises — `within {secs}
+            // seconds` in a feature file — and a fetch that stalls on the
+            // client's own budget would otherwise outlive it and let a
+            // late frame satisfy an assertion that should have failed.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, self.try_command_log()).await {
+                Ok(Ok(log)) => {
                     if pred(&log) {
                         return Ok(log);
                     }
                     last_log = Some(log);
                 }
-                Err(e) => last_err = e,
+                Ok(Err(e)) => last_err = e,
+                Err(_) => last_err = format!("no response within the window's last {remaining:?}"),
             }
             if Instant::now() >= deadline {
                 break;
@@ -364,21 +372,21 @@ impl StarAdventurerWorld {
         }
         Err(match last_log {
             Some(log) => CommandLogTimeout::NoMatch(log),
-            None => CommandLogTimeout::Unreachable(last_err),
+            None => CommandLogTimeout::FetchFailed(last_err),
         })
     }
 
     /// Fetch the mock-mode wire-command log, retrying transient fetch
-    /// failures. Fails the scenario only if the endpoint never answers.
+    /// failures. Fails the scenario only if no read ever succeeds.
     pub async fn command_log(&self) -> Vec<String> {
         match self
             .wait_for_command_log(DEBUG_RETRY_WINDOW, |_| true)
             .await
         {
             Ok(log) => log,
-            Err(CommandLogTimeout::Unreachable(e)) => {
-                panic!("mock-commands endpoint never answered within {DEBUG_RETRY_WINDOW:?}: {e}")
-            }
+            Err(CommandLogTimeout::FetchFailed(e)) => panic!(
+                "could not read mock-commands within {DEBUG_RETRY_WINDOW:?}; last failure: {e}"
+            ),
             Err(CommandLogTimeout::NoMatch(_)) => unreachable!("the predicate accepts any log"),
         }
     }
