@@ -20,7 +20,8 @@
 #                      (default: raspberry-pi — must match the workflow's
 #                      runs-on list or jobs will never schedule)
 #     RUNNER_USER      System user that owns the runner (default: gh-runner)
-#     REPO_URL         Repository URL (default: rusty-photon/rusty-photon)
+#     REPO_URL         Full repository URL passed to `config.sh --url`
+#                      (default: https://github.com/rusty-photon/rusty-photon)
 #
 # To obtain RUNNER_TOKEN:
 #   GitHub → Repo Settings → Actions → Runners → "New self-hosted runner"

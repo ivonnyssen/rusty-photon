@@ -288,12 +288,20 @@ directory entry and the install:
 sudo bash -c 'cd /home/gh-runner/actions-runner && ./svc.sh install gh-runner && ./svc.sh start'
 ```
 
-The service is named `actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service`
-(or similar). Verify:
+`svc.sh` derives the unit name from the URL `config.sh` was given plus the
+runner name — `actions.runner.<owner>-<repo>.<runner>.service` — and
+freezes it at `svc.sh install` time. A fresh install against the org URL
+yields `actions.runner.rusty-photon-rusty-photon.pi5-nightly.service`; an
+installation configured before the org transfer keeps
+`actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service` (the
+currently deployed Pi is one) until `svc.sh uninstall` + `install` is
+re-run. List what is actually installed with
+`systemctl list-units 'actions.runner.*'`. Verify (substituting your
+installed unit name):
 
 ```bash
-systemctl status actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
-sudo journalctl -u actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service -f
+systemctl status actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
+sudo journalctl -u actions.runner.rusty-photon-rusty-photon.pi5-nightly.service -f
 ```
 
 From GitHub: Repo → Settings → Actions → Runners — the runner should show
@@ -316,8 +324,10 @@ Live job logs appear in the Actions tab as usual. The runner-side daemon
 log (start/stop, job pickup, deregistration events) is in journald:
 
 ```bash
-sudo journalctl -u actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service -f
+sudo journalctl -u actions.runner.rusty-photon-rusty-photon.pi5-nightly.service -f
 ```
+
+(Substitute your installed unit name — see §5's naming note.)
 
 The job's working tree lives under `~gh-runner/actions-runner/_work/rusty-photon/rusty-photon`
 between runs. The runner's default behaviour is to wipe the workspace
@@ -357,9 +367,14 @@ the Pi):
    page.
 3. On the Pi (the `sudo -u gh-runner bash -c '...'` wrapping is for the
    same `0750` home-directory reason as §5 — `config.sh` expects to run
-   from inside its own directory):
+   from inside its own directory). Use your installed unit name in the
+   stop/start lines (`systemctl list-units 'actions.runner.*'`; the
+   deployed Pi predates the org transfer, so today that is the
+   `ivonnyssen-` form). Re-registering via `config.sh` does **not**
+   rename the unit — the install-time name persists and keeps working;
+   only `svc.sh uninstall` + `install` re-derives it:
    ```bash
-   sudo systemctl stop actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
+   sudo systemctl stop actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh remove --token <REMOVAL_TOKEN>'
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh \
      --url https://github.com/rusty-photon/rusty-photon \
@@ -369,7 +384,7 @@ the Pi):
      --work _work \
      --unattended \
      --replace'
-   sudo systemctl start actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service
+   sudo systemctl start actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
    ```
 
 The removal token and registration token are different and are both shown
