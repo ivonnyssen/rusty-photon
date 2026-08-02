@@ -444,7 +444,6 @@ pub fn pulse_guide_step_period(sidereal_period: u32, rate_factor: f64) -> u32 {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
 

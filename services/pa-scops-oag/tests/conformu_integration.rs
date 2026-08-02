@@ -4,7 +4,7 @@
 //! against the driver running in mock mode.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use bdd_infra::ServiceHandle;
 use bdd_infra::{run_conformu, ConformuRun};

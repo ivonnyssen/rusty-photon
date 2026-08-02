@@ -369,7 +369,6 @@ mod identity_tests {
 
 #[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod simulation_tests {
     use super::*;
 

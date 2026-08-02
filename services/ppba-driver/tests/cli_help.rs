@@ -6,7 +6,7 @@
 //! marks) so RTL/LTR mixing renders correctly. Tests therefore search for
 //! prefix/suffix substrings rather than the literal user-supplied value.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::process::Command;
 

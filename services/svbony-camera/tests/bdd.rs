@@ -8,7 +8,7 @@
 //! (docs/skills/testing.md §2.7) for any future feature landing ahead of
 //! its implementation, not because anything is currently tagged.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "bdd/world.rs"]
 mod world;

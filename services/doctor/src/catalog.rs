@@ -203,7 +203,6 @@ pub fn entry_for_unit(unit: &str) -> Option<&'static CatalogEntry> {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use std::collections::HashSet;
 

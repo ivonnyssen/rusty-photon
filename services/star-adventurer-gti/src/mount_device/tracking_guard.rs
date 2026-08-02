@@ -338,7 +338,6 @@ pub(super) fn spawn_tracking_guard(device: MountDevice, polling_interval: Durati
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::tracking_guard_breached;
     use proptest::prelude::*;

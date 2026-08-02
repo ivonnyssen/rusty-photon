@@ -77,20 +77,32 @@ description = "Rusty Photon - An astrophotography application"
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
-# Panic-free production code: deny the three most common ways to panic from
-# otherwise-recoverable situations. Tests are expected to use `.unwrap()` per
-# docs/skills/testing.md, so they opt back in *scoped to the test code only*:
-#   - Inline `#[cfg(test)] mod tests { ... }` in `src/`: add
-#     `#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]`
-#     as an attribute on the `mod` item itself (not at the crate root, so the
-#     allow never leaks into the production-cfg compile of `src/`).
-#   - Top-level integration test entry files under `tests/`: add
-#     `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]`
-#     at the top. BDD submodules pulled in via `#[path] mod` inherit it.
+# Panic-free production code: deny the routes by which an otherwise-recoverable
+# situation aborts the process instead. A driver that panics at 2am ends the
+# night's imaging (docs/workspace.md § Project Tenets, tenet 2).
+#
+# Test code is exempt where the panic is the point, but the exemption lives in
+# `clippy.toml` at the repo root rather than in per-module attributes: it turns
+# `unwrap_used`, `expect_used`, `panic` and `indexing_slicing` off in test scope
+# only, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its own.
+#
+# Two gaps still need a scoped `#[allow]`, and both are deliberate:
+#   - `unreachable` has no `clippy.toml` knob.
+#   - Clippy treats `#[cfg(test)]` modules and `#[test]` functions as test code,
+#     but not cucumber step definitions (`#[given]`/`#[when]`/`#[then]`), which
+#     are plain functions in a test crate. `tests/bdd/` entry files therefore
+#     keep a file-level `#![allow(...)]`; submodules pulled in via `#[path] mod`
+#     inherit it.
+#
+# docs/plans/workspace-lints.md tracks the ladder that widens this set.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic_in_result_fn = "deny"
+unchecked_time_subtraction = "deny"
 
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }

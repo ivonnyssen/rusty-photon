@@ -9,8 +9,6 @@
 //! refcount was bumped before the handshake ran and never rolled back.
 //! This test crate proves the new structure can't reproduce that bug.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-
 mod common;
 
 use std::sync::Arc;

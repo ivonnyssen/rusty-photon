@@ -22,8 +22,6 @@
 //! - On-acquire eager reconnect (an `acquire()` mid-reconnect that
 //!   triggers a synchronous attempt with `reconnect_acquire_timeout`).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-
 mod common;
 
 use std::sync::atomic::Ordering;

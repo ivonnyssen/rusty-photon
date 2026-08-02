@@ -3,7 +3,7 @@
 //! These tests spawn three processes — OmniSim, rp, and session-runner —
 //! and drive workflow documents end-to-end via rp's REST API.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::expect_used)]
 
 #[path = "bdd/world.rs"]
 mod world;

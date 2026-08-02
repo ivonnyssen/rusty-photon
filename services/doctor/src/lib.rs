@@ -190,7 +190,6 @@ fn provision_material(
 
 #[cfg(all(test, unix))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 

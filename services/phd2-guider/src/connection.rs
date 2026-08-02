@@ -362,7 +362,7 @@ pub(crate) fn spawn_reader_task(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#[allow(clippy::unreachable)]
 mod tests {
     use super::*;
 
@@ -435,7 +435,7 @@ mod tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#[allow(clippy::unreachable)]
 mod mock_tests {
     use super::*;
 

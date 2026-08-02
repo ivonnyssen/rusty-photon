@@ -8,8 +8,6 @@
 //! these tests cover *cross-validation* against an independent
 //! implementation.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;

@@ -516,7 +516,6 @@ fn firmware_helper(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::scan::scan_service;

@@ -56,7 +56,7 @@ mod watchers;
 
 #[cfg(all(test, feature = "mock"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#[allow(clippy::unwrap_used)]
 mod tests;
 
 pub use park_persistence::{

@@ -502,7 +502,6 @@ impl CoolingController {
 /// `session::tests` too — same pattern as
 /// [`crate::equipment::test_support`].
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 pub(crate) mod test_support {
     use super::*;
 
@@ -758,7 +757,6 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::test_support::*;
     use super::*;

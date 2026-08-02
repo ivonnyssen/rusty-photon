@@ -617,7 +617,7 @@ impl TransportFactory for CapturingMockFactory {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#[allow(clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};

@@ -303,7 +303,6 @@ pub fn ensure_qhyccd_dll() -> Result<DllResolution, PreflightError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;

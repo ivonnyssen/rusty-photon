@@ -88,7 +88,6 @@ impl ConfigurableDriver for RpConfigDriver {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use rusty_photon_config::actions::{config_get, config_schema};
     use serde_json::Value;

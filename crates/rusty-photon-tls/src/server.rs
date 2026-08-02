@@ -569,7 +569,6 @@ fn build_redirect_response(request: &ParsedRequest, local_addr: SocketAddr) -> S
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
     use crate::error::TlsError;

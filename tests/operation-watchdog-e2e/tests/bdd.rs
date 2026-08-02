@@ -4,7 +4,7 @@
 //! plate-solver stub) and drives the watchdog through wedge → escalation →
 //! corrective ladder. See `world.rs` for the process lifecycle.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::expect_used)]
 
 #[path = "bdd/world.rs"]
 mod world;

@@ -6,7 +6,7 @@
 //! scenario *Reject invalid configuration sources* in
 //! `tests/features/configuration.feature`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[cfg(not(miri))]
 use filemonitor::{AlpacaServerConfig, Config, DeviceConfig, FileConfig, ParsingConfig};

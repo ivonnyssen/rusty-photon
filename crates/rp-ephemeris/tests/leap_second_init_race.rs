@@ -16,8 +16,6 @@
 //! the process's first-ever ERFA calls. A sibling unit test that happened
 //! to run first would warm the table and silently mask a regression.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use std::sync::{Arc, Barrier};
 use std::thread;
 

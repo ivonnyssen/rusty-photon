@@ -1,6 +1,6 @@
 //! BDD test entry point for filemonitor service
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "bdd/world.rs"]
 mod world;
