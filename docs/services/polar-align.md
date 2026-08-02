@@ -4,14 +4,17 @@
 
 `polar-align` is an orchestrator plugin that measures how far an
 equatorial mount's RA axis is from the refracted celestial pole and
-guides the operator through correcting it. It slews the mount to three
-RA positions — near the pole by default, or sweeping outward from
-wherever the mount already points in current-position mode — captures
-and plate-solves an image at each, computes the axis direction from
-the three solves, then enters a live adjustment phase: it keeps
-capturing and solving while the operator turns the mount's
-azimuth/altitude adjusters, publishing the residual error and
-PoleMaster-style star/target-circle pairs after every solve.
+guides the operator through correcting it. It captures and
+plate-solves an image at three RA-axis positions — slewing near the
+pole by default, sweeping outward from wherever the mount already
+points in current-position mode, or waiting for the operator to
+rotate a non-GoTo tracker by hand in manual-rotation mode — computes
+the axis direction from the three solves, then enters a live
+adjustment phase: it keeps capturing and solving while the operator
+turns the mount's azimuth/altitude adjusters, publishing the
+residual error and PoleMaster-style star/target-circle pairs after
+every solve, plus a rendered PNG of the latest frame for the UI to
+draw them over.
 
 The method is N.I.N.A. Three Point Polar Alignment's: rotating only
 the RA axis sweeps the camera pointing along a circle whose center is
@@ -78,6 +81,7 @@ Accessibility"); `/status` carries their paths, never pixels.
 
 | Tool | Usage |
 |------|-------|
+| `get_site` | Resolve the observer site when the plugin config omits its `site` block (rp's configured site, cross-checked against the mount on connect when the mount reports one) |
 | `get_park_state` | Read `at_park` before any motion; decide whether to unpark |
 | `get_mount_position` | Read the mount-frame pointing that anchors a current-position measurement (RA-only targets are computed relative to it) |
 | `unpark` | Clear `AtPark` (no motion) before enabling tracking |
@@ -87,8 +91,13 @@ Accessibility"); `/status` carries their paths, never pixels.
 | `abort_slew` | Cleanup only: stop an in-flight slew on failure |
 | `capture` | Take the measurement and adjustment exposures |
 | `get_camera_info` | Read the sensor bounds the overlay's `in_frame` flag is computed against (preflight) |
-| `plate_solve` | Solve each capture (hinted with the commanded pointing) |
+| `plate_solve` | Solve each capture (hinted with the commanded pointing; blind in manual-rotation mode) |
 | `detect_stars` | Locate the brightest stars in each adjustment frame for the target-circle overlay |
+
+`manual_rotation` mode calls **no mount tool at all** — a manual-only
+registration needs only `get_site` (when the plugin config carries no
+site), `capture`, `get_camera_info`, `plate_solve`, and
+`detect_stars`.
 
 ## Invocation Protocol
 
@@ -107,6 +116,9 @@ exactly as for calibrator-flats:
 The plugin acknowledges with timing estimates: `estimated_duration` =
 3 × (slew + exposure + solve allowance) + `adjustment.max_duration` / 2,
 `max_duration` = the same with the full `adjustment.max_duration`.
+A `manual_rotation` config adds the two operator waits on top:
+`manual_timeout / 2` each for the estimate, the full
+`manual_timeout` each for the maximum.
 `recovery` is accepted and ignored (a polar-alignment session is
 re-run from scratch; there is no state worth resuming).
 
@@ -121,15 +133,23 @@ concurrent alignments are meaningless.
 
 ### Measurement phase
 
+0. Resolve the observer site: the config's `site` block when
+   present, else rp's `get_site` tool. rp-sourced coordinates pass
+   the same validation as configured ones (range, ≥1° from the
+   equator), with the error naming rp as the source; no site on
+   either side aborts naming both fixes ("set `site` in the
+   polar-align config or configure rp's `site` block").
 1. `get_park_state`. If `at_park` and `can_unpark`: `unpark`. If
    `at_park` and not `can_unpark`: abort with an error naming the
-   condition (nothing has moved).
+   condition (nothing has moved). *Skipped in `manual_rotation`
+   mode, which touches no mount tool.*
 2. `get_tracking`; if tracking is off and `can_set_tracking`:
    `set_tracking(true)`. Off and not settable: abort (rp's `slew`
    would fail anyway; failing here gives a clearer message).
+   *Skipped in `manual_rotation` mode.*
 3. Compute the three measurement targets, by `measurement.mode`:
-   - **`near_pole`** (default): local sidereal time from
-     `site.longitude_deg`; target hour angles
+   - **`near_pole`** (default): local sidereal time from the
+     resolved site longitude; target hour angles
      `direction × (first_point_ha_deg + i × sweep_deg)` for
      i = 0, 1, 2; declination `measurement_dec_deg` (sign follows
      the site hemisphere); RA = LST − HA, folded to [0, 24h).
@@ -142,36 +162,56 @@ concurrent alignments are meaningless.
      meridian could trigger a GoTo meridian flip mid-measurement).
      `dec_deg`, `first_point_ha_deg`, and `direction` are unused in
      this mode.
-   Any target below 10° observed altitude aborts before any motion,
-   naming the point and its altitude — a near-horizon exposure gives
-   refraction-dominated garbage.
+   - **`manual_rotation`**: no targets are computed — the operator
+     rotates the RA axis by hand between exposures. `dec_deg`,
+     `first_point_ha_deg`, `sweep_deg`, and `direction` are all
+     unused.
+   Any computed target below 10° observed altitude aborts before any
+   motion, naming the point and its altitude — a near-horizon
+   exposure gives refraction-dominated garbage. (`manual_rotation`
+   computes no targets, commands no motion, and therefore has no
+   horizon guard: the operator at the tripod owns the pointing.)
 4. For each point: `slew` → settle → `capture`
    (`measurement.exposure`) → `plate_solve` with
    `pointing_hint` = the commanded coordinates and
    `search_radius_deg` = `solve.search_radius_deg`. In
    `current_position` mode the first point is captured where the
-   mount already stands — only points 2 and 3 slew — and every
-   measurement solve must carry a `wcs_matrix`; a matrix-less solve
-   aborts with an error naming the point (the mode's axis needs full
-   camera attitudes).
+   mount already stands — only points 2 and 3 slew. In
+   `manual_rotation` mode nothing ever slews: the first point is
+   captured in place, and before each further point the workflow
+   publishes `awaiting_point` on `/status` and waits — bounded by
+   `measurement.manual_timeout` — for the operator to rotate the RA
+   axis (15–45° recommended) and `POST /measure/continue`; a timeout
+   aborts naming the point. Manual-mode solves are **blind** (no
+   pointing hint, no mount hints): the plugin has no trustworthy
+   prediction of where the operator left the axis, and a wrong hint
+   is worse than none — budget `solve.timeout` accordingly. In both
+   `current_position` and `manual_rotation` modes every measurement
+   solve must carry a `wcs_matrix`; a matrix-less solve aborts with
+   an error naming the point (these modes' axis needs full camera
+   attitudes).
 5. Axis, by mode: `near_pole` fits the plane normal of the three
    solved centers (sign toward the visible pole); a degenerate sweep
    (centers closer than ~2 arcsec — the mount didn't move) aborts
-   with a distinct error. `current_position` extracts the common
-   rotation axis of the relative rotations between the three camera
-   attitudes, which works anywhere in the sky. Whichever method is
-   not primary runs as a best-effort cross-check: the angular
-   separation between the two axes is published as
-   `measurement.cross_check_arcsec` and warned about above 2′
-   (see the plan's D2/D9 and the Geometry Reference). The axis is
-   converted to observed azimuth/altitude; error against the
-   refracted pole (D3).
+   with a distinct error. `current_position` and `manual_rotation`
+   extract the common rotation axis of the relative rotations
+   between the three camera attitudes, which works anywhere in the
+   sky (and the ≥1° segment guard doubles as "the operator actually
+   rotated" in manual mode). Whichever method is not primary runs as
+   a best-effort cross-check: the angular separation between the two
+   axes is published as `measurement.cross_check_arcsec` and warned
+   about above 2′ (see the plan's D2/D9 and the Geometry Reference).
+   The axis is converted to observed azimuth/altitude; error against
+   the refracted pole (D3).
 6. Phase transitions to `adjusting`; the measurement result is
    published on `/status`.
 
 A failure at any step posts `status: "error"` to the completion
 endpoint with a `reason` naming the step, after stop-class cleanup
 (tenet 3): `abort_slew` if and only if a slew was in flight.
+`manual_rotation` skips the `abort_slew` — the plugin never
+commanded motion, so there is nothing stop-class to stop (and a
+manual-only rig may register no mount tools at all).
 
 ### Adjustment phase
 
@@ -239,6 +279,11 @@ reports `"phase": "idle"`.
 ```
 
 - `phase`: `idle` | `measuring` | `adjusting` | `complete` | `error`.
+- `awaiting_point` (omitted unless set): the measurement point
+  number (2 or 3) a `manual_rotation` workflow is waiting on. While
+  present, the workflow is paused until `POST /measure/continue` or
+  `measurement.manual_timeout` expires. Never present in the other
+  modes.
 - `measurement` appears from the end of the measurement phase onward
   and is updated by every adjustment solve (the error shrinks as the
   operator converges). Signed errors: azimuth positive = axis east of
@@ -261,6 +306,36 @@ reports `"phase": "idle"`.
 - `error` carries the failure message when `phase` is `error`, null
   otherwise.
 
+### `POST /measure/continue`
+
+Confirms a manual rotation: the operator has rotated the RA axis and
+the tracker has settled, so the paused `manual_rotation` measurement
+may capture the next point. Returns `202 Accepted` while a wait is
+active (`/status.awaiting_point` present), `409 Conflict` otherwise —
+including in the other measurement modes, which never wait. The wait
+signal is armed per wait, so a duplicate or late post cannot skip a
+later point.
+
+### `GET /preview.png`
+
+The most recent captured frame (measurement or adjustment), rendered
+as an 8-bit grayscale PNG for the UI to draw the star/target overlay
+over:
+
+- `?width=` selects the preview width in pixels; default 1024,
+  clamped to [64, native width]. Height follows the sensor aspect
+  ratio. Downscaling is a stride subsample — the overlay stays in
+  native pixel coordinates (`/status`), so preview resolution never
+  affects overlay accuracy; the UI scales the bitmap under its
+  viewBox.
+- Brightness is a linear percentile stretch (0.5–99.9%, computed on
+  the preview pixels). A constant frame renders mid-gray.
+- `404 Not Found` before any frame has been captured, and when the
+  frame no longer exists on disk (rp owns the capture directory and
+  may prune it).
+- The preview is presentation-only: star *analysis* stays in rp's
+  `detect_stars`, and the alignment math never touches these pixels.
+
 ### `POST /adjust/finish`
 
 Ends the adjustment loop, posts the completion report
@@ -279,9 +354,10 @@ and solver are reached through rp per-invocation).
 The service reads a single JSON config file; `--config` names it,
 otherwise the platform default (`~/.config/rusty-photon/polar-align.json`
 on Linux, `%PROGRAMDATA%\rusty-photon\polar-align.json` on Windows)
-via `rusty-photon-config`. Site coordinates are mandatory, so the
-packaged systemd unit gates on the file with `ConditionPathExists`
-(no built-in default config). `deny_unknown_fields` throughout.
+via `rusty-photon-config`. Camera and mount ids are mandatory, so
+the packaged systemd unit gates on the file with
+`ConditionPathExists` (no built-in default config).
+`deny_unknown_fields` throughout.
 
 ```json
 {
@@ -298,7 +374,8 @@ packaged systemd unit gates on the file with `ConditionPathExists`
     "sweep_deg": 45.0,
     "direction": "west",
     "exposure": "2s",
-    "settle": "2s"
+    "settle": "2s",
+    "manual_timeout": "10m"
   },
   "adjustment": {
     "exposure": "2s",
@@ -318,28 +395,34 @@ packaged systemd unit gates on the file with `ConditionPathExists`
 | `service_auth` / `ca_cert` | — | null | Credentials/CA toward rp, exactly as calibrator-flats (ADR-017) |
 | `camera_id` | string | required | Camera on the imaging train used for alignment exposures |
 | `mount_id` | string | required | The mount (informational; rp's mount tools address the singular configured mount) |
-| `site.latitude_deg` | float | required | Geodetic latitude, degrees, north positive. Range ±90; `abs(latitude) < 1°` is rejected (no meaningful pole altitude) |
-| `site.longitude_deg` | float | required | Degrees, east positive, range ±180 |
-| `measurement.mode` | `"near_pole"`\|`"current_position"` | `"near_pole"` | `near_pole` sweeps the configured dec-85 arc; `current_position` sweeps the RA axis from wherever the mount points, away from the meridian |
-| `measurement.dec_deg` | float | 85.0 | `near_pole` only. Measurement declination; sign is folded to the site hemisphere at load |
+| `site` | object | optional | Observer site. When absent, resolved per workflow from rp's `get_site` tool (rp's configured, mount-validated site); an explicit block wins |
+| `site.latitude_deg` | float | — | Geodetic latitude, degrees, north positive. Range ±90; `abs(latitude) < 1°` is rejected (no meaningful pole altitude). rp-sourced values pass the same rules |
+| `site.longitude_deg` | float | — | Degrees, east positive, range ±180 |
+| `measurement.mode` | `"near_pole"`\|`"current_position"`\|`"manual_rotation"` | `"near_pole"` | `near_pole` sweeps the configured dec-85 arc; `current_position` sweeps the RA axis from wherever the mount points, away from the meridian; `manual_rotation` waits for the operator to rotate a non-GoTo tracker between exposures |
+| `measurement.dec_deg` | float | 85.0 | `near_pole` only. Measurement declination; the sign is folded to the resolved site's hemisphere at workflow start (the site may come from rp) |
 | `measurement.first_point_ha_deg` | float | 15.0 | `near_pole` only. Hour angle of the first point, degrees from the meridian (1–60) |
 | `measurement.sweep_deg` | float | 45.0 | Hour-angle step between points (10–60; total span ≤ 150° keeps one pier side) |
 | `measurement.direction` | `"east"`\|`"west"` | `"west"` | `near_pole` only. Which side of the meridian the three points sit on; `current_position` picks the side the mount is already on |
 | `measurement.exposure` | humantime | `"2s"` | Measurement exposure duration |
 | `measurement.settle` | humantime | `"2s"` | Extra settle after each slew before capturing |
+| `measurement.manual_timeout` | humantime | `"10m"` | `manual_rotation` only. Ceiling on each wait for `POST /measure/continue`; expiry aborts the workflow naming the point |
 | `adjustment.exposure` | humantime | `"2s"` | Adjustment-loop exposure duration |
 | `adjustment.interval` | humantime | `"1s"` | Pause between adjustment iterations |
 | `adjustment.max_duration` | humantime | `"30m"` | Hard ceiling on the adjustment phase |
 | `adjustment.max_solve_failures` | int | 10 | Consecutive failed solves that abort the workflow |
 | `adjustment.star_count` | int | 10 | Brightest stars published with target circles |
-| `solve.search_radius_deg` | float | 5.0 | Passed to `plate_solve` (hinted with commanded/previous pointing) |
+| `solve.search_radius_deg` | float | 5.0 | Passed to `plate_solve` alongside the pointing hint. Not sent with `manual_rotation`'s blind solves — the radius bounds the search around a hint, and a blind solve has none |
 | `solve.timeout` | humantime | `"30s"` | Per-solve timeout passed to `plate_solve` |
 | `refraction.enabled` | bool | true | Apply refraction to the pole target and the axis conversion |
 | `refraction.temperature_c` / `pressure_hpa` | float | 10.0 / 1010.0 | Refraction model inputs |
 
 Range rules are enforced parse-don't-validate style (newtypes with
 serde `try_from`, per `development-workflow.md`), so a bad config
-fails at load naming the field.
+fails at load naming the field. All range and cross-field rules
+apply in every mode — including to fields the configured mode
+ignores. The mode is a per-session choice: a latent near-pole
+geometry error must fail at load, not on the night the operator
+switches back to `near_pole`.
 
 The rp-side plugin registration:
 
@@ -351,10 +434,14 @@ The rp-side plugin registration:
   "requires_tools": [
     "capture", "get_camera_info", "plate_solve", "detect_stars",
     "slew", "abort_slew", "set_tracking", "get_tracking",
-    "unpark", "get_park_state", "get_mount_position"
+    "unpark", "get_park_state", "get_mount_position", "get_site"
   ]
 }
 ```
+
+A `manual_rotation`-only rig (no GoTo, no rp mount) trims the list to
+`capture`, `get_camera_info`, `plate_solve`, `detect_stars`, and —
+when the plugin config carries no `site` block — `get_site`.
 
 `polar-align doctor [--config <file>] [--json]` diagnoses the config
 read-only without starting the service, per
@@ -427,15 +514,19 @@ services/polar-align/src/
   lib.rs             ServerBuilder, BoundServer, module declarations
   config.rs          PolarAlignConfig + validated newtypes
   error.rs           Error types (thiserror)
-  routes.rs          Axum router: /invoke, /health, /status, /adjust/finish
+  routes.rs          Axum router: /invoke, /health, /status,
+                     /measure/continue, /adjust/finish, /preview.png
   mcp_client.rs      rp-mcp-client wrapper (ADR-017)
   workflow.rs        Measurement + adjustment orchestration, cleanup guard
   math.rs            Axis, attitude, error decomposition, target projection
   ephemeris.rs       ICRS→observed, LST, refracted pole (rp-ephemeris)
+  preview.rs         FITS → stretched grayscale PNG for /preview.png
 ```
 
-Star detection is rp's `detect_stars` tool — the plugin carries no
-image-processing code of its own.
+Star *detection* is rp's `detect_stars` tool — the plugin carries no
+image-analysis code of its own. `preview.rs` only re-encodes pixels
+for display (`rp-fits` reader + the pure-Rust `png` encoder); nothing
+it produces feeds the alignment math.
 
 ## Testing Strategy
 
@@ -458,16 +549,25 @@ Per `docs/skills/testing.md`.
   stub whose canned solves are choreographed from a known injected
   axis error — the completion report must recover it. Scenarios per
   the plan's Phase 3 list; `doctor.feature` and `auth.feature` ride
-  the shared smoke fixtures.
+  the shared smoke fixtures. Manual-rotation scenarios drive the
+  wait/continue protocol over choreographed solves; the site-from-rp
+  scenario runs a site-less plugin config against an rp whose `site`
+  block matches OmniSim's default mount site (rp validates the two
+  against each other on connect). The preview endpoint is asserted
+  on the real FITS frames rp captures from the simulator.
+- **Preview unit tests** render synthetic FITS written through
+  `rp-fits` and decode the PNG back: dimensions follow the width
+  clamp, the stretch spans the output range, a constant frame is
+  mid-gray, and a missing file is a clean error.
 - **No OmniSim image↔pointing coupling exists**, so end-to-end
   optical truth arrives only in Phase 7 rig validation.
 
 ## MVP Scope
 
 In scope: everything above, including the P6 attitude-based axis and
-`current_position` mode. Out of scope (see the plan): ui-htmx page
-(P5), site-from-rp sourcing, manual-rotation mode for non-GoTo
-trackers, PNG preview endpoint.
+`current_position` mode, and the Phase 8 additions — site-from-rp
+sourcing (D10), `manual_rotation` mode (D11), and the PNG preview
+endpoint (D12). Out of scope (see the plan): the ui-htmx page (P5).
 
 ## References
 

@@ -18,7 +18,22 @@ use cucumber::{given, then, when};
 use polar_align::math::{unit_from_radec, wcs_from_attitude, Mat3, Vec3};
 use rp_ephemeris::{AltAz, Ephemeris, ErfarsEphemeris, Site};
 
-use crate::world::{PolarAlignWorld, SITE_LATITUDE_DEG, SITE_LONGITUDE_DEG};
+use crate::world::{
+    PolarAlignWorld, OMNISIM_SITE_LATITUDE_DEG, OMNISIM_SITE_LONGITUDE_DEG, SITE_LATITUDE_DEG,
+    SITE_LONGITUDE_DEG,
+};
+
+/// [`choreograph_solves_at`] in the world's shared site — what every
+/// scenario whose plugin config carries that site uses.
+fn choreograph_solves(east_arcmin: f64, alt_arcmin: f64, off_axis_deg: f64) -> Vec<CannedWcs> {
+    choreograph_solves_at(
+        SITE_LATITUDE_DEG,
+        SITE_LONGITUDE_DEG,
+        east_arcmin,
+        alt_arcmin,
+        off_axis_deg,
+    )
+}
 
 /// Generate the three measurement solves (plus one adjustment solve
 /// the Sequence clamps on) for a mount whose RA axis sits at the
@@ -27,15 +42,22 @@ use crate::world::{PolarAlignWorld, SITE_LATITUDE_DEG, SITE_LONGITUDE_DEG};
 /// `off_axis_deg` from the axis and each point rotates the full
 /// attitude 45° about it, so the per-point `wcs_matrix` encodes the
 /// same rotation the centers trace — both axis methods must agree on
-/// these solves. Pure geometry in the world's shared site,
-/// unrefracted — matching the service config's
-/// `refraction.enabled = false`.
-fn choreograph_solves(east_arcmin: f64, alt_arcmin: f64, off_axis_deg: f64) -> Vec<CannedWcs> {
-    let site = Site::new(SITE_LATITUDE_DEG, SITE_LONGITUDE_DEG).expect("test site");
+/// these solves. Pure geometry in the given site, unrefracted —
+/// matching the service config's `refraction.enabled = false`. The
+/// site must be the one the *plugin* resolves (config or rp), or the
+/// recovered error cannot match the injected one.
+fn choreograph_solves_at(
+    site_latitude_deg: f64,
+    site_longitude_deg: f64,
+    east_arcmin: f64,
+    alt_arcmin: f64,
+    off_axis_deg: f64,
+) -> Vec<CannedWcs> {
+    let site = Site::new(site_latitude_deg, site_longitude_deg).expect("test site");
     let eph = ErfarsEphemeris::new();
     let now = chrono::Utc::now();
 
-    let axis_alt = SITE_LATITUDE_DEG + alt_arcmin / 60.0;
+    let axis_alt = site_latitude_deg + alt_arcmin / 60.0;
     let axis_az = ((east_arcmin / 60.0_f64).to_radians().sin() / axis_alt.to_radians().cos())
         .asin()
         .to_degrees();
@@ -189,6 +211,48 @@ async fn measurement_from_current_position(world: &mut PolarAlignWorld) {
         .insert("sweep_deg".to_string(), serde_json::json!(15.0));
 }
 
+#[given("the measurement uses manual rotation")]
+async fn measurement_manual_rotation(world: &mut PolarAlignWorld) {
+    world
+        .measurement_overrides
+        .insert("mode".to_string(), serde_json::json!("manual_rotation"));
+}
+
+#[given("rp is configured with the simulator's default observer site")]
+async fn rp_configured_with_omnisim_site(world: &mut PolarAlignWorld) {
+    world.rp_site = Some((OMNISIM_SITE_LATITUDE_DEG, OMNISIM_SITE_LONGITUDE_DEG));
+}
+
+#[given("the polar-align config carries no site block")]
+async fn plugin_config_without_site(world: &mut PolarAlignWorld) {
+    world.omit_plugin_site = true;
+}
+
+#[given(
+    expr = "a stub plate solver choreographed for an axis error of {float} arcminutes east and {float} arcminutes in altitude at the simulator's default site"
+)]
+async fn stub_solver_choreographed_omnisim_site(world: &mut PolarAlignWorld, east: f64, alt: f64) {
+    // Choreographed in the site the plugin will RESOLVE (rp's, which
+    // must equal OmniSim's default) — measuring these solves against
+    // any other site is degrees wrong, so the 2′ recovery assertion
+    // only passes if the site really came from rp.
+    let stub = PlateSolverStub::start(StubBehavior::Sequence(choreograph_solves_at(
+        OMNISIM_SITE_LATITUDE_DEG,
+        OMNISIM_SITE_LONGITUDE_DEG,
+        east,
+        alt,
+        5.0,
+    )))
+    .await;
+    world.plate_solver = Some(bdd_infra::rp_harness::PlateSolverConfig {
+        url: stub.url.clone(),
+        timeout: None,
+        default_search_radius_deg: None,
+    });
+    world.plate_solver_stub = Some(stub);
+    world.injected_error_arcmin = Some((east, alt));
+}
+
 #[given(expr = "the workflow tolerates at most {int} consecutive failed solves")]
 async fn limit_solve_failures(world: &mut PolarAlignWorld, max: u32) {
     world
@@ -292,6 +356,51 @@ async fn post_invocation_missing_workflow_id(world: &mut PolarAlignWorld) {
         .send()
         .await
         .expect("failed to POST /invoke");
+    world.last_api_status = Some(resp.status().as_u16());
+    world.last_api_body = resp.json().await.ok();
+}
+
+#[when(expr = "the polar-align workflow awaits measurement point {int}")]
+async fn workflow_awaits_point(world: &mut PolarAlignWorld, point: u64) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/status", world.polar_align_url());
+    let mut last = String::new();
+    for _ in 0..720 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                if body.get("awaiting_point").and_then(|v| v.as_u64()) == Some(point) {
+                    return;
+                }
+                last = body.to_string();
+            }
+        }
+    }
+    panic!("polar-align never awaited measurement point {point} (last status: {last})");
+}
+
+#[when("the operator confirms the manual rotation")]
+async fn operator_confirms_rotation(world: &mut PolarAlignWorld) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/measure/continue", world.polar_align_url());
+    let resp = client
+        .post(&url)
+        .send()
+        .await
+        .expect("failed to POST /measure/continue");
+    world.last_api_status = Some(resp.status().as_u16());
+    world.last_api_body = resp.json().await.ok();
+}
+
+#[when("the preview endpoint is fetched")]
+async fn fetch_preview(world: &mut PolarAlignWorld) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/preview.png", world.polar_align_url());
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("failed to GET /preview.png");
     world.last_api_status = Some(resp.status().as_u16());
     world.last_api_body = resp.json().await.ok();
 }
@@ -403,6 +512,72 @@ async fn first_solve_hint_near_synced_pointing(world: &mut PolarAlignWorld, tole
     assert!(
         (dec_hint - 60.0).abs() <= tolerance,
         "first solve dec_hint {dec_hint}° is not the synced declination 60°"
+    );
+}
+
+#[then("the first solve request should carry no pointing hint")]
+async fn first_solve_request_unhinted(world: &mut PolarAlignWorld) {
+    let stub = world
+        .plate_solver_stub
+        .as_ref()
+        .expect("plate solver stub not started");
+    let requests = stub.requests().await;
+    let first = requests.first().expect("no solve requests recorded");
+    // Manual rotation solves blind AND pins rp's mount hints off — a
+    // hint from the (unrelated) simulator mount would defeat the
+    // no-mount contract.
+    assert!(
+        first.get("ra_hint").is_none() && first.get("dec_hint").is_none(),
+        "first solve request must be blind, got: {first}"
+    );
+}
+
+#[then(expr = "the preview endpoint should serve a PNG at most {int} pixels wide")]
+async fn preview_serves_png(world: &mut PolarAlignWorld, max_width: u32) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/preview.png", world.polar_align_url());
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("failed to GET /preview.png");
+    assert_eq!(resp.status().as_u16(), 200, "preview must be available");
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+    let bytes = resp.bytes().await.expect("failed to read preview body");
+    assert!(
+        bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+        "body does not start with the PNG magic"
+    );
+    // IHDR width lives at bytes 16..20, big-endian.
+    let width = u32::from_be_bytes(bytes[16..20].try_into().expect("truncated IHDR"));
+    assert!(
+        width > 0 && width <= max_width,
+        "preview width {width} outside (0, {max_width}]"
+    );
+}
+
+#[then(expr = "the continue request should be rejected with status {int}")]
+async fn continue_rejected(world: &mut PolarAlignWorld, expected: u16) {
+    assert_eq!(
+        world.last_api_status,
+        Some(expected),
+        "unexpected /measure/continue status (body: {:?})",
+        world.last_api_body
+    );
+}
+
+#[then(expr = "the preview request should be rejected with status {int}")]
+async fn preview_rejected(world: &mut PolarAlignWorld, expected: u16) {
+    assert_eq!(
+        world.last_api_status,
+        Some(expected),
+        "unexpected /preview.png status (body: {:?})",
+        world.last_api_body
     );
 }
 
@@ -529,6 +704,12 @@ async fn start_polar_align_service(world: &mut PolarAlignWorld) {
         return;
     }
     let mut config = PolarAlignWorld::polar_align_service_config();
+    if world.omit_plugin_site {
+        config
+            .as_object_mut()
+            .expect("service config is an object")
+            .remove("site");
+    }
     if let Some(adjustment) = config.get_mut("adjustment").and_then(|a| a.as_object_mut()) {
         for (key, value) in &world.adjustment_overrides {
             adjustment.insert(key.clone(), value.clone());

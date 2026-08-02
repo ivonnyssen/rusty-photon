@@ -20,6 +20,15 @@ use serde_json::Value;
 pub const SITE_LATITUDE_DEG: f64 = 48.0;
 pub const SITE_LONGITUDE_DEG: f64 = -122.8;
 
+/// OmniSim's default telescope-profile site. Scenarios that give *rp*
+/// a site block must use this one: rp hard-errors on mount connect
+/// when its configured site differs from the mount's reported site by
+/// more than 0.01°, and mutating OmniSim's site instead would leak
+/// into other suites (the write outlives the scenario — see
+/// `OmniSimHandle::set_telescope_site`).
+pub const OMNISIM_SITE_LATITUDE_DEG: f64 = 51.0786;
+pub const OMNISIM_SITE_LONGITUDE_DEG: f64 = -0.2944;
+
 #[derive(Default, World, derive_more::Debug)]
 #[debug("PolarAlignWorld {{ .. }}")]
 pub struct PolarAlignWorld {
@@ -34,6 +43,14 @@ pub struct PolarAlignWorld {
     pub mount: Option<bdd_infra::rp_harness::MountConfig>,
     pub plate_solver: Option<bdd_infra::rp_harness::PlateSolverConfig>,
     pub plugin_configs: Vec<Value>,
+    /// rp's `site` block, absent by default. Scenarios exercising
+    /// site-from-rp sourcing set it (to OmniSim's default site — see
+    /// the constants above).
+    pub rp_site: Option<(f64, f64)>,
+
+    /// Strip the `site` block from the polar-align service config, so
+    /// the workflow must resolve it from rp's `get_site`.
+    pub omit_plugin_site: bool,
 
     // --- Choreography ---
     /// The axis error the stub's solves were generated from, in
@@ -118,6 +135,9 @@ impl PolarAlignWorld {
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
+        }
+        if let Some((lat, lon)) = self.rp_site {
+            builder.with_site(lat, lon);
         }
         builder.build()
     }
