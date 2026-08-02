@@ -13,6 +13,8 @@ use std::time::Duration;
 use ascom_alpaca::api::{Telescope, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::doctor_smoke::{DoctorSmokeState, DoctorSmokeWorld};
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
@@ -37,6 +39,11 @@ pub struct BridgeWorld {
     pub telescope: Option<Arc<dyn Telescope>>,
     pub temp_dir: Option<TempDir>,
     pub stub_rp: Option<StubRp>,
+    /// Staged config and captured output of the shared doctor smoke — it
+    /// runs the binary's `doctor` subcommand, never a server.
+    pub doctor_smoke: DoctorSmokeState,
+    /// Throwaway PKI and credentials for the shared TLS + auth smoke.
+    pub tls_auth: TlsAuthState,
 
     // Config knobs set by Given steps before the service starts.
     pub floor: FloorSetting,
@@ -82,6 +89,35 @@ impl BridgeWorld {
             .and_then(|rest| rest.split('/').next())
             .and_then(|port| port.parse().ok())
             .expect("rp URL is not the harness shape http://127.0.0.1:PORT/mcp")
+    }
+
+    /// The service-specific half of a bridge config — everything but the
+    /// `server` block, which the doctor and TLS/auth smokes each fill in
+    /// their own way. Spelling out every block puts the whole typed load
+    /// path (site newtypes, the `assume_epoch` enum, humantime durations)
+    /// under the doctor smoke's clean-report scenario.
+    ///
+    /// `spool.path` is deliberately absent: only a `&mut self` path can mint
+    /// a scenario temp dir, so `start_with_tls_auth` inserts it before
+    /// spawning. Doctor needs none — it parses the file and never resolves
+    /// the spool location.
+    fn smoke_base_config() -> serde_json::Value {
+        serde_json::json!({
+            "site": {
+                "site_latitude_deg": 33.0,
+                "site_longitude_deg": -117.0,
+                "site_elevation_m": 0.0,
+            },
+            // Neither smoke imports anything, and a dead URL keeps the
+            // import worker off whatever is listening on rp's real port.
+            "rp": { "mcp_server_url": unreachable_rp_url() },
+            "device": {
+                "slew_duration": "3s",
+                "assume_epoch": "j2000",
+                "report_altitude_floor_deg": 10.0,
+            },
+            "spool": { "max_entries": 1000, "replay_backoff_max": "60s" },
+        })
     }
 
     fn write_config(&mut self) -> String {
@@ -233,6 +269,45 @@ impl BridgeWorld {
             .json()
             .await
             .ok()
+    }
+}
+
+impl DoctorSmokeWorld for BridgeWorld {
+    fn doctor_smoke(&mut self) -> &mut DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    /// The smoke base config plus a plain `server` block — the full shape
+    /// the bridge's own `deny_unknown_fields` load accepts.
+    fn valid_config(&self) -> serde_json::Value {
+        let mut config = Self::smoke_base_config();
+        config["server"] = serde_json::json!({ "port": 0 });
+        config
+    }
+}
+
+impl TlsAuthSmokeWorld for BridgeWorld {
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        Self::smoke_base_config()
+    }
+
+    /// Point the spool at the scenario temp dir before spawning: an absent
+    /// `spool.path` resolves to — and creates — the *platform* config dir,
+    /// which a test must never touch.
+    async fn start_with_tls_auth(&mut self, mut config: serde_json::Value) {
+        let spool_path = self.spool_path();
+        config["spool"]["path"] = spool_path.to_string_lossy().into_owned().into();
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.handle = Some(handle);
     }
 }
 

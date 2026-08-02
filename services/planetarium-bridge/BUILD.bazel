@@ -98,7 +98,7 @@ rust_test(
     tags = ["bdd"],
     use_libtest_harness = False,
     deps = [
-        "//crates/bdd-infra",
+        "//crates/bdd-infra:bdd-infra_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
