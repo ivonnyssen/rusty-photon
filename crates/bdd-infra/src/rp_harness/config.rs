@@ -833,7 +833,18 @@ pub fn build_calibrator_flats_config(
         "tolerance": 1.0,
         "max_iterations": 1,
         "initial_duration": "100ms",
-        "filters": filter_entries
+        "filters": filter_entries,
+        // Port 0, not the omitted-block default. calibrator-flats falls back to
+        // a fixed 11170, which every concurrent instance then fights over: a
+        // second copy of the suite (`--runs_per_test`, a second worktree, a
+        // service already running on the box) loses the bind and dies before
+        // printing its address, surfacing as "failed to parse bound port".
+        // Nothing reads the port from the config — the harness takes it from
+        // the spawned process's `bound_addr=` line.
+        "server": {
+            "port": 0,
+            "bind_address": "127.0.0.1"
+        }
     });
     if let Some(fw) = filter_wheel_id {
         config["filter_wheel_id"] = serde_json::json!(fw);
@@ -1244,5 +1255,14 @@ mod tests {
             "a filterless plan must omit filter_wheel_id entirely"
         );
         assert_eq!(cfg["filters"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn calibrator_flats_config_asks_for_an_ephemeral_port() {
+        // Omitting the block lets the service fall back to its fixed default
+        // port, which collides the moment two instances exist.
+        let cfg = build_calibrator_flats_config(&[("Luminance".to_string(), 1)], None);
+        assert_eq!(cfg["server"]["port"], 0);
+        assert_eq!(cfg["server"]["bind_address"], "127.0.0.1");
     }
 }
