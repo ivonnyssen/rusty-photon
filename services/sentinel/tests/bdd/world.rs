@@ -38,7 +38,7 @@ pub struct SentinelWorld {
     pub last_error: Option<String>,
 
     // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
-    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
     // Local Pushover API stub so notification scenarios never hit the real
     // api.pushover.net (slow, non-hermetic, rejects test credentials).
@@ -98,7 +98,7 @@ impl SentinelWorld {
 
     /// The shared PKI fixture (panics if the cert-generation Given hasn't run).
     pub fn pki(&self) -> &bdd_infra::tls_auth::PkiFixture {
-        self.pki.as_ref().expect("TLS certs not generated")
+        self.pki.as_deref().expect("TLS certs not generated")
     }
 
     /// `server.tls` fragment for the filemonitor certificate pair signed by

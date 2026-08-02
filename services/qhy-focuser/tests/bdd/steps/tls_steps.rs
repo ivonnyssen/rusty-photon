@@ -7,10 +7,8 @@ use crate::world::QhyFocuserWorld;
 use bdd_infra::ServiceHandle;
 
 #[given("generated TLS certificates for qhy-focuser")]
-fn generate_tls_certs(world: &mut QhyFocuserWorld) {
-    world.pki = Some(bdd_infra::tls_auth::PkiFixture::generate(env!(
-        "CARGO_PKG_NAME"
-    )));
+async fn generate_tls_certs(world: &mut QhyFocuserWorld) {
+    world.pki = Some(bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await);
 }
 
 #[given("qhy-focuser is configured with TLS enabled and mock serial")]

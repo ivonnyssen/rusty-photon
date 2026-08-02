@@ -5,22 +5,44 @@ use tempfile::TempDir;
 
 use crate::world::SentinelWorld;
 
+/// Guards the extra filemonitor certificate below. The shared fixture is
+/// generated once per suite, so its companion cert is signed once too —
+/// without this, concurrent scenarios would rewrite the same file while
+/// another scenario's filemonitor is reading it.
+static FILEMONITOR_CERT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
 #[given("generated TLS certificates for sentinel")]
-fn generate_tls_certs(world: &mut SentinelWorld) {
-    let pki = bdd_infra::tls_auth::PkiFixture::generate(env!("CARGO_PKG_NAME"));
+async fn generate_tls_certs(world: &mut SentinelWorld) {
+    let pki = bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;
     // The cross-service scenarios spawn a TLS-enabled filemonitor whose
     // certificate must chain to the same CA sentinel trusts. The fixture
     // generates one service cert, so sign the filemonitor cert with the
     // fixture's CA directly (ca-key.pem sits next to ca.pem).
-    let ca_pem = std::fs::read_to_string(pki.ca_path()).unwrap();
-    let ca_key = std::fs::read_to_string(pki.ca_path().with_file_name("ca-key.pem")).unwrap();
-    let certs_dir = pki
-        .cert_path()
-        .parent()
-        .expect("cert path has no parent")
-        .to_path_buf();
-    rusty_photon_tls::test_cert::generate_service_cert(&ca_pem, &ca_key, "filemonitor", &certs_dir)
-        .unwrap();
+    let for_cert = std::sync::Arc::clone(&pki);
+    FILEMONITOR_CERT
+        .get_or_init(|| async move {
+            tokio::task::spawn_blocking(move || {
+                let ca_pem = std::fs::read_to_string(for_cert.ca_path()).unwrap();
+                let ca_key =
+                    std::fs::read_to_string(for_cert.ca_path().with_file_name("ca-key.pem"))
+                        .unwrap();
+                let certs_dir = for_cert
+                    .cert_path()
+                    .parent()
+                    .expect("cert path has no parent")
+                    .to_path_buf();
+                rusty_photon_tls::test_cert::generate_service_cert(
+                    &ca_pem,
+                    &ca_key,
+                    "filemonitor",
+                    &certs_dir,
+                )
+                .unwrap();
+            })
+            .await
+            .expect("filemonitor cert generation panicked")
+        })
+        .await;
     world.pki = Some(pki);
 }
 

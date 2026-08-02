@@ -413,6 +413,10 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
 - `run_once_async()` / `run_once()` — run a binary once (a `doctor` subcommand,
   a `--help`) and reap its output. Steps use the async form; see
   [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
+- `tls_auth::shared_pki()` — the suite's throwaway CA, service certificate and
+  credential pair, generated once per test process on the blocking pool. Steps
+  call this, never `PkiFixture::generate` directly; see
+  [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
 
 **Labeled stderr forwarding.** Every spawned child's stderr (where every
 service's `tracing` output goes) is captured and re-printed line-by-line,
@@ -877,6 +881,16 @@ to), and any other blocking wait belongs in `tokio::task::spawn_blocking`.
 `tokio::task::block_in_place` is *not* a fix here — it hands a worker's
 queue to a replacement thread, and the poll loop being starved is not on a
 worker.
+
+CPU-bound setup counts as blocking, not just waiting on a child. The TLS
+fixture is the standing example: a CA keypair, a service keypair, a
+signature and an Argon2id hash — which exists to be expensive, and which
+`bazel test` builds unoptimised. Call
+**`bdd_infra::tls_auth::shared_pki`, never `PkiFixture::generate`**: it
+runs that work on the blocking pool *and* once per test process rather
+than once per scenario, since a suite's scenarios all want the same
+throwaway PKI. Reach for the same shape whenever setup is both expensive
+and identical across scenarios.
 
 The same reasoning applies to a helper a step calls: make it `async` all
 the way down rather than blocking one level lower.

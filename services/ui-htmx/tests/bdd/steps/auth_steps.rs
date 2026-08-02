@@ -11,12 +11,12 @@ use crate::world::UiWorld;
 
 /// The scenario's PKI + credentials fixture.
 fn pki(world: &UiWorld) -> &PkiFixture {
-    world.pki.as_ref().expect("TLS certs not generated")
+    world.pki.as_deref().expect("TLS certs not generated")
 }
 
 #[given("generated TLS certificates for ui-htmx")]
-fn generate_tls_certs(world: &mut UiWorld) {
-    world.pki = Some(PkiFixture::generate(env!("CARGO_PKG_NAME")));
+async fn generate_tls_certs(world: &mut UiWorld) {
+    world.pki = Some(bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await);
 }
 
 #[given("ui-htmx is configured with TLS and auth enabled")]

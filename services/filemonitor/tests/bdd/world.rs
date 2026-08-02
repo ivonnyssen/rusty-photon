@@ -42,7 +42,7 @@ pub struct FilemonitorWorld {
     pub config_path: Option<String>,
 
     // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
-    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
     // Config actions test state
     pub last_response: Option<Value>,
@@ -84,7 +84,7 @@ impl FilemonitorWorld {
 
     /// The shared PKI fixture (panics if the cert-generation Given hasn't run).
     pub fn pki(&self) -> &bdd_infra::tls_auth::PkiFixture {
-        self.pki.as_ref().expect("TLS certs not generated")
+        self.pki.as_deref().expect("TLS certs not generated")
     }
 
     /// Build a JSON config from the accumulated world state.

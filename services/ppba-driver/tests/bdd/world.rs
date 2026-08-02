@@ -30,7 +30,7 @@ pub struct PpbaWorld {
     pub last_error: Option<ASCOMError>,
 
     /// Throwaway PKI + per-run credentials for the TLS/auth scenarios
-    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
