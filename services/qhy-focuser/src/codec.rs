@@ -128,10 +128,12 @@ impl Codec for QhyCodec {
         // `SerialFrameTransport` includes the terminator. Trim leading
         // junk (matches the legacy `TokioSerialReader` defensive
         // behaviour) before parsing.
-        let json_start = text.find('{').ok_or_else(|| {
-            QhyCodecError::InvalidResponse(format!("no `{{` found in frame: {text:?}"))
-        })?;
-        let json = &text[json_start..];
+        let json = text
+            .find('{')
+            .and_then(|start| text.get(start..))
+            .ok_or_else(|| {
+                QhyCodecError::InvalidResponse(format!("no `{{` found in frame: {text:?}"))
+            })?;
 
         let value: Value = serde_json::from_str(json)
             .map_err(|e| QhyCodecError::Parse(format!("invalid JSON: {e}")))?;

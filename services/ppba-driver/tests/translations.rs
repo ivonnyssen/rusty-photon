@@ -34,7 +34,7 @@
 //!   default bzlmod workspace name but can be configured per project, so we
 //!   read `TEST_WORKSPACE` rather than hard-coding it.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 

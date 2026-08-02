@@ -411,9 +411,8 @@ fn format_float(f: f64) -> String {
     // `1.0000000000E+00` to match the FITS canonical form.
     let raw = format!("{f:.10E}");
     // Insert sign on exponent if missing.
-    let (mantissa, exp) = match raw.find('E') {
-        Some(i) => (&raw[..i], &raw[i + 1..]),
-        None => return raw,
+    let Some((mantissa, exp)) = raw.split_once('E') else {
+        return raw;
     };
     let (sign, exp_digits) = match exp.chars().next() {
         Some('+') | Some('-') => exp.split_at(1),

@@ -192,16 +192,19 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
             continue;
         };
         let raw_name = raw_name.as_str();
-        if whole.start() > last_end {
-            segments.push(Segment::Literal(&pattern[last_end..whole.start()]));
+        if let Some(literal) = pattern
+            .get(last_end..whole.start())
+            .filter(|l| !l.is_empty())
+        {
+            segments.push(Segment::Literal(literal));
         }
         let token = Token::from_canonical(raw_name)
             .ok_or_else(|| format!("unknown naming-template token {{{raw_name}}}"))?;
         segments.push(Segment::Token(token));
         last_end = whole.end();
     }
-    if last_end < pattern.len() {
-        segments.push(Segment::Literal(&pattern[last_end..]));
+    if let Some(tail) = pattern.get(last_end..).filter(|t| !t.is_empty()) {
+        segments.push(Segment::Literal(tail));
     }
 
     // A `{` with no matching `}` (or containing a non-word character)
@@ -210,7 +213,8 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
     for segment in &segments {
         if let Segment::Literal(text) = segment {
             if let Some(pos) = text.find('{') {
-                return Err(format!("unterminated token starting at {:?}", &text[pos..]));
+                let offending = text.get(pos..).unwrap_or(text);
+                return Err(format!("unterminated token starting at {offending:?}"));
             }
         }
     }

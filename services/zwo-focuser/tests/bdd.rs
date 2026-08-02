@@ -2,7 +2,7 @@
 //! backend) and drives it through the typed ASCOM Alpaca Focuser client. The
 //! binary must be pre-built with `--features simulation` (or `--all-features`).
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "bdd/world.rs"]
 mod world;

@@ -675,7 +675,7 @@ impl McpHandler {
         // Operator-controlled `file_naming_pattern` rendering is reserved
         // until a token resolver lands; for now capture writes
         // `<uuid8>.fits` regardless of any configured template.
-        let uuid8 = &document_id[..8];
+        let uuid8 = document_id.get(..8).unwrap_or(document_id.as_str());
         let mut image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
 
         let operation_id = Uuid::new_v4().to_string();

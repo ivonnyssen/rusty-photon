@@ -88,13 +88,13 @@ impl RawResponse {
         let end = trimmed
             .rfind(')')
             .ok_or_else(|| DsdFp2Error::MalformedResponse(format!("missing ')': {raw:?}")))?;
-        if end <= start {
-            return Err(DsdFp2Error::MalformedResponse(format!(
-                "inverted parens: {raw:?}"
-            )));
-        }
+        // `get` returns `None` exactly when `end <= start`, so it is also
+        // the inverted-parens check.
+        let body = trimmed
+            .get(start + 1..end)
+            .ok_or_else(|| DsdFp2Error::MalformedResponse(format!("inverted parens: {raw:?}")))?;
         Ok(Self {
-            body: trimmed[start + 1..end].trim().to_string(),
+            body: body.trim().to_string(),
         })
     }
 

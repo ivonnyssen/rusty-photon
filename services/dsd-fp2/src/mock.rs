@@ -183,39 +183,47 @@ impl MockFrameTransport {
             "GLBR" => format!("({})", inner.brightness),
             "GHTT" => format!("({:.6})", inner.heater_temp),
             "GHTM" => format!("({})", inner.heater_mode),
-            other if other.starts_with("STRG") => match other[4..].parse::<u16>() {
-                Ok(v) => {
-                    inner.target_angle = Some(v);
-                    "(OK)".to_string()
+            other => {
+                if let Some(arg) = other.strip_prefix("STRG") {
+                    match arg.parse::<u16>() {
+                        Ok(v) => {
+                            inner.target_angle = Some(v);
+                            "(OK)".to_string()
+                        }
+                        Err(_) => "(MOCK_BAD_ARG)".to_string(),
+                    }
+                } else if let Some(arg) = other.strip_prefix("SLON") {
+                    match arg {
+                        "0" => {
+                            inner.light_on = false;
+                            "(OK)".to_string()
+                        }
+                        "1" => {
+                            inner.light_on = true;
+                            "(OK)".to_string()
+                        }
+                        _ => "(MOCK_BAD_ARG)".to_string(),
+                    }
+                } else if let Some(arg) = other.strip_prefix("SLBR") {
+                    match arg.parse::<u16>() {
+                        Ok(v) => {
+                            inner.brightness = v;
+                            "(OK)".to_string()
+                        }
+                        Err(_) => "(MOCK_BAD_ARG)".to_string(),
+                    }
+                } else if let Some(arg) = other.strip_prefix("SHTM") {
+                    match arg.parse::<u8>() {
+                        Ok(v) => {
+                            inner.heater_mode = v;
+                            "(OK)".to_string()
+                        }
+                        Err(_) => "(MOCK_BAD_ARG)".to_string(),
+                    }
+                } else {
+                    format!("(MOCK_UNKNOWN:{other})")
                 }
-                Err(_) => "(MOCK_BAD_ARG)".to_string(),
-            },
-            other if other.starts_with("SLON") => match &other[4..] {
-                "0" => {
-                    inner.light_on = false;
-                    "(OK)".to_string()
-                }
-                "1" => {
-                    inner.light_on = true;
-                    "(OK)".to_string()
-                }
-                _ => "(MOCK_BAD_ARG)".to_string(),
-            },
-            other if other.starts_with("SLBR") => match other[4..].parse::<u16>() {
-                Ok(v) => {
-                    inner.brightness = v;
-                    "(OK)".to_string()
-                }
-                Err(_) => "(MOCK_BAD_ARG)".to_string(),
-            },
-            other if other.starts_with("SHTM") => match other[4..].parse::<u8>() {
-                Ok(v) => {
-                    inner.heater_mode = v;
-                    "(OK)".to_string()
-                }
-                Err(_) => "(MOCK_BAD_ARG)".to_string(),
-            },
-            other => format!("(MOCK_UNKNOWN:{other})"),
+            }
         }
     }
 }

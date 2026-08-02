@@ -1,6 +1,11 @@
 //! BDD test entry point for sentinel service
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreachable,
+    clippy::panic
+)]
 
 #[path = "bdd/world.rs"]
 mod world;

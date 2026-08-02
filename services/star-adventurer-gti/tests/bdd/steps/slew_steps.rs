@@ -193,7 +193,7 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     // `skywatcher_motor_protocol::MotionMode::to_wire_bytes` for
     // the canonical encoding. DB2 bit 0 = CCW.
     assert_eq!(g2.len(), 6, "malformed :G2 frame {g2:?}");
-    let db2 = u8::from_str_radix(&g2[4..5], 16).expect("valid hex");
+    let db2 = u8::from_str_radix(g2.get(4..5).expect("6-byte :G2 frame"), 16).expect("valid hex");
     let signed_ticks: i64 = if db2 & 0x1 != 0 {
         -(dec_magnitude as i64)
     } else {

@@ -1480,9 +1480,13 @@ mod tests {
     /// The `<input ...>` tag whose `name` attribute is `name`.
     fn input_tag(markup: &str, name: &str) -> String {
         let pos = markup.find(&format!(r#"name="{name}""#)).unwrap();
-        let start = markup[..pos].rfind("<input").unwrap();
-        let end = markup[start..].find('>').unwrap() + start;
-        markup[start..=end].to_string()
+        let start = markup
+            .get(..pos)
+            .and_then(|head| head.rfind("<input"))
+            .unwrap();
+        let tag = markup.get(start..).unwrap();
+        let end = tag.find('>').unwrap();
+        tag.get(..=end).unwrap().to_string()
     }
 
     // --- schema walker -------------------------------------------------------

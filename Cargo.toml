@@ -99,10 +99,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 unwrap_used = "deny"
 expect_used = "deny"
 unreachable = "deny"
+panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 panic_in_result_fn = "deny"
 unchecked_time_subtraction = "deny"
+string_slice = "deny"
 
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }

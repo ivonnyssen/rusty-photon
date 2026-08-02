@@ -41,20 +41,20 @@ fn surface_ok(s: &str) -> bool {
     let mut rest = s;
     let mut components = 0usize;
     while !rest.is_empty() {
-        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        if digits == 0 {
+        let after_digits = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+        if after_digits.len() == rest.len() {
             return false;
         }
-        rest = &rest[digits..];
-        if let Some(after) = rest.strip_prefix('.') {
-            let frac = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-            if frac == 0 {
+        rest = after_digits;
+        if let Some(after_dot) = rest.strip_prefix('.') {
+            let after_frac = after_dot.trim_start_matches(|c: char| c.is_ascii_digit());
+            if after_frac.len() == after_dot.len() {
                 return false;
             }
-            rest = &after[frac..];
+            rest = after_frac;
         }
-        match UNITS.iter().find(|u| rest.starts_with(**u)) {
-            Some(u) => rest = &rest[u.len()..],
+        match UNITS.iter().find_map(|u| rest.strip_prefix(*u)) {
+            Some(after_unit) => rest = after_unit,
             None => return false,
         }
         rest = rest.trim_start();

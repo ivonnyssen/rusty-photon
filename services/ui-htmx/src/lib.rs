@@ -1418,9 +1418,13 @@ mod tests {
     /// The `<input ...>` tag whose `name` attribute is `name`.
     fn input_tag(html: &str, name: &str) -> String {
         let pos = html.find(&format!(r#"name="{name}""#)).unwrap();
-        let start = html[..pos].rfind("<input").unwrap();
-        let end = html[start..].find('>').unwrap() + start;
-        html[start..=end].to_string()
+        let start = html
+            .get(..pos)
+            .and_then(|head| head.rfind("<input"))
+            .unwrap();
+        let tag = html.get(start..).unwrap();
+        let end = tag.find('>').unwrap();
+        tag.get(..=end).unwrap().to_string()
     }
 
     #[tokio::test]

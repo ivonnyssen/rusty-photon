@@ -394,12 +394,16 @@ The hook is installed automatically the first time any test build pulls
 
 `[workspace.lints.clippy]` in the root `Cargo.toml` denies the routes by which
 an otherwise-recoverable situation aborts the process — `unwrap_used`,
-`expect_used`, `unreachable`, `todo`, `unimplemented`, `panic_in_result_fn`,
-`unchecked_time_subtraction`. A driver that panics at 2am ends the night's
-imaging (tenet 2). Members opt in with `[lints] workspace = true`; the
-dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`, `svbony-rs` and their `-sys`
-shims) deliberately do not, since their lint policy travels with them to
-crates.io.
+`expect_used`, `unreachable`, `panic`, `todo`, `unimplemented`,
+`panic_in_result_fn`, `unchecked_time_subtraction`, `string_slice`. A driver
+that panics at 2am ends the night's imaging (tenet 2). Members opt in with
+`[lints] workspace = true`; the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
+`svbony-rs` and their `-sys` shims) deliberately do not, since their lint
+policy travels with them to crates.io.
+
+`exit` is deliberately **not** denied: every call site is a `doctor.rs`
+`pub fn run(...) -> !` honouring doctor's documented 0/1/2 exit contract
+(see [doctor](services/doctor.md)), so denying it would buy only `#[allow]`s.
 
 Test code is exempt where the panic is the point, and that exemption lives in
 `clippy.toml` at the repo root rather than in per-module attributes. It turns
@@ -407,14 +411,19 @@ Test code is exempt where the panic is the point, and that exemption lives in
 scope only**, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its
 own and production code in the same file still gets the full deny.
 
-You still need a scoped `#[allow]` in two cases:
+You still need a scoped `#[allow]` in three cases:
 
-- **`unreachable`** — clippy has no `allow-*-in-tests` knob for it.
+- **Lints with no knob** — clippy offers `allow-*-in-tests` for only eight
+  lints; `unreachable` and `string_slice` are not among them.
 - **Cucumber step definitions.** Clippy treats `#[cfg(test)]` modules and
   `#[test]` functions as test code, but `#[given]`/`#[when]`/`#[then]` are
-  plain functions in a test crate. `tests/bdd/` entry files therefore keep a
-  file-level `#![allow(...)]`, which submodules pulled in via `#[path] mod`
-  inherit.
+  plain functions in a test crate. Every file directly under `tests/` is its
+  own crate root and therefore carries its own file-level `#![allow(...)]`,
+  which submodules pulled in via `mod`/`#[path] mod` inherit — a service with
+  both `tests/bdd.rs` and `tests/test_lib.rs` needs the attribute on each.
+- **Panics inside closures and helper fns in a test crate.** The knobs
+  recognise the `#[test]` function itself, not a closure it builds or a
+  `tests/common/mod.rs` helper it calls.
 
 Before deleting an `#[allow]`, resolve its **scope** — a per-file assumption is
 wrong. An inner `#![allow]` in a file's header region covers the whole package,

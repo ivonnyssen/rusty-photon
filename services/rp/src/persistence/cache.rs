@@ -632,6 +632,9 @@ fn disk_resolve_document(dir: &Path, full_uuid: &str) -> Option<ExposureDocument
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+// Slicing a literal UUID down to its 8-char disk key. There is no
+// `allow-string-slice-in-tests` knob, so the exemption is scoped here.
+#[allow(clippy::string_slice)]
 mod tests {
     use super::*;
     use ndarray::Array2;
