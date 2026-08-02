@@ -291,20 +291,10 @@ impl SentinelBuilder {
 
         // The discovery loop (registry upkeep + universal health
         // supervision) is appended after the DI override so injecting custom
-        // event monitors never silently disables supervision. With the
-        // doctor-written `service_auth` credential set AND a `ca_cert` to
-        // verify peers against, probes authenticate (HTTP Basic, https
-        // requests only — see `ReqwestHttpClient`) — credentials never ride
-        // an unverified or unencrypted connection. `service_auth` without
-        // `ca_cert` cannot honor that rule (system roots reject self-signed
-        // peers, probing them as down), so it degrades to the
-        // unauthenticated path with a loud warning. Unauthenticated probes
-        // send no credentials and never parse the body, and sentinel cannot
-        // assume it holds a CA for every peer's self-signed certificate, so
-        // that client skips certificate verification; auth-on peers answer
-        // 401, which is still proof of life. If the intended client cannot
-        // be built, fall back to the shared (verifying) client loudly —
-        // self-signed TLS peers would then probe as down.
+        // event monitors never silently disables supervision. The probe
+        // client's trust and auth posture — pinned CA, platform roots, or
+        // unauthenticated with verification off — is decided by
+        // `build_probe_client`; see its doc for the three states.
         let probe_http =
             build_probe_client(config.service_auth.as_ref(), ca_path.as_deref(), &http);
         let supervision = DiscoverySupervisor::new(
@@ -482,19 +472,40 @@ impl Sentinel {
     }
 }
 
-/// The client the health-supervision probes use. With the doctor-written
-/// `service_auth` credential set AND a `ca_cert` to verify peers against,
-/// probes authenticate (HTTP Basic, https requests only — see
-/// [`ReqwestHttpClient`]) — credentials never ride an unverified or
-/// unencrypted connection. `service_auth` without `ca_cert` cannot honor
-/// that rule (system roots reject self-signed peers, probing them as down),
-/// so it degrades to the unauthenticated path with a loud warning.
-/// Unauthenticated probes send no credentials and never parse the body, and
-/// sentinel cannot assume it holds a CA for every peer's self-signed
-/// certificate, so that client skips certificate verification; auth-on
-/// peers answer 401, which is still proof of life. If the intended client
-/// cannot be built, fall back to the `shared` (verifying) client loudly —
-/// self-signed TLS peers would then probe as down.
+/// The client the health-supervision probes use, keyed off the
+/// doctor-written `service_auth` credential and the optional `ca_cert` pin
+/// (a pin *replaces* the platform trust roots — ADR-002):
+///
+/// - credential + pin: authenticated probes (HTTP Basic, https requests
+///   only — see [`ReqwestHttpClient`]) verifying peers against the pinned
+///   observatory CA — the self-signed install doctor provisions.
+/// - credential, no pin: authenticated probes verifying against the
+///   **platform trust roots** — the ACME install, where the pin must be
+///   absent (it would reject the publicly-trusted peers) and the platform
+///   store is exactly what verifies them. An absent pin is a trust choice,
+///   never a loss of capability.
+/// - no credential: unauthenticated probes with certificate verification
+///   off — a probe sends no credentials and never parses the body, and
+///   sentinel cannot assume it holds a CA for every peer's self-signed
+///   certificate; auth-on peers answer 401, which is still proof of life.
+///
+/// A credential whose pinned client cannot be built (`ca_cert` names a
+/// missing or unreadable file) is the one misconfiguration: it degrades
+/// loudly to the unauthenticated verification-off client, so the
+/// credential never rides an unverified connection and the self-signed
+/// peers the pin was for keep probing as alive rather than down. If even
+/// that client cannot be built, fall back to the `shared` (verifying)
+/// client loudly — self-signed TLS peers would then probe as down.
+/// The remediation to append when the authenticated probe client cannot
+/// be built — only a pinned install has a `ca_cert` to fix or remove.
+fn degraded_probe_advice(has_pin: bool) -> &'static str {
+    if has_pin {
+        " Fix or remove ca_cert to restore authenticated probes."
+    } else {
+        ""
+    }
+}
+
 fn build_probe_client(
     service_auth: Option<&rp_auth::config::ClientAuthConfig>,
     ca_path: Option<&std::path::Path>,
@@ -513,30 +524,30 @@ fn build_probe_client(
         }
     };
     match (service_auth, ca_path) {
-        (Some(auth), Some(ca)) => match ReqwestHttpClient::with_auth(
-            Some(ca),
-            auth.username.clone(),
-            auth.password.clone(),
-        ) {
-            Ok(client) => Arc::new(client),
-            Err(e) => {
-                tracing::error!(
-                    "failed to build the authenticated probe client: {e}; probing \
-                     through the shared client without service_auth — auth-on \
-                     peers will answer 401 (still proof of life)"
-                );
-                Arc::clone(shared)
+        (Some(auth), ca) => {
+            match ReqwestHttpClient::with_auth(ca, auth.username.clone(), auth.password.clone()) {
+                Ok(client) => {
+                    if ca.is_none() {
+                        tracing::debug!(
+                            "service_auth is set with no ca_cert pin — probing \
+                         authenticated, verifying peers against the platform \
+                         trust roots"
+                        );
+                    }
+                    Arc::new(client)
+                }
+                Err(e) => {
+                    let advice = degraded_probe_advice(ca.is_some());
+                    tracing::error!(
+                        "failed to build the authenticated probe client: {e}; \
+                     probing unauthenticated with certificate verification \
+                     off so the credential never rides an unverified \
+                     connection — auth-on peers answer 401 (still proof of \
+                     life).{advice}"
+                    );
+                    insecure_probe_client()
+                }
             }
-        },
-        (Some(_), None) => {
-            tracing::warn!(
-                "service_auth is set but ca_cert is not — probing unauthenticated \
-                 with certificate verification off so the credential never rides \
-                 an unverified connection; auth-on peers answer 401 (still proof \
-                 of life). Set ca_cert to authenticate probes (doctor --fix \
-                 writes both)"
-            );
-            insecure_probe_client()
         }
         (None, _) => insecure_probe_client(),
     }
@@ -549,14 +560,6 @@ mod tests {
     use crate::config::MonitorConfig;
     use crate::io::MockHttpClient;
 
-    /// A CA file on disk for the authenticated-probe arm.
-    fn temp_ca() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
-        let ca = dir.path().join("ca.pem");
-        (dir, ca)
-    }
-
     fn observatory_auth() -> rp_auth::config::ClientAuthConfig {
         rp_auth::config::ClientAuthConfig {
             username: "observatory".to_string(),
@@ -564,36 +567,119 @@ mod tests {
         }
     }
 
-    #[test]
-    fn probe_client_authenticates_with_credential_and_ca() {
-        let (_dir, ca) = temp_ca();
+    /// A TLS peer presenting a certificate from a throwaway CA, echoing
+    /// whether the request carried an `Authorization` header. Returns the
+    /// CA path, the probe URL, and a guard whose drop stops the server.
+    async fn spawn_tls_peer(
+        dir: &std::path::Path,
+    ) -> (std::path::PathBuf, String, tokio::sync::oneshot::Sender<()>) {
+        rusty_photon_tls::test_cert::generate_ca(dir).unwrap();
+        let ca_pem = std::fs::read_to_string(dir.join("ca.pem")).unwrap();
+        let ca_key_pem = std::fs::read_to_string(dir.join("ca-key.pem")).unwrap();
+        rusty_photon_tls::test_cert::generate_service_cert(&ca_pem, &ca_key_pem, "peer", dir)
+            .unwrap();
+        let tls = rusty_photon_tls::config::TlsConfig {
+            cert: dir.join("peer.pem").to_string_lossy().into_owned(),
+            key: dir.join("peer-key.pem").to_string_lossy().into_owned(),
+        };
+        let router = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|headers: axum::http::HeaderMap| async move {
+                if headers.contains_key(axum::http::header::AUTHORIZATION) {
+                    "authenticated"
+                } else {
+                    "anonymous"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            rusty_photon_tls::server::serve_tls(listener, router, &tls, async move {
+                stopped.await.ok();
+            })
+            .await
+            .ok();
+        });
+        (
+            dir.join("ca.pem"),
+            format!("https://localhost:{port}/health"),
+            stop,
+        )
+    }
+
+    #[tokio::test]
+    async fn probe_client_with_credential_and_pin_authenticates_against_pinned_ca() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, url, _stop) = spawn_tls_peer(dir.path()).await;
         let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
         let client = build_probe_client(Some(&observatory_auth()), Some(&ca), &shared);
-        // A distinct client was built rather than the shared one reused.
-        assert!(!Arc::ptr_eq(
-            &client,
-            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
-        ));
+        let response = client.get(&url).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "authenticated");
     }
 
-    #[test]
-    fn probe_client_degrades_to_unauthenticated_without_ca() {
+    #[tokio::test]
+    async fn probe_client_with_credential_and_no_pin_verifies_against_platform_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ca, url, _stop) = spawn_tls_peer(dir.path()).await;
         let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        // Preflight through the verification-off client: the peer is up
+        // and answering, so the failure asserted below can only be the
+        // handshake — not a dead listener.
+        let insecure = build_probe_client(None, None, &shared);
+        assert_eq!(insecure.get(&url).await.unwrap().status, 200);
         let client = build_probe_client(Some(&observatory_auth()), None, &shared);
-        assert!(!Arc::ptr_eq(
-            &client,
-            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
-        ));
+        // The peer's throwaway CA is not in the platform trust store, so
+        // the handshake must be refused — verification stays on with no
+        // pin (issue #810: absent means platform roots, not verification
+        // off).
+        let err = client.get(&url).await.unwrap_err();
+        match &err {
+            crate::SentinelError::Http(msg) => {
+                assert!(msg.starts_with(&format!("GET {url} failed:")), "{msg}");
+                assert!(
+                    msg.contains("certificate"),
+                    "expected a certificate verification error, got: {msg}"
+                );
+            }
+            other => panic!("expected SentinelError::Http, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_client_with_unusable_pin_withholds_credential_and_skips_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ca, url, _stop) = spawn_tls_peer(dir.path()).await;
+        let missing = dir.path().join("no-such-ca.pem");
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(Some(&observatory_auth()), Some(&missing), &shared);
+        // The pinned client cannot be built, so probing degrades to the
+        // verification-off client — which never carries the credential.
+        let response = client.get(&url).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "anonymous");
     }
 
     #[test]
-    fn probe_client_is_insecure_without_credential() {
+    fn degraded_probe_advice_names_ca_cert_only_when_pinned() {
+        assert_eq!(
+            degraded_probe_advice(true),
+            " Fix or remove ca_cert to restore authenticated probes."
+        );
+        assert_eq!(degraded_probe_advice(false), "");
+    }
+
+    #[tokio::test]
+    async fn probe_client_without_credential_probes_unauthenticated_without_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ca, url, _stop) = spawn_tls_peer(dir.path()).await;
         let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
         let client = build_probe_client(None, None, &shared);
-        assert!(!Arc::ptr_eq(
-            &client,
-            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
-        ));
+        let response = client.get(&url).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "anonymous");
     }
 
     #[tokio::test]

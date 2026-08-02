@@ -4,10 +4,10 @@
 //! streamable-HTTP transport. The handler [`McpHandler`] owns shared
 //! state (equipment registry, event bus, session config, image cache,
 //! observer site, planner targets, plate-solver client, guider
-//! client, target store) and exposes 59 tools across 13 categories:
+//! client, target store) and exposes 63 tools across 14 categories:
 //! camera, imaging, filter wheel, cover/calibrator, focuser, mount,
 //! rotator, auto_focus (incl. refocus_train), plate_solve, guider,
-//! center_on_target, planner, targets.
+//! center_on_target, planner, targets, plan_schema.
 //!
 //! ## Layout
 //!
@@ -74,6 +74,9 @@ pub mod progress;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+// Slicing a literal UUID down to its 8-char disk key. There is no
+// `allow-string-slice-in-tests` knob, so the exemption is scoped here.
+#[allow(clippy::string_slice)]
 mod tests;
 
 pub use handler::McpHandler;

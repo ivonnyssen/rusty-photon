@@ -247,7 +247,7 @@ pub struct RpWorld {
     // --- TLS test state ---
     /// Shared PKI + credentials fixture for the TLS/auth connectivity suites
     /// (`tls.feature`, `auth.feature`).
-    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 
@@ -396,7 +396,7 @@ impl RpWorld {
     /// The shared PKI + credentials fixture, panicking if the
     /// `Given generated TLS certificates` step has not run.
     pub fn pki(&self) -> &bdd_infra::tls_auth::PkiFixture {
-        self.pki.as_ref().expect("TLS certs not generated")
+        self.pki.as_deref().expect("TLS certs not generated")
     }
 
     /// Get the persistent MCP client, panicking if not connected.

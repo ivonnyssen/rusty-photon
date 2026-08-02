@@ -672,18 +672,26 @@ fn validate_callback_url(value: &Value) -> std::result::Result<&str, String> {
 /// later `@` in a path or query is left alone.
 fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
     let authority_start = url.find("://").map_or(0, |i| i + 3);
-    let authority_end = url[authority_start..]
+    let Some(rest) = url.get(authority_start..) else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let authority = rest
         .find(['/', '?', '#'])
-        .map_or(url.len(), |i| authority_start + i);
+        .and_then(|i| rest.get(..i))
+        .unwrap_or(rest);
     // The last `@` in the authority is the delimiter; an earlier one
     // would be inside the userinfo itself.
-    match url[authority_start..authority_end].rfind('@') {
-        Some(at) => std::borrow::Cow::Owned(format!(
-            "{}***@{}",
-            &url[..authority_start],
-            &url[authority_start + at + 1..]
-        )),
-        None => std::borrow::Cow::Borrowed(url),
+    let Some(at) = authority.rfind('@') else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    // Everything after the `@`, including the path and query — only the
+    // userinfo is dropped.
+    match (
+        url.get(..authority_start),
+        url.get(authority_start + at + 1..),
+    ) {
+        (Some(prefix), Some(after)) => std::borrow::Cow::Owned(format!("{prefix}***@{after}")),
+        _ => std::borrow::Cow::Borrowed(url),
     }
 }
 

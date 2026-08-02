@@ -444,7 +444,7 @@ pub fn parse_windows_path_name(path_name: &str) -> Option<PathBuf> {
     let trimmed = path_name.trim();
     if let Some(rest) = trimmed.strip_prefix('"') {
         let end = rest.find('"')?;
-        return Some(PathBuf::from(&rest[..end]));
+        return rest.get(..end).map(PathBuf::from);
     }
     trimmed.split_whitespace().next().map(PathBuf::from)
 }

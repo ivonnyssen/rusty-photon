@@ -659,7 +659,9 @@ fn test_error_span_covers_the_whole_utf8_char() {
     let src = "café + 1";
     let err = Expression::parse(src).unwrap_err();
     assert_eq!((err.span.start, err.span.end), (3, 5));
-    assert_eq!(&src[err.span.start..err.span.end], "é");
+    // `get` rather than a slice: it *returns* the boundary check the
+    // assertion is about, instead of panicking when it fails.
+    assert_eq!(src.get(err.span.start..err.span.end), Some("é"));
 }
 
 #[test]

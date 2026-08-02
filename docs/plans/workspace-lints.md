@@ -2,12 +2,12 @@
 
 ## Goal
 
-The workspace denies three ways to panic today (`unwrap_used`, `expect_used`,
-`unreachable`). The target set is wider — the remaining panic/abort routes
-(`indexing_slicing`, `arithmetic_side_effects`, `panic`, `todo`,
-`unimplemented`, `panic_in_result_fn`, `string_slice`,
-`unchecked_time_subtraction`, `exit`), plus `as_conversions` and the
-`pedantic` / `nursery` groups:
+The workspace denies nine ways to panic as of L4 — `unwrap_used`,
+`expect_used`, `unreachable`, `panic`, `todo`, `unimplemented`,
+`panic_in_result_fn`, `unchecked_time_subtraction`, `string_slice`. What is
+left of the target set is `indexing_slicing`, `arithmetic_side_effects`,
+`as_conversions` and the `pedantic` / `nursery` groups (`exit` was measured
+and deliberately dropped from the target — see L4):
 
 ```toml
 [lints.clippy]
@@ -24,16 +24,20 @@ todo = "deny"
 string_slice = "deny"
 panic_in_result_fn = "deny"
 panic = "deny"
-exit = "deny"
+exit = "deny"                # measured, then deliberately dropped — see L4
 as_conversions = "deny"
 ```
 
-This matters for [tenet 2 (robustness)](workspace.md#project-tenets): a panic
+This matters for [tenet 2 (robustness)](../workspace.md#project-tenets): a panic
 in a driver at 2am ends the night's imaging. The lints that close panic routes
 are the point; the `pedantic` / `nursery` groups are a separate, much larger
 style question that this plan deliberately sequences last.
 
 ## Measured baseline
+
+Numbers below are the **pre-L1** census; each phase re-measures before it runs,
+because the earlier estimate is reliably wrong once the knobs and the previous
+phase's fixes are in (L3 in particular came in far cheaper than sized here).
 
 Census taken with clippy 0.1.96 on `--workspace --all-targets --all-features`,
 driving the full proposed set as `-W` flags so every crate still completes its
@@ -88,10 +92,13 @@ Three measured limits:
    `unreachable`, `todo`, `unimplemented`, or `exit`.
 2. **Nothing in `pedantic` / `nursery` is covered.** All 3,844 test-side group
    sites survive, including `needless_pass_by_ref_mut`'s 1,171.
-3. **The knobs only recognise `#[cfg(test)]` mods and `#[test]` fns.** All 682
-   surviving `panic` / `indexing_slicing` test sites are in `tests/bdd/steps/*.rs`
-   and `tests/bdd/world.rs` — cucumber's `#[given]`/`#[when]`/`#[then]` are not
-   `#[test]` functions, so clippy does not classify them as test code.
+3. **The knobs only recognise `#[cfg(test)]` mods and `#[test]` fns.** The 682
+   surviving `panic` / `indexing_slicing` test sites are dominated by
+   `tests/bdd/steps/*.rs` and `tests/bdd/world.rs` — cucumber's
+   `#[given]`/`#[when]`/`#[then]` are not `#[test]` functions, so clippy does
+   not classify them as test code. L3 found the tail is broader than that:
+   also plain `tests/*.rs` targets other than `bdd.rs`, and panics inside
+   closures and `tests/common/` helpers that a `#[test]` fn merely calls.
 
 ### The knobs make most existing `#[allow]`s dead
 
@@ -144,14 +151,21 @@ in the workspace. Phase 7.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| L0 | This plan | Complete | `worktree-clippy-warnings` |
-| L1 | `clippy.toml` + dead-allow sweep + the four free lints | Complete | `worktree-clippy-warnings` |
-| L2 | Mechanical `cargo clippy --fix` sweep (~3,521 sites) | Not started | |
-| L3 | BDD file-level allows (682 sites) | Not started | |
-| L4 | `string_slice` (41) and `exit` (39) policy | Not started | |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Not started | |
+| L0 | This plan | Complete | #827 |
+| L1 | `clippy.toml` + dead-allow sweep + the four free lints | Complete | #827 |
+| L3 | Deny `panic` — test-crate-root allows | Complete | `chore/workspace-lints-l3` |
+| L4 | Deny `string_slice`; leave `exit` alone | Complete | `chore/workspace-lints-l3` |
 | L6 | `pedantic` / `nursery` decision | Not started | |
+| L2 | Mechanical `cargo clippy --fix` sweep | Not started | |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
+
+**L2 moved after L6.** L2 is a `--fix` sweep of ~3,521 sites, but most of what
+`--fix` rewrites is `pedantic` / `nursery` fallout — and L6's standing
+recommendation is `pedantic = "warn"` with `nursery` off. Running L2 first
+would pay for thousands of fixes to lints the workspace then never gates on.
+L6 is a policy call, not a code change; making it first scopes L2 to what is
+actually being enforced.
 
 ---
 
@@ -184,20 +198,50 @@ crates: 141 → 67 warnings with all tests still green. Merge per crate so revie
 stays tractable. This phase does not flip any lint to `deny`; it only removes
 debt so later phases are smaller.
 
-## L3 — BDD file-level allows
+## L3 — deny `panic`
 
-The 682 `panic` / `indexing_slicing` sites the knobs cannot reach are all in
-BDD step and world files. Add `#![allow(clippy::panic, clippy::indexing_slicing)]`
-at the `tests/bdd/` entry files, matching the convention already used there for
-the trio. This is the one phase where allows *grow*.
+Re-measured after L1, `panic` turned out to be the cheapest rung on the ladder:
+442 sites, but only **20 outside `tests/`**, and 19 of those are `bdd-infra` —
+test infrastructure shaped as a library, so the knobs never see it. Exactly one
+was production.
 
-## L4 — bounded policy calls
+| Where | Sites | Treatment |
+|---|---:|---|
+| `tests/` in 24 crates | 422 | `clippy::panic` appended to the crate-root `#![allow(...)]` each already carried |
+| `crates/bdd-infra/src/` | 19 | same, on the existing crate-root allow |
+| `services/doctor/src/catalog.rs` | 1 | fixed |
 
-- **`string_slice` (41 sites)** — real, fixable; `get(..)` or a checked split.
-- **`exit` (39 sites)** — recommend **not** denying. All 39 are
-  `services/*/src/doctor.rs`, where `pub fn run(...) -> !` exits on doctor's
-  documented 0/1/2 contract (see [doctor](../services/doctor.md)). Denying it
-  buys 19 `#[allow]`s or a refactor of a deliberate signature.
+Two scope facts drove the mechanical part:
+
+- **Every file directly under `tests/` is its own crate root.** Covering
+  `tests/bdd.rs` alone missed `test_lib.rs`, `test_integration.rs`,
+  `translations.rs`, `runner_integration.rs`, `supervision_integration.rs` and
+  `test_mock_server.rs` — six more targets, each needing its own attribute.
+- **The knobs see the `#[test]` fn, not what it calls.** A panic inside a
+  closure or a `tests/common/mod.rs` helper still fires, which is why
+  `rusty-photon-shared-transport`'s failure-injection helpers needed one.
+
+The production fix: `doctor`'s `CATALOG` parsed each embedded
+`pkg/doctor.toml` with `unwrap_or_else(|e| panic!(...))`. It now skips an
+unparseable entry, and `test_catalog_covers_every_embedded_service` asserts
+the catalog covers every `RAW` entry — so a malformed file fails CI loudly
+instead of aborting every doctor run in the field.
+
+## L4 — `string_slice` denied, `exit` deliberately not
+
+**`string_slice` (41 sites, 38 in `src/`)** — done. Mostly `get(..)` in place
+of a bare range, with three that read better rewritten outright:
+`rp-fits`'s exponent split became `split_once('E')`, session-runner's duration
+surface check became `strip_prefix`/`trim_start_matches` chaining with no
+slicing or length arithmetic at all, and `dsd-fp2`'s mock command dispatch
+became a `strip_prefix` chain instead of `starts_with` guards followed by
+`[4..]`. Three test modules keep a scoped `#[allow]` (no knob exists), all
+slicing a literal UUID to its 8-char disk key.
+
+**`exit` (40 sites)** — **not** denied, and recorded as a decision rather than
+a deferral. Every site is `services/*/src/doctor.rs`, where `pub fn run(...) -> !`
+exits on doctor's documented 0/1/2 contract (see [doctor](../services/doctor.md)).
+Denying it buys a pile of `#[allow]`s or a refactor of a deliberate signature.
 
 ## L5 — the expensive three
 

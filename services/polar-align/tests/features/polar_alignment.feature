@@ -23,6 +23,7 @@ Feature: Plate-solving polar alignment (end-to-end)
     And the polar-align status should report an altitude error within 2.0 arcminutes of -20.0
     And the polar-align status should report an axis cross-check below 1.0 arcseconds
     And the stub plate solver should have received at least 3 solve requests
+    And the preview endpoint should serve a PNG at most 1024 pixels wide
     And the session status should be "idle"
 
   Scenario: A failing solver aborts the measurement and frees the session
@@ -88,3 +89,54 @@ Feature: Plate-solving polar alignment (end-to-end)
     And the polar-align workflow reaches the "error" phase
     Then the polar-align status error should mention "full camera attitudes"
     And the session status should be "idle"
+
+  Scenario: The observer site resolves from rp when the plugin config has none
+    Given a running Alpaca simulator
+    And rp is configured with the simulator's default observer site
+    And a stub plate solver choreographed for an axis error of 30.0 arcminutes east and -20.0 arcminutes in altitude at the simulator's default site
+    And the polar-align config carries no site block
+    And rp is running with a camera, a mount, the stub plate solver, and the polar-align orchestrator
+    When a session is started via the REST API
+    And the polar-align workflow reaches the "adjusting" phase
+    And the adjustment is finished via the REST API
+    Then the polar-align status should report an azimuth error within 2.0 arcminutes of 30.0
+    And the polar-align status should report an altitude error within 2.0 arcminutes of -20.0
+    And the session status should be "idle"
+
+  Scenario: A site missing on both sides aborts before any motion
+    Given a running Alpaca simulator
+    And a stub plate solver that always fails
+    And the polar-align config carries no site block
+    And rp is running with a camera, a mount, the stub plate solver, and the polar-align orchestrator
+    When a session is started via the REST API
+    And the polar-align workflow reaches the "error" phase
+    Then the polar-align status error should mention "site"
+    And the session status should be "idle"
+
+  Scenario: Manual rotation measures a hand-rotated tracker
+    Given a running Alpaca simulator
+    And a stub plate solver choreographed for an axis error of 30.0 arcminutes east and -20.0 arcminutes in altitude from a mid-sky pointing
+    And the measurement uses manual rotation
+    And rp is running with a camera, a mount, the stub plate solver, and the polar-align orchestrator
+    When a session is started via the REST API
+    And the polar-align workflow awaits measurement point 2
+    And the operator confirms the manual rotation
+    And the polar-align workflow awaits measurement point 3
+    And the operator confirms the manual rotation
+    And the polar-align workflow reaches the "adjusting" phase
+    And the adjustment is finished via the REST API
+    Then the polar-align status should report an azimuth error within 2.0 arcminutes of 30.0
+    And the polar-align status should report an altitude error within 2.0 arcminutes of -20.0
+    And the polar-align status should report an axis cross-check below 1.0 arcseconds
+    And the first solve request should carry no pointing hint
+    And the session status should be "idle"
+
+  Scenario: Confirming a rotation while nothing waits is rejected
+    Given the polar-align service is running standalone
+    When the operator confirms the manual rotation
+    Then the continue request should be rejected with status 409
+
+  Scenario: The preview is absent before any capture
+    Given the polar-align service is running standalone
+    When the preview endpoint is fetched
+    Then the preview request should be rejected with status 404

@@ -18,17 +18,18 @@ use crate::world::SessionRunnerWorld;
 use super::infrastructure::start_session_runner_service_with;
 
 #[given("generated TLS certificates")]
-fn generate_certs(world: &mut SessionRunnerWorld) {
+async fn generate_certs(world: &mut SessionRunnerWorld) {
     // The certificate is for the rp these scenarios spawn, not for
     // session-runner's own server (the tls_auth_smoke macro covers that).
-    world.tls_auth.pki = Some(PkiFixture::generate("rp"));
+    // `shared_pki` keys on that name, so the two fixtures stay distinct.
+    world.tls_auth.pki = Some(bdd_infra::tls_auth::shared_pki("rp").await);
 }
 
 fn pki(world: &SessionRunnerWorld) -> &PkiFixture {
     world
         .tls_auth
         .pki
-        .as_ref()
+        .as_deref()
         .expect("TLS certs not generated")
 }
 

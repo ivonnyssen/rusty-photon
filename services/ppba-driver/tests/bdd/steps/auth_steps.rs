@@ -7,7 +7,7 @@ use crate::steps::infrastructure::ServiceHandle;
 use crate::world::PpbaWorld;
 
 fn pki(world: &PpbaWorld) -> &PkiFixture {
-    world.pki.as_ref().expect("TLS certs not generated")
+    world.pki.as_deref().expect("TLS certs not generated")
 }
 
 fn management_url(world: &PpbaWorld) -> String {

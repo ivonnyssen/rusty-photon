@@ -97,7 +97,7 @@ pub struct UiWorld {
     pub sse_cursor: Option<u64>,
     /// Shared PKI + credentials fixture for the TLS + auth suite
     /// (`auth.feature`, `tls.feature`).
-    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
     /// Config JSON staged by a Given step for a custom-config BFF start.
     pub pending_config: Option<Value>,
     /// Doctor-subcommand smoke state (staged config file + run output).

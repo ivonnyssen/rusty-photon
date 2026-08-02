@@ -12,10 +12,8 @@ use crate::world::RpWorld;
 // ---------------------------------------------------------------------------
 
 #[given("generated TLS certificates")]
-fn generate_tls_certs(world: &mut RpWorld) {
-    world.pki = Some(bdd_infra::tls_auth::PkiFixture::generate(env!(
-        "CARGO_PKG_NAME"
-    )));
+async fn generate_tls_certs(world: &mut RpWorld) {
+    world.pki = Some(bdd_infra::tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await);
 }
 
 #[given("rp is configured with TLS enabled")]

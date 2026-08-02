@@ -2,7 +2,12 @@
 //! binary and a real `dsd-fp2` driver (mock hardware) and drives the BFF over
 //! HTTP, so the `bdd_infra::bdd_main!` macro is used (child-process spawning,
 //! skipped under Miri). Both binaries must be pre-built with `--all-features`.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreachable,
+    clippy::panic
+)]
 
 #[path = "bdd/browser.rs"]
 mod browser;

@@ -97,7 +97,9 @@ The `server` block is the shared `ServerConfig` from
 ### The observatory probe credential
 
 Two optional top-level keys wire sentinel into a doctor-provisioned rig
-(`doctor --fix` writes both — see
+(on a self-signed install `doctor --fix` writes both; on an ACME install
+it writes only `service_auth` — a pin would break public trust, below.
+See
 [`doctor.md` §Provisioning](doctor.md#provisioning--tls-and-the-observatory-credential-d6a)):
 
 ```json
@@ -107,13 +109,20 @@ Two optional top-level keys wire sentinel into a doctor-provisioned rig
 }
 ```
 
-`ca_cert` is the CA the HTTP clients trust for TLS-enabled peers.
-`service_auth` is the observatory credential's plaintext copy: when set, the
-health-supervision probes send it as HTTP Basic auth **and verify TLS
-against `ca_cert`** (credentials never ride an unverified connection);
-when absent, probes are unauthenticated and skip certificate verification
-(a challenge still proves aliveness). `doctor auth rotate` overwrites the
-password in place.
+`ca_cert` pins the CA the HTTP clients trust for TLS-enabled peers. The
+pin **replaces** the platform trust roots (ADR-002), so it belongs only on
+a self-signed install; when it is absent the clients verify against the
+platform roots — which is what verifies the publicly-trusted certificates
+of an ACME install, where the pin must stay unset. `service_auth` is the
+observatory credential's plaintext copy: when set, the health-supervision
+probes send it as HTTP Basic auth over a **verified** TLS connection —
+verified against `ca_cert` when pinned, against the platform roots
+otherwise (credentials never ride an unverified connection); when absent,
+probes are unauthenticated and skip certificate verification (a challenge
+still proves aliveness). A `ca_cert` naming a missing or unreadable file
+is a misconfiguration: sentinel logs an error and probes unauthenticated
+with verification off — withholding the credential — until the pin is
+fixed or removed. `doctor auth rotate` overwrites the password in place.
 
 ### The probe-host override (`probe_domain`)
 

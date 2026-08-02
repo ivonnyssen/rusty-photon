@@ -1075,6 +1075,7 @@ hours, `dec` is degrees. See
 | `get_moon_position` | time (optional) | ra_hours, dec_degrees, altitude_degrees, azimuth_degrees, phase_degrees, illumination_fraction | Moon position + Sun-Moon elongation (phase) |
 | `compute_moon_separation` | ra, dec, time (optional) | separation_degrees | Angular separation between target and Moon |
 | `get_local_sidereal_time` | time (optional) | lst_hours | Local sidereal time at the configured site |
+| `get_site` | — | latitude_degrees, longitude_degrees | The configured observer site (cross-checked against the mount on connect when the mount reports one); lets a plugin source coordinates instead of duplicating them |
 
 **Planner — Convenience tools**
 

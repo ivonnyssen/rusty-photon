@@ -8,7 +8,7 @@ use crate::world::ScopsWorld;
 use bdd_infra::ServiceHandle;
 
 fn pki(world: &ScopsWorld) -> &PkiFixture {
-    world.pki.as_ref().expect("TLS certs not generated")
+    world.pki.as_deref().expect("TLS certs not generated")
 }
 
 fn mock_config() -> pa_scops_oag::Config {

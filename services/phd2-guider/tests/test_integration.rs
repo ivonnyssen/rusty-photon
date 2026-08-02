@@ -6,7 +6,12 @@
 //!
 //! Some tests use the mock_phd2 binary and can run without PHD2 installed.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreachable,
+    clippy::panic
+)]
 
 #[cfg_attr(miri, allow(unused_imports))]
 use phd2_guider::{

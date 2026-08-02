@@ -5,7 +5,9 @@
 //! — just enough for the lifecycle tests to construct a [`SharedTransport`]
 //! over a stub codec and a programmable factory.
 
-#![allow(dead_code)]
+// The failure-injection helpers panic *inside closures* rather than inside a
+// `#[test]` fn, which is what `allow-panic-in-tests` recognises.
+#![allow(dead_code, clippy::panic)]
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

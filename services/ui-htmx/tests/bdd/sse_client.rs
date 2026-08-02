@@ -122,7 +122,12 @@ fn drain_frames(buffer: &mut String) -> Vec<Frame> {
     let mut rest = normalized.as_str();
     while let Some(end) = rest.find("\n\n") {
         let (raw, remainder) = rest.split_at(end);
-        rest = &remainder[2..];
+        // `find` matched "\n\n", so `remainder` starts with the delimiter and
+        // the two-byte skip is in bounds. Fail loudly if that ever stops
+        // holding rather than silently dropping the rest of the buffer.
+        rest = remainder
+            .get(2..)
+            .expect("SSE frame delimiter is two bytes wide");
         let mut frame = Frame {
             id: None,
             event: None,

@@ -2,7 +2,13 @@
 // bdd-infra is consumed only by other crates' integration/BDD test harnesses.
 // It's test infrastructure dressed up as a library — apply the same panic
 // allowances as the tests it supports, rather than treating it as production.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreachable,
+    clippy::panic,
+    clippy::string_slice
+)]
 //! Shared BDD test infrastructure for rusty-photon services.
 //!
 //! Provides [`ServiceHandle`] for spawning, managing, and stopping service

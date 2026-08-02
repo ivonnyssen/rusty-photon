@@ -118,6 +118,9 @@ pub struct RecordExposureParams {
 pub struct GetSessionProgressParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetSiteParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMeridianStatusParams {
     #[serde(default)]
     pub time: Option<String>,
@@ -472,6 +475,29 @@ impl McpHandler {
         Ok(CallToolResult::success(vec![ContentBlock::text(
             v.to_string(),
         )]))
+    }
+
+    #[tool(description = "The configured observer site: latitude_degrees (north \
+                       positive) and longitude_degrees (east positive). \
+                       Cross-checked against the mount's reported site on \
+                       connect when the mount exposes one. Requires `site`.")]
+    pub(crate) async fn get_site(
+        &self,
+        Parameters(_params): Parameters<GetSiteParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let site = match self.site.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(tool_error!(
+                    "{}",
+                    crate::planner::primitives::site_required_error()
+                ))
+            }
+        };
+        Ok(tool_success!({
+            "latitude_degrees": site.latitude_degrees,
+            "longitude_degrees": site.longitude_degrees,
+        }))
     }
 
     #[tool(description = "Local apparent sidereal time at the configured site. Requires `site`.")]

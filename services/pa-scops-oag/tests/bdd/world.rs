@@ -26,7 +26,7 @@ pub struct ScopsWorld {
     pub is_moving_result: Option<bool>,
 
     /// Throwaway PKI + per-run credentials for the TLS/auth scenarios
-    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,

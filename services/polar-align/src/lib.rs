@@ -5,6 +5,7 @@ pub mod ephemeris;
 pub mod error;
 pub mod math;
 pub mod mcp_client;
+pub mod preview;
 pub mod routes;
 pub mod workflow;
 

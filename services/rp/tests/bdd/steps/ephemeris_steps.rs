@@ -116,6 +116,16 @@ async fn call_record_exposure_unfiltered(world: &mut RpWorld, target: String) {
     world.last_tool_result = Some(result);
 }
 
+#[when("the MCP client calls \"get_site\"")]
+async fn call_get_site(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_site", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
 #[when("the MCP client calls \"get_session_progress\"")]
 async fn call_session_progress(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
@@ -284,6 +294,32 @@ fn error_mentions(world: &mut RpWorld, fragment: String) {
 }
 
 // --- Helpers ---
+
+#[then(expr = "the result latitude_degrees should be {float}")]
+fn result_latitude_degrees(world: &mut RpWorld, expected: f64) {
+    let value = success_payload(world);
+    let lat = value
+        .get("latitude_degrees")
+        .and_then(Value::as_f64)
+        .expect("missing `latitude_degrees`");
+    assert!(
+        (lat - expected).abs() < 1e-9,
+        "latitude_degrees {lat} != {expected}"
+    );
+}
+
+#[then(expr = "the result longitude_degrees should be {float}")]
+fn result_longitude_degrees(world: &mut RpWorld, expected: f64) {
+    let value = success_payload(world);
+    let lon = value
+        .get("longitude_degrees")
+        .and_then(Value::as_f64)
+        .expect("missing `longitude_degrees`");
+    assert!(
+        (lon - expected).abs() < 1e-9,
+        "longitude_degrees {lon} != {expected}"
+    );
+}
 
 fn success_payload(world: &RpWorld) -> &Value {
     world
