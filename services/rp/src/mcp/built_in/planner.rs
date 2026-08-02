@@ -478,9 +478,9 @@ impl McpHandler {
     }
 
     #[tool(description = "The configured observer site: latitude_degrees (north \
-                       positive) and longitude_degrees (east positive), as \
-                       validated against the mount's reported site on \
-                       connect. Requires `site`.")]
+                       positive) and longitude_degrees (east positive). \
+                       Cross-checked against the mount's reported site on \
+                       connect when the mount exposes one. Requires `site`.")]
     pub(crate) async fn get_site(
         &self,
         Parameters(_params): Parameters<GetSiteParams>,

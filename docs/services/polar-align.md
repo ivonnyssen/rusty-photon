@@ -81,7 +81,7 @@ Accessibility"); `/status` carries their paths, never pixels.
 
 | Tool | Usage |
 |------|-------|
-| `get_site` | Resolve the observer site when the plugin config omits its `site` block (rp's configured site, mount-validated on connect) |
+| `get_site` | Resolve the observer site when the plugin config omits its `site` block (rp's configured site, cross-checked against the mount on connect when the mount reports one) |
 | `get_park_state` | Read `at_park` before any motion; decide whether to unpark |
 | `get_mount_position` | Read the mount-frame pointing that anchors a current-position measurement (RA-only targets are computed relative to it) |
 | `unpark` | Clear `AtPark` (no motion) before enabling tracking |
