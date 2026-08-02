@@ -48,8 +48,10 @@ at the job level.
 The "I'd like ARM coverage on PRs too" temptation must be resisted on a
 public repo until either (a) the runner is moved to a private mirror, or
 (b) a Just-In-Time (JIT) ephemeral runner pool with PR-approval gating is
-set up. Both are substantial changes. For now, the rule is binary: this
-file gets `schedule:` and `workflow_dispatch:` only.
+set up. Option (b) now exists for x86_64 Linux — see
+docs/skills/proxmox-runner-pool.md — but its workflows remain
+dispatch-only too, and THIS Pi runner is unchanged. For this file the rule
+stays binary: `schedule:` and `workflow_dispatch:` only.
 
 If you ever need ARM-on-PR coverage, prefer GitHub's free `ubuntu-24.04-arm`
 runner (free for public repos) — see
