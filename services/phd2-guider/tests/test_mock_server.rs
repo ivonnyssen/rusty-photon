@@ -3,7 +3,12 @@
 //! These tests use a mock TCP server to test client methods without requiring
 //! a real PHD2 instance.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreachable,
+    clippy::panic
+)]
 
 use phd2_guider::{GuideAxis, Phd2Client, Phd2Config, Rect, SettleParams};
 use std::io::{BufRead, BufReader, Write};

@@ -29,8 +29,8 @@ fn scan(content: &str, token: &str) -> Vec<String> {
             continue;
         }
         let mut rest = line;
-        while let Some(at) = rest.find(token) {
-            rest = &rest[at + token.len()..];
+        while let Some((_, after_token)) = rest.split_once(token) {
+            rest = after_token;
             let after = rest
                 .trim_start()
                 .trim_start_matches([':', '='])

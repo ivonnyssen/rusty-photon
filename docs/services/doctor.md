@@ -114,6 +114,9 @@ Three guards keep the catalog honest:
    not doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
    the embedded set parses, ports are unique, and the table matches the files.
+   That test is load-bearing rather than belt-and-braces: at runtime the
+   catalog *skips* an entry it cannot parse, so a malformed file would quietly
+   drop one service from every report instead of aborting the run.
    Doctor also embeds the three shipped udev rules
    (`services/*/pkg/90-*.rules`) and asserts each rule-shipping service's
    declared `usb_vendor` equals the `ATTRS{idVendor}` its own rule matches —

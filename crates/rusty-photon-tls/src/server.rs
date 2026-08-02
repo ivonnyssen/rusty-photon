@@ -508,18 +508,19 @@ fn is_ipv6_literal_byte(b: u8) -> bool {
 fn strip_host_port(host: &str) -> Option<&str> {
     if let Some(rest) = host.strip_prefix('[') {
         let end = rest.find(']')?;
-        let literal = &rest[..end];
+        let literal = rest.get(..end)?;
         if literal.is_empty() || !literal.bytes().all(is_ipv6_literal_byte) {
             return None;
         }
-        let after = &rest[end + 1..];
+        let after = rest.get(end + 1..)?;
         if !after.is_empty() {
             let port = after.strip_prefix(':')?;
             if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }
         }
-        return Some(&host[..end + 2]);
+        // `end + 2` re-includes the `[` the prefix strip removed and the `]`.
+        return host.get(..end + 2);
     }
     let name = match host.rsplit_once(':') {
         Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,

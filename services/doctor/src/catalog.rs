@@ -128,18 +128,21 @@ static RAW: &[(&str, &str)] = &[
 ];
 
 static CATALOG: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
+    // A malformed embedded `doctor.toml` is a repo defect rather than a
+    // runtime condition — `test_catalog_covers_every_embedded_service`
+    // fails on it. Dropping the entry keeps one bad file from aborting
+    // every doctor run.
     RAW.iter()
-        .map(|(name, content)| {
-            let meta = doctor_toml::parse(content)
-                .unwrap_or_else(|e| panic!("embedded {name}/pkg/doctor.toml is invalid: {e}"));
-            CatalogEntry {
+        .filter_map(|(name, content)| {
+            let meta = doctor_toml::parse(content).ok()?;
+            Some(CatalogEntry {
                 name,
                 class: meta.class,
                 default_port: meta.port,
                 config_gated: meta.config_gated,
                 serial: meta.serial,
                 usb: meta.usb,
-            }
+            })
         })
         .collect()
 });
@@ -207,6 +210,19 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    /// The catalog skips an embedded `doctor.toml` it cannot parse, so this
+    /// is the check that stops a malformed one from shipping: without it a
+    /// service would just go missing from every report.
+    #[test]
+    fn test_catalog_covers_every_embedded_service() {
+        for (name, content) in RAW {
+            if let Err(e) = doctor_toml::parse(content) {
+                panic!("embedded {name}/pkg/doctor.toml is invalid: {e}");
+            }
+        }
+        assert_eq!(catalog().len(), RAW.len());
+    }
 
     #[test]
     fn test_catalog_parses_and_ports_are_unique() {
