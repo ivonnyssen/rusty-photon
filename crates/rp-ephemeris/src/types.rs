@@ -41,7 +41,7 @@ impl Default for RefractionConditions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RiseSet {
     pub rise_utc: DateTime<Utc>,
     pub set_utc: DateTime<Utc>,
@@ -65,16 +65,17 @@ pub enum TwilightKind {
 
 impl TwilightKind {
     /// Sun-altitude threshold for this twilight kind, in degrees.
-    pub fn sun_altitude_threshold_degrees(self) -> f64 {
+    #[must_use]
+    pub const fn sun_altitude_threshold_degrees(self) -> f64 {
         match self {
-            TwilightKind::Civil => -6.0,
-            TwilightKind::Nautical => -12.0,
-            TwilightKind::Astronomical => -18.0,
+            Self::Civil => -6.0,
+            Self::Nautical => -12.0,
+            Self::Astronomical => -18.0,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwilightWindow {
     /// Sun crosses the threshold going down (evening twilight begins).
     pub begin_utc: Option<DateTime<Utc>>,
