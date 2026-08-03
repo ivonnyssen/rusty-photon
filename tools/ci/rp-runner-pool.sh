@@ -1,11 +1,17 @@
 #!/bin/bash
 # Ephemeral GitHub Actions runner pool for a Proxmox VE host.
 #
-# Maintains one warm runner clone at a time:
+# Maintains one warm runner clone per POOL SLOT:
 #   linked-clone the template -> boot -> mint a single-use JIT runner config
 #   via the GitHub API -> inject it through the QEMU guest agent -> the
-#   in-guest gha-runner service runs exactly one job and powers off -> the
+#   in-guest one-job runner runs exactly one job and powers off -> the
 #   clone is destroyed -> repeat.
+#
+# Each slot runs that loop independently and concurrently, so the pool can
+# serve several queued jobs at once. Slots are declared in SLOTS below; two
+# slots sharing a label set are interchangeable, which is how the Linux pool
+# serves bazel.yml and bazel-coverage.yml (both fire on the same PR event)
+# without one queueing behind the other.
 #
 # Deployment (on the Proxmox host, as root — see
 # docs/skills/proxmox-runner-pool.md):
@@ -28,11 +34,20 @@
 set -u
 
 ORG=rusty-photon
-TEMPLATE=902
-VMID=9100
-NAME=runner-eph
 TOKEN_FILE=/etc/rp-runner/github-token
-LABELS='["self-hosted","Linux","X64","proxmox-ephemeral"]'
+
+# Pool slots: name|template VMID|clone VMID|guest OS|labels
+#
+# Clone VMIDs must be unique and must not collide with any other VM on the
+# host. Guest OS selects the jitconfig injection path (the guests differ in
+# shell and runner directory, nothing else). Sizing note: every slot keeps one
+# clone powered on at all times, so the host must hold the sum of their
+# memory — see the capacity section of docs/plans/proxmox-pr-routing.md.
+SLOTS=(
+  "runner-eph|903|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-eph2|903|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-win|904|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+)
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id
 # rather than assuming 1 so a plan change can't silently break registration.
@@ -46,58 +61,98 @@ if [ -z "${GROUP_ID:-}" ]; then
   exit 1
 fi
 
-while true; do
-  if ! qm status $VMID >/dev/null 2>&1; then
-    qm clone $TEMPLATE $VMID --name $NAME >/dev/null || { sleep 30; continue; }
-    qm start $VMID >/dev/null
+log() { echo "$(date -Is) [$1] ${*:2}"; }
 
-    booted=0
-    for _ in $(seq 1 60); do
-      qm agent $VMID ping >/dev/null 2>&1 && { booted=1; break; }
-      sleep 5
+# Write the JIT config into the guest. Both variants write a temp file and
+# rename it, because the in-guest runner polls for a NON-EMPTY .jitconfig and
+# must never read a partial write. A JIT config is base64, so single-quoting
+# it in the PowerShell variant is safe.
+inject_jitconfig() {
+  local vmid=$1 os=$2 jit=$3
+  case "$os" in
+    linux)
+      qm guest exec "$vmid" -- /bin/bash -c "printf %s \"$jit\" > /home/ci/actions-runner/.jitconfig.tmp && chown ci:ci /home/ci/actions-runner/.jitconfig.tmp && mv /home/ci/actions-runner/.jitconfig.tmp /home/ci/actions-runner/.jitconfig"
+      ;;
+    windows)
+      qm guest exec "$vmid" -- powershell.exe -NoProfile -NonInteractive -Command "Set-Content -Path 'C:\\actions-runner\\.jitconfig.tmp' -Value '$jit' -NoNewline -Encoding ascii; Move-Item -Force 'C:\\actions-runner\\.jitconfig.tmp' 'C:\\actions-runner\\.jitconfig'"
+      ;;
+    *)
+      echo "unknown guest os '$os'" >&2
+      return 1
+      ;;
+  esac
+}
+
+destroy_clone() {
+  qm stop "$1" >/dev/null 2>&1
+  qm destroy "$1" --purge >/dev/null 2>&1
+}
+
+slot_loop() {
+  local name=$1 template=$2 vmid=$3 os=$4 labels=$5
+
+  while true; do
+    if ! qm status "$vmid" >/dev/null 2>&1; then
+      qm clone "$template" "$vmid" --name "$name" >/dev/null || { sleep 30; continue; }
+      qm start "$vmid" >/dev/null
+
+      # Windows clones take appreciably longer than Linux to reach a
+      # responding guest agent, so the wait is generous rather than tuned.
+      booted=0
+      for _ in $(seq 1 60); do
+        qm agent "$vmid" ping >/dev/null 2>&1 && { booted=1; break; }
+        sleep 5
+      done
+      if [ $booted != 1 ]; then
+        log "$name" "clone $vmid never reached the guest agent; destroying"
+        destroy_clone "$vmid"
+        sleep 30
+        continue
+      fi
+
+      # The auth header arrives via process substitution (bash printf is a
+      # builtin), so the PAT never appears on any process command line.
+      JIT=$(curl -fsS -X POST \
+        -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
+        -d "{\"name\":\"$name-$(date +%s)\",\"runner_group_id\":$GROUP_ID,\"labels\":$labels,\"work_folder\":\"_work\"}" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["encoded_jit_config"])')
+      if [ -z "${JIT:-}" ]; then
+        log "$name" "jitconfig mint failed; destroying $vmid"
+        destroy_clone "$vmid"
+        sleep 60
+        continue
+      fi
+
+      # An unverified injection would deadlock this loop — the guest waits for
+      # a config that never arrives while this loop waits for a poweroff that
+      # never comes — so check both qm's own exit and the in-guest exitcode.
+      if ! inject_jitconfig "$vmid" "$os" "$JIT" \
+          | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("exitcode") == 0 else 1)'; then
+        log "$name" "jitconfig injection into $vmid failed; destroying"
+        destroy_clone "$vmid"
+        sleep 30
+        continue
+      fi
+      log "$name" "runner clone $vmid up and registered"
+    fi
+
+    # The clone powers itself off after its single job.
+    while [ "$(qm status "$vmid" 2>/dev/null | awk '{print $2}')" = running ]; do
+      sleep 10
     done
-    if [ $booted != 1 ]; then
-      qm stop $VMID >/dev/null 2>&1
-      qm destroy $VMID --purge >/dev/null 2>&1
-      sleep 30
-      continue
-    fi
-
-    # The auth header arrives via process substitution (bash printf is a
-    # builtin), so the PAT never appears on any process command line.
-    JIT=$(curl -fsS -X POST \
-      -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
-      -d "{\"name\":\"$NAME-$(date +%s)\",\"runner_group_id\":$GROUP_ID,\"labels\":$LABELS,\"work_folder\":\"_work\"}" \
-      | python3 -c 'import json,sys; print(json.load(sys.stdin)["encoded_jit_config"])')
-    if [ -z "${JIT:-}" ]; then
-      qm stop $VMID >/dev/null 2>&1
-      qm destroy $VMID --purge >/dev/null 2>&1
-      sleep 60
-      continue
-    fi
-
-    # .tmp + mv: the in-guest service polls for a non-empty .jitconfig, so the
-    # rename keeps it from ever reading a partial write. An unverified
-    # injection would deadlock the loop — the guest waits for a config that
-    # never arrives while this loop waits for a poweroff that never comes —
-    # so check both qm's own exit and the in-guest exitcode it reports.
-    if ! qm guest exec $VMID -- /bin/bash -c "printf %s \"$JIT\" > /home/ci/actions-runner/.jitconfig.tmp && chown ci:ci /home/ci/actions-runner/.jitconfig.tmp && mv /home/ci/actions-runner/.jitconfig.tmp /home/ci/actions-runner/.jitconfig" \
-        | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("exitcode") == 0 else 1)'; then
-      echo "$(date -Is) jitconfig injection into $VMID failed; destroying"
-      qm stop $VMID >/dev/null 2>&1
-      qm destroy $VMID --purge >/dev/null 2>&1
-      sleep 30
-      continue
-    fi
-    echo "$(date -Is) runner clone $VMID up and registered"
-  fi
-
-  # The clone powers itself off after its single job.
-  while [ "$(qm status $VMID 2>/dev/null | awk '{print $2}')" = running ]; do
-    sleep 10
+    log "$name" "runner clone $vmid finished; destroying"
+    qm destroy "$vmid" --purge >/dev/null 2>&1
   done
-  echo "$(date -Is) runner clone $VMID finished; destroying"
-  qm destroy $VMID --purge >/dev/null 2>&1
+}
+
+# One background loop per slot. Killing the service kills the loops; the
+# clones they left behind are reclaimed on the next start, when a slot finds
+# its VMID already present and waits for that clone to finish its job.
+for slot in "${SLOTS[@]}"; do
+  IFS='|' read -r s_name s_template s_vmid s_os s_labels <<<"$slot"
+  log "$s_name" "starting slot (template $s_template, clone $s_vmid, $s_os)"
+  slot_loop "$s_name" "$s_template" "$s_vmid" "$s_os" "$s_labels" &
 done
+wait
