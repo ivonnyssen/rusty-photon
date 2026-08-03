@@ -3,10 +3,11 @@
 ## Goal
 
 Route real `pull_request`-triggered CI legs of this public repository to the
-Proxmox ephemeral runner pool ([skill doc](../skills/proxmox-runner-pool.md)),
-starting with `bazel / ubuntu-latest` and extending to the two Windows legs
-(`bazel / windows-latest` and msi.yml's `build-verify`) — while fork PRs stay
-on GitHub-hosted runners and every layer of the security contract in
+Proxmox ephemeral runner pool ([skill doc](../skills/proxmox-runner-pool.md)):
+`bazel / ubuntu-latest`, `bazel coverage` (bazel-coverage.yml), and
+`bazel / windows-latest` — the three required Bazel checks — plus msi.yml's
+`build-verify` if its measurement pans out. Fork PRs stay on GitHub-hosted
+runners and every layer of the security contract in
 [ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
 holds. Measured baseline: the pool completes the Linux Bazel steps in ~16 s
 on an unchanged tree with a warm LAN cache versus 4–10 minutes hosted.
@@ -21,18 +22,34 @@ the full layered contract and its rationale.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | R1 | Isolation + credential hardening: runner VLAN (router + tagged template NIC), write credential removed from runner `.env`, fencing verified by dispatch job | **Done** (2026-08-02: probe matrix from inside a clone — GitHub + cache:8080 reachable, all other RFC1918 dropped; acceptance dispatch green through the fence) | infra only |
-| R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc updates | In progress | — |
-| R3 | Windows runner template: one-job service, sysprep'd template, orchestrator second pool slot, validation dispatch job, msi compile timing measurement | Planned | — |
-| R4 | Route Windows: `bazel / windows-latest` + msi `build-verify` via the same expression, Windows kill switch | Planned | — |
+| R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc updates | **Done** (2026-08-02: PR's own ubuntu leg self-tested on the pool pre-merge; first push-to-main ran on the pool and grew the LAN cache +894 objects via the write secret) | PR #849 |
+| R3 | Windows runner template: one-job service, sysprep'd template, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | In progress | infra + orchestrator PR |
+| R4 | Route Windows: `bazel / windows-latest` via the same expression, Windows kill switch; msi `build-verify` only if the R3 measurement beats hosted | Planned | — |
+| R5 | Route `bazel coverage`: same expression + provisioning guards in bazel-coverage.yml, Linux template warmed for the nightly/instrumented graph, shared `RP_POOL_LINUX` kill switch | Planned | — |
 
 R1 is strictly first (it closes residual risk before exposure increases).
 R2 depends on R1. R3 is independent of R2 and can proceed in parallel once
-R1 lands. R4 depends on R2 (the proven expression) and R3.
+R1 lands. R4 depends on R2 (the proven expression) and R3. R5 depends on
+R2 and on R3's orchestrator multi-slot rework (a PR event fires both Linux
+legs at once, so routing coverage before the second Linux slot exists would
+queue one of them behind the other on every PR) — it does not depend on the
+Windows template itself and can land before or after R4.
 
-Deferred beyond this plan: `bazel coverage` (another Linux required check —
-same recipe as R2 once soaked), and the macOS leg (requires physical Apple
-hardware; the strongest motivation — the remote-cache wedge ladder — is
-tracked in #765).
+Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
+the strongest motivation — the remote-cache wedge ladder — is tracked in
+#765).
+
+### Host capacity (20 cores / 94 GB)
+
+Target steady state after R5: three warm slots — 2× Linux (16 vCPU,
+24 GB each; shrunk from 32 GB, to be confirmed by measuring peak RAM during
+a real job before the resize) + 1× Windows (16 vCPU, 28 GB) — ~76 GB
+committed, leaving headroom for the host and the cache LXC. vCPU is
+deliberately overcommitted (48 vCPU on 20 cores): jobs are bursty, and even
+two full builds landing together get ~10 effective cores each, still a
+multiple of the hosted runners' 4. A PR event fires at most three pool jobs
+(ubuntu, coverage, windows); msi — if routed — queues briefly behind the
+Windows bazel leg rather than earning a fourth slot.
 
 ## Venue and cache matrix
 
@@ -151,11 +168,13 @@ Mirrors the Linux template build (P2), with Windows specifics:
 4. **Template hygiene.** Sysprep/generalize before converting to a template
    (the machine-identity wipe the Linux template does with
    `machine-id` + `cloud-init clean`). NIC tagged with the runner VLAN.
-5. **Orchestrator.** `rp-runner-pool.sh` grows a second pool slot: per-pool
-   template VMID, clone VMID, name prefix, and labels
-   (`self-hosted`, `Windows`, `X64`, `proxmox-ephemeral-windows`). Sizing
-   note: two warm clones now idle on the host — measure host headroom and
-   size the Windows VM's vCPU/RAM accordingly rather than assuming.
+5. **Orchestrator.** `rp-runner-pool.sh` is reworked from one hard-coded
+   warm clone into pool *slots* (per-slot template VMID, clone VMID, name
+   prefix, labels), one maintenance loop per slot: a Windows slot
+   (`self-hosted`, `Windows`, `X64`, `proxmox-ephemeral-windows`) and a
+   second Linux slot (same labels as the first — GitHub dispatches a queued
+   job to any idle matching runner), which R5 requires. Host sizing per the
+   capacity section above.
 6. **Validation + measurement.** Extend `proxmox-runner-test.yml` with a
    dispatch-only Windows job (same masked-env cache pattern). Also measure
    the msi `build-verify` release compile on the template: it is Cargo, not
@@ -175,6 +194,37 @@ Mirrors the Linux template build (P2), with Windows specifics:
 3. Cache flags: the Windows Bazel leg uses the LAN cache like Linux
    (bazel-remote is platform-agnostic; Windows actions populate under
    distinct action keys). Write gating identical to R2.
+
+## R5 — Route `bazel coverage`
+
+The third required Bazel check (bazel-coverage.yml), same recipe as R2 with
+three coverage-specific points:
+
+1. **Expression.** Not a matrix job, so the R2 expression with the literal
+   fallback: `… && fromJSON('["self-hosted", "proxmox-ephemeral"]') ||
+   'ubuntu-latest'`. The event gate already sends the nightly `schedule` run
+   to hosted runners — deliberate for the same reason as bazel.yml's: the
+   schedule is what keeps the **cloud** cache's coverage entries warm for
+   fork PRs. Kill switch: the same `RP_POOL_LINUX` variable — both Linux
+   legs are healthy or unhealthy together (it is the same pool), and one
+   flip must evacuate everything Linux.
+2. **Cache split.** Same REMOTE_FLAGS block as bazel.yml: LAN URL override
+   on the pool, LAN write auth (`BAZEL_LAN_CACHE_WRITE_AUTH`) on `push`
+   only, `--remote_upload_local_results=false` otherwise. Push-to-main then
+   warms the LAN cache's *coverage* namespace exactly as it does the
+   build/test namespace. The provisioning steps (lld, bazelisk, OmniSim,
+   Pebble, libusb, QHY SDK, ZWO SDK) get the same
+   `runner.environment == 'github-hosted'` guards.
+3. **Template warmup.** Coverage builds the whole graph **instrumented on
+   the nightly toolchain** — a distinct action + external-repo namespace
+   from the stable build/test the template was benched with. Before routing,
+   the Linux template gets a one-time warmup (`bazel coverage` run to
+   completion during template rebuild) so the nightly toolchain and the
+   instrumented externals live in the template's output base; without it,
+   every ephemeral clone would re-fetch the nightly toolchain over the WAN
+   on every job. The codecov CLI download (~small, rolling `latest`) stays
+   per-run; the Codecov upload runs from the pool over the WAN like any
+   other egress.
 
 ## References
 
