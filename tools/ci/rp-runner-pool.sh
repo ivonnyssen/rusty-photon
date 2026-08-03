@@ -42,6 +42,12 @@ set -u -o pipefail
 ORG=rusty-photon
 TOKEN_FILE=/etc/rp-runner/github-token
 
+# Per-clone "this one received its config" markers, used to tell an in-flight
+# job from an orphan when this service restarts. tmpfs on purpose: a host
+# reboot clears it, and a host reboot also takes the clones with it.
+STATE_DIR=/run/rp-runner-pool
+mkdir -p "$STATE_DIR"
+
 # Pool slots: name|template VMID|clone VMID|guest OS|labels
 #
 # Clone VMIDs must be unique and must not collide with any other VM on the
@@ -96,10 +102,23 @@ inject_jitconfig() {
 destroy_clone() {
   qm stop "$1" >/dev/null 2>&1
   qm destroy "$1" --purge >/dev/null 2>&1
+  rm -f "$STATE_DIR/$1.injected"
 }
 
 slot_loop() {
   local name=$1 template=$2 vmid=$3 os=$4 labels=$5
+
+  # Reconcile a clone left behind by a previous run of this service. If it has
+  # no injection marker it was created but never configured — a restart in
+  # that window would otherwise be unrecoverable: the guest waits for a config
+  # that will never arrive (the Linux runner script has no no-config timeout
+  # at all), and the poweroff wait below waits for a shutdown that never
+  # comes, wedging the slot permanently. A clone WITH a marker is running a
+  # real job, so it is left alone and simply waited on.
+  if qm status "$vmid" >/dev/null 2>&1 && [ ! -e "$STATE_DIR/$vmid.injected" ]; then
+    log "$name" "clone $vmid predates this run and never received a config; destroying"
+    destroy_clone "$vmid"
+  fi
 
   while true; do
     if ! qm status "$vmid" >/dev/null 2>&1; then
@@ -145,6 +164,8 @@ slot_loop() {
         sleep 30
         continue
       fi
+      # Only now is the clone recoverable across a restart of this service.
+      : > "$STATE_DIR/$vmid.injected"
       log "$name" "runner clone $vmid up and registered"
     fi
 
@@ -160,13 +181,14 @@ slot_loop() {
       sleep 10
     done
     log "$name" "runner clone $vmid finished; destroying"
-    qm destroy "$vmid" --purge >/dev/null 2>&1
+    destroy_clone "$vmid"
   done
 }
 
-# One background loop per slot. Killing the service kills the loops; the
-# clones they left behind are reclaimed on the next start, when a slot finds
-# its VMID already present and waits for that clone to finish its job.
+# One background loop per slot. Killing the service kills the loops but not
+# the clones; each slot reconciles its own leftover on the next start —
+# waiting on one that was already running a job, destroying one that never got
+# a config (see slot_loop).
 for slot in "${SLOTS[@]}"; do
   IFS='|' read -r s_name s_template s_vmid s_os s_labels <<<"$slot"
   log "$s_name" "starting slot (template $s_template, clone $s_vmid, $s_os)"
