@@ -356,7 +356,7 @@ async fn read_request_head(stream: &mut TcpStream, deadline: Instant) -> Option<
         }
 
         match timeout_at(deadline, stream.read(&mut chunk[..read_len])).await {
-            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
+            Ok(Ok(0) | Err(_)) | Err(_) => return None,
             Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
         }
     }
@@ -458,7 +458,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// token (and header field-names, though this crate only uses it for the
 /// method): any alphanumeric ASCII byte, plus a fixed set of punctuation.
 /// Notably excludes whitespace and control characters (including `\r`/`\n`).
-fn is_tchar(b: u8) -> bool {
+const fn is_tchar(b: u8) -> bool {
     b.is_ascii_alphanumeric()
         || matches!(
             b,
@@ -486,13 +486,13 @@ fn is_tchar(b: u8) -> bool {
 /// could read differently than intended if reflected verbatim into the
 /// `Location` authority (e.g. `Host: trusted.local@evil.example` parsed
 /// with userinfo `trusted.local` and actual host `evil.example`).
-fn is_host_byte(b: u8) -> bool {
+const fn is_host_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_')
 }
 
 /// A bracketed IPv6 literal is built only from hex digits, `:` (and `.`
 /// for an IPv4-mapped form like `::ffff:192.0.2.1`).
-fn is_ipv6_literal_byte(b: u8) -> bool {
+const fn is_ipv6_literal_byte(b: u8) -> bool {
     b.is_ascii_hexdigit() || matches!(b, b':' | b'.')
 }
 
@@ -550,8 +550,7 @@ fn build_redirect_response(request: &ParsedRequest, local_addr: SocketAddr) -> S
         .host
         .as_deref()
         .and_then(strip_host_port)
-        .map(str::to_string)
-        .unwrap_or_else(|| format_ip_for_url(local_addr.ip()));
+        .map_or_else(|| format_ip_for_url(local_addr.ip()), str::to_string);
     // "*" (OPTIONS's server-wide form) is a request-line-only construct —
     // it isn't valid URI-path syntax, so appended as-is it would produce a
     // Location like "https://host:port*" with no path separator. Map it to

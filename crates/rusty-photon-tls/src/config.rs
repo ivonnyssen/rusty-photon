@@ -15,6 +15,7 @@ pub struct TlsConfig {
 }
 
 /// Expand a leading `~` to the user's home directory.
+#[must_use]
 pub fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = home_dir() {
@@ -44,21 +45,25 @@ fn home_dir() -> Option<PathBuf> {
 
 impl TlsConfig {
     /// Resolve cert and key paths, expanding `~` to the home directory.
+    #[must_use]
     pub fn resolved_cert_path(&self) -> PathBuf {
         expand_tilde(&self.cert)
     }
 
     /// Resolve cert and key paths, expanding `~` to the home directory.
+    #[must_use]
     pub fn resolved_key_path(&self) -> PathBuf {
         expand_tilde(&self.key)
     }
 }
 
 /// CA cert and key filenames within the PKI directory.
+#[must_use]
 pub fn ca_cert_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("ca.pem")
 }
 
+#[must_use]
 pub fn ca_key_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("ca-key.pem")
 }
@@ -78,7 +83,7 @@ mod tests {
 
     #[test]
     fn optional_tls_config_defaults_to_none() {
-        let json = r#"{}"#;
+        let json = r"{}";
         #[derive(Deserialize)]
         struct Wrapper {
             #[serde(default)]
