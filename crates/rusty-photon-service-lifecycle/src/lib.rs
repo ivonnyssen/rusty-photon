@@ -79,6 +79,24 @@
 
 #![deny(unsafe_code)]
 
+// Every binary in this workspace depends on this crate, so this is the one
+// place a workspace-wide target guard reaches all of them. Cargo.toml cannot
+// express it — `compile_error!` in the root of the common dependency can.
+//
+// The workspace assumes a little-endian target throughout: the catalog format
+// (`rp-catalog`), the mount wire protocols (`skywatcher-motor-protocol`,
+// `pa-falcon-rotator`), and the camera SDK buffers all read and write native
+// integers without byte-swapping. None of it has ever been built or validated
+// big-endian. Failing at compile time is honest; silently decoding a star
+// catalog or an encoder position with the bytes reversed is not.
+#[cfg(not(target_endian = "little"))]
+compile_error!(
+    "Rusty Photon supports little-endian targets only. Wire protocols, the star \
+     catalog, and camera buffers are all decoded natively without byte-swapping, \
+     so a big-endian build would misread them silently. If you need big-endian \
+     support, open an issue — the decoders need auditing first."
+);
+
 mod logging;
 mod reload;
 mod runner;
