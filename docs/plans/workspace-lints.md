@@ -378,11 +378,15 @@ FalconManager::new(Arc::<MockFalconTransportFactory>::clone(&factory))
 but it drops the explicit `Arc::clone` spelling the workspace uses to keep
 refcount bumps visible.
 
-The other two shapes are simpler. `Arc::new(Concrete) as Arc<dyn T>` just loses
-its cast — the argument alone fixes the type parameter, so the coercion applies
-to the result. `s as &dyn T` inside a closure body cannot: a closure with an
-inferred return type is not a coercion site, so those need either an explicit
-closure return type or an `#[expect]`.
+`Arc::new(Concrete) as Arc<dyn T>` just loses its cast — the argument alone
+fixes the type parameter, so the coercion applies to the result.
+
+That leaves 7 of the 32: `s as &dyn ProgressEmitter` in `rp`'s MCP tools, where
+the cast sits in a closure body. A closure with an inferred return type is not a
+coercion site, so these need either an explicit closure return type or an
+`#[expect]` — and unlike the other 25 they are production code. Collapsing the
+trait object is not an alternative: `ProgressEmitter` has a second impl that
+the unit tests count progress notifications through.
 
 ## L6a — split the CI channels
 

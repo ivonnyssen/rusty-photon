@@ -358,7 +358,7 @@ mod tests {
     }
 
     fn disconnected_device() -> FalconRotatorDevice {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         FalconRotatorDevice::new(RotatorConfig::default(), manager)
     }
 
@@ -383,7 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_comes_from_config() {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         let device = FalconRotatorDevice::new(
             RotatorConfig {
                 unique_id: "test-rotator-unique-id".to_string(),

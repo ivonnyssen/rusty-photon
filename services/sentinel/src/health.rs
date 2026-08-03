@@ -1362,7 +1362,7 @@ mod tests {
             let ctx = SupervisionContext {
                 policy: fast_policy(),
                 registry: Arc::clone(&registry),
-                http: ScriptedHttp::new(ProbeAnswer::Ok200) as Arc<dyn HttpClient>,
+                http: ScriptedHttp::new(ProbeAnswer::Ok200),
                 restarts,
                 notifiers: vec![],
                 state: Arc::clone(&state),

@@ -412,7 +412,7 @@ mod tests {
     }
 
     fn disconnected_device() -> FalconStatusSwitchDevice {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         FalconStatusSwitchDevice::new(SwitchConfig::default(), manager)
     }
 
@@ -464,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_comes_from_config() {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         let device = FalconStatusSwitchDevice::new(
             SwitchConfig {
                 unique_id: "test-switch-unique-id".to_string(),
