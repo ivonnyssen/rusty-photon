@@ -34,8 +34,8 @@ async fn running_server_with_switch_description(world: &mut PpbaWorld, descripti
 // ============================================================================
 
 #[when(expr = "I try to set switch {int} name to {string}")]
-async fn try_set_switch_name(world: &mut PpbaWorld, id: i32, name: String) {
-    let result = world.switch_ref().set_switch_name(id as usize, name).await;
+async fn try_set_switch_name(world: &mut PpbaWorld, id: usize, name: String) {
+    let result = world.switch_ref().set_switch_name(id, name).await;
     world.capture_result(result);
 }
 
@@ -80,25 +80,25 @@ async fn switch_device_driver_version_not_empty(world: &mut PpbaWorld) {
 }
 
 #[then(expr = "the switch device max switch should be {int}")]
-async fn switch_device_max_switch_should_be(world: &mut PpbaWorld, expected: i32) {
+async fn switch_device_max_switch_should_be(world: &mut PpbaWorld, expected: usize) {
     let max = world.switch_ref().max_switch().await.unwrap();
-    assert_eq!(max, expected as usize, "max switch mismatch");
+    assert_eq!(max, expected, "max switch mismatch");
 }
 
 #[then(expr = "all {int} switches should have non-empty names")]
-async fn all_switches_have_names(world: &mut PpbaWorld, count: i32) {
+async fn all_switches_have_names(world: &mut PpbaWorld, count: usize) {
     let switch = world.switch_ref();
     for id in 0..count {
-        let name = switch.get_switch_name(id as usize).await.unwrap();
+        let name = switch.get_switch_name(id).await.unwrap();
         assert!(!name.is_empty(), "switch {id} should have a non-empty name");
     }
 }
 
 #[then(expr = "all {int} switches should have non-empty descriptions")]
-async fn all_switches_have_descriptions(world: &mut PpbaWorld, count: i32) {
+async fn all_switches_have_descriptions(world: &mut PpbaWorld, count: usize) {
     let switch = world.switch_ref();
     for id in 0..count {
-        let desc = switch.get_switch_description(id as usize).await.unwrap();
+        let desc = switch.get_switch_description(id).await.unwrap();
         assert!(
             !desc.is_empty(),
             "switch {id} should have a non-empty description"
@@ -126,12 +126,8 @@ async fn all_switches_consistent(world: &mut PpbaWorld) {
 }
 
 #[then(expr = "switch {int} min value should be {float}")]
-async fn switch_min_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
-    let min = world
-        .switch_ref()
-        .min_switch_value(id as usize)
-        .await
-        .unwrap();
+async fn switch_min_value_should_be(world: &mut PpbaWorld, id: usize, expected: f64) {
+    let min = world.switch_ref().min_switch_value(id).await.unwrap();
     assert!(
         (min - expected).abs() < f64::EPSILON,
         "switch {id} min: expected {expected}, got {min}"
@@ -139,12 +135,8 @@ async fn switch_min_value_should_be(world: &mut PpbaWorld, id: i32, expected: f6
 }
 
 #[then(expr = "switch {int} max value should be {float}")]
-async fn switch_max_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
-    let max = world
-        .switch_ref()
-        .max_switch_value(id as usize)
-        .await
-        .unwrap();
+async fn switch_max_value_should_be(world: &mut PpbaWorld, id: usize, expected: f64) {
+    let max = world.switch_ref().max_switch_value(id).await.unwrap();
     assert!(
         (max - expected).abs() < f64::EPSILON,
         "switch {id} max: expected {expected}, got {max}"
@@ -152,10 +144,10 @@ async fn switch_max_value_should_be(world: &mut PpbaWorld, id: i32, expected: f6
 }
 
 #[then(expr = "all {int} switches should have positive step values")]
-async fn all_switches_positive_step(world: &mut PpbaWorld, count: i32) {
+async fn all_switches_positive_step(world: &mut PpbaWorld, count: usize) {
     let switch = world.switch_ref();
     for id in 0..count {
-        let step = switch.switch_step(id as usize).await.unwrap();
+        let step = switch.switch_step(id).await.unwrap();
         assert!(
             step > 0.0,
             "switch {id} should have positive step, got {step}"
@@ -164,21 +156,13 @@ async fn all_switches_positive_step(world: &mut PpbaWorld, count: i32) {
 }
 
 #[then(expr = "switch {int} name should be queryable")]
-async fn switch_name_queryable(world: &mut PpbaWorld, id: i32) {
-    world
-        .switch_ref()
-        .get_switch_name(id as usize)
-        .await
-        .unwrap();
+async fn switch_name_queryable(world: &mut PpbaWorld, id: usize) {
+    world.switch_ref().get_switch_name(id).await.unwrap();
 }
 
 #[then(expr = "querying switch {int} name should fail")]
-async fn querying_switch_name_should_fail(world: &mut PpbaWorld, id: i32) {
-    world
-        .switch_ref()
-        .get_switch_name(id as usize)
-        .await
-        .unwrap_err();
+async fn querying_switch_name_should_fail(world: &mut PpbaWorld, id: usize) {
+    world.switch_ref().get_switch_name(id).await.unwrap_err();
 }
 
 #[then("the switch device static name should not be empty")]

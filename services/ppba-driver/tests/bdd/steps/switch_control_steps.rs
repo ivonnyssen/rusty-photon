@@ -43,20 +43,17 @@ async fn wait_for_switch_data(world: &mut PpbaWorld) {
 }
 
 #[when(expr = "I set switch {int} value to {float}")]
-async fn set_switch_value(world: &mut PpbaWorld, id: i32, value: f64) {
+async fn set_switch_value(world: &mut PpbaWorld, id: usize, value: f64) {
     world
         .switch_ref()
-        .set_switch_value(id as usize, value)
+        .set_switch_value(id, value)
         .await
         .unwrap();
 }
 
 #[when(expr = "I try to set switch {int} value to {float}")]
-async fn try_set_switch_value(world: &mut PpbaWorld, id: i32, value: f64) {
-    let result = world
-        .switch_ref()
-        .set_switch_value(id as usize, value)
-        .await;
+async fn try_set_switch_value(world: &mut PpbaWorld, id: usize, value: f64) {
+    let result = world.switch_ref().set_switch_value(id, value).await;
     world.capture_result(result);
 }
 
@@ -65,12 +62,8 @@ async fn try_set_switch_value(world: &mut PpbaWorld, id: i32, value: f64) {
 // ============================================================================
 
 #[then(expr = "switch {int} value should be {float}")]
-async fn switch_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
-    let value = world
-        .switch_ref()
-        .get_switch_value(id as usize)
-        .await
-        .unwrap();
+async fn switch_value_should_be(world: &mut PpbaWorld, id: usize, expected: f64) {
+    let value = world.switch_ref().get_switch_value(id).await.unwrap();
     assert!(
         (value - expected).abs() < f64::EPSILON,
         "switch {id} value: expected {expected}, got {value}"
@@ -78,65 +71,61 @@ async fn switch_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
 }
 
 #[then(expr = "switch {int} boolean should be true")]
-async fn switch_boolean_should_be_true(world: &mut PpbaWorld, id: i32) {
+async fn switch_boolean_should_be_true(world: &mut PpbaWorld, id: usize) {
     assert!(
-        world.switch_ref().get_switch(id as usize).await.unwrap(),
+        world.switch_ref().get_switch(id).await.unwrap(),
         "switch {id} should be true"
     );
 }
 
 #[then(expr = "setting switch {int} boolean to true should succeed")]
-async fn setting_switch_boolean_should_succeed(world: &mut PpbaWorld, id: i32) {
-    world
-        .switch_ref()
-        .set_switch(id as usize, true)
-        .await
-        .unwrap();
+async fn setting_switch_boolean_should_succeed(world: &mut PpbaWorld, id: usize) {
+    world.switch_ref().set_switch(id, true).await.unwrap();
 }
 
 #[then(expr = "switches {int} through {int} should be writable")]
-async fn switches_should_be_writable(world: &mut PpbaWorld, from: i32, to: i32) {
+async fn switches_should_be_writable(world: &mut PpbaWorld, from: usize, to: usize) {
     let switch = world.switch_ref();
     for id in from..=to {
         assert!(
-            switch.can_write(id as usize).await.unwrap(),
+            switch.can_write(id).await.unwrap(),
             "switch {id} should be writable"
         );
     }
 }
 
 #[then(expr = "switches {int} through {int} should not be writable")]
-async fn switches_should_not_be_writable(world: &mut PpbaWorld, from: i32, to: i32) {
+async fn switches_should_not_be_writable(world: &mut PpbaWorld, from: usize, to: usize) {
     let switch = world.switch_ref();
     for id in from..=to {
         assert!(
-            !switch.can_write(id as usize).await.unwrap(),
+            !switch.can_write(id).await.unwrap(),
             "switch {id} should not be writable"
         );
     }
 }
 
 #[then(expr = "switch {int} should not be writable")]
-async fn switch_should_not_be_writable(world: &mut PpbaWorld, id: i32) {
+async fn switch_should_not_be_writable(world: &mut PpbaWorld, id: usize) {
     assert!(
-        !world.switch_ref().can_write(id as usize).await.unwrap(),
+        !world.switch_ref().can_write(id).await.unwrap(),
         "switch {id} should not be writable"
     );
 }
 
 #[then(expr = "switch {int} should be writable")]
-async fn switch_should_be_writable(world: &mut PpbaWorld, id: i32) {
+async fn switch_should_be_writable(world: &mut PpbaWorld, id: usize) {
     assert!(
-        world.switch_ref().can_write(id as usize).await.unwrap(),
+        world.switch_ref().can_write(id).await.unwrap(),
         "switch {id} should be writable"
     );
 }
 
 #[then(expr = "setting switch {int} value to {float} should succeed")]
-async fn setting_switch_value_should_succeed(world: &mut PpbaWorld, id: i32, value: f64) {
+async fn setting_switch_value_should_succeed(world: &mut PpbaWorld, id: usize, value: f64) {
     world
         .switch_ref()
-        .set_switch_value(id as usize, value)
+        .set_switch_value(id, value)
         .await
         .unwrap();
 }
@@ -144,10 +133,9 @@ async fn setting_switch_value_should_succeed(world: &mut PpbaWorld, id: i32, val
 #[then(
     expr = "all {int} switches should be queryable for name, description, min, max, step, value, and can_write"
 )]
-async fn all_switches_queryable(world: &mut PpbaWorld, count: i32) {
+async fn all_switches_queryable(world: &mut PpbaWorld, count: usize) {
     let switch = world.switch_ref();
     for id in 0..count {
-        let id = id as usize;
         switch.get_switch_name(id).await.unwrap();
         switch.get_switch_description(id).await.unwrap();
         switch.min_switch_value(id).await.unwrap();
@@ -159,9 +147,9 @@ async fn all_switches_queryable(world: &mut PpbaWorld, count: i32) {
 }
 
 #[then(expr = "get_switch should work for switches {int} through {int}")]
-async fn get_switch_should_work(world: &mut PpbaWorld, from: i32, to: i32) {
+async fn get_switch_should_work(world: &mut PpbaWorld, from: usize, to: usize) {
     let switch = world.switch_ref();
     for id in from..=to {
-        switch.get_switch(id as usize).await.unwrap();
+        switch.get_switch(id).await.unwrap();
     }
 }

@@ -400,24 +400,24 @@ async fn should_not_receive_events(world: &mut RpWorld) {
 }
 
 #[then(expr = "the test webhook receiver should have received {int} {string} events")]
-async fn should_receive_n_events(world: &mut RpWorld, count: i32, event_type: String) {
+async fn should_receive_n_events(world: &mut RpWorld, count: usize, event_type: String) {
     assert!(
-        world.wait_for_events(&event_type, count as usize).await,
+        world.wait_for_events(&event_type, count).await,
         "expected {count} '{event_type}' events within timeout"
     );
 
     let events = world.received_events.read().await;
     let actual = events.iter().filter(|e| e.event_type == event_type).count();
     assert_eq!(
-        actual, count as usize,
+        actual, count,
         "expected exactly {count} '{event_type}' events, got {actual}"
     );
 }
 
 #[then(expr = "the test webhook receiver should have received at least {int} {string} event(s)")]
-async fn should_receive_at_least_n_events(world: &mut RpWorld, count: i32, event_type: String) {
+async fn should_receive_at_least_n_events(world: &mut RpWorld, count: usize, event_type: String) {
     assert!(
-        world.wait_for_events(&event_type, count as usize).await,
+        world.wait_for_events(&event_type, count).await,
         "expected at least {count} '{event_type}' event(s) within timeout"
     );
 }
