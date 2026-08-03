@@ -200,7 +200,26 @@ slot_loop() {
     # genuinely wedged guest (hung shutdown, dead runner process) does hold a
     # slot, but distinguishing that from idle needs a health check rather than
     # a timer — tracked separately.
-    while [ "$(qm status "$vmid" 2>/dev/null | awk '{print $2}')" = running ]; do
+    # Only a confirmed `stopped` ends the wait. An unreadable status is NOT
+    # "stopped": stderr is suppressed here, so a transient failure (host under
+    # load, a lock) yields an empty string, and treating that as stopped would
+    # destroy a VM still running a job. Unknown therefore means keep waiting —
+    # but not forever, since a VM removed out of band would never report
+    # anything again; after a few minutes of silence give up on the wait and
+    # let the next iteration's reconcile decide.
+    unknown=0
+    while true; do
+      state=$(qm status "$vmid" 2>/dev/null | awk '{print $2}')
+      [ "$state" = stopped ] && break
+      if [ -z "$state" ]; then
+        unknown=$((unknown + 1))
+        if [ "$unknown" -ge 30 ]; then
+          log "$name" "status of $vmid unreadable for 5 minutes; abandoning the wait"
+          break
+        fi
+      else
+        unknown=0
+      fi
       sleep 10
     done
     log "$name" "runner clone $vmid finished; destroying"
