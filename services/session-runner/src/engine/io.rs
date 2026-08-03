@@ -81,7 +81,7 @@ impl Clock for SystemClock {
 /// plus its `payload` (which becomes the `event.*` namespace in trigger
 /// scopes). Produced by the SSE client (`crate::events`) and, for the
 /// synthetic `correction_requested` source, by the engine itself.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineEvent {
     pub event: String,
     pub payload: Value,
@@ -103,12 +103,14 @@ pub struct EventIntake {
 }
 
 impl EventIntake {
-    pub fn new(rx: mpsc::Receiver<EngineEvent>) -> Self {
+    #[must_use]
+    pub const fn new(rx: mpsc::Receiver<EngineEvent>) -> Self {
         Self { rx: Some(rx) }
     }
 
     /// An intake with no stream behind it: nothing ever arrives.
-    pub fn disconnected() -> Self {
+    #[must_use]
+    pub const fn disconnected() -> Self {
         Self { rx: None }
     }
 

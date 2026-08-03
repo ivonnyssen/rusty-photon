@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! BDD test world for the session-runner service.
 //!
-//! Holds the three external processes (OmniSim, rp, session-runner) plus
+//! Holds the three external processes (`OmniSim`, rp, session-runner) plus
 //! an in-process webhook receiver. The shared harness types come from
 //! `bdd_infra::rp_harness`; everything below is just the per-scenario
 //! accumulator state for this service's tests.
@@ -43,7 +43,7 @@ pub struct SessionRunnerWorld {
     pub cameras: Vec<CameraConfig>,
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
-    /// Singular mount (deep_sky.feature's scenarios).
+    /// Singular mount (`deep_sky.feature`'s scenarios).
     pub mount: Option<MountConfig>,
     pub focusers: Vec<FocuserConfig>,
     /// Optical trains — the deep-sky document is train-addressed, so
@@ -70,13 +70,13 @@ pub struct SessionRunnerWorld {
     /// The computed target coordinates behind `pending_store_targets`,
     /// kept for the mount-sync and plate-solver-echo steps.
     pub night_targets: Vec<IcrsCoord>,
-    /// OmniSim's telescope site as it was before a scenario overwrote
+    /// `OmniSim`'s telescope site as it was before a scenario overwrote
     /// it. The site is a profile *setting* the per-scenario device
     /// restart does not reset, and on platforms without
-    /// `PR_SET_PDEATHSIG` the OmniSim process outlives this test
+    /// `PR_SET_PDEATHSIG` the `OmniSim` process outlives this test
     /// binary — so the after-hook must put the site back or the next
     /// suite reusing the instance (rp's planner scenarios pin their
-    /// config to OmniSim's default site) fails mount-site validation.
+    /// config to `OmniSim`'s default site) fails mount-site validation.
     pub original_telescope_site: Option<(f64, f64)>,
     /// The scenario's plate-solver stub (kept alive for its lifetime)
     /// and the rp config block pointing at it.
@@ -116,7 +116,7 @@ pub struct SessionRunnerWorld {
     pub flat_plan: Vec<(String, u32)>,
     /// Filterless (OSC) rig: no filter wheel is rostered and the
     /// registration omits `filter_wheel_id`, exercising the document's
-    /// `""` default (set_filter is skipped).
+    /// `""` default (`set_filter` is skipped).
     pub no_filter_wheel: bool,
 
     // --- REST API state ---

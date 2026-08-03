@@ -1,5 +1,5 @@
 //! Shared BDD infrastructure helpers for the session-runner suite: the
-//! three-process topology (OmniSim + rp + session-runner) and the
+//! three-process topology (`OmniSim` + rp + session-runner) and the
 //! orchestrator registration, reused by every feature's step definitions.
 
 use std::time::Duration;
@@ -91,7 +91,7 @@ pub fn ensure_focuser(world: &mut SessionRunnerWorld) {
 }
 
 /// The default equipment set: one camera, one filter wheel, one cover
-/// calibrator, all on OmniSim device 0. Scenarios that need less simply
+/// calibrator, all on `OmniSim` device 0. Scenarios that need less simply
 /// don't reference the rest.
 pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
     ensure_omnisim(world).await;
@@ -116,7 +116,7 @@ pub async fn start_session_runner_service(world: &mut SessionRunnerWorld) {
 
 /// Like [`start_session_runner_service`], merging `extra` top-level fields
 /// into the config — the rp client wiring (`mcp_server_url`,
-/// `service_auth`, `ca_cert`) for the mcp_client_auth scenarios.
+/// `service_auth`, `ca_cert`) for the `mcp_client_auth` scenarios.
 pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, extra: Value) {
     if world.session_runner.is_some() {
         return;
@@ -191,7 +191,11 @@ pub fn register_orchestrator(
 }
 
 pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
+    if world
+        .rp
+        .as_ref()
+        .is_some_and(bdd_infra::ServiceHandle::is_running)
+    {
         return;
     }
 

@@ -107,12 +107,12 @@ async fn connect(
     if let Some(id) = last_seq {
         request = request.header("last-event-id", id.to_string());
     }
-    let response = match tokio::time::timeout(CONNECT_TIMEOUT, request.send()).await {
-        Ok(response) => response,
-        Err(_) => {
-            debug!(%url, "event stream subscribe attempt timed out");
-            return None;
-        }
+    let response = if let Ok(response) = tokio::time::timeout(CONNECT_TIMEOUT, request.send()).await
+    {
+        response
+    } else {
+        debug!(%url, "event stream subscribe attempt timed out");
+        return None;
     };
     match response {
         Ok(response) if response.status().is_success() => {
@@ -144,11 +144,11 @@ async fn client_loop(
             read_stream(response, &tx, &mut last_seq).await;
         }
         tokio::select! {
-            _ = tx.closed() => return,
+            () = tx.closed() => return,
             () = tokio::time::sleep(RECONNECT_BACKOFF) => {}
         }
         connection = tokio::select! {
-            _ = tx.closed() => return,
+            () = tx.closed() => return,
             connected = connect(&client, &url, last_seq, auth.as_ref()) => connected,
         };
     }
@@ -169,7 +169,7 @@ async fn read_stream(
             // response so the HTTP connection closes — otherwise this task
             // could block on `chunk()` forever on a quiet stream, leaking
             // the task + connection.
-            _ = tx.closed() => return,
+            () = tx.closed() => return,
             chunk = response.chunk() => chunk,
         };
         match chunk {
@@ -465,7 +465,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let mut intake = timeout(
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             subscribe(
                 format!("http://{addr}/api/events/subscribe"),
                 &RpConnection::default(),

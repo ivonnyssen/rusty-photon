@@ -56,7 +56,8 @@ pub struct Span {
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize) -> Self {
+    #[must_use]
+    pub const fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
 }
@@ -122,12 +123,14 @@ impl Expression {
     }
 
     /// The original source string.
+    #[must_use]
     pub fn source(&self) -> &str {
         &self.src
     }
 
     /// Canonical s-expression form of the parse tree. Grouping is
     /// structural (spans are ignored); intended for diagnostics and tests.
+    #[must_use]
     pub fn canon(&self) -> String {
         self.ast.canon()
     }
@@ -138,6 +141,7 @@ impl Expression {
     /// the tree is a namespace root, so this is exact. Document
     /// validation uses it for scope checks (e.g. `event.*` is only in
     /// scope inside a trigger), pointing at the offending root.
+    #[must_use]
     pub fn namespaces(&self) -> BTreeMap<&str, Span> {
         let mut roots = BTreeMap::new();
         self.ast.collect_idents(&mut roots);

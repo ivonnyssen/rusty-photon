@@ -68,10 +68,12 @@ pub struct RpConnection {
 }
 
 impl RpConnection {
-    pub fn auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
+    #[must_use]
+    pub const fn auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
         self.service_auth.as_ref()
     }
 
+    #[must_use]
     pub fn ca_path(&self) -> Option<&Path> {
         self.ca_cert.as_deref()
     }
@@ -96,7 +98,7 @@ pub struct CliOverrides {
 
 impl CliOverrides {
     /// Apply the overrides onto `config` in place.
-    pub fn apply(&self, config: &mut Config) {
+    pub const fn apply(&self, config: &mut Config) {
         if let Some(port) = self.port {
             config.server.port = port;
         }

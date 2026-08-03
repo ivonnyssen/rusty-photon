@@ -42,7 +42,8 @@ pub struct EvalContext<'a> {
 
 impl<'a> EvalContext<'a> {
     /// A context with all namespaces absent.
-    pub fn new(now: DateTime<Utc>) -> Self {
+    #[must_use]
+    pub const fn new(now: DateTime<Utc>) -> Self {
         Self {
             params: None,
             session: None,
@@ -65,7 +66,7 @@ impl<'a> EvalContext<'a> {
     }
 }
 
-pub(crate) fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, ExprError> {
+pub fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, ExprError> {
     match expr {
         Expr::Null(_) => Ok(Value::Null),
         Expr::Bool(b, _) => Ok(Value::Bool(*b)),
@@ -323,7 +324,7 @@ fn value_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-fn type_name(v: &Value) -> &'static str {
+const fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
         Value::Bool(_) => "boolean",

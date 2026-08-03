@@ -2,7 +2,7 @@
 //! a timeout emits.
 //!
 //! Steps that wait for the engine to record frames are waiting on real
-//! work — an OmniSim exposure, a sensor download, a blackboard persist,
+//! work — an `OmniSim` exposure, a sensor download, a blackboard persist,
 //! and (when the scenario centres) a plate solve. How long that takes is
 //! a property of the scenario, so the budget is derived from the
 //! scenario's own parameters rather than fixed: a two-frame capture loop
@@ -35,7 +35,7 @@ const STARTUP_ALLOWANCE: Duration = Duration::from_secs(10);
 /// rather than the developer machine.
 ///
 /// `windows-latest` has 4 vCPUs and runs several of this workspace's
-/// 3-process (OmniSim + rp + session-runner) BDD trios concurrently,
+/// 3-process (`OmniSim` + rp + session-runner) BDD trios concurrently,
 /// where process creation and scheduling cost materially more than POSIX
 /// `fork`/`exec`. Linux and macOS finish far inside this; the whole
 /// point is that one number covers the worst platform so the budget does

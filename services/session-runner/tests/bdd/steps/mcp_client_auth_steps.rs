@@ -1,10 +1,10 @@
 //! BDD step definitions for session-runner's authenticated MCP client
-//! (service_auth / ca_cert, ADR-017).
+//! (`service_auth` / `ca_cert`, ADR-017).
 //!
 //! The positive scenario proves standalone /validate reaches a TLS- and
 //! auth-enabled rp when both fields are wired. The negative scenario
-//! pins the credential policy behaviorally: with service_auth but no
-//! ca_cert the credential is NOT sent, so an auth-enabled plain-HTTP rp
+//! pins the credential policy behaviorally: with `service_auth` but no
+//! `ca_cert` the credential is NOT sent, so an auth-enabled plain-HTTP rp
 //! rejects the catalog fetch — if a regression sent the credential
 //! anyway, the fetch would succeed and the scenario would fail.
 
@@ -33,7 +33,7 @@ fn pki(world: &SessionRunnerWorld) -> &PkiFixture {
         .expect("TLS certs not generated")
 }
 
-fn rp_port(world: &SessionRunnerWorld) -> u16 {
+const fn rp_port(world: &SessionRunnerWorld) -> u16 {
     world.rp.as_ref().expect("rp not started").port
 }
 

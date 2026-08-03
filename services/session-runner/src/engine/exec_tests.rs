@@ -983,7 +983,7 @@ async fn test_wait_until_event_times_out_when_the_event_never_arrives() {
         "`wait` `until_event` `guide_settled` did not arrive within 5m"
     );
     assert_eq!(error.instruction_id.as_deref(), Some("settle"));
-    assert_eq!(clock.sleeps(), vec![Duration::from_secs(300)]);
+    assert_eq!(clock.sleeps(), vec![Duration::from_mins(5)]);
 }
 
 #[tokio::test]
@@ -999,7 +999,7 @@ async fn test_wait_until_event_times_out_past_non_matching_events() {
         failure(outcome).message,
         "`wait` `until_event` `guide_settled` did not arrive within 1m"
     );
-    assert_eq!(clock.sleeps(), vec![Duration::from_secs(60)]);
+    assert_eq!(clock.sleeps(), vec![Duration::from_mins(1)]);
 }
 
 // --- fail, if, log -------------------------------------------------------------

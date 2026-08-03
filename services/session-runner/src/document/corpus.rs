@@ -807,7 +807,7 @@ pub(super) fn cases() -> Vec<Case> {
 /// every suite that consumes this corpus pinned to the artifact that
 /// ships; the engine's exec tests execute it against `rp`-faithful mock
 /// results.
-pub(crate) fn golden_calibrator_flats() -> serde_json::Value {
+pub fn golden_calibrator_flats() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/calibrator_flats.json"))
         .expect("workflows/calibrator_flats.json is not valid JSON")
 }
@@ -818,7 +818,7 @@ pub(crate) fn golden_calibrator_flats() -> serde_json::Value {
 /// loop re-entrant with zero `once` markers. Embedded verbatim for the
 /// same reason as the flats document: the suites pin the shipped
 /// artifact, not a copy.
-pub(crate) fn golden_deep_sky() -> serde_json::Value {
+pub fn golden_deep_sky() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/deep_sky.json"))
         .expect("workflows/deep_sky.json is not valid JSON")
 }
@@ -829,7 +829,7 @@ pub(crate) fn golden_deep_sky() -> serde_json::Value {
 /// `wait` inside a loop, and the index-marker re-entrancy idiom.
 /// Embedded verbatim like its siblings: the suites pin the shipped
 /// artifact, not a copy.
-pub(crate) fn golden_sky_flat() -> serde_json::Value {
+pub fn golden_sky_flat() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/sky_flat.json"))
         .expect("workflows/sky_flat.json is not valid JSON")
 }

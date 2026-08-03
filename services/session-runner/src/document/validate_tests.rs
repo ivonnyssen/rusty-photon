@@ -355,7 +355,7 @@ fn test_wait_until_defaults_poll_interval_to_ten_seconds() {
         panic!("root is {:?}", doc.root.kind);
     };
     assert_eq!(*poll_interval, std::time::Duration::from_secs(10));
-    assert_eq!(*timeout, std::time::Duration::from_secs(60));
+    assert_eq!(*timeout, std::time::Duration::from_mins(1));
 }
 
 #[test]
@@ -388,7 +388,7 @@ fn test_trigger_model_captures_gates_and_bookkeeping_fields() {
     assert_eq!(t.id, "refocus");
     assert_eq!(t.on, TriggerSource::Event("exposure_complete".to_owned()));
     assert!(t.when.is_some() && t.while_gate.is_some());
-    assert_eq!(t.cooldown, Some(std::time::Duration::from_secs(900)));
+    assert_eq!(t.cooldown, Some(std::time::Duration::from_mins(15)));
     assert!(t.once);
     assert_eq!(t.actions.len(), 1);
 }
@@ -411,12 +411,9 @@ fn test_estimated_and_max_duration_parse_to_durations() {
     }));
     assert_eq!(
         doc.estimated_duration,
-        Some(std::time::Duration::from_secs(5400))
+        Some(std::time::Duration::from_mins(90))
     );
-    assert_eq!(
-        doc.max_duration,
-        Some(std::time::Duration::from_secs(43_200))
-    );
+    assert_eq!(doc.max_duration, Some(std::time::Duration::from_hours(12)));
     let bare = parse(json!({ "version": 1, "name": "t", "root": { "sequence": [] } }));
     assert!(bare.estimated_duration.is_none() && bare.max_duration.is_none());
 }

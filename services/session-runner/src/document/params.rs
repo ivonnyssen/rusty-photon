@@ -88,7 +88,7 @@ pub fn bind_parameters(
                     bound.insert(name.clone(), v.clone());
                 }
                 Err(msg) => {
-                    issues.push(issue(&pointer(name), format!("parameter `{name}`: {msg}")))
+                    issues.push(issue(&pointer(name), format!("parameter `{name}`: {msg}")));
                 }
             },
             None => match &decl.default {

@@ -34,7 +34,7 @@ pub struct Document {
 }
 
 /// A declared invocation parameter.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParameterDecl {
     pub ty: ParameterType,
     /// `None` = the parameter is required; `Some` = optional with this
@@ -59,14 +59,15 @@ pub enum ParameterType {
 }
 
 impl ParameterType {
-    pub fn name(self) -> &'static str {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
-            ParameterType::String => "string",
-            ParameterType::Integer => "integer",
-            ParameterType::Number => "number",
-            ParameterType::Boolean => "boolean",
-            ParameterType::Duration => "duration",
-            ParameterType::Array => "array",
+            Self::String => "string",
+            Self::Integer => "integer",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+            Self::Duration => "duration",
+            Self::Array => "array",
         }
     }
 }
@@ -178,6 +179,7 @@ pub struct SetEntry {
 
 impl SetEntry {
     /// The document-form key (`session.a.b`), for logs and errors.
+    #[must_use]
     pub fn key(&self) -> String {
         let mut key = String::from("session");
         for seg in &self.path {

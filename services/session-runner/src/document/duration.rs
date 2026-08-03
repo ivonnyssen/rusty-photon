@@ -19,7 +19,7 @@ use std::time::Duration;
 /// Parses a document duration string, enforcing the published surface
 /// form. The error is a human-readable message (no position — callers
 /// attach the JSON Pointer).
-pub(crate) fn parse_duration(s: &str) -> Result<Duration, String> {
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let parsed =
         humantime::parse_duration(s).map_err(|e| format!("`{s}` is not a valid duration: {e}"))?;
     if !surface_ok(s) {

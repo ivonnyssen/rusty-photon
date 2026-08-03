@@ -42,6 +42,7 @@ pub struct ToolSpec {
 /// Validate every tool call in `doc` (the procedure tree and all trigger
 /// `do` blocks and poll sources) against the catalog. Returns all
 /// findings; empty means the document passes layer 2.
+#[must_use]
 pub fn validate_against_catalog(doc: &Document, catalog: &[ToolSpec]) -> Vec<ValidationIssue> {
     let by_name: BTreeMap<&str, &ToolSpec> = catalog
         .iter()

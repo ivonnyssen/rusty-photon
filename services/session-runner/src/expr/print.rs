@@ -36,7 +36,7 @@ fn postfix_obj(obj: &Expr) -> String {
     wrap_if(prec(obj) < 8 || s.starts_with('-'), s)
 }
 
-pub(crate) fn print(e: &Expr) -> String {
+pub fn print(e: &Expr) -> String {
     match e {
         Expr::Null(_) => "null".into(),
         Expr::Bool(b, _) => b.to_string(),

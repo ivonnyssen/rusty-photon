@@ -36,10 +36,12 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { config: None }
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
         self
@@ -105,7 +107,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -116,7 +118,7 @@ impl BoundServer {
             Some(ref tls) => {
                 rusty_photon_tls::server::serve_tls(self.listener, self.router, tls, shutdown)
                     .await
-                    .map_err(|e| SessionRunnerError::Server(e.to_string()))?
+                    .map_err(|e| SessionRunnerError::Server(e.to_string()))?;
             }
             None => axum::serve(self.listener, self.router)
                 .with_graceful_shutdown(shutdown)
