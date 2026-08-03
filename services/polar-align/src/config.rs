@@ -17,12 +17,14 @@ use crate::error::{PolarAlignError, Result};
 pub struct LatitudeDeg(f64);
 
 impl LatitudeDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 
     /// +1.0 for a northern site, -1.0 for a southern one.
-    pub fn hemisphere_sign(self) -> f64 {
+    #[must_use]
+    pub const fn hemisphere_sign(self) -> f64 {
         self.0.signum()
     }
 }
@@ -52,7 +54,8 @@ impl TryFrom<f64> for LatitudeDeg {
 pub struct LongitudeDeg(f64);
 
 impl LongitudeDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 }
@@ -77,7 +80,8 @@ impl TryFrom<f64> for LongitudeDeg {
 pub struct FirstPointHaDeg(f64);
 
 impl FirstPointHaDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 }
@@ -101,7 +105,8 @@ impl TryFrom<f64> for FirstPointHaDeg {
 pub struct SweepDeg(f64);
 
 impl SweepDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 }
@@ -150,10 +155,11 @@ pub enum SweepDirection {
 impl SweepDirection {
     /// Sign applied to the hour-angle offsets: hour angle is positive
     /// west of the meridian.
-    pub fn ha_sign(self) -> f64 {
+    #[must_use]
+    pub const fn ha_sign(self) -> f64 {
         match self {
-            SweepDirection::West => 1.0,
-            SweepDirection::East => -1.0,
+            Self::West => 1.0,
+            Self::East => -1.0,
         }
     }
 }
@@ -283,7 +289,8 @@ pub struct PolarAlignConfig {
 }
 
 impl PolarAlignConfig {
-    pub fn rp_auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
+    #[must_use]
+    pub const fn rp_auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
         self.service_auth.as_ref()
     }
 
@@ -295,6 +302,7 @@ impl PolarAlignConfig {
     /// hemisphere: a northern site measures at +|dec|, a southern one
     /// at -|dec|. The hemisphere sign comes from the *resolved* site
     /// (config or rp), so the fold happens at workflow start.
+    #[must_use]
     pub fn measurement_dec_deg(&self, hemisphere_sign: f64) -> f64 {
         self.measurement.dec_deg.abs() * hemisphere_sign.signum()
     }
@@ -343,7 +351,7 @@ pub struct CliOverrides {
 
 impl CliOverrides {
     /// Apply the overrides onto `config` in place.
-    pub fn apply(&self, config: &mut PolarAlignConfig) {
+    pub const fn apply(&self, config: &mut PolarAlignConfig) {
         if let Some(port) = self.port {
             config.server.port = port;
         }
@@ -366,7 +374,7 @@ fn default_measurement() -> MeasurementConfig {
     }
 }
 
-fn default_adjustment() -> AdjustmentConfig {
+const fn default_adjustment() -> AdjustmentConfig {
     AdjustmentConfig {
         exposure: default_exposure(),
         interval: default_interval(),
@@ -376,74 +384,74 @@ fn default_adjustment() -> AdjustmentConfig {
     }
 }
 
-fn default_solve() -> SolveConfig {
+const fn default_solve() -> SolveConfig {
     SolveConfig {
         search_radius_deg: default_search_radius(),
         timeout: default_solve_timeout(),
     }
 }
 
-fn default_measurement_dec() -> f64 {
+const fn default_measurement_dec() -> f64 {
     85.0
 }
 
-fn default_first_point_ha() -> FirstPointHaDeg {
+const fn default_first_point_ha() -> FirstPointHaDeg {
     FirstPointHaDeg(15.0)
 }
 
-fn default_sweep() -> SweepDeg {
+const fn default_sweep() -> SweepDeg {
     SweepDeg(45.0)
 }
 
-fn default_direction() -> SweepDirection {
+const fn default_direction() -> SweepDirection {
     SweepDirection::West
 }
 
-fn default_exposure() -> Duration {
+const fn default_exposure() -> Duration {
     Duration::from_secs(2)
 }
 
-fn default_settle() -> Duration {
+const fn default_settle() -> Duration {
     Duration::from_secs(2)
 }
 
-fn default_interval() -> Duration {
+const fn default_interval() -> Duration {
     Duration::from_secs(1)
 }
 
-fn default_max_duration() -> Duration {
-    Duration::from_secs(30 * 60)
+const fn default_max_duration() -> Duration {
+    Duration::from_mins(30)
 }
 
-fn default_manual_timeout() -> Duration {
-    Duration::from_secs(10 * 60)
+const fn default_manual_timeout() -> Duration {
+    Duration::from_mins(10)
 }
 
-fn default_max_solve_failures() -> u32 {
+const fn default_max_solve_failures() -> u32 {
     10
 }
 
-fn default_star_count() -> usize {
+const fn default_star_count() -> usize {
     10
 }
 
-fn default_search_radius() -> f64 {
+const fn default_search_radius() -> f64 {
     5.0
 }
 
-fn default_solve_timeout() -> Duration {
+const fn default_solve_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_temperature() -> f64 {
+const fn default_temperature() -> f64 {
     10.0
 }
 
-fn default_pressure() -> f64 {
+const fn default_pressure() -> f64 {
     1010.0
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -497,8 +505,8 @@ mod tests {
         assert_eq!(config.measurement.sweep_deg.degrees(), 45.0);
         assert_eq!(config.measurement.direction, SweepDirection::West);
         assert_eq!(config.measurement.exposure, Duration::from_secs(2));
-        assert_eq!(config.measurement.manual_timeout, Duration::from_secs(600));
-        assert_eq!(config.adjustment.max_duration, Duration::from_secs(1800));
+        assert_eq!(config.measurement.manual_timeout, Duration::from_mins(10));
+        assert_eq!(config.adjustment.max_duration, Duration::from_mins(30));
         assert_eq!(config.adjustment.max_solve_failures, 10);
         assert_eq!(config.adjustment.star_count, 10);
         assert_eq!(config.solve.search_radius_deg, 5.0);
@@ -539,7 +547,7 @@ mod tests {
         }"#;
         let config = parse_with_cross_field(json).unwrap();
         assert_eq!(config.measurement.mode, MeasurementMode::ManualRotation);
-        assert_eq!(config.measurement.manual_timeout, Duration::from_secs(180));
+        assert_eq!(config.measurement.manual_timeout, Duration::from_mins(3));
     }
 
     #[test]

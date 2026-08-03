@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! BDD test world for the polar-align service.
 //!
-//! Holds the external processes (OmniSim, rp, polar-align) plus the
+//! Holds the external processes (`OmniSim`, rp, polar-align) plus the
 //! in-process plate-solver stub whose choreographed solves inject a
 //! known axis error. The shared harness types come from
 //! `bdd_infra::rp_harness`; everything below is per-scenario
@@ -20,10 +20,10 @@ use serde_json::Value;
 pub const SITE_LATITUDE_DEG: f64 = 48.0;
 pub const SITE_LONGITUDE_DEG: f64 = -122.8;
 
-/// OmniSim's default telescope-profile site. Scenarios that give *rp*
+/// `OmniSim`'s default telescope-profile site. Scenarios that give *rp*
 /// a site block must use this one: rp hard-errors on mount connect
 /// when its configured site differs from the mount's reported site by
-/// more than 0.01°, and mutating OmniSim's site instead would leak
+/// more than 0.01°, and mutating `OmniSim`'s site instead would leak
 /// into other suites (the write outlives the scenario — see
 /// `OmniSimHandle::set_telescope_site`).
 pub const OMNISIM_SITE_LATITUDE_DEG: f64 = 51.0786;
@@ -44,7 +44,7 @@ pub struct PolarAlignWorld {
     pub plate_solver: Option<bdd_infra::rp_harness::PlateSolverConfig>,
     pub plugin_configs: Vec<Value>,
     /// rp's `site` block, absent by default. Scenarios exercising
-    /// site-from-rp sourcing set it (to OmniSim's default site — see
+    /// site-from-rp sourcing set it (to `OmniSim`'s default site — see
     /// the constants above).
     pub rp_site: Option<(f64, f64)>,
 

@@ -2,7 +2,7 @@
 //! service-specific parts (config template, launch) live in the
 //! `TlsAuthSmokeWorld` impl in `world.rs`. Unlike the workflow suite, the
 //! smoke scenario spawns ONLY polar-align itself, with a temp config —
-//! no OmniSim, no rp.
+//! no `OmniSim`, no rp.
 
 use crate::world::PolarAlignWorld;
 
