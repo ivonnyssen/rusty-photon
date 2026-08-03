@@ -235,7 +235,7 @@ impl BridgeWorld {
         Arc::clone(self.telescope.as_ref().expect("telescope not acquired"))
     }
 
-    pub fn stub(&self) -> &StubRp {
+    pub const fn stub(&self) -> &StubRp {
         self.stub_rp.as_ref().expect("no stub rp running")
     }
 

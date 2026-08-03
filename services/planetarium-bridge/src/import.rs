@@ -136,6 +136,7 @@ pub struct ImportWorker {
 
 /// Build the pipeline: the device-facing [`Importer`], the shared
 /// [`HealthState`], and the worker to spawn.
+#[must_use]
 pub fn pipeline(
     spool_path: PathBuf,
     max_entries: usize,

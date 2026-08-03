@@ -1,4 +1,4 @@
-//! Steps for position_policy.feature: the reported-position altitude floor
+//! Steps for `position_policy.feature`: the reported-position altitude floor
 //! and its zenith idle point.
 
 use cucumber::{then, when};

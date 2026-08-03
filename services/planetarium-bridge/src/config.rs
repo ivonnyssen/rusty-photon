@@ -45,7 +45,7 @@ impl Default for Config {
     }
 }
 
-/// The startup-default observing site. A client site push (SkySafari sends
+/// The startup-default observing site. A client site push (`SkySafari` sends
 /// its GPS-derived coordinates after connect) overrides these live; a
 /// restart reverts to them.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
@@ -76,13 +76,14 @@ impl Default for SiteConfig {
 pub struct LatitudeDeg(f64);
 
 impl LatitudeDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 }
 
 impl From<LatitudeDeg> for f64 {
-    fn from(v: LatitudeDeg) -> f64 {
+    fn from(v: LatitudeDeg) -> Self {
         v.0
     }
 }
@@ -107,13 +108,14 @@ impl TryFrom<f64> for LatitudeDeg {
 pub struct LongitudeDeg(f64);
 
 impl LongitudeDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 }
 
 impl From<LongitudeDeg> for f64 {
-    fn from(v: LongitudeDeg) -> f64 {
+    fn from(v: LongitudeDeg) -> Self {
         v.0
     }
 }
@@ -164,13 +166,14 @@ impl Default for RpConfig {
 pub struct McpServerUrl(String);
 
 impl McpServerUrl {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl From<McpServerUrl> for String {
-    fn from(v: McpServerUrl) -> String {
+    fn from(v: McpServerUrl) -> Self {
         v.0
     }
 }
@@ -199,7 +202,7 @@ impl TryFrom<String> for McpServerUrl {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
-    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run by
+    /// ASCOM `UniqueID`. Minted as a `UUIDv4` on first run by
     /// `rusty_photon_config::materialize_identity` (JSON pointer
     /// `/device/unique_id`), persisted, and never overwritten. Defaults to
     /// an empty string so an absent or empty value triggers minting.
@@ -236,11 +239,11 @@ impl Default for DeviceConfig {
     }
 }
 
-fn default_slew_duration() -> Duration {
+const fn default_slew_duration() -> Duration {
     Duration::from_secs(3)
 }
 
-fn default_floor() -> Option<FloorDeg> {
+const fn default_floor() -> Option<FloorDeg> {
     Some(FloorDeg(10.0))
 }
 
@@ -264,13 +267,14 @@ pub enum AssumeEpoch {
 pub struct FloorDeg(f64);
 
 impl FloorDeg {
-    pub fn degrees(self) -> f64 {
+    #[must_use]
+    pub const fn degrees(self) -> f64 {
         self.0
     }
 }
 
 impl From<FloorDeg> for f64 {
-    fn from(v: FloorDeg) -> f64 {
+    fn from(v: FloorDeg) -> Self {
         v.0
     }
 }
@@ -321,12 +325,12 @@ impl Default for SpoolConfig {
     }
 }
 
-fn default_max_entries() -> MaxEntries {
+const fn default_max_entries() -> MaxEntries {
     MaxEntries(1000)
 }
 
-fn default_replay_backoff_max() -> Duration {
-    Duration::from_secs(300)
+const fn default_replay_backoff_max() -> Duration {
+    Duration::from_mins(5)
 }
 
 /// A positive spool bound.
@@ -335,13 +339,14 @@ fn default_replay_backoff_max() -> Duration {
 pub struct MaxEntries(u64);
 
 impl MaxEntries {
+    #[must_use]
     pub fn get(self) -> usize {
         usize::try_from(self.0).unwrap_or(usize::MAX)
     }
 }
 
 impl From<MaxEntries> for u64 {
-    fn from(v: MaxEntries) -> u64 {
+    fn from(v: MaxEntries) -> Self {
         v.0
     }
 }
@@ -400,7 +405,7 @@ mod tests {
         );
         assert!(config.spool.path.is_none());
         assert_eq!(config.spool.max_entries.get(), 1000);
-        assert_eq!(config.spool.replay_backoff_max, Duration::from_secs(300));
+        assert_eq!(config.spool.replay_backoff_max, Duration::from_mins(5));
     }
 
     #[test]

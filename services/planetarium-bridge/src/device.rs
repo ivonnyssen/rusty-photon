@@ -28,7 +28,7 @@ use crate::config::{AssumeEpoch, DeviceConfig, SiteConfig};
 use crate::epoch;
 use crate::import::{ImportRequest, ImportSource, Importer, SOURCE_KIND};
 
-/// The exact device name — pinned by device_contract.feature. It states
+/// The exact device name — pinned by `device_contract.feature`. It states
 /// loudly that connecting planetarium clients are not driving a mount.
 pub const DEVICE_NAME: &str = "Planetarium Bridge (virtual target entry — NOT a mount)";
 
@@ -104,7 +104,9 @@ impl BridgeTelescope {
             ephemeris,
             assume_epoch: device.assume_epoch,
             slew_duration: device.slew_duration,
-            floor_deg: device.report_altitude_floor_deg.map(|f| f.degrees()),
+            floor_deg: device
+                .report_altitude_floor_deg
+                .map(super::config::FloorDeg::degrees),
             importer,
             last_client,
         })
