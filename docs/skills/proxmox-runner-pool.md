@@ -19,16 +19,38 @@ population.
 
 Components:
 
-* **Template VM** (`runner-template`): Ubuntu 24.04 provisioned exactly like
-  `bazel.yml`'s Linux leg (lld, pinned bazelisk, the patched OmniSim fork,
+* **Linux template VM** (`runner-template`): Ubuntu 24.04 provisioned exactly
+  like `bazel.yml`'s Linux leg (lld, pinned bazelisk, the patched OmniSim fork,
   Pebble, QHYCCD SDK, ZWO SDK blobs — same pins, same SHA checks), plus the
   GitHub Actions runner and a `gha-runner` systemd unit that waits for a JIT
   config file, runs **exactly one job**, and powers the VM off. The
   template's machine-id and cloud-init state are wiped so every clone boots
   with a fresh identity.
+* **Windows template VM** (`runner-template-win`): Windows Server 2025 — the
+  same build as GitHub's `windows-latest` image — provisioned like
+  `bazel.yml`'s Windows leg. Everything installs **machine-wide** under
+  `C:\ci` and is located by MACHINE environment variables
+  (`OMNISIM_PATH`, `PEBBLE_PATH`, `PEBBLE_CHALLTESTSRV_PATH`,
+  `QHYCCD_SDK_DIR`, `ZWO_SDK_LIB_DIR`, `LIBCLANG_PATH`, `BAZELISK_HOME`,
+  `CARGO_HOME`, `RUSTUP_HOME`, `RP_LAN_CACHE_URL`), which is the Windows
+  analogue of the Linux runner's `.env`. The one exception is the runner
+  itself, which lives at `C:\actions-runner` (mirroring the Linux
+  `/home/ci/actions-runner`) — that is where the orchestrator injects
+  `.jitconfig`, so a template rebuild must keep the path. A `gha-runner`
+  scheduled task (AtStartup, SYSTEM) plays the systemd unit's role. Two Windows-only
+  requirements: `BAZEL_SH` must point at Git's `bash.exe` or Bazel reports
+  "No suitable shell toolchain found", and `QHYCCD_SDK_DIR` only reaches
+  build actions because `.bazelrc` forwards it (a machine-wide SDK is
+  invisible to the `GITHUB_WORKSPACE` fallback hosted runners rely on).
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
-  host; keeps one warm linked clone registered just-in-time and destroys it
-  after its single job. See the script header for deployment.
+  host; keeps one warm linked clone per **pool slot** registered just-in-time
+  and destroys it after its single job. Slots are declared in the script's
+  `SLOTS` array (name, template VMID, clone VMID, guest OS, labels) and each
+  runs its clone/register/wait/destroy loop concurrently. Two slots sharing a
+  label set are interchangeable — that is how the two Linux slots keep
+  `bazel.yml` and `bazel-coverage.yml`, which fire on the same PR event, from
+  queueing behind each other. Every slot holds one powered-on clone, so host
+  memory must cover their sum. See the script header for deployment.
 * **LAN build cache**: a `bazel-remote` instance in a container on the same
   host — anonymous reads, credential-gated writes (same public-read /
   token-write model as the cloud R2 cache). Jobs receive the endpoint from
@@ -120,9 +142,16 @@ dangerous combination. The rule bifurcates by runner kind
   fresh clone of the template, apply the change, wipe `/etc/machine-id`, run
   `cloud-init clean`, power off, and convert to the new template — then roll
   the template VMID forward in `rp-runner-pool.sh`.
-* Host and template identifiers (VMIDs, addresses, credentials) are operator
-  infrastructure and deliberately absent from this repo; the runner's `.env`
-  carries what jobs need.
+* What lives where: **VMIDs are in the repo**, in `rp-runner-pool.sh`'s
+  `SLOTS` array — they are local to one hypervisor, meaningless anywhere else,
+  and the orchestrator needs them to do its job. What is deliberately absent
+  is anything that identifies or unlocks infrastructure: **addresses**
+  (this repo is public — see the LAN cache endpoint, which reaches jobs only
+  via the runner's `.env` and is masked before use) and **credentials** (the
+  PAT lives on the hypervisor at `/etc/rp-runner/github-token`, the cache
+  write credential only as a GitHub Actions secret). A reader should be able
+  to see exactly which VM does what, and nothing about where it is or how to
+  reach it.
 
 ## Bootstrapping a Runner Manually (no orchestrator)
 
