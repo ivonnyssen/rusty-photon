@@ -1,10 +1,10 @@
 //! BDD step definitions for safety enforcement (rp.md § Safety): a
-//! SafetyMonitor unsafe transition interrupts the active session and
+//! `SafetyMonitor` unsafe transition interrupts the active session and
 //! gates `/mcp`; the safe transition re-invokes the orchestrator with
 //! recovery context.
 //!
-//! The monitor is OmniSim's safety-monitor simulator; its reported
-//! `IsSafe` is flipped at runtime through OmniSim's private
+//! The monitor is `OmniSim`'s safety-monitor simulator; its reported
+//! `IsSafe` is flipped at runtime through `OmniSim`'s private
 //! `issafesetting` endpoint.
 
 use std::time::Duration;

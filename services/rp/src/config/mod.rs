@@ -123,7 +123,7 @@ pub struct Config {
     /// PEM CA certificate `rp` trusts for every outbound HTTPS connection
     /// it makes as a client: Alpaca devices (`equipment.*[].alpaca_url`),
     /// the plate-solver service, and the guider service. An observatory
-    /// runs one CA (rusty_photon_tls), so this is a single rp-level
+    /// runs one CA (`rusty_photon_tls`), so this is a single rp-level
     /// setting rather than per-target — matching the `ca_cert` field
     /// doctor already wires into sentinel, session-runner, and
     /// calibrator-flats (`services/doctor/src/provision/mod.rs`
@@ -152,6 +152,7 @@ impl Config {
 /// `%PROGRAMDATA%\rusty-photon\rp\` on Windows (ADR-015). Must stay
 /// deserializable into [`Config`] — the packaged first-start contract
 /// depends on it.
+#[must_use]
 pub fn default_scaffold() -> serde_json::Value {
     serde_json::json!({
         "session": { "data_directory": default_data_directory() },
@@ -229,6 +230,7 @@ fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::Pat
 /// Empty result means valid. Paths are dotted with array indices
 /// (`equipment.cameras.0.focal_length_mm`) so a UI can render each error
 /// next to its field; messages name the device id where one exists.
+#[must_use]
 pub fn validate_config(config: &Config) -> Vec<FieldError> {
     let mut errors = Vec::new();
     if let Some(site) = config.site.as_ref() {

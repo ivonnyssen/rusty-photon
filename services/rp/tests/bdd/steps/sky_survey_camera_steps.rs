@@ -2,7 +2,7 @@
 //!
 //! Phase-4 integration path from
 //! `docs/plans/archive/sky-survey-camera-mount-following.md`: the camera is a
-//! real `sky-survey-camera` process configured to follow OmniSim's
+//! real `sky-survey-camera` process configured to follow `OmniSim`'s
 //! Telescope. The scenario primes a one-shot pointing override on
 //! the camera (F7) before invoking `center_on_target`, so iter 0
 //! sees the camera "off-target", syncs the mount, slews, and iter 1
@@ -91,7 +91,7 @@ async fn arm_one_shot_override(world: &mut RpWorld, ra_deg: f64, dec_deg: f64) {
         .expect("sky-survey-camera handle missing — was the Given step run?")
         .base_url
         .clone();
-    let url = format!("{}/sky-survey/position", cam_url);
+    let url = format!("{cam_url}/sky-survey/position");
     let resp = reqwest::Client::new()
         .post(&url)
         .json(&serde_json::json!({ "ra_deg": ra_deg, "dec_deg": dec_deg }))

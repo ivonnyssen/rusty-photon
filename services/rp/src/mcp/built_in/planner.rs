@@ -170,7 +170,7 @@ impl McpHandler {
         let last_filter_key = self
             .progress
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last_filter_key()
             .map(String::from);
         let mut progress = crate::planner::progress::PlanProgress::new(last_filter_key);
@@ -752,7 +752,10 @@ impl McpHandler {
         };
         let key = crate::planner::progress::filter_key(params.filter.as_deref());
         {
-            let mut store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            let mut store = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             store.record(params.filter.as_deref());
         }
         // Frame counts survive a crash on their own — they live in the

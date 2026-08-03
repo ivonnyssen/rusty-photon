@@ -22,8 +22,7 @@ fn tool_call_failed(world: &mut RpWorld) {
     let result = world.last_tool_result.as_ref().expect("no tool result");
     assert!(
         result.is_err(),
-        "expected tool call to fail, got success: {:?}",
-        result
+        "expected tool call to fail, got success: {result:?}"
     );
 }
 
@@ -42,7 +41,7 @@ fn resolved_ra(world: &mut RpWorld, expected: f64) {
     let value = result_payload(world);
     let ra = value
         .get("ra_hours")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .expect("resolved target payload missing `ra_hours`");
     // Catalog values are committed at ~6-decimal precision; the Gherkin
     // input is 4-decimal. Allow 0.001h ≈ 3.6 s of RA — well below any
@@ -58,7 +57,7 @@ fn resolved_dec(world: &mut RpWorld, expected: f64) {
     let value = result_payload(world);
     let dec = value
         .get("dec_degrees")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .expect("resolved target payload missing `dec_degrees`");
     assert!(
         (dec - expected).abs() < 0.001,

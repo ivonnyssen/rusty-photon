@@ -44,7 +44,7 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
         if p > max {
             max = p;
         }
-        sum += p.max(0) as f64;
+        sum += f64::from(p.max(0));
     }
     let mean_adu = sum / pixel_count as f64;
 
@@ -52,7 +52,7 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
     let median = if pixels.len().is_multiple_of(2) {
         let (_, &mut upper, _) = pixels.select_nth_unstable(mid);
         let (_, &mut lower, _) = pixels[..mid].select_nth_unstable(mid - 1);
-        ((lower as i64 + upper as i64) / 2) as i32
+        i64::midpoint(i64::from(lower), i64::from(upper)) as i32
     } else {
         let (_, &mut m, _) = pixels.select_nth_unstable(mid);
         m

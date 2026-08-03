@@ -34,7 +34,8 @@ impl FocuserStepsPerSec {
     }
 
     /// The rate in steps/sec.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }

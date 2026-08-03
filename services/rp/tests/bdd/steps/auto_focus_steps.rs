@@ -179,8 +179,7 @@ async fn fits_files_in_pinned_dir(world: &mut RpWorld, expected: usize) {
     let count = count_extension(dir, "fits").await;
     assert_eq!(
         count, expected,
-        "expected {} FITS files in {}, found {}",
-        expected, dir, count
+        "expected {expected} FITS files in {dir}, found {count}"
     );
 }
 
@@ -193,22 +192,15 @@ async fn every_sidecar_has_section(world: &mut RpWorld, section_name: String) {
     let sidecars = read_sidecars(dir).await;
     assert!(
         !sidecars.is_empty(),
-        "no .json sidecars in {} — sweep did not run",
-        dir
+        "no .json sidecars in {dir} — sweep did not run"
     );
     for (path, body) in &sidecars {
-        let sections = body.get("sections").unwrap_or_else(|| {
-            panic!(
-                "sidecar {:?} has no 'sections' field, body: {:?}",
-                path, body
-            )
-        });
+        let sections = body
+            .get("sections")
+            .unwrap_or_else(|| panic!("sidecar {path:?} has no 'sections' field, body: {body:?}"));
         assert!(
             sections.get(&section_name).is_some(),
-            "sidecar {:?} missing '{}' section, sections: {:?}",
-            path,
-            section_name,
-            sections
+            "sidecar {path:?} missing '{section_name}' section, sections: {sections:?}"
         );
     }
 }
@@ -233,7 +225,7 @@ async fn no_sidecar_has_section(world: &mut RpWorld, section_name: String) {
 
 // --- Helpers ---
 
-/// Baseline arg map representing a "valid" auto_focus call against the
+/// Baseline arg map representing a "valid" `auto_focus` call against the
 /// default camera + focuser. Individual scenarios mutate this baseline
 /// (insert override / remove field) before dispatching, so that the
 /// missing-parameter scenarios can each carve out exactly one field
@@ -266,7 +258,7 @@ async fn call_auto_focus(world: &mut RpWorld, args: Map<String, Value>) {
 async fn count_extension(dir: &str, ext: &str) -> usize {
     let mut entries = tokio::fs::read_dir(dir)
         .await
-        .unwrap_or_else(|e| panic!("failed to read pinned data directory {:?}: {}", dir, e));
+        .unwrap_or_else(|e| panic!("failed to read pinned data directory {dir:?}: {e}"));
     let mut count = 0usize;
     while let Some(entry) = entries.next_entry().await.expect("read_dir entry") {
         if entry.path().extension().and_then(|s| s.to_str()) == Some(ext) {
@@ -279,7 +271,7 @@ async fn count_extension(dir: &str, ext: &str) -> usize {
 async fn read_sidecars(dir: &str) -> Vec<(std::path::PathBuf, Value)> {
     let mut entries = tokio::fs::read_dir(dir)
         .await
-        .unwrap_or_else(|e| panic!("failed to read pinned data directory {:?}: {}", dir, e));
+        .unwrap_or_else(|e| panic!("failed to read pinned data directory {dir:?}: {e}"));
     let mut out = Vec::new();
     while let Some(entry) = entries.next_entry().await.expect("read_dir entry") {
         let path = entry.path();
@@ -288,9 +280,9 @@ async fn read_sidecars(dir: &str) -> Vec<(std::path::PathBuf, Value)> {
         }
         let bytes = tokio::fs::read(&path)
             .await
-            .unwrap_or_else(|e| panic!("failed to read sidecar {:?}: {}", path, e));
+            .unwrap_or_else(|e| panic!("failed to read sidecar {path:?}: {e}"));
         let body: Value = serde_json::from_slice(&bytes)
-            .unwrap_or_else(|e| panic!("failed to parse sidecar {:?}: {}", path, e));
+            .unwrap_or_else(|e| panic!("failed to parse sidecar {path:?}: {e}"));
         out.push((path, body));
     }
     out

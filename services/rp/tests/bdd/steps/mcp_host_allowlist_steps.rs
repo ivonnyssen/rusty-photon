@@ -5,7 +5,7 @@
 //! the deployment shape whose advertised hostname URL rp used to reject
 //! — and address the loopback listener with an explicit `Host` header,
 //! which is exactly what an orchestrator dialing that URL sends. They
-//! never touch OmniSim, so the feature is untagged (no `@serial`), and
+//! never touch `OmniSim`, so the feature is untagged (no `@serial`), and
 //! they reuse `rp is started with that config file` from
 //! `config_rest_steps`.
 

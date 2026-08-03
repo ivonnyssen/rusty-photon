@@ -137,7 +137,7 @@ pub(crate) mod test_support {
     /// Test double: counts emissions and stores their arguments so
     /// unit tests can assert "at least N progress notifications were
     /// sent during this run".
-    pub(crate) struct CountingProgressEmitter {
+    pub struct CountingProgressEmitter {
         count: std::sync::atomic::AtomicUsize,
         records: std::sync::Mutex<Vec<(f64, Option<f64>, Option<String>)>>,
     }

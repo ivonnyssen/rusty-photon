@@ -229,10 +229,9 @@ async fn camera_should_be_connected(world: &mut RpWorld) {
         .expect("main-cam not found in equipment response");
 
     assert_eq!(
-        cam.get("connected").and_then(|v| v.as_bool()),
+        cam.get("connected").and_then(serde_json::Value::as_bool),
         Some(true),
-        "expected main-cam to be connected, got: {:?}",
-        cam
+        "expected main-cam to be connected, got: {cam:?}"
     );
 }
 
@@ -262,10 +261,9 @@ async fn filter_wheel_should_be_connected(world: &mut RpWorld) {
         .expect("main-fw not found in equipment response");
 
     assert_eq!(
-        fw.get("connected").and_then(|v| v.as_bool()),
+        fw.get("connected").and_then(serde_json::Value::as_bool),
         Some(true),
-        "expected main-fw to be connected, got: {:?}",
-        fw
+        "expected main-fw to be connected, got: {fw:?}"
     );
 }
 
@@ -307,10 +305,9 @@ async fn filter_wheel_should_be_disconnected(world: &mut RpWorld) {
         .expect("main-fw not found in equipment response");
 
     assert_eq!(
-        fw.get("connected").and_then(|v| v.as_bool()),
+        fw.get("connected").and_then(serde_json::Value::as_bool),
         Some(false),
-        "expected main-fw to be disconnected, got: {:?}",
-        fw
+        "expected main-fw to be disconnected, got: {fw:?}"
     );
 }
 
@@ -340,17 +337,16 @@ async fn camera_should_be_disconnected(world: &mut RpWorld) {
         .expect("main-cam not found in equipment response");
 
     assert_eq!(
-        cam.get("connected").and_then(|v| v.as_bool()),
+        cam.get("connected").and_then(serde_json::Value::as_bool),
         Some(false),
-        "expected main-cam to be disconnected, got: {:?}",
-        cam
+        "expected main-cam to be disconnected, got: {cam:?}"
     );
 }
 
 /// Fetch `GET /api/equipment`, find the entry with `id` in the array at
 /// `array_key`, and assert its `connected` flag equals `expected`. Shared by
 /// the switch/rotator/observing-conditions/dome connected/disconnected Then
-/// steps below — the camera/filter_wheel steps above predate this helper and
+/// steps below — the `camera/filter_wheel` steps above predate this helper and
 /// keep their own inline bodies.
 async fn assert_device_connected(world: &RpWorld, array_key: &str, id: &str, expected: bool) {
     let client = reqwest::Client::new();
@@ -379,10 +375,9 @@ async fn assert_device_connected(world: &RpWorld, array_key: &str, id: &str, exp
         .unwrap_or_else(|| panic!("{id} not found in {array_key} in equipment response"));
 
     assert_eq!(
-        device.get("connected").and_then(|v| v.as_bool()),
+        device.get("connected").and_then(serde_json::Value::as_bool),
         Some(expected),
-        "expected {id} connected to be {expected}, got: {:?}",
-        device
+        "expected {id} connected to be {expected}, got: {device:?}"
     );
 }
 

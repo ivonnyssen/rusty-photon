@@ -1,6 +1,6 @@
 //! BDD step definitions for the camera-cooling feature
-//! (camera_cooling.feature). Session/orchestrator/webhook steps are
-//! shared with session_steps.rs and event_steps.rs; this file adds the
+//! (`camera_cooling.feature`). Session/orchestrator/webhook steps are
+//! shared with `session_steps.rs` and `event_steps.rs`; this file adds the
 //! ladder-configured camera Givens, the numeric event/document
 //! assertions, and the direct simulator cooler-state checks.
 
@@ -151,7 +151,7 @@ fn document_has_numeric_field(world: &mut RpWorld, field: String) {
 
 /// Read `CoolerOn` straight from the simulator camera — the
 /// device-level ground truth the scenarios assert against (connecting
-/// first: OmniSim rejects cooler reads on a disconnected device, and
+/// first: `OmniSim` rejects cooler reads on a disconnected device, and
 /// rp's own connection does not make the state readable for other
 /// clients).
 async fn omnisim_cooler_on(world: &RpWorld) -> bool {

@@ -6,7 +6,7 @@
 //! cache is strictly a hot-path optimization, with the file as fallback on
 //! miss. See `docs/services/rp.md` (Image Cache) for the full design.
 //!
-//! Storage is `u16` for every consumer/prosumer astro camera (max_adu ≤
+//! Storage is `u16` for every consumer/prosumer astro camera (`max_adu` ≤
 //! 65535); the `I32` variant is the hatch for future scientific cameras whose
 //! `max_adu` exceeds 16-bit range.
 //!
@@ -64,10 +64,11 @@ macro_rules! dispatch_pixels {
 
 impl CachedPixels {
     /// Memory footprint of this buffer, in bytes.
+    #[must_use]
     pub fn nbytes(&self) -> usize {
         match self {
-            CachedPixels::U16(a) => a.len() * std::mem::size_of::<u16>(),
-            CachedPixels::I32(a) => a.len() * std::mem::size_of::<i32>(),
+            Self::U16(a) => a.len() * std::mem::size_of::<u16>(),
+            Self::I32(a) => a.len() * std::mem::size_of::<i32>(),
         }
     }
 
@@ -81,7 +82,7 @@ impl CachedPixels {
     /// Returns `None` if `from_shape_vec` fails (pixel count vs shape
     /// mismatch).
     pub fn from_i32_pixels(pixels: Vec<i32>, shape: (usize, usize), max_adu: u32) -> Option<Self> {
-        if max_adu <= u16::MAX as u32 {
+        if u16::try_from(max_adu).is_ok() {
             let max_cached = max_adu as i32;
             let narrowed: Vec<u16> = pixels
                 .into_iter()
@@ -129,6 +130,7 @@ impl CachedImage {
     /// writes), `json_nbytes` falls back to `0` — the cache will under-bill
     /// the entry rather than refuse to insert. Surface the error elsewhere
     /// (sidecar write) so the caller can decide.
+    #[must_use]
     pub fn new(
         pixels: CachedPixels,
         width: u32,
@@ -137,7 +139,7 @@ impl CachedImage {
         max_adu: u32,
         document: ExposureDocument,
     ) -> Self {
-        let json_nbytes = serde_json::to_vec(&document).map(|v| v.len()).unwrap_or(0);
+        let json_nbytes = serde_json::to_vec(&document).map_or(0, |v| v.len());
         Self {
             pixels,
             width,
@@ -205,7 +207,10 @@ impl ImageCache {
     /// that id. Evicts LRU entries until both budgets are satisfied.
     pub fn insert(&self, document_id: String, image: CachedImage) {
         let nbytes = image.nbytes();
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if let Some(prev) = inner.images.remove(&document_id) {
             inner.bytes = inner.bytes.saturating_sub(prev.nbytes());
@@ -230,8 +235,12 @@ impl ImageCache {
     /// In-memory lookup only. Returns the cached image for `document_id`
     /// if present, marking it most-recently-used. `None` on miss — for
     /// disk fallback use [`resolve`](Self::resolve).
+    #[must_use]
     pub fn get(&self, document_id: &str) -> Option<Arc<CachedImage>> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let image = inner.images.get(document_id).cloned()?;
         inner.order.retain(|k| k != document_id);
         inner.order.push_back(document_id.to_string());
@@ -375,7 +384,7 @@ impl ImageCache {
         let prior = doc.sections.insert(name.to_string(), value);
         match super::document::write_sidecar(&doc).await {
             Ok(()) => {
-                let new_json_bytes = serde_json::to_vec(&*doc).map(|v| v.len()).unwrap_or(0);
+                let new_json_bytes = serde_json::to_vec(&*doc).map_or(0, |v| v.len());
                 let old_json_bytes = image.json_nbytes.swap(new_json_bytes, Ordering::Relaxed);
                 drop(doc);
                 self.adjust_bytes(new_json_bytes as i64 - old_json_bytes as i64);
@@ -421,7 +430,7 @@ impl ImageCache {
                 ))
             })?;
         let mut doc = doc_opt.ok_or_else(|| {
-            crate::error::RpError::Imaging(format!("document not found: {}", document_id))
+            crate::error::RpError::Imaging(format!("document not found: {document_id}"))
         })?;
         doc.sections.insert(name.to_string(), value);
         // Reuse the document's own `file_path` to derive the sidecar
@@ -446,7 +455,10 @@ impl ImageCache {
     /// cache mutex, then run eviction so the budget stays honored after
     /// document growth.
     fn adjust_bytes(&self, delta: i64) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if delta >= 0 {
             inner.bytes = inner.bytes.saturating_add(delta as usize);
         } else {
@@ -457,23 +469,29 @@ impl ImageCache {
 
     /// Number of entries currently in the cache.
     #[cfg(test)]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .images
             .len()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Total bytes currently held.
     #[cfg(test)]
+    #[must_use]
     pub fn bytes(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).bytes
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bytes
     }
 
     fn evict_locked(&self, inner: &mut CacheInner) {
@@ -503,8 +521,8 @@ impl ImageCache {
 /// disambiguate by reading FITS `DOC_ID` afterwards, but the prefilter
 /// keeps the candidate set small.
 fn matches_uuid8_suffix(name: &str, uuid8: &str) -> bool {
-    let needle = format!("{}.fits", uuid8);
-    name == needle || name.ends_with(&format!("_{}", needle))
+    let needle = format!("{uuid8}.fits");
+    name == needle || name.ends_with(&format!("_{needle}"))
 }
 
 /// Find candidate FITS files in `dir` whose name suffix matches the
@@ -649,7 +667,7 @@ mod tests {
             frame_type: None,
             id: id.to_string(),
             captured_at: "2026-04-30T00:00:00Z".to_string(),
-            file_path: format!("/tmp/{}.fits", id),
+            file_path: format!("/tmp/{id}.fits"),
             width: 0,
             height: 0,
             camera_id: None,
@@ -671,7 +689,7 @@ mod tests {
             pixels,
             width: side as u32,
             height: side as u32,
-            fits_path: PathBuf::from(format!("/tmp/{}.fits", side)),
+            fits_path: PathBuf::from(format!("/tmp/{side}.fits")),
             max_adu: 65535,
             document: RwLock::new(dummy_document("doc")),
             json_nbytes: AtomicUsize::new(0),
@@ -684,7 +702,7 @@ mod tests {
             pixels,
             width: side as u32,
             height: side as u32,
-            fits_path: PathBuf::from(format!("/tmp/{}.fits", side)),
+            fits_path: PathBuf::from(format!("/tmp/{side}.fits")),
             max_adu: 1 << 20,
             document: RwLock::new(dummy_document("doc")),
             json_nbytes: AtomicUsize::new(0),
@@ -821,7 +839,7 @@ mod tests {
 
     /// Write a complete FITS+sidecar pair into `dir` and return the full
     /// document UUID. The sidecar carries `max_adu = Some(65535)` by
-    /// default so disk_resolve can pick the U16 cache variant.
+    /// default so `disk_resolve` can pick the U16 cache variant.
     async fn write_disk_pair(
         dir: &Path,
         doc_uuid: &str,
@@ -830,8 +848,8 @@ mod tests {
         height: u32,
     ) -> String {
         let uuid8 = &doc_uuid[..8];
-        let fits_path = dir.join(format!("{}.fits", uuid8));
-        let sidecar_path = dir.join(format!("{}.json", uuid8));
+        let fits_path = dir.join(format!("{uuid8}.fits"));
+        let sidecar_path = dir.join(format!("{uuid8}.json"));
         crate::persistence::write_fits_u16(&fits_path, pixels, width, height, doc_uuid)
             .await
             .unwrap();
@@ -948,7 +966,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "22222222-2222-2222-2222-222222222222";
         let uuid8 = &doc_uuid[..8];
-        let fits_path = dir.path().join(format!("{}.fits", uuid8));
+        let fits_path = dir.path().join(format!("{uuid8}.fits"));
         crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid)
             .await
             .unwrap();
@@ -958,7 +976,7 @@ mod tests {
         doc.height = 2;
         doc.max_adu = None;
         std::fs::write(
-            dir.path().join(format!("{}.json", uuid8)),
+            dir.path().join(format!("{uuid8}.json")),
             serde_json::to_vec(&doc).unwrap(),
         )
         .unwrap();
@@ -983,7 +1001,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "33333333-3333-3333-3333-333333333333";
         let uuid8 = &doc_uuid[..8];
-        let fits_path = dir.path().join(format!("{}.fits", uuid8));
+        let fits_path = dir.path().join(format!("{uuid8}.fits"));
         let mut file = std::fs::File::create(&fits_path).unwrap();
         rp_fits::writer::write_i32_image(&mut file, &[1i32, 2, 3, 4], 2, 2, &[]).unwrap();
         drop(file);
@@ -993,7 +1011,7 @@ mod tests {
         doc.height = 2;
         doc.max_adu = Some(65535);
         std::fs::write(
-            dir.path().join(format!("{}.json", uuid8)),
+            dir.path().join(format!("{uuid8}.json")),
             serde_json::to_vec(&doc).unwrap(),
         )
         .unwrap();

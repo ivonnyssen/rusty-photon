@@ -294,21 +294,15 @@ fn plate_solve_field_equals_float(world: &mut RpWorld, field: String, expected: 
         .last_plate_solve_result
         .as_ref()
         .expect("no plate_solve result");
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in plate_solve result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in plate_solve result, got: {result:?}"));
     let actual = value
         .as_f64()
-        .unwrap_or_else(|| panic!("expected '{}' to be a number, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
     assert!(
         (actual - expected).abs() < 1e-6,
-        "expected '{}' to equal {}, got: {}",
-        field,
-        expected,
-        actual
+        "expected '{field}' to equal {expected}, got: {actual}"
     );
 }
 
@@ -321,7 +315,7 @@ fn plate_solve_field_equals_string(world: &mut RpWorld, field: String, expected:
     let actual = result
         .get(&field)
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| panic!("expected '{}' as string in {:?}", field, result));
+        .unwrap_or_else(|| panic!("expected '{field}' as string in {result:?}"));
     assert_eq!(actual, expected);
 }
 
@@ -345,7 +339,7 @@ fn plate_solve_wcs_matrix_matches(world: &mut RpWorld, step: &cucumber::gherkin:
             .unwrap_or_else(|_| panic!("value must be f64 in row {row:?}"));
         let actual = matrix
             .get(field)
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or_else(|| panic!("expected '{field}' as number in wcs_matrix: {matrix:?}"));
         assert!(
             (actual - expected).abs() < 1e-9,
@@ -363,12 +357,12 @@ async fn stub_received_pointing_hints(world: &mut RpWorld, ra_hint: f64, dec_hin
     let request = last_stub_request(world).await;
     let actual_ra = request
         .get("ra_hint")
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| panic!("expected ra_hint in request, got: {:?}", request));
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or_else(|| panic!("expected ra_hint in request, got: {request:?}"));
     let actual_dec = request
         .get("dec_hint")
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| panic!("expected dec_hint in request, got: {:?}", request));
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or_else(|| panic!("expected dec_hint in request, got: {request:?}"));
     // Tolerance 0.01° (~36 arcsec) covers OmniSim's mount-echo
     // float drift (~0.001° / ~3.6 arcsec, same root cause as
     // mount.feature's slew tolerance) while still catching a missed
@@ -378,15 +372,11 @@ async fn stub_received_pointing_hints(world: &mut RpWorld, ra_hint: f64, dec_hin
     // hint precision isn't load-bearing.
     assert!(
         (actual_ra - ra_hint).abs() < 0.01,
-        "expected ra_hint ≈ {}, got {}",
-        ra_hint,
-        actual_ra
+        "expected ra_hint ≈ {ra_hint}, got {actual_ra}"
     );
     assert!(
         (actual_dec - dec_hint).abs() < 0.01,
-        "expected dec_hint ≈ {}, got {}",
-        dec_hint,
-        actual_dec
+        "expected dec_hint ≈ {dec_hint}, got {actual_dec}"
     );
 }
 
@@ -397,9 +387,7 @@ async fn stub_received_blind_request(world: &mut RpWorld) {
         let v = request.get(field);
         assert!(
             v.is_none() || v == Some(&Value::Null),
-            "expected '{}' to be absent or null on a blind solve, got: {:?}",
-            field,
-            v
+            "expected '{field}' to be absent or null on a blind solve, got: {v:?}"
         );
     }
 }
@@ -415,22 +403,23 @@ async fn stub_received_optional_fields(
 ) {
     let request = last_stub_request(world).await;
     assert_eq!(
-        request.get("fov_hint_deg").and_then(|v| v.as_f64()),
-        Some(fov_hint_deg),
-        "fov_hint_deg mismatch in {:?}",
         request
+            .get("fov_hint_deg")
+            .and_then(serde_json::Value::as_f64),
+        Some(fov_hint_deg),
+        "fov_hint_deg mismatch in {request:?}"
     );
     assert_eq!(
-        request.get("search_radius_deg").and_then(|v| v.as_f64()),
-        Some(search_radius_deg),
-        "search_radius_deg mismatch in {:?}",
         request
+            .get("search_radius_deg")
+            .and_then(serde_json::Value::as_f64),
+        Some(search_radius_deg),
+        "search_radius_deg mismatch in {request:?}"
     );
     assert_eq!(
         request.get("timeout").and_then(|v| v.as_str()),
         Some(timeout.as_str()),
-        "timeout mismatch in {:?}",
-        request
+        "timeout mismatch in {request:?}"
     );
 }
 
@@ -440,10 +429,11 @@ async fn stub_received_optional_fields(
 async fn stub_received_search_radius(world: &mut RpWorld, search_radius_deg: f64) {
     let request = last_stub_request(world).await;
     assert_eq!(
-        request.get("search_radius_deg").and_then(|v| v.as_f64()),
-        Some(search_radius_deg),
-        "search_radius_deg mismatch in {:?}",
         request
+            .get("search_radius_deg")
+            .and_then(serde_json::Value::as_f64),
+        Some(search_radius_deg),
+        "search_radius_deg mismatch in {request:?}"
     );
 }
 
@@ -457,7 +447,7 @@ async fn stub_received_captured_fits_path(world: &mut RpWorld) {
     let fits_path = request
         .get("fits_path")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| panic!("expected fits_path in request, got: {:?}", request));
+        .unwrap_or_else(|| panic!("expected fits_path in request, got: {request:?}"));
     assert_eq!(
         fits_path, expected,
         "expected fits_path to be the captured FITS path"

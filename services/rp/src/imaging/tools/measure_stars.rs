@@ -171,17 +171,12 @@ mod tests {
         let hfr = s.hfr.expect("hfr should be Some");
         let fwhm = s.fwhm.expect("fwhm should be Some");
         let ecc = s.eccentricity.expect("eccentricity should be Some");
-        assert!(hfr > 0.0 && hfr.is_finite(), "hfr = {}", hfr);
+        assert!(hfr > 0.0 && hfr.is_finite(), "hfr = {hfr}");
         // Input σ = 2 ⇒ FWHM ≈ 4.71. Allow generous slop for the noisy fit.
-        assert!(
-            (fwhm - 4.71).abs() < 0.6,
-            "fwhm = {} (expected ≈ 4.71)",
-            fwhm
-        );
+        assert!((fwhm - 4.71).abs() < 0.6, "fwhm = {fwhm} (expected ≈ 4.71)");
         assert!(
             ecc < 0.2,
-            "circular PSF eccentricity should be ~0, got {}",
-            ecc
+            "circular PSF eccentricity should be ~0, got {ecc}"
         );
     }
 
@@ -269,11 +264,7 @@ mod tests {
         let s = &r.stars[0];
         assert!(s.hfr.expect("hfr").is_finite());
         let fwhm = s.fwhm.expect("fwhm");
-        assert!(
-            (fwhm - 4.71).abs() < 0.6,
-            "fwhm = {} (expected ≈ 4.71)",
-            fwhm
-        );
+        assert!((fwhm - 4.71).abs() < 0.6, "fwhm = {fwhm} (expected ≈ 4.71)");
     }
 
     #[test]

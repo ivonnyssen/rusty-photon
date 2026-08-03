@@ -139,7 +139,7 @@ impl McpHandler {
         };
 
         let (bin_x, bin_y) = match cam.bin().await {
-            Ok(bin) => (bin[0] as u32, bin[1] as u32),
+            Ok(bin) => (u32::from(bin[0]), u32::from(bin[1])),
             Err(e) => {
                 debug!(error = %e, "failed to read binning, using defaults");
                 (1u32, 1u32)
@@ -150,7 +150,7 @@ impl McpHandler {
             Ok(range) => (*range.start(), *range.end()),
             Err(e) => {
                 debug!(error = %e, "failed to read exposure range, using defaults");
-                (Duration::from_millis(1), Duration::from_secs(3600))
+                (Duration::from_millis(1), Duration::from_hours(1))
             }
         };
 

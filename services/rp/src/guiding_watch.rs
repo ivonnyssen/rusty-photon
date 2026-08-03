@@ -44,7 +44,8 @@ pub struct WatchCore {
 }
 
 impl WatchCore {
-    pub fn new(config: FocusWatchConfig) -> Self {
+    #[must_use]
+    pub const fn new(config: FocusWatchConfig) -> Self {
         Self {
             config,
             baseline: None,
@@ -57,7 +58,7 @@ impl WatchCore {
     /// fresh focus (or a guiding restart) is a fresh reference, and a
     /// trend degrading against it deserves a fresh event rather than
     /// suppression left over from the previous episode.
-    pub fn rearm(&mut self) {
+    pub const fn rearm(&mut self) {
         self.baseline = None;
         self.episode = None;
         self.cooldown_until = None;
@@ -145,7 +146,7 @@ pub fn spawn(
         debug!("guide focus watch started");
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(config.poll_interval) => {
+                () = tokio::time::sleep(config.poll_interval) => {
                     let (guiding, valid) = match client.guiding_metrics().await {
                         Ok(metrics) => {
                             let valid: Vec<f64> = metrics
@@ -272,7 +273,7 @@ mod tests {
         let mut core = WatchCore::new(config(
             3,
             1.25,
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             Duration::from_secs(10),
         ));
         let t0 = Instant::now();
@@ -308,8 +309,8 @@ mod tests {
 
     #[test]
     fn recovery_ends_the_episode_silently_and_cooldown_gates_the_next_fire() {
-        let cooldown = Duration::from_secs(60);
-        let mut core = WatchCore::new(config(3, 1.25, cooldown, Duration::from_secs(600)));
+        let cooldown = Duration::from_mins(1);
+        let mut core = WatchCore::new(config(3, 1.25, cooldown, Duration::from_mins(10)));
         let t0 = Instant::now();
 
         assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
@@ -340,8 +341,8 @@ mod tests {
         let mut core = WatchCore::new(config(
             3,
             1.25,
-            Duration::from_secs(3600),
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
+            Duration::from_hours(1),
         ));
         let t0 = Instant::now();
         assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
@@ -366,8 +367,8 @@ mod tests {
         let mut core = WatchCore::new(config(
             3,
             1.25,
-            Duration::from_secs(600),
-            Duration::from_secs(600),
+            Duration::from_mins(10),
+            Duration::from_mins(10),
         ));
         let t0 = Instant::now();
         assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());

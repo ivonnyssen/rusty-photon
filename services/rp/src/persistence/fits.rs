@@ -79,7 +79,7 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
             .map_err(translate_write_err)
     })
     .await
-    .map_err(|e| RpError::Imaging(format!("task join error: {}", e)))?
+    .map_err(|e| RpError::Imaging(format!("task join error: {e}")))?
 }
 
 /// Write i32 pixel data as a FITS file (BITPIX=32). Used for
@@ -120,7 +120,7 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
             .map_err(translate_write_err)
     })
     .await
-    .map_err(|e| RpError::Imaging(format!("task join error: {}", e)))?
+    .map_err(|e| RpError::Imaging(format!("task join error: {e}")))?
 }
 
 /// Read pixel data from a FITS file, normalised to `i32`.
@@ -242,8 +242,7 @@ mod tests {
             .unwrap_err();
         assert!(
             err.to_string().contains("does not match dimensions"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
@@ -252,8 +251,7 @@ mod tests {
         let err = read_fits_pixels("/nonexistent/path.fits").unwrap_err();
         assert!(
             err.to_string().contains("failed to open FITS"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
@@ -276,8 +274,7 @@ mod tests {
         let err = read_fits_doc_id("/nonexistent/path.fits").unwrap_err();
         assert!(
             err.to_string().contains("failed to open FITS"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
@@ -296,8 +293,7 @@ mod tests {
         let read_back = read_fits_doc_id(&path).unwrap();
         assert!(
             read_back.is_none(),
-            "expected None for FITS without DOC_ID, got {:?}",
-            read_back
+            "expected None for FITS without DOC_ID, got {read_back:?}"
         );
     }
 
@@ -368,8 +364,7 @@ mod tests {
             .unwrap_err();
         assert!(
             err.to_string().contains("failed to write FITS file"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
 
         assert_eq!(
@@ -389,13 +384,12 @@ mod tests {
             .unwrap_err();
         assert!(
             err.to_string().contains("does not match dimensions"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
-    /// `read_fits_doc_id` translates a non-string DOC_ID header (a file
-    /// where DOC_ID was somehow written as an integer) into a clean
+    /// `read_fits_doc_id` translates a non-string `DOC_ID` header (a file
+    /// where `DOC_ID` was somehow written as an integer) into a clean
     /// "non-string value" error. Force the case by writing a raw HDU
     /// with `DOC_ID` as an Int.
     #[test]
@@ -411,8 +405,7 @@ mod tests {
         let err = read_fits_doc_id(&path).unwrap_err();
         assert!(
             err.to_string().contains("non-string value"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
@@ -426,8 +419,7 @@ mod tests {
         let err = read_fits_doc_id(&path).unwrap_err();
         assert!(
             err.to_string().contains("failed to read DOC_ID"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
@@ -461,8 +453,7 @@ mod tests {
 
         assert!(
             err.to_string().contains("failed to write FITS file"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
 
         let (pixels, _, _) = read_fits_pixels(&path).unwrap();

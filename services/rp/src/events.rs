@@ -165,6 +165,7 @@ impl EventEnvelope {
     /// Build a `*_started` envelope. `operation` is the event-name prefix
     /// (e.g. `"slew"` → `"slew_started"`). Identity fields (`event_id`,
     /// `event_seq`, `timestamp`) are filled in by the bus at emit time.
+    #[must_use]
     pub fn started(
         operation: &str,
         operation_id: &str,
@@ -191,7 +192,7 @@ impl EventEnvelope {
     /// other field is untouched, so operations without a prediction keep
     /// both fields `None` (omitted from the JSON).
     #[must_use]
-    pub fn with_deadlines(mut self, predicted_ms: u64, max_ms: u64) -> Self {
+    pub const fn with_deadlines(mut self, predicted_ms: u64, max_ms: u64) -> Self {
         self.predicted_duration_ms = Some(predicted_ms);
         self.max_duration_ms = Some(max_ms);
         self
@@ -200,6 +201,7 @@ impl EventEnvelope {
     /// Build a `*_complete` envelope, computing `ended_at` and `elapsed_ms`
     /// from `started_at` and the current time. `payload` carries the
     /// operation outcome.
+    #[must_use]
     pub fn complete(
         operation: &str,
         operation_id: &str,
@@ -214,6 +216,7 @@ impl EventEnvelope {
     /// `dither_settled`; the event catalog uses "settled" rather than
     /// "complete" for operations that end by guiding stabilizing).
     /// Same timing semantics as [`EventEnvelope::complete`].
+    #[must_use]
     pub fn settled(
         operation: &str,
         operation_id: &str,
@@ -225,6 +228,7 @@ impl EventEnvelope {
 
     /// Build a `*_failed` envelope. The error message is carried as
     /// `{"error": <message>}` in the payload.
+    #[must_use]
     pub fn failed(
         operation: &str,
         operation_id: &str,
@@ -375,7 +379,10 @@ impl EventBus {
     /// boundary, never dropped. `last_seq == None` requests no replay (a fresh
     /// subscriber that only wants the live tail).
     pub fn subscribe_with_history(&self, last_seq: Option<u64>) -> Subscription {
-        let history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+        let history = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let oldest_retained_seq = history.front().map(|e| e.event_seq);
         let replay = match last_seq {
             Some(cursor) => history
@@ -435,7 +442,10 @@ impl EventBus {
         // delivered live). The webhook fan-out is an independent path and runs
         // after the lock is released.
         {
-            let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             envelope.event_seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
             if history.len() >= HISTORY_CAPACITY {
                 history.pop_front();

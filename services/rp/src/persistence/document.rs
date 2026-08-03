@@ -1,7 +1,7 @@
 //! Exposure documents: the JSON record describing a captured image plus all
 //! tool-produced sections written against it.
 //!
-//! `rp` owns the core document fields (id, captured_at, file_path, camera/
+//! `rp` owns the core document fields (id, `captured_at`, `file_path`, camera/
 //! exposure metadata). Image-analysis tools and plugins contribute additional
 //! data via named sections — see `docs/services/rp.md` (Exposure Document and
 //! Plugin Sections).
@@ -161,6 +161,7 @@ impl Optics {
     /// write — breaking capture's persistence contract for an auxiliary
     /// metadata block. Defense in depth keeps the failure scoped to the
     /// `optics` field.
+    #[must_use]
     pub fn from_camera_geometry(
         focal_length_mm: f64,
         pixel_size_x_um: f64,
@@ -204,6 +205,7 @@ impl Optics {
 
 /// Sidecar JSON path for a given FITS file path (`/foo/<uuid8>.fits` →
 /// `/foo/<uuid8>.json`).
+#[must_use]
 pub fn sidecar_path(file_path: &str) -> PathBuf {
     let p = PathBuf::from(file_path);
     p.with_extension("json")
@@ -454,8 +456,7 @@ mod tests {
         let body = serde_json::to_string(&doc).unwrap();
         assert!(
             !body.contains("max_adu"),
-            "max_adu should be omitted when None, got: {}",
-            body
+            "max_adu should be omitted when None, got: {body}"
         );
     }
 
@@ -467,13 +468,11 @@ mod tests {
         let obj = parsed.as_object().expect("top-level should be an object");
         assert!(
             !obj.contains_key("target"),
-            "target key should be omitted when None, got: {}",
-            body
+            "target key should be omitted when None, got: {body}"
         );
         assert!(
             !obj.contains_key("frame_type"),
-            "frame_type key should be omitted when None, got: {}",
-            body
+            "frame_type key should be omitted when None, got: {body}"
         );
     }
 
@@ -534,8 +533,7 @@ mod tests {
         let obj = parsed.as_object().expect("top-level should be an object");
         assert!(
             !obj.contains_key("optics"),
-            "optics key should be omitted when None, got: {}",
-            body
+            "optics key should be omitted when None, got: {body}"
         );
     }
 
@@ -606,8 +604,7 @@ mod tests {
         let optics = Optics::from_camera_geometry(f64::MIN_POSITIVE, 3.76, 3.76, 1024, 1024);
         assert!(
             optics.is_none(),
-            "derivation must reject inputs that overflow to infinity, got: {:?}",
-            optics
+            "derivation must reject inputs that overflow to infinity, got: {optics:?}"
         );
     }
 

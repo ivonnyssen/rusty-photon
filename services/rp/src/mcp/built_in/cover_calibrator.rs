@@ -19,7 +19,7 @@ pub struct CalibratorIdParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CalibratorOnParams {
     pub calibrator_id: String,
-    /// Brightness 0..max_brightness. When omitted, the device's
+    /// Brightness `0..max_brightness`. When omitted, the device's
     /// reported `max_brightness` is used.
     #[serde(default)]
     pub brightness: Option<u32>,
@@ -68,7 +68,7 @@ impl McpHandler {
             return Ok(tool_error!("failed to close cover: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
@@ -105,7 +105,7 @@ impl McpHandler {
             return Ok(tool_error!("failed to open cover: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
@@ -151,7 +151,7 @@ impl McpHandler {
             return Ok(tool_error!("failed to turn calibrator on: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {
@@ -190,7 +190,7 @@ impl McpHandler {
             return Ok(tool_error!("failed to turn calibrator off: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {

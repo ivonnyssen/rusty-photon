@@ -71,39 +71,39 @@ impl Default for CoolingConfig {
     }
 }
 
-fn default_poll_interval() -> Duration {
+const fn default_poll_interval() -> Duration {
     Duration::from_secs(10)
 }
 
-fn default_plateau_window() -> Duration {
-    Duration::from_secs(120)
+const fn default_plateau_window() -> Duration {
+    Duration::from_mins(2)
 }
 
-fn default_plateau_threshold_c() -> f64 {
+const fn default_plateau_threshold_c() -> f64 {
     0.5
 }
 
-fn default_tolerance_c() -> f64 {
+const fn default_tolerance_c() -> f64 {
     1.0
 }
 
-fn default_max_cooler_power_pct() -> f64 {
+const fn default_max_cooler_power_pct() -> f64 {
     90.0
 }
 
-fn default_regulation_margin_c() -> f64 {
+const fn default_regulation_margin_c() -> f64 {
     3.0
 }
 
-fn default_max_cooldown() -> Duration {
-    Duration::from_secs(20 * 60)
+const fn default_max_cooldown() -> Duration {
+    Duration::from_mins(20)
 }
 
-fn default_warmup_step_interval() -> Duration {
-    Duration::from_secs(120)
+const fn default_warmup_step_interval() -> Duration {
+    Duration::from_mins(2)
 }
 
-fn default_warm_target_c() -> f64 {
+const fn default_warm_target_c() -> f64 {
     10.0
 }
 
@@ -123,16 +123,13 @@ mod tests {
 
         let config = load_config(&path).unwrap();
         assert_eq!(config.cooling.poll_interval, Duration::from_secs(10));
-        assert_eq!(config.cooling.plateau_window, Duration::from_secs(120));
+        assert_eq!(config.cooling.plateau_window, Duration::from_mins(2));
         assert_eq!(config.cooling.plateau_threshold_c, 0.5);
         assert_eq!(config.cooling.tolerance_c, 1.0);
         assert_eq!(config.cooling.max_cooler_power_pct, 90.0);
         assert_eq!(config.cooling.regulation_margin_c, 3.0);
-        assert_eq!(config.cooling.max_cooldown, Duration::from_secs(1200));
-        assert_eq!(
-            config.cooling.warmup_step_interval,
-            Duration::from_secs(120)
-        );
+        assert_eq!(config.cooling.max_cooldown, Duration::from_mins(20));
+        assert_eq!(config.cooling.warmup_step_interval, Duration::from_mins(2));
         assert_eq!(config.cooling.warm_target_c, 10.0);
     }
 

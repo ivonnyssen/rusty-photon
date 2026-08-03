@@ -50,7 +50,7 @@ async fn stream_delivers(world: &mut RpWorld, event_type: String) {
             .frames()
             .await
             .iter()
-            .filter_map(|f| f.event_type())
+            .filter_map(bdd_infra::rp_harness::SseFrame::event_type)
             .collect();
         panic!("expected the SSE stream to deliver a '{event_type}' frame; saw: {seen:?}");
     }
@@ -71,7 +71,7 @@ async fn frame_id_equals_event_seq(world: &mut RpWorld, event_type: String) {
     let envelope_seq = frame
         .json()
         .get("event_seq")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or_else(|| panic!("'{event_type}' data carried no event_seq"));
     assert_eq!(
         sse_id, envelope_seq,

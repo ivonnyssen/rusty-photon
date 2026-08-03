@@ -48,13 +48,15 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             config: None,
             config_path: None,
         }
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
         self
@@ -62,6 +64,7 @@ impl ServerBuilder {
 
     /// The resolved config-file path the server was loaded from.
     /// `PUT /api/config` persists to it.
+    #[must_use]
     pub fn with_config_path(mut self, path: std::path::PathBuf) -> Self {
         self.config_path = Some(path);
         self
@@ -190,7 +193,7 @@ impl ServerBuilder {
         let default_min_alt = match config
             .planner
             .get("min_altitude_degrees")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
         {
             Some(v) if (-90.0..=90.0).contains(&v) => v,
             Some(v) => {
@@ -230,10 +233,10 @@ impl ServerBuilder {
         // failure here is a code bug — surface it loud regardless.
         let trains = crate::equipment::trains::TrainModel::try_from_equipment(&config.equipment)
             .map_err(|errors| {
-                let msg = errors
-                    .first()
-                    .map(|e| format!("{} {}", e.path, e.msg))
-                    .unwrap_or_else(|| "optical_trains validation failed".to_string());
+                let msg = errors.first().map_or_else(
+                    || "optical_trains validation failed".to_string(),
+                    |e| format!("{} {}", e.path, e.msg),
+                );
                 crate::error::RpError::Config(msg)
             })?;
 
@@ -418,7 +421,7 @@ impl ServerBuilder {
         // and the only stdout consumer (bdd-infra's port parser) never runs
         // services with --service.
         if !rusty_photon_service_lifecycle::is_scm_service() {
-            println!("Bound rp server bound_addr={}", local_addr);
+            println!("Bound rp server bound_addr={local_addr}");
         }
         info!("rp service bound on {}", local_addr);
 
@@ -461,15 +464,14 @@ fn advertised_base_url(
         return format!("{scheme}://{local_addr}");
     }
     let port = local_addr.port();
-    match hostname {
-        Some(host) => format!("{scheme}://{host}:{port}"),
-        None => {
-            warn!(
-                "wildcard bind and no system hostname; advertising loopback — \
-                 remote orchestrators cannot connect"
-            );
-            format!("{scheme}://127.0.0.1:{port}")
-        }
+    if let Some(host) = hostname {
+        format!("{scheme}://{host}:{port}")
+    } else {
+        warn!(
+            "wildcard bind and no system hostname; advertising loopback — \
+             remote orchestrators cannot connect"
+        );
+        format!("{scheme}://127.0.0.1:{port}")
     }
 }
 
@@ -569,7 +571,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -619,24 +621,16 @@ impl BoundServer {
             safety_cancel.cancel();
         };
 
-        match self.tls {
-            Some(ref tls_config) => {
-                info!("rp service started on {} (TLS)", self.local_addr);
-                rusty_photon_tls::server::serve_tls(
-                    self.listener,
-                    self.router,
-                    tls_config,
-                    graceful,
-                )
+        if let Some(ref tls_config) = self.tls {
+            info!("rp service started on {} (TLS)", self.local_addr);
+            rusty_photon_tls::server::serve_tls(self.listener, self.router, tls_config, graceful)
                 .await
                 .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
-            }
-            None => {
-                info!("rp service started on {}", self.local_addr);
-                axum::serve(self.listener, self.router)
-                    .with_graceful_shutdown(graceful)
-                    .await?;
-            }
+        } else {
+            info!("rp service started on {}", self.local_addr);
+            axum::serve(self.listener, self.router)
+                .with_graceful_shutdown(graceful)
+                .await?;
         }
 
         // The safety loop was cancelled by `graceful`; join it so the
@@ -796,7 +790,7 @@ mod tests {
 
     /// `ServerBuilder::build` aborts loud when the plate-solver client
     /// can't be built — here, an invalid `ca_cert` path makes
-    /// `client_builder` fail. Pins the "plate_solver: failed to build
+    /// `client_builder` fail. Pins the "`plate_solver`: failed to build
     /// HTTP client" error path (issue #609's `ca_cert_path` plumbing).
     #[tokio::test]
     async fn build_fails_loud_when_plate_solver_client_cannot_be_built() {

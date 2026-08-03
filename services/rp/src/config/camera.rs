@@ -85,6 +85,7 @@ impl CameraConfig {
     /// `PUT /api/config` validation. Paths are dotted with the index
     /// (`equipment.cameras.0.focal_length_mm`) so a UI can map each error
     /// onto its field; the message names the camera id for humans.
+    #[must_use]
     pub fn field_errors(&self, index: usize) -> Vec<FieldError> {
         let mut errors = Vec::new();
         let off_grid: Vec<i32> = self

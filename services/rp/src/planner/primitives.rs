@@ -75,6 +75,7 @@ pub fn validate_icrs(ra_hours: f64, dec_degrees: f64) -> Result<IcrsCoord, Strin
 /// Common error: a tool that needs a configured site was called when
 /// the deployment has no `site` block. The MCP tool body projects this
 /// onto a structured error payload.
+#[must_use]
 pub fn site_required_error() -> String {
     "site not configured: this tool requires a `site` block in rp's config; \
      see docs/services/rp.md §\"Site Configuration\""
@@ -99,6 +100,7 @@ pub fn compute_alt_az(
     }))
 }
 
+#[must_use]
 pub fn compute_transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Value {
     let result = ErfarsEphemeris::new().transit(site, target, date);
     json!({
@@ -106,6 +108,7 @@ pub fn compute_transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Value
     })
 }
 
+#[must_use]
 pub fn compute_rise_set(
     site: &Site,
     target: IcrsCoord,
@@ -125,6 +128,7 @@ pub fn compute_rise_set(
     }
 }
 
+#[must_use]
 pub fn compute_meridian_flip(
     site: &Site,
     target: IcrsCoord,
@@ -137,6 +141,7 @@ pub fn compute_meridian_flip(
     })
 }
 
+#[must_use]
 pub fn get_sun_position(site: &Site, time: DateTime<Utc>) -> Value {
     let info = ErfarsEphemeris::new().sun_position(site, time);
     json!({
@@ -161,6 +166,7 @@ fn finite_or_null(v: f64) -> Value {
     }
 }
 
+#[must_use]
 pub fn get_twilight(site: &Site, date: NaiveDate, kind: TwilightKind) -> Value {
     let w = ErfarsEphemeris::new().twilight(site, date, kind);
     json!({
@@ -174,6 +180,7 @@ pub fn get_twilight(site: &Site, date: NaiveDate, kind: TwilightKind) -> Value {
     })
 }
 
+#[must_use]
 pub fn get_moon_position(site: &Site, time: DateTime<Utc>) -> Value {
     let info = ErfarsEphemeris::new().moon_position(site, time);
     json!({
@@ -188,6 +195,7 @@ pub fn get_moon_position(site: &Site, time: DateTime<Utc>) -> Value {
     })
 }
 
+#[must_use]
 pub fn compute_moon_separation(target: IcrsCoord, time: DateTime<Utc>) -> Value {
     let sep = ErfarsEphemeris::new().moon_separation(target, time);
     json!({
@@ -195,6 +203,7 @@ pub fn compute_moon_separation(target: IcrsCoord, time: DateTime<Utc>) -> Value 
     })
 }
 
+#[must_use]
 pub fn get_local_sidereal_time(site: &Site, time: DateTime<Utc>) -> Value {
     let lst = ErfarsEphemeris::new().sidereal_time(site, time);
     json!({
@@ -418,7 +427,7 @@ mod tests {
         for k in ["altitude_degrees", "azimuth_degrees"] {
             let val = &v[k];
             assert!(
-                val.is_null() || val.as_f64().is_some_and(|f| f.is_finite()),
+                val.is_null() || val.as_f64().is_some_and(f64::is_finite),
                 "{k} should be null or finite, got {val:?}"
             );
         }

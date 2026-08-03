@@ -41,8 +41,7 @@ pub(super) async fn connect_focuser(
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
             Err(_) => {
                 return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {:?}",
-                    GET_DEVICES_TIMEOUT
+                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
                 ));
             }
         };
@@ -127,7 +126,7 @@ mod tests {
     /// `FocuserEntry`; the registry never refuses to start because a focuser
     /// went missing. The two unit tests below pin two of the failure paths
     /// directly, complementing the single failure path exercised by the
-    /// "rp is running with a focuser at \"http://localhost:1\" device 0"
+    /// "rp is running with a focuser at \"<http://localhost:1>\" device 0"
     /// BDD scenario.
     #[tokio::test]
     async fn connect_focuser_invalid_url_returns_disconnected_entry() {

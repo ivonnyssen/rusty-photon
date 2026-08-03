@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SafetyConfig {
-    /// How often every configured SafetyMonitor is polled (default `"10s"`).
+    /// How often every configured `SafetyMonitor` is polled (default `"10s"`).
     #[serde(default = "default_safety_poll_interval", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub poll_interval: Duration,
@@ -23,7 +23,7 @@ impl Default for SafetyConfig {
     }
 }
 
-fn default_safety_poll_interval() -> Duration {
+const fn default_safety_poll_interval() -> Duration {
     Duration::from_secs(10)
 }
 

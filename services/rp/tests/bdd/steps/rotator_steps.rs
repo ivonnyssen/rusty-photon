@@ -212,7 +212,7 @@ fn add_offline_rotator(world: &mut RpWorld, id: &str) {
     });
 }
 
-pub(crate) fn add_offline_camera(world: &mut RpWorld, id: &str) {
+pub fn add_offline_camera(world: &mut RpWorld, id: &str) {
     world.cameras.push(CameraConfig {
         id: id.to_string(),
         alpaca_url: "not-a-url".to_string(),
@@ -221,7 +221,7 @@ pub(crate) fn add_offline_camera(world: &mut RpWorld, id: &str) {
     });
 }
 
-pub(crate) fn push_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
+pub fn push_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
     world.optical_trains.push(OpticalTrainConfig {
         id: id.to_string(),
         purpose: None,
@@ -242,7 +242,7 @@ async fn call_rotator_tool(world: &mut RpWorld, tool: &str, args: Map<String, Va
     world.last_tool_result = Some(result);
 }
 
-fn last_rotator_result(world: &RpWorld) -> &Value {
+const fn last_rotator_result(world: &RpWorld) -> &Value {
     world
         .last_rotator_result
         .as_ref()

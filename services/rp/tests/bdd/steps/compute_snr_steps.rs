@@ -104,89 +104,68 @@ fn result_contains_field(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
     assert!(
         result.get(&field).is_some(),
-        "expected '{}' in compute_snr result, got: {:?}",
-        field,
-        result
+        "expected '{field}' in compute_snr result, got: {result:?}"
     );
 }
 
 #[then(expr = "the compute_snr result should contain {string} as a non-negative integer")]
 fn result_contains_non_negative_integer(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in compute_snr result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in compute_snr result, got: {result:?}"));
 
     assert!(
         value.as_u64().is_some() || value.as_i64().is_some_and(|v| v >= 0),
-        "expected '{}' to be a non-negative integer, got: {:?}",
-        field,
-        value
+        "expected '{field}' to be a non-negative integer, got: {value:?}"
     );
 }
 
 #[then(expr = "the compute_snr result should contain {string} as a non-negative number")]
 fn result_contains_non_negative_number(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in compute_snr result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in compute_snr result, got: {result:?}"));
 
     let num = value
         .as_f64()
-        .unwrap_or_else(|| panic!("expected '{}' to be a number, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
 
     assert!(
         num >= 0.0,
-        "expected '{}' to be non-negative, got: {}",
-        field,
-        num
+        "expected '{field}' to be non-negative, got: {num}"
     );
 }
 
 #[then(expr = "the compute_snr result should contain {string} with value null")]
 fn result_field_is_null(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in compute_snr result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in compute_snr result, got: {result:?}"));
 
     assert!(
         value.is_null(),
-        "expected '{}' to be null, got: {:?}",
-        field,
-        value
+        "expected '{field}' to be null, got: {value:?}"
     );
 }
 
 #[then(expr = "the compute_snr result should contain {string} with value {int}")]
 fn result_field_equals_int(world: &mut RpWorld, field: String, expected: i64) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in compute_snr result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in compute_snr result, got: {result:?}"));
 
     let actual = value
         .as_i64()
         .or_else(|| value.as_u64().map(|v| v as i64))
-        .unwrap_or_else(|| panic!("expected '{}' to be an integer, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be an integer, got: {value:?}"));
 
     assert_eq!(
         actual, expected,
-        "expected '{}' to equal {}, got: {}",
-        field, expected, actual
+        "expected '{field}' to equal {expected}, got: {actual}"
     );
 }
 
@@ -236,7 +215,7 @@ fn record_result(world: &mut RpWorld, result: Result<Value, String>) {
     world.last_tool_result = Some(result);
 }
 
-fn result_or_panic(world: &RpWorld) -> &Value {
+const fn result_or_panic(world: &RpWorld) -> &Value {
     world
         .last_compute_snr_result
         .as_ref()

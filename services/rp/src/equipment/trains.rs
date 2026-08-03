@@ -27,12 +27,12 @@ pub enum TrainDeviceKind {
 }
 
 impl TrainDeviceKind {
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
-            TrainDeviceKind::Camera => "camera",
-            TrainDeviceKind::Focuser => "focuser",
-            TrainDeviceKind::Rotator => "rotator",
-            TrainDeviceKind::FilterWheel => "filter wheel",
+            Self::Camera => "camera",
+            Self::Focuser => "focuser",
+            Self::Rotator => "rotator",
+            Self::FilterWheel => "filter wheel",
         }
     }
 }
@@ -66,12 +66,14 @@ impl Train {
     /// The camera this train terminates in. Always `Some` for a
     /// validated train (never empty, last entry a camera); `Option`
     /// keeps the accessor total.
+    #[must_use]
     pub fn camera_id(&self) -> Option<&str> {
         self.devices.last().map(|d| d.id.as_str())
     }
 
     /// The focuser that focuses this train's camera: the last focuser
     /// in the list. `None` for a train without focusers.
+    #[must_use]
     pub fn terminal_focuser(&self) -> Option<&str> {
         self.devices
             .iter()
@@ -335,10 +337,12 @@ impl TrainModel {
                 trains.push(Train {
                     id: train.id.clone(),
                     purpose: train.purpose,
-                    focal_length_mm: train.focal_length_mm.map(|f| f.value()),
+                    focal_length_mm: train
+                        .focal_length_mm
+                        .map(super::super::config::optical_train::FocalLengthMm::value),
                     default_position_angle_degrees: train
                         .default_position_angle_degrees
-                        .map(|a| a.value()),
+                        .map(super::super::config::optical_train::PositionAngleDegrees::value),
                     devices,
                     auto_focus: train.auto_focus.clone(),
                 });
@@ -369,16 +373,19 @@ impl TrainModel {
     }
 
     /// Every validated train, in config order.
+    #[must_use]
     pub fn trains(&self) -> &[Train] {
         &self.trains
     }
 
+    #[must_use]
     pub fn train(&self, train_id: &str) -> Option<&Train> {
         self.trains.iter().find(|t| t.id == train_id)
     }
 
     /// The train terminating in `camera_id`, if any. At most one —
     /// validation rejects a camera terminating two trains.
+    #[must_use]
     pub fn train_for_camera(&self, camera_id: &str) -> Option<&Train> {
         self.trains
             .iter()
@@ -388,12 +395,14 @@ impl TrainModel {
     /// The effective focal length of `camera_id`'s light path, feeding
     /// the exposure document's `optics` block. `None` when the camera
     /// terminates no train or its train omits `focal_length_mm`.
+    #[must_use]
     pub fn focal_length_for_camera(&self, camera_id: &str) -> Option<f64> {
         self.train_for_camera(camera_id)?.focal_length_mm
     }
 
     /// The focuser that focuses `camera_id`: the last focuser in its
     /// train's list.
+    #[must_use]
     pub fn focuser_for_camera(&self, camera_id: &str) -> Option<&str> {
         self.train_for_camera(camera_id)?.terminal_focuser()
     }
@@ -402,6 +411,7 @@ impl TrainModel {
     /// motion: true iff the camera terminates a train with
     /// `purpose: "imaging"` (rp.md § Mount Motion Gate). Un-trained
     /// and guiding-train cameras bypass the gate.
+    #[must_use]
     pub fn camera_in_imaging_train(&self, camera_id: &str) -> bool {
         self.train_for_camera(camera_id)
             .is_some_and(|t| t.purpose == TrainPurpose::Imaging)
@@ -409,6 +419,7 @@ impl TrainModel {
 
     /// The train with `purpose: "guiding"`, if any. At most one —
     /// validation rejects a second.
+    #[must_use]
     pub fn guiding_train(&self) -> Option<&Train> {
         self.trains
             .iter()
@@ -418,6 +429,7 @@ impl TrainModel {
     /// Every train containing `device_id` — the invalidation queries:
     /// moving focuser F invalidates focus of these trains, rotating
     /// rotator R rotates them, a filter change on wheel W touches them.
+    #[must_use]
     pub fn trains_with_device(&self, device_id: &str) -> Vec<&Train> {
         self.trains
             .iter()
@@ -430,6 +442,7 @@ impl TrainModel {
     /// upstream-first — each run in the train where it is terminal —
     /// then the train's own terminal focuser. `None` for an unknown
     /// train id; empty for a train without focusers.
+    #[must_use]
     pub fn af_sequence(&self, train_id: &str) -> Option<Vec<AfStep>> {
         let train = self.train(train_id)?;
         let terminal = train.terminal_focuser();
@@ -450,8 +463,7 @@ impl TrainModel {
                 .trains
                 .iter()
                 .find(|t| t.terminal_focuser() == Some(device.id.as_str()))
-                .map(|t| t.id.as_str())
-                .unwrap_or(train_id);
+                .map_or(train_id, |t| t.id.as_str());
             steps.push(AfStep {
                 focuser_id: device.id.clone(),
                 train_id: run_train.to_string(),
@@ -527,7 +539,7 @@ fn order_cycle(trains: &[Train]) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// Equipment JSON → EquipmentConfig, panicking on parse errors so
+    /// Equipment JSON → `EquipmentConfig`, panicking on parse errors so
     /// tests fail loudly on typos.
     fn equipment(json: serde_json::Value) -> EquipmentConfig {
         serde_json::from_value(json).unwrap()

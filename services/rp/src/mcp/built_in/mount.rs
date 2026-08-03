@@ -313,7 +313,7 @@ impl McpHandler {
                         "unpark",
                         &operation_id,
                         started_at,
-                        &format!("failed to unpark: {}", e),
+                        &format!("failed to unpark: {e}"),
                     ));
                 Ok(tool_error!("failed to unpark: {}", e))
             }

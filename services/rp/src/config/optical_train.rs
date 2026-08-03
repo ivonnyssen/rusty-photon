@@ -38,7 +38,8 @@ impl FocalLengthMm {
     }
 
     /// The focal length in millimetres.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -75,7 +76,8 @@ impl PositionAngleDegrees {
     }
 
     /// The angle in degrees east of north.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -97,7 +99,8 @@ impl TryFrom<f64> for PositionAngleDegrees {
 pub struct SweepStepSize(i32);
 
 impl SweepStepSize {
-    pub fn value(self) -> i32 {
+    #[must_use]
+    pub const fn value(self) -> i32 {
         self.0
     }
 }
@@ -122,7 +125,8 @@ impl TryFrom<i64> for SweepStepSize {
 pub struct SweepHalfWidth(i32);
 
 impl SweepHalfWidth {
-    pub fn value(self) -> i32 {
+    #[must_use]
+    pub const fn value(self) -> i32 {
         self.0
     }
 }
@@ -154,7 +158,8 @@ pub struct FramesPerStep(u32);
 const GUIDER_METRICS_WINDOW: i64 = 50;
 
 impl FramesPerStep {
-    pub fn value(self) -> u32 {
+    #[must_use]
+    pub const fn value(self) -> u32 {
         self.0
     }
 }

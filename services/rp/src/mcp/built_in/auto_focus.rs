@@ -75,7 +75,7 @@ pub struct RefocusTrainParams {
     #[serde(default)]
     pub train_id: Option<String>,
     /// Free-form trigger description recorded on `refocus_started`
-    /// and the result (e.g. "temperature_drift"). Default "manual".
+    /// and the result (e.g. "`temperature_drift`"). Default "manual".
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -100,17 +100,13 @@ enum PlannedStep {
 impl PlannedStep {
     fn focuser_id(&self) -> &str {
         match self {
-            PlannedStep::Capture { focuser_id, .. } | PlannedStep::Metric { focuser_id, .. } => {
-                focuser_id
-            }
+            Self::Capture { focuser_id, .. } | Self::Metric { focuser_id, .. } => focuser_id,
         }
     }
 
     fn train_id(&self) -> &str {
         match self {
-            PlannedStep::Capture { train_id, .. } | PlannedStep::Metric { train_id, .. } => {
-                train_id
-            }
+            Self::Capture { train_id, .. } | Self::Metric { train_id, .. } => train_id,
         }
     }
 }
@@ -563,8 +559,7 @@ impl McpHandler {
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
             .device
-            .as_ref()
-            .cloned()
+            .clone()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
 
         // Read the current focuser position + temperature exactly once
@@ -725,7 +720,10 @@ impl McpHandler {
             step_size,
             half_width,
             frames_per_step: block
-                .and_then(|b| b.frames_per_step.map(|f| f.value()))
+                .and_then(|b| {
+                    b.frames_per_step
+                        .map(crate::config::optical_train::FramesPerStep::value)
+                })
                 .unwrap_or(3),
             min_fit_points: params
                 .min_fit_points
@@ -756,7 +754,7 @@ impl McpHandler {
 
     /// The active-guiding precondition shared by the guide-train
     /// sweep and `refocus_train`'s metric-step validation. `what`
-    /// names the caller in the error ("guide-train auto_focus" /
+    /// names the caller in the error ("guide-train `auto_focus`" /
     /// "guide-train step").
     async fn require_active_guiding(
         &self,
@@ -799,8 +797,7 @@ impl McpHandler {
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
             .device
-            .as_ref()
-            .cloned()
+            .clone()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
         let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
 
@@ -1009,9 +1006,7 @@ impl McpHandler {
 /// The highest frame number in a metrics window, 0 when absent — the
 /// initial freshness watermark.
 fn latest_frame(metrics: Option<&rp_guider::GuidingMetrics>) -> u64 {
-    metrics
-        .map(|m| m.frames.iter().map(|f| f.frame).max().unwrap_or(0))
-        .unwrap_or(0)
+    metrics.map_or(0, |m| m.frames.iter().map(|f| f.frame).max().unwrap_or(0))
 }
 
 /// Fill sweep parameters the call omitted from the train's
@@ -1053,7 +1048,9 @@ fn guide_sweep_from_block(block: &TrainAutoFocusConfig) -> GuideSweepParams {
     GuideSweepParams {
         step_size: block.step_size.value(),
         half_width: block.half_width.value(),
-        frames_per_step: block.frames_per_step.map(|f| f.value()).unwrap_or(3),
+        frames_per_step: block
+            .frames_per_step
+            .map_or(3, crate::config::optical_train::FramesPerStep::value),
         min_fit_points: block.min_fit_points.unwrap_or(5),
     }
 }

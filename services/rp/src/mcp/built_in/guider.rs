@@ -82,11 +82,11 @@ pub enum DitherUnit {
 }
 
 impl DitherUnit {
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
-            DitherUnit::GuidePx => "guide_px",
-            DitherUnit::MainPx => "main_px",
-            DitherUnit::Arcsec => "arcsec",
+            Self::GuidePx => "guide_px",
+            Self::MainPx => "main_px",
+            Self::Arcsec => "arcsec",
         }
     }
 }
@@ -501,7 +501,7 @@ impl McpHandler {
         };
         match client.current_equipment().await {
             Ok(equipment) => {
-                let phd2_has_rotator = equipment.rotator.map(|r| r.connected).unwrap_or(false);
+                let phd2_has_rotator = equipment.rotator.is_some_and(|r| r.connected);
                 if !phd2_has_rotator {
                     tracing::warn!(
                         rotator_id,

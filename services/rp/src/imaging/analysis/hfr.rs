@@ -17,6 +17,7 @@ use super::stars::Star;
 
 /// Per-star half-flux radius in pixels. `None` if the star's total
 /// background-subtracted flux is non-positive.
+#[must_use]
 pub fn star_hfr<T: Pixel>(view: ArrayView2<T>, star: &Star, background_mean: f64) -> Option<f64> {
     let mut samples: Vec<(f64, f64)> = Vec::with_capacity(star.pixels.len());
     let mut total_flux = 0.0_f64;
@@ -27,7 +28,7 @@ pub fn star_hfr<T: Pixel>(view: ArrayView2<T>, star: &Star, background_mean: f64
         }
         let dx = r as f64 - star.centroid_x;
         let dy = c as f64 - star.centroid_y;
-        let d = (dx * dx + dy * dy).sqrt();
+        let d = dx.hypot(dy);
         samples.push((d, f));
         total_flux += f;
     }
@@ -89,7 +90,7 @@ pub fn aggregate_hfr<T: Pixel>(
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
-        Some((lower + upper) / 2.0)
+        Some(f64::midpoint(lower, upper))
     }
 }
 
@@ -145,14 +146,12 @@ mod tests {
                 }
             }
         }
-        let star = star_from_pixels(pixels, cx as f64, cy as f64);
+        let star = star_from_pixels(pixels, f64::from(cx), f64::from(cy));
         let hfr = star_hfr(arr.view(), &star, 0.0).unwrap();
-        let expected = (r_disc as f64) / 2_f64.sqrt();
+        let expected = f64::from(r_disc) / 2_f64.sqrt();
         assert!(
             (hfr - expected).abs() < 0.5,
-            "hfr = {}, expected ≈ {}",
-            hfr,
-            expected
+            "hfr = {hfr}, expected ≈ {expected}"
         );
     }
 
@@ -184,9 +183,7 @@ mod tests {
         let expected = sigma * (2.0_f64.ln() * 2.0).sqrt();
         assert!(
             (hfr - expected).abs() < 0.5,
-            "hfr = {}, expected ≈ {}",
-            hfr,
-            expected
+            "hfr = {hfr}, expected ≈ {expected}"
         );
     }
 
@@ -217,9 +214,7 @@ mod tests {
         let expected = 3.0 / 2_f64.sqrt();
         assert!(
             (agg - expected).abs() < 0.5,
-            "agg = {}, expected ≈ {}",
-            agg,
-            expected
+            "agg = {agg}, expected ≈ {expected}"
         );
     }
 
@@ -241,14 +236,12 @@ mod tests {
                 }
             }
         }
-        let star = star_from_pixels(pixels, cx as f64, cy as f64);
+        let star = star_from_pixels(pixels, f64::from(cx), f64::from(cy));
         let hfr = star_hfr(arr.view(), &star, 0.0).unwrap();
-        let expected = (r_disc as f64) / 2_f64.sqrt();
+        let expected = f64::from(r_disc) / 2_f64.sqrt();
         assert!(
             (hfr - expected).abs() < 0.5,
-            "hfr = {}, expected ≈ {}",
-            hfr,
-            expected
+            "hfr = {hfr}, expected ≈ {expected}"
         );
     }
 

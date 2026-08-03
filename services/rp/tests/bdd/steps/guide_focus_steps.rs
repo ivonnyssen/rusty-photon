@@ -1,12 +1,12 @@
 //! BDD step definitions for the T4 guiding integration:
 //! `guide_focus.feature` (the guide-train PHD2-metric sweep, the
-//! guide focus watch, the start_guiding rotator warning) plus the
+//! guide focus watch, the `start_guiding` rotator warning) plus the
 //! rotate-while-guiding ladder scenarios in `rotator.feature`.
 //!
 //! Shared steps: tool listing / error assertions in `tool_steps.rs`,
 //! guider stub lifecycle in `guider_steps.rs`, webhook receiver in
 //! `event_steps.rs`, offline-roster helpers in `rotator_steps.rs`.
-//! The stub guider's `metrics_hfd_script` (guider_stub.rs) drives
+//! The stub guider's `metrics_hfd_script` (`guider_stub.rs`) drives
 //! the deterministic outcomes here: a one-value script is perfectly
 //! flat HFD (the sweep's fit then reports no minimum), a two-value
 //! script is the degradation the focus watch turns into events.
@@ -197,7 +197,7 @@ async fn call_auto_focus_train_duration(world: &mut RpWorld, train_id: String, d
 
 // --- Then steps: stub guider request assertions ----------------------
 
-fn stub(world: &RpWorld) -> &bdd_infra::rp_harness::GuiderStub {
+const fn stub(world: &RpWorld) -> &bdd_infra::rp_harness::GuiderStub {
     world
         .guider_stub
         .as_ref()
@@ -235,7 +235,7 @@ async fn stub_received_at_least(world: &mut RpWorld, count: usize, path_suffix: 
 
 // --- Then steps: ladder result assertions ----------------------------
 
-fn last_rotator_result(world: &RpWorld) -> &Value {
+const fn last_rotator_result(world: &RpWorld) -> &Value {
     world
         .last_rotator_result
         .as_ref()

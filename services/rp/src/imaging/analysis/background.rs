@@ -24,6 +24,7 @@ pub struct BackgroundStats {
 /// Iterative sigma-clip with caller-controlled `k` and iteration cap.
 ///
 /// Returns `None` if the input view is empty or all pixels are clipped away.
+#[must_use]
 pub fn sigma_clipped_stats<T: Pixel>(
     view: ArrayView2<T>,
     k: f64,
@@ -62,6 +63,7 @@ pub fn sigma_clipped_stats<T: Pixel>(
 }
 
 /// Convenience: `k = 3.0`, `max_iters = 5`.
+#[must_use]
 pub fn estimate_background<T: Pixel>(view: ArrayView2<T>) -> Option<BackgroundStats> {
     sigma_clipped_stats(view, 3.0, 5)
 }
@@ -94,7 +96,7 @@ fn median_of(values: &mut [f64]) -> f64 {
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
-        (lower + upper) / 2.0
+        f64::midpoint(lower, upper)
     }
 }
 

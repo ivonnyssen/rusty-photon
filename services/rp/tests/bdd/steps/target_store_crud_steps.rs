@@ -2,7 +2,7 @@
 //! (`target_store_crud.feature`, rp.md § Target Store — *(planned, P1)*,
 //! not yet implemented; scenarios are tagged `@wip`).
 //!
-//! These scenarios never touch OmniSim: `add_target`/`get_target`/
+//! These scenarios never touch `OmniSim`: `add_target`/`get_target`/
 //! `list_targets`/`update_target`/`delete_target` are pure plan-data
 //! operations, so rp is spawned directly from a scenario-private temp
 //! config on port 0 (the `config_rest.feature` pattern), skipping the
@@ -23,7 +23,7 @@ use crate::world::RpWorld;
 // ---------------------------------------------------------------------------
 
 /// Write a scenario-private rp config for target-store scenarios: no
-/// OmniSim, port 0, an optional filter-wheel roster (declared but never
+/// `OmniSim`, port 0, an optional filter-wheel roster (declared but never
 /// connected — goal filter-roster validation reads the configured
 /// `filters[]` list, not live device state, per rp.md § Target Store).
 /// Picks up `world.target_store_config` (set by a `Given rp is
@@ -32,7 +32,7 @@ use crate::world::RpWorld;
 /// applies the same field for the OmniSim-backed bootstrap path, so a
 /// scenario can set the override before either "rp is running ..."
 /// Given step.
-pub(crate) fn write_target_store_config(world: &mut RpWorld, filters: Option<Vec<String>>) {
+pub fn write_target_store_config(world: &mut RpWorld, filters: Option<Vec<String>>) {
     let dir = tempfile::tempdir().expect("create temp dir for rp config");
     let mut equipment = serde_json::json!({});
     if let Some(filters) = filters {
@@ -73,7 +73,7 @@ pub(crate) fn write_target_store_config(world: &mut RpWorld, filters: Option<Vec
     world.config_rest_dir = Some(dir);
 }
 
-pub(crate) async fn start_target_store_rp(world: &mut RpWorld) {
+pub async fn start_target_store_rp(world: &mut RpWorld) {
     let path = world
         .config_rest_path
         .clone()
@@ -90,7 +90,7 @@ pub(crate) async fn start_target_store_rp(world: &mut RpWorld) {
 /// Call `add_target`, panicking with the tool error on failure (a Given
 /// fixture step — testing.md §3.3: fail fast on setup problems).
 /// Remembers the returned slug on `world.last_target_slug`.
-pub(crate) async fn add_target_fixture(world: &mut RpWorld, args: Value) {
+pub async fn add_target_fixture(world: &mut RpWorld, args: Value) {
     ensure_mcp_client(world).await;
     let result = world.mcp().call_tool("add_target", args).await;
     let value = result
@@ -414,7 +414,7 @@ fn record_target_list(world: &mut RpWorld, result: Result<Value, String>) {
 fn target_result_created(world: &mut RpWorld) {
     let created = target_result(world)
         .get("created")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .expect("add_target result missing `created`");
     assert!(
         created,
@@ -426,7 +426,7 @@ fn target_result_created(world: &mut RpWorld) {
 fn target_result_updated(world: &mut RpWorld) {
     let created = target_result(world)
         .get("created")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .expect("add_target result missing `created`");
     assert!(
         !created,
@@ -448,7 +448,7 @@ fn target_result_deleted(world: &mut RpWorld, expected: String) {
     let expected: bool = expected.parse().expect("expected must be true or false");
     let deleted = target_result(world)
         .get("deleted")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .expect("delete_target result missing `deleted`");
     assert_eq!(deleted, expected, "delete_target `deleted` field");
 }
@@ -501,7 +501,7 @@ fn list_targets_count(world: &mut RpWorld, expected: usize) {
         .last_target_list
         .as_ref()
         .expect("no target list — call list_targets first");
-    assert_eq!(list.len(), expected, "list_targets count, got: {:?}", list);
+    assert_eq!(list.len(), expected, "list_targets count, got: {list:?}");
 }
 
 #[then(expr = "the target list should contain exactly {string}")]

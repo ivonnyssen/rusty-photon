@@ -34,7 +34,7 @@ pub(super) enum ImageSource<'a> {
 /// [`ImageSource`]. `document_id` wins when both are supplied (matches
 /// the documented param semantics). `(None, None)` is the only input
 /// that errors.
-pub(super) fn require_image_source<'a>(
+pub(super) const fn require_image_source<'a>(
     document_id: Option<&'a str>,
     image_path: Option<&'a str>,
 ) -> Result<ImageSource<'a>, &'static str> {
@@ -85,7 +85,7 @@ pub struct MeasureBasicParams {
     pub max_area: Option<usize>,
 }
 
-fn default_threshold_sigma() -> f64 {
+const fn default_threshold_sigma() -> f64 {
     5.0
 }
 
@@ -107,10 +107,10 @@ pub struct EstimateBackgroundParams {
     pub max_iters: u32,
 }
 
-fn default_clip_k() -> f64 {
+const fn default_clip_k() -> f64 {
     3.0
 }
-fn default_clip_max_iters() -> u32 {
+const fn default_clip_max_iters() -> u32 {
     5
 }
 
@@ -141,7 +141,7 @@ pub struct MeasureStarsParams {
     pub stamp_half_size: usize,
 }
 
-fn default_stamp_half_size() -> usize {
+const fn default_stamp_half_size() -> usize {
     imaging::DEFAULT_STAMP_HALF_SIZE
 }
 

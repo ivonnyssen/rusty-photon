@@ -1,4 +1,4 @@
-//! BDD step definitions for get_camera_info MCP tool
+//! BDD step definitions for `get_camera_info` MCP tool
 
 use cucumber::{then, when};
 
@@ -43,16 +43,13 @@ fn result_contains_positive_integer(world: &mut RpWorld, field: String) {
 
     let value = result
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in tool result, got: {:?}", field, result));
+        .unwrap_or_else(|| panic!("expected '{field}' in tool result, got: {result:?}"));
 
     let num = value.as_u64().unwrap_or_else(|| {
-        panic!(
-            "expected '{}' to be a non-negative integer, got: {:?}",
-            field, value
-        )
+        panic!("expected '{field}' to be a non-negative integer, got: {value:?}")
     });
 
-    assert!(num > 0, "expected '{}' to be positive, got: {}", field, num);
+    assert!(num > 0, "expected '{field}' to be positive, got: {num}");
 }
 
 #[then(expr = "the tool result should contain {string}")]
@@ -66,8 +63,6 @@ fn result_contains_field(world: &mut RpWorld, field: String) {
 
     assert!(
         result.get(&field).is_some(),
-        "expected '{}' in tool result, got: {:?}",
-        field,
-        result
+        "expected '{field}' in tool result, got: {result:?}"
     );
 }

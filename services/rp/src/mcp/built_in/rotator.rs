@@ -32,7 +32,7 @@ use crate::events::EventEnvelope;
 /// config to size a predictive deadline from; 120 s mirrors the
 /// focuser fallback ceiling and covers a worst-case half-turn on the
 /// slowest amateur rotators.
-const ROTATOR_MOVE_DEADLINE: Duration = Duration::from_secs(120);
+const ROTATOR_MOVE_DEADLINE: Duration = Duration::from_mins(2);
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(extend("oneOf" = [{"required": ["rotator_id"]}, {"required": ["train_id"]}]))]
@@ -112,7 +112,7 @@ impl McpHandler {
                     Ok(stats) if stats.guiding => ladder_client = Some(client),
                     Ok(_) => debug!(rotator_id, "guider not guiding; rotating bare"),
                     Err(e) => {
-                        debug!(rotator_id, error = %e, "guider stats unreachable; rotating bare")
+                        debug!(rotator_id, error = %e, "guider stats unreachable; rotating bare");
                     }
                 }
             }
@@ -282,7 +282,7 @@ impl McpHandler {
                 .current_equipment()
                 .await
                 .map_err(|e| format!("failed to read PHD2 equipment: {e}"))?;
-            let phd2_has_rotator = equipment.rotator.map(|r| r.connected).unwrap_or(false);
+            let phd2_has_rotator = equipment.rotator.is_some_and(|r| r.connected);
             let delta_deg = angular_delta_deg(pre_move_angle, post_move_angle);
             let threshold = self.guider_defaults.recalibrate_above_deg;
             let calibration_cleared = if !phd2_has_rotator && delta_deg > threshold {

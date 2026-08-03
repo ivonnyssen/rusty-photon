@@ -38,7 +38,7 @@ use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
 /// camera never reports either readiness or error. 120 s mirrors
 /// `do_move_focuser_blocking`'s deadline and comfortably covers real
 /// readout/download latency on top of the exposure itself.
-const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
+const CAPTURE_READOUT_GRACE: Duration = Duration::from_mins(2);
 
 /// Default per-camera readout + download estimate used to size the
 /// predictive exposure deadline (§2.4) when `camera.readout_time_estimate`
@@ -104,13 +104,13 @@ pub(crate) fn centering_deadlines(
 /// plan). A short slew still gets at least this long before it's considered
 /// overrun, covering fixed overheads that `distance / rate` ignores:
 /// acceleration ramps and controller/`IsSlewing` latency. The binding
-/// constraint is the OmniSim BDD simulator — it slews at 20°/s with a fixed
+/// constraint is the `OmniSim` BDD simulator — it slews at 20°/s with a fixed
 /// deceleration tail, so a from-rest slew (its physical axes reset to a
 /// startup position each scenario, while `sync_mount` only moves the
 /// *reported* coordinates) takes up to ~12 s regardless of the small
 /// reported distance rp sizes the deadline from. A real mount's tiny slew
 /// is far quicker, so this floor is slack in production. 30 s is ~2.5×
-/// OmniSim's ~12 s worst case — margin for a contended CI runner dropping
+/// `OmniSim`'s ~12 s worst case — margin for a contended CI runner dropping
 /// timer ticks (the goto-slew advances a fixed angle per tick, so a stalled
 /// timer stretches wall-clock time) — while still surfacing a wedged slew
 /// ~10× sooner than the prior hardcoded 300 s ceiling, and well before
@@ -123,7 +123,7 @@ const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(30);
 /// prediction is an optimization, not a precondition for slewing, so the
 /// deadline degrades to the historical 300 s ceiling rather than failing
 /// the slew.
-const SLEW_DEADLINE_FALLBACK: Duration = Duration::from_secs(300);
+const SLEW_DEADLINE_FALLBACK: Duration = Duration::from_mins(5);
 
 /// Worst-case axis traverse used to size the park deadline (§2.2). The
 /// generic Alpaca `Telescope` trait exposes no park-position getter, so rp
@@ -141,15 +141,15 @@ const PARK_DEADLINE_HEADROOM: f64 = 2.0;
 
 /// Floor on the predictive park deadline. More generous than
 /// [`MIN_SLEW_DEADLINE`] — park traverses to a fixed mechanical position
-/// that can be a long way off, and OmniSim's BDD park is a from-rest
+/// that can be a long way off, and `OmniSim`'s BDD park is a from-rest
 /// physical traverse.
-const MIN_PARK_DEADLINE: Duration = Duration::from_secs(60);
+const MIN_PARK_DEADLINE: Duration = Duration::from_mins(1);
 
 /// Park deadline used when no mount is configured (the only case in which
 /// the park deadline can't be sized). Park would fail immediately without a
 /// mount anyway; the fallback keeps the poll loop bounded for symmetry with
 /// the slew path.
-const PARK_DEADLINE_FALLBACK: Duration = Duration::from_secs(300);
+const PARK_DEADLINE_FALLBACK: Duration = Duration::from_mins(5);
 
 /// Headroom multiplier over the focuser `predicted` (§2.3): `max =
 /// max(predicted × 2, MIN_FOCUSER_DEADLINE)`.
@@ -164,7 +164,7 @@ const MIN_FOCUSER_DEADLINE: Duration = Duration::from_secs(5);
 /// prediction is an optimization, not a precondition for moving, so the
 /// deadline degrades to the historical 120 s ceiling rather than failing
 /// the move.
-const FOCUSER_DEADLINE_FALLBACK: Duration = Duration::from_secs(120);
+const FOCUSER_DEADLINE_FALLBACK: Duration = Duration::from_mins(2);
 
 // ---------------------------------------------------------------------------
 // Private helper types shared across imaging tool bodies. All
@@ -293,7 +293,7 @@ impl McpHandler {
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
-                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+                crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         self.stats_via_path(&doc.file_path).await
     }
@@ -309,7 +309,7 @@ impl McpHandler {
                 .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
         })
         .await
-        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
     }
 
     pub(crate) async fn measure_via_document(
@@ -334,7 +334,7 @@ impl McpHandler {
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
-                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+                crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         // No camera context here, so we can't reliably know max_adu — pass None
         // (saturation flagging is best-effort; not a correctness issue).
@@ -353,13 +353,11 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
-                .map_err(|e| {
-                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
-                })?;
+                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             imaging::measure_basic(arr.view(), threshold, min_a, max_a, None)
         })
         .await
-        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
     }
 
     pub(crate) async fn estimate_via_document(
@@ -377,7 +375,7 @@ impl McpHandler {
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
-                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+                crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         self.estimate_via_path(&doc.file_path, params).await
     }
@@ -393,13 +391,11 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
-                .map_err(|e| {
-                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
-                })?;
+                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             clip_outcome(arr.view(), &ResolvedClipParams { k, max_iters })
         })
         .await
-        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
     }
 
     pub(crate) async fn detect_via_document(
@@ -420,7 +416,7 @@ impl McpHandler {
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
-                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+                crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         // No camera context here — pass max_adu = None (matches measure_basic).
         self.detect_via_path(&doc.file_path, params).await
@@ -440,13 +436,11 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
-                .map_err(|e| {
-                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
-                })?;
+                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             detect_outcome(arr.view(), &resolved, None)
         })
         .await
-        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
     }
 
     pub(crate) async fn measure_stars_via_document(
@@ -472,7 +466,7 @@ impl McpHandler {
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
-                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+                crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         self.measure_stars_via_path(&doc.file_path, params).await
     }
@@ -490,13 +484,11 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
-                .map_err(|e| {
-                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
-                })?;
+                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             imaging::measure_stars(arr.view(), threshold, min_a, max_a, None, stamp)
         })
         .await
-        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
     }
 
     pub(crate) async fn snr_via_document(
@@ -521,7 +513,7 @@ impl McpHandler {
             .resolve_document(doc_id)
             .await
             .ok_or_else(|| {
-                crate::error::RpError::Imaging(format!("document not found: {}", doc_id))
+                crate::error::RpError::Imaging(format!("document not found: {doc_id}"))
             })?;
         self.snr_via_path(&doc.file_path, params).await
     }
@@ -538,13 +530,11 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
-                .map_err(|e| {
-                    crate::error::RpError::Imaging(format!("FITS shape mismatch: {}", e))
-                })?;
+                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             imaging::compute_snr(arr.view(), threshold, min_a, max_a, None)
         })
         .await
-        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {}", e)))?
+        .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
     }
 
     /// Persist the document and (on success) populate the image cache.
@@ -626,12 +616,11 @@ impl McpHandler {
         let cam_entry = self
             .equipment
             .find_camera(camera_id)
-            .ok_or_else(|| format!("camera not found: {}", camera_id))?;
+            .ok_or_else(|| format!("camera not found: {camera_id}"))?;
         let cam = cam_entry
             .device
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| format!("camera not connected: {}", camera_id))?;
+            .clone()
+            .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
         // Snapshot the train-derived focal length and the five
         // invariant physical-sensor properties cached at connect time.
         // `cam_entry` is a borrow off `self.equipment`; the snapshot
@@ -708,7 +697,7 @@ impl McpHandler {
         let capture_result: std::result::Result<(), String> = async {
             cam.start_exposure(duration, true)
                 .await
-                .map_err(|e| format!("failed to start exposure: {}", e))?;
+                .map_err(|e| format!("failed to start exposure: {e}"))?;
 
             // Poll until the frame is ready — but a not-ready camera is not
             // necessarily still exposing. An Alpaca camera that *fails* an
@@ -744,13 +733,11 @@ impl McpHandler {
                         // below still bounds the wait.
                         match cam.camera_state().await {
                             Ok(CameraState::Error) => {
-                                let detail = cam
-                                    .image_array()
-                                    .await
-                                    .err()
-                                    .map(|e| e.to_string())
-                                    .unwrap_or_else(|| "camera reported error state".to_string());
-                                return Err(format!("exposure failed: {}", detail));
+                                let detail = cam.image_array().await.err().map_or_else(
+                                    || "camera reported error state".to_string(),
+                                    |e| e.to_string(),
+                                );
+                                return Err(format!("exposure failed: {detail}"));
                             }
                             // An aborted exposure (the safety enforcer's
                             // best-effort AbortExposure, an operator abort)
@@ -777,10 +764,7 @@ impl McpHandler {
                                         // an abort — same treatment as the
                                         // outer poll's Err arm.
                                         Err(e) => {
-                                            return Err(format!(
-                                                "error checking image ready: {}",
-                                                e
-                                            ))
+                                            return Err(format!("error checking image ready: {e}"))
                                         }
                                     }
                                 }
@@ -790,8 +774,7 @@ impl McpHandler {
                         let now = Instant::now();
                         if now >= deadline {
                             return Err(format!(
-                                "timeout waiting for image_ready after {:?}",
-                                total_budget
+                                "timeout waiting for image_ready after {total_budget:?}"
                             ));
                         }
                         if let Some(sink) = progress {
@@ -812,7 +795,7 @@ impl McpHandler {
                             }
                         }
                     }
-                    Err(e) => return Err(format!("error checking image ready: {}", e)),
+                    Err(e) => return Err(format!("error checking image ready: {e}")),
                 }
             }
 
@@ -858,7 +841,7 @@ impl McpHandler {
                     let bin = cam
                         .bin()
                         .await
-                        .map_err(|e| format!("capture: failed to read binning: {}", e))?;
+                        .map_err(|e| format!("capture: failed to read binning: {e}"))?;
                     let binning = rp_targets::Binning {
                         x: bin[0] as u8,
                         y: bin[1] as u8,
@@ -878,7 +861,7 @@ impl McpHandler {
                     };
 
                     let dir_relative = templates.directory.render(&fields).map_err(|e| {
-                        format!("capture: failed to render session.directory_pattern: {}", e)
+                        format!("capture: failed to render session.directory_pattern: {e}")
                     })?;
                     let scan_dir = std::path::Path::new(&self.session_config.data_directory)
                         .join(&dir_relative);
@@ -891,17 +874,14 @@ impl McpHandler {
                     )
                     .await?;
                     fields.frame_number = Some(frame_number);
-                    fields.uuid8 = Some(uuid8.to_string());
+                    fields.uuid8 = Some(uuid8.clone());
 
                     let file_base = templates.file.render(&fields).map_err(|e| {
-                        format!(
-                            "capture: failed to render session.file_naming_pattern: {}",
-                            e
-                        )
+                        format!("capture: failed to render session.file_naming_pattern: {e}")
                     })?;
 
                     image_path = scan_dir
-                        .join(format!("{}.fits", file_base))
+                        .join(format!("{file_base}.fits"))
                         .to_string_lossy()
                         .into_owned();
                 }
@@ -910,7 +890,7 @@ impl McpHandler {
             let image_array = cam
                 .image_array()
                 .await
-                .map_err(|e| format!("failed to download image array: {}", e))?;
+                .map_err(|e| format!("failed to download image array: {e}"))?;
 
             let (dim_x, dim_y, _planes) = image_array.dim();
             let width = dim_x as u32;
@@ -936,52 +916,49 @@ impl McpHandler {
             // sensor-dimension reads from `CameraEntry`. Any missing piece
             // (focal length not configured, connect-time read failed) drops
             // the whole block — see `docs/services/rp.md` §"Core Fields".
-            let optics = match focal_length_mm {
-                Some(focal_length_mm) => {
-                    match (
-                        cached_pixel_size_x_um,
-                        cached_pixel_size_y_um,
-                        cached_sensor_width_px,
-                        cached_sensor_height_px,
-                    ) {
-                        (Some(px), Some(py), Some(sw), Some(sh)) => {
-                            let derived = persistence::Optics::from_camera_geometry(
+            let optics = if let Some(focal_length_mm) = focal_length_mm {
+                match (
+                    cached_pixel_size_x_um,
+                    cached_pixel_size_y_um,
+                    cached_sensor_width_px,
+                    cached_sensor_height_px,
+                ) {
+                    (Some(px), Some(py), Some(sw), Some(sh)) => {
+                        let derived = persistence::Optics::from_camera_geometry(
+                            focal_length_mm,
+                            px,
+                            py,
+                            sw,
+                            sh,
+                        );
+                        if derived.is_none() {
+                            // All cached values are present but the
+                            // derivation declined — typically a non-
+                            // positive or wild-magnitude reading that
+                            // would have overflowed the derived pixel
+                            // scale / FOV. Surface enough to diagnose
+                            // bad camera state or a misconfigured focal
+                            // length.
+                            debug!(
+                                camera_id,
                                 focal_length_mm,
-                                px,
-                                py,
-                                sw,
-                                sh,
+                                pixel_size_x_um = px,
+                                pixel_size_y_um = py,
+                                sensor_width_px = sw,
+                                sensor_height_px = sh,
+                                "optics derivation declined; omitting block"
                             );
-                            if derived.is_none() {
-                                // All cached values are present but the
-                                // derivation declined — typically a non-
-                                // positive or wild-magnitude reading that
-                                // would have overflowed the derived pixel
-                                // scale / FOV. Surface enough to diagnose
-                                // bad camera state or a misconfigured focal
-                                // length.
-                                debug!(
-                                    camera_id,
-                                    focal_length_mm,
-                                    pixel_size_x_um = px,
-                                    pixel_size_y_um = py,
-                                    sensor_width_px = sw,
-                                    sensor_height_px = sh,
-                                    "optics derivation declined; omitting block"
-                                );
-                            }
-                            derived
                         }
-                        _ => None,
+                        derived
                     }
+                    _ => None,
                 }
-                None => {
-                    debug!(
-                        camera_id,
-                        "focal_length_mm not configured; omitting optics block"
-                    );
-                    None
-                }
+            } else {
+                debug!(
+                    camera_id,
+                    "focal_length_mm not configured; omitting optics block"
+                );
+                None
             };
 
             // Dispatch on max_adu, collecting pixels directly into the
@@ -989,7 +966,7 @@ impl McpHandler {
             // for the cache insert.
             let shape = (width as usize, height as usize);
             let cached_pixels: Option<CachedPixels> = match captured_max_adu {
-                Some(max_adu) if max_adu <= u16::MAX as u32 => {
+                Some(max_adu) if u16::try_from(max_adu).is_ok() => {
                     let max_adu_i32 = max_adu as i32;
                     let u16_pixels: Vec<u16> = image_array
                         .iter()
@@ -1004,7 +981,7 @@ impl McpHandler {
                         &document_id,
                     )
                     .await
-                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                    .map_err(|e| format!("failed to write FITS file: {e}"))?;
                     CachedPixels::from_u16_pixels(u16_pixels, shape)
                 }
                 _ => {
@@ -1018,7 +995,7 @@ impl McpHandler {
                         &document_id,
                     )
                     .await
-                    .map_err(|e| format!("failed to write FITS file: {}", e))?;
+                    .map_err(|e| format!("failed to write FITS file: {e}"))?;
                     captured_max_adu
                         .and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m))
                 }
@@ -1082,7 +1059,7 @@ impl McpHandler {
     ) -> std::result::Result<(persistence::ExposureTarget, rp_targets::TargetSlug), String> {
         if let Some(target) = target {
             let slug = rp_targets::TargetSlug::new(target)
-                .map_err(|e| format!("capture: invalid target slug '{}': {}", target, e))?;
+                .map_err(|e| format!("capture: invalid target slug '{target}': {e}"))?;
             let store = self
                 .target_store
                 .as_ref()
@@ -1090,8 +1067,8 @@ impl McpHandler {
             let found = store
                 .get_target(&slug)
                 .await
-                .map_err(|e| format!("capture: failed to look up target '{}': {}", target, e))?
-                .ok_or_else(|| format!("capture: unknown target '{}'", target))?;
+                .map_err(|e| format!("capture: failed to look up target '{target}': {e}"))?
+                .ok_or_else(|| format!("capture: unknown target '{target}'"))?;
             return Ok((persistence::ExposureTarget::from(&found), slug));
         }
 
@@ -1160,22 +1137,22 @@ impl McpHandler {
         let Some(fw_entry) = self.equipment.find_filter_wheel(&fw_id) else {
             return Ok(None);
         };
-        let Some(fw) = fw_entry.device.as_ref().cloned() else {
+        let Some(fw) = fw_entry.device.clone() else {
             return Ok(None);
         };
         let position = fw
             .position()
             .await
-            .map_err(|e| format!("failed to read filter wheel '{}' position: {}", fw_id, e))?;
+            .map_err(|e| format!("failed to read filter wheel '{fw_id}' position: {e}"))?;
         let Some(position) = position else {
-            return Err(format!("filter wheel '{}' is moving", fw_id));
+            return Err(format!("filter wheel '{fw_id}' is moving"));
         };
         let filter_name = fw_entry
             .config
             .filters
             .get(position)
             .cloned()
-            .unwrap_or_else(|| format!("Filter {}", position));
+            .unwrap_or_else(|| format!("Filter {position}"));
         Ok(Some((filter_name, position as u32)))
     }
 
@@ -1316,26 +1293,23 @@ impl McpHandler {
         let foc_entry = self
             .equipment
             .find_focuser(focuser_id)
-            .ok_or_else(|| format!("focuser not found: {}", focuser_id))?;
+            .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
             .device
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| format!("focuser not connected: {}", focuser_id))?;
+            .clone()
+            .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
 
         if let Some(min) = foc_entry.config.min_position {
             if position < min {
                 return Err(format!(
-                    "position out of range: {} < min_position {}",
-                    position, min
+                    "position out of range: {position} < min_position {min}"
                 ));
             }
         }
         if let Some(max) = foc_entry.config.max_position {
             if position > max {
                 return Err(format!(
-                    "position out of range: {} > max_position {}",
-                    position, max
+                    "position out of range: {position} > max_position {max}"
                 ));
             }
         }
@@ -1343,7 +1317,7 @@ impl McpHandler {
         debug!(focuser_id, position, "moving focuser");
         foc.move_(position)
             .await
-            .map_err(|e| format!("failed to move focuser: {}", e))?;
+            .map_err(|e| format!("failed to move focuser: {e}"))?;
 
         let total_budget = deadline;
         let total_budget_secs = total_budget.as_secs_f64();
@@ -1371,13 +1345,13 @@ impl McpHandler {
                     continue;
                 }
                 Ok(true) => return Err("timeout waiting for focuser to settle".to_string()),
-                Err(e) => return Err(format!("error polling focuser is_moving: {}", e)),
+                Err(e) => return Err(format!("error polling focuser is_moving: {e}")),
             }
         }
 
         foc.position()
             .await
-            .map_err(|e| format!("failed to read focuser position: {}", e))
+            .map_err(|e| format!("failed to read focuser position: {e}"))
     }
 
     /// Resolve the singular mount, returning the entry + connected device
@@ -1399,8 +1373,7 @@ impl McpHandler {
             .ok_or_else(|| "no mount configured".to_string())?;
         let device = entry
             .device
-            .as_ref()
-            .cloned()
+            .clone()
             .ok_or_else(|| "mount not connected".to_string())?;
         Ok((entry, device))
     }
@@ -1425,11 +1398,11 @@ impl McpHandler {
         let current_ra = mount
             .right_ascension()
             .await
-            .map_err(|e| format!("failed to read mount right_ascension: {}", e))?;
+            .map_err(|e| format!("failed to read mount right_ascension: {e}"))?;
         let current_dec = mount
             .declination()
             .await
-            .map_err(|e| format!("failed to read mount declination: {}", e))?;
+            .map_err(|e| format!("failed to read mount declination: {e}"))?;
         // `haversine_arcsec` takes degrees for both coordinates; RA is in
         // hours at this boundary, so scale both RA terms by 15 (matching
         // `center_on_target`).
@@ -1562,7 +1535,7 @@ impl McpHandler {
         mount
             .slew_to_coordinates_async(ra, dec)
             .await
-            .map_err(|e| format!("failed to slew: {}", e))?;
+            .map_err(|e| format!("failed to slew: {e}"))?;
 
         match poll_slewing_until_idle(mount.as_ref(), deadline, progress).await {
             Ok(()) => {}
@@ -1573,7 +1546,7 @@ impl McpHandler {
                 return Err("timeout waiting for mount to settle".to_string());
             }
             Err(PollIdleError::Read(e)) => {
-                return Err(format!("error polling mount slewing: {}", e));
+                return Err(format!("error polling mount slewing: {e}"));
             }
         }
 
@@ -1599,11 +1572,11 @@ impl McpHandler {
         let actual_ra = mount
             .right_ascension()
             .await
-            .map_err(|e| format!("failed to read mount right_ascension: {}", e))?;
+            .map_err(|e| format!("failed to read mount right_ascension: {e}"))?;
         let actual_dec = mount
             .declination()
             .await
-            .map_err(|e| format!("failed to read mount declination: {}", e))?;
+            .map_err(|e| format!("failed to read mount declination: {e}"))?;
         Ok((actual_ra, actual_dec))
     }
 
@@ -1735,7 +1708,7 @@ impl McpHandler {
         mount
             .park()
             .await
-            .map_err(|e| format!("failed to park: {}", e))?;
+            .map_err(|e| format!("failed to park: {e}"))?;
 
         let total_budget = deadline;
         let total_budget_secs = total_budget.as_secs_f64();
@@ -1762,7 +1735,7 @@ impl McpHandler {
                     }
                 }
                 Ok(false) => return Err("timeout waiting for mount to park".to_string()),
-                Err(e) => return Err(format!("error polling mount at_park: {}", e)),
+                Err(e) => return Err(format!("error polling mount at_park: {e}")),
             }
         }
     }
@@ -1812,7 +1785,7 @@ impl McpHandler {
         mount
             .sync_to_coordinates(ra_hours, dec_deg)
             .await
-            .map_err(|e| format!("failed to sync mount: {}", e))
+            .map_err(|e| format!("failed to sync mount: {e}"))
     }
 
     /// Read the current mount pointing for `plate_solve`'s
@@ -1928,23 +1901,21 @@ impl McpHandler {
 
         let client = self
             .plate_solver
-            .as_ref()
-            .cloned()
+            .clone()
             .ok_or_else(|| "plate_solve: plate solver not configured".to_string())?;
 
         // Resolve fits_path: document_id wins when both supplied.
-        let (fits_path, target_doc_id) = match input.document_id {
-            Some(doc_id) => match self.image_cache.resolve_document(doc_id).await {
-                Some(doc) => (doc.file_path.clone(), Some(doc_id.to_string())),
-                None => return Err(format!("plate_solve: document not found: {}", doc_id)),
-            },
-            None => {
-                let path = input.image_path.ok_or_else(|| {
-                    "plate_solve: missing required argument: provide either document_id or image_path"
-                        .to_string()
-                })?;
-                (path.to_string(), None)
+        let (fits_path, target_doc_id) = if let Some(doc_id) = input.document_id {
+            match self.image_cache.resolve_document(doc_id).await {
+                Some(doc) => (doc.file_path, Some(doc_id.to_string())),
+                None => return Err(format!("plate_solve: document not found: {doc_id}")),
             }
+        } else {
+            let path = input.image_path.ok_or_else(|| {
+                "plate_solve: missing required argument: provide either document_id or image_path"
+                    .to_string()
+            })?;
+            (path.to_string(), None)
         };
 
         // Resolve hints. The wrapper takes flat ra_hint/dec_hint in
@@ -1955,7 +1926,7 @@ impl McpHandler {
         } else if input.use_mount_hints {
             match self.read_mount_hints_for_plate_solve().await {
                 Ok((ra_deg, dec_deg)) => (Some(ra_deg), Some(dec_deg)),
-                Err(e) => return Err(format!("plate_solve: use_mount_hints requested but {}", e)),
+                Err(e) => return Err(format!("plate_solve: use_mount_hints requested but {e}")),
             }
         } else {
             (None, None)
@@ -1978,7 +1949,7 @@ impl McpHandler {
         let outcome = match client.solve(request).await {
             Ok(o) => o,
             Err(rp_plate_solver::SolveError::ServiceUnreachable(reason)) => {
-                return Err(format!("plate_solve: service unreachable: {}", reason));
+                return Err(format!("plate_solve: service unreachable: {reason}"));
             }
             Err(rp_plate_solver::SolveError::Wrapper {
                 code,
@@ -1986,15 +1957,14 @@ impl McpHandler {
                 details,
             }) => {
                 if details.is_null() {
-                    return Err(format!("plate_solve: {}: {}", code, message));
+                    return Err(format!("plate_solve: {code}: {message}"));
                 }
                 return Err(format!(
-                    "plate_solve: {}: {} (details: {})",
-                    code, message, details
+                    "plate_solve: {code}: {message} (details: {details})"
                 ));
             }
             Err(rp_plate_solver::SolveError::Internal(reason)) => {
-                return Err(format!("plate_solve: internal: {}", reason));
+                return Err(format!("plate_solve: internal: {reason}"));
             }
         };
 
@@ -2018,7 +1988,7 @@ impl McpHandler {
                 .image_cache
                 .resolve_document_by_path(&fits_path)
                 .await
-                .map(|d| d.id.clone()),
+                .map(|d| d.id),
         };
         if let Some(doc_id) = persist_doc_id {
             if let Err(e) = self
@@ -2153,7 +2123,7 @@ pub(crate) enum PollIdleError {
 
 /// Consecutive `slewing()` read errors [`poll_slewing_until_idle`]
 /// tolerates before giving up. A transient read failure — the now
-/// timeout-bounded stall a loaded OmniSim or a flaky link produces
+/// timeout-bounded stall a loaded `OmniSim` or a flaky link produces
 /// (issue #319) — is treated like "not idle yet" and retried on the
 /// next tick; only a *persistent* failure aborts the slew. The 300 s
 /// deadline still caps the total wait. Mirrors the connect path's

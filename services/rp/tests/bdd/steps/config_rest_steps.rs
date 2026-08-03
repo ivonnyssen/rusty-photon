@@ -2,7 +2,7 @@
 //! (`config_rest.feature`).
 //!
 //! These scenarios spawn their own rp on port 0 from a scenario-private temp
-//! config file and never touch OmniSim, so the feature is untagged (no
+//! config file and never touch `OmniSim`, so the feature is untagged (no
 //! `@serial`). The camera used by the secret scenarios points at an
 //! unreachable Alpaca URL — rp boots regardless (equipment connects lazily /
 //! records the failure) and the config endpoints only need the file.
@@ -20,7 +20,7 @@ use crate::world::RpWorld;
 /// `equipment` block) and remember its path for later file assertions.
 /// `pub(crate)`: the optical-trains validation steps stage their configs
 /// through the same path.
-pub(crate) fn write_scenario_config(world: &mut RpWorld, equipment: Value) {
+pub fn write_scenario_config(world: &mut RpWorld, equipment: Value) {
     write_scenario_config_with_server(
         world,
         equipment,
@@ -31,11 +31,7 @@ pub(crate) fn write_scenario_config(world: &mut RpWorld, equipment: Value) {
 /// [`write_scenario_config`] with an explicit `server` block — the
 /// Host-allowlist scenarios need the wildcard bind that derives rp's
 /// advertised hostname URL.
-pub(crate) fn write_scenario_config_with_server(
-    world: &mut RpWorld,
-    equipment: Value,
-    server: Value,
-) {
+pub fn write_scenario_config_with_server(world: &mut RpWorld, equipment: Value, server: Value) {
     let dir = tempfile::tempdir().expect("create temp dir for rp config");
     let config = serde_json::json!({
         "session": { "data_directory": dir.path().join("data").to_string_lossy() },
@@ -65,14 +61,14 @@ fn config_file_value(world: &RpWorld) -> Value {
         .expect("rp config file is JSON")
 }
 
-fn last_response_json(world: &RpWorld) -> &Value {
+const fn last_response_json(world: &RpWorld) -> &Value {
     world
         .last_config_response_json
         .as_ref()
         .expect("last config response was not JSON — check the request step ran")
 }
 
-pub(crate) async fn send_put_config(world: &mut RpWorld, body: String) {
+pub async fn send_put_config(world: &mut RpWorld, body: String) {
     let client = reqwest::Client::new();
     let response = client
         .put(format!("{}/api/config", world.rp_url()))

@@ -9,7 +9,7 @@ use crate::world::RpWorld;
 // --- Given steps ---
 
 #[given(expr = "rp is configured with site latitude {float} longitude {float}")]
-fn site_configured(world: &mut RpWorld, lat: f64, lon: f64) {
+const fn site_configured(world: &mut RpWorld, lat: f64, lon: f64) {
     world.site = Some((lat, lon));
 }
 
@@ -151,7 +151,7 @@ fn result_altitude_finite(world: &mut RpWorld) {
     let value = success_payload(world);
     let alt = value
         .get("altitude_degrees")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .expect("missing `altitude_degrees`");
     assert!(alt.is_finite(), "altitude_degrees not finite: {alt}");
 }
@@ -170,7 +170,7 @@ fn result_reason(world: &mut RpWorld, expected: String) {
 fn result_target_null(world: &mut RpWorld) {
     let value = success_payload(world);
     assert!(
-        value.get("target").is_some_and(|v| v.is_null()),
+        value.get("target").is_some_and(serde_json::Value::is_null),
         "expected target=null, got: {value}"
     );
 }
@@ -210,7 +210,10 @@ fn result_filter_null(world: &mut RpWorld) {
     let value = success_payload(world);
     let exposure = value.get("exposure").expect("missing `exposure`");
     assert!(
-        exposure.is_null() || exposure.get("filter").is_some_and(|v| v.is_null()),
+        exposure.is_null()
+            || exposure
+                .get("filter")
+                .is_some_and(serde_json::Value::is_null),
         "expected filter=null, got: {value}"
     );
 }
@@ -220,7 +223,7 @@ fn result_duration_secs(world: &mut RpWorld, expected: f64) {
     let value = success_payload(world);
     let duration = value
         .pointer("/exposure/duration_secs")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("missing `exposure.duration_secs` in: {value}"));
     assert!(
         (duration - expected).abs() < f64::EPSILON,
@@ -233,7 +236,10 @@ fn result_duration_secs_null(world: &mut RpWorld) {
     let value = success_payload(world);
     let exposure = value.get("exposure").expect("missing `exposure`");
     assert!(
-        exposure.is_null() || exposure.get("duration_secs").is_some_and(|v| v.is_null()),
+        exposure.is_null()
+            || exposure
+                .get("duration_secs")
+                .is_some_and(serde_json::Value::is_null),
         "expected duration_secs=null, got: {value}"
     );
 }
@@ -258,7 +264,7 @@ fn lst_in_range(world: &mut RpWorld) {
     let value = success_payload(world);
     let lst = value
         .get("lst_hours")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .expect("missing `lst_hours`");
     assert!((0.0..24.0).contains(&lst), "lst_hours {lst} not in [0, 24)");
 }
@@ -268,7 +274,7 @@ fn altitude_within(world: &mut RpWorld, expected: f64, tolerance: f64) {
     let value = success_payload(world);
     let alt = value
         .get("altitude_degrees")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .expect("missing `altitude_degrees`");
     assert!(
         (alt - expected).abs() < tolerance,

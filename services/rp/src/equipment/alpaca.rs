@@ -15,7 +15,7 @@ use tracing::{debug, info};
 /// (see [`retry_connect_attempt`]), so the worst-case wait per device
 /// before giving up is 3 s of sleep plus up to 3 ×
 /// [`GET_DEVICES_TIMEOUT`] of in-flight HTTP. Three attempts is
-/// enough to ride out a transient OmniSim stall (e.g. a long .NET
+/// enough to ride out a transient `OmniSim` stall (e.g. a long .NET
 /// full GC) without making BDD scenarios that intentionally point at
 /// unreachable URLs pay too high a wall-clock cost.
 pub(super) const CONNECT_ATTEMPTS: u32 = 3;
@@ -32,8 +32,8 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// the requested index in the Alpaca server's reply" is `Permanent`
 /// inside the closure — every other failure inside the retry loop
 /// (HTTP transport errors including connection-refused on an
-/// unreachable host, get_devices timeouts, set_connected errors,
-/// OmniSim under GC pressure) is `Transient` and goes through the
+/// unreachable host, `get_devices` timeouts, `set_connected` errors,
+/// `OmniSim` under GC pressure) is `Transient` and goes through the
 /// retry/backoff path. Note: `Client::new` failures are filtered
 /// out *before* the retry loop, so that case never produces an
 /// `AttemptOutcome` at all.
@@ -108,7 +108,7 @@ pub(super) const ALPACA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// reqwest has **no** default request timeout, and `ascom-alpaca`'s
 /// client adds none (it only bounds UDP discovery). Without this, a
-/// device that accepts the TCP connection but never answers — an OmniSim
+/// device that accepts the TCP connection but never answers — an `OmniSim`
 /// wedged under heavy parallel CI load, or a real mount / USB-serial
 /// bridge that stalls mid-request during an unattended night — hangs the
 /// awaiting tool handler **forever**.
@@ -171,7 +171,7 @@ pub(crate) const READ_RETRY_ATTEMPTS: u32 = 3;
 /// with short backoff (100 ms, then 200 ms).
 ///
 /// The runtime analogue of [`retry_connect_attempt`]: the connect path
-/// already rides out a transient OmniSim stall (e.g. a long .NET GC),
+/// already rides out a transient `OmniSim` stall (e.g. a long .NET GC),
 /// but the *runtime* mount reads that `center_on_target` issues every
 /// iteration did not — so a single read failure aborted the whole
 /// compound tool. Now that [`ALPACA_READ_TIMEOUT`] bounds a stalled read
@@ -414,13 +414,14 @@ mod tests {
         let stub = spawn_stub(app).await;
         let client = build_alpaca_client(&stub.url(), None, None).unwrap();
 
-        let outcome = tokio::time::timeout(Duration::from_secs(120), client.get_devices()).await;
+        let outcome = tokio::time::timeout(Duration::from_mins(2), client.get_devices()).await;
         let inner = outcome.expect("get_devices must return via the read timeout, not hang");
         // `get_devices`'s Ok type is `impl Iterator` (not Debug), so match
         // rather than `expect_err`.
-        if inner.is_ok() {
-            panic!("a silently-stalled device must surface as an error, not a value");
-        }
+        assert!(
+            inner.is_err(),
+            "a silently-stalled device must surface as an error, not a value"
+        );
     }
 
     // ----- CA trust wiring (issue #609) --------------------------------

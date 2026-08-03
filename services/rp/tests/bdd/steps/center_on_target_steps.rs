@@ -54,8 +54,7 @@ async fn stub_plate_solver_sequence(world: &mut RpWorld, step: &Step) {
         assert_eq!(
             row.len(),
             2,
-            "table row must have ra_center, dec_center: {:?}",
-            row
+            "table row must have ra_center, dec_center: {row:?}"
         );
         let ra_center: f64 = row[0]
             .parse()
@@ -173,8 +172,8 @@ fn center_on_target_attempts(world: &mut RpWorld, expected: i64) {
         .expect("no center_on_target result");
     let actual = result
         .get("attempts")
-        .and_then(|v| v.as_i64())
-        .unwrap_or_else(|| panic!("expected 'attempts' in result, got: {:?}", result));
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| panic!("expected 'attempts' in result, got: {result:?}"));
     assert_eq!(actual, expected);
 }
 
@@ -187,7 +186,7 @@ fn center_on_target_iteration_action(world: &mut RpWorld, index: usize, expected
     let iterations = result
         .get("iterations")
         .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("expected 'iterations' array in result, got: {:?}", result));
+        .unwrap_or_else(|| panic!("expected 'iterations' array in result, got: {result:?}"));
     let entry = iterations.get(index).unwrap_or_else(|| {
         panic!(
             "iterations has only {} entries, asked for index {}",
@@ -198,7 +197,7 @@ fn center_on_target_iteration_action(world: &mut RpWorld, index: usize, expected
     let actual = entry
         .get("action")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| panic!("iteration {} has no 'action' field: {:?}", index, entry));
+        .unwrap_or_else(|| panic!("iteration {index} has no 'action' field: {entry:?}"));
     assert_eq!(actual, expected);
 }
 
@@ -210,9 +209,7 @@ fn center_on_target_result_field_present(world: &mut RpWorld, field: String) {
         .expect("no center_on_target result");
     assert!(
         result.get(&field).is_some(),
-        "expected '{}' in center_on_target result, got: {:?}",
-        field,
-        result
+        "expected '{field}' in center_on_target result, got: {result:?}"
     );
 }
 
@@ -239,15 +236,15 @@ fn mount_position_approx(world: &mut RpWorld, expected_ra: f64, expected_dec: f6
         .as_ref()
         .expect("no tool result")
         .as_ref()
-        .unwrap_or_else(|e| panic!("expected get_mount_position to succeed, got error: {}", e));
+        .unwrap_or_else(|e| panic!("expected get_mount_position to succeed, got error: {e}"));
     let actual_ra = result
         .get("ra")
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| panic!("expected 'ra' in mount position, got: {:?}", result));
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or_else(|| panic!("expected 'ra' in mount position, got: {result:?}"));
     let actual_dec = result
         .get("dec")
-        .and_then(|v| v.as_f64())
-        .unwrap_or_else(|| panic!("expected 'dec' in mount position, got: {:?}", result));
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or_else(|| panic!("expected 'dec' in mount position, got: {result:?}"));
     // OmniSim's slew-echo drift is ~0.001° on both axes (~3.6
     // arcsec) — same root cause as mount.feature's slew tolerance.
     // For the dec axis (degrees) the 0.01 cap here gives ~3× slack
@@ -258,21 +255,17 @@ fn mount_position_approx(world: &mut RpWorld, expected_ra: f64, expected_dec: f6
     // tens of arcsec — or hours, in our scenarios — away.
     assert!(
         (actual_ra - expected_ra).abs() < 0.01,
-        "expected ra ≈ {}, got {}",
-        expected_ra,
-        actual_ra
+        "expected ra ≈ {expected_ra}, got {actual_ra}"
     );
     assert!(
         (actual_dec - expected_dec).abs() < 0.01,
-        "expected dec ≈ {}, got {}",
-        expected_dec,
-        actual_dec
+        "expected dec ≈ {expected_dec}, got {actual_dec}"
     );
 }
 
 // --- Helpers ---
 
-/// Baseline arg map representing a "valid" center_on_target call.
+/// Baseline arg map representing a "valid" `center_on_target` call.
 /// Individual scenarios mutate this baseline (insert override / remove
 /// field) before dispatching, so that the missing-parameter and
 /// numeric-range scenarios can each carve out exactly one field

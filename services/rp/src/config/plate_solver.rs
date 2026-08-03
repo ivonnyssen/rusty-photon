@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// HTTP-client connection to the `plate-solver` rp-managed service.
+///
 /// `timeout` is the connection-side outer timeout (the
 /// belt-and-suspenders backstop per Tenet 1) — *not* the wrapper's
 /// per-solve deadline, which is set by the `plate_solve` MCP tool's
@@ -28,8 +29,8 @@ pub struct PlateSolverConfig {
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 
-fn default_plate_solver_timeout() -> Duration {
-    Duration::from_secs(60)
+const fn default_plate_solver_timeout() -> Duration {
+    Duration::from_mins(1)
 }
 
 #[cfg(test)]
@@ -71,7 +72,7 @@ mod tests {
         let config = load_config(&path).unwrap();
         let ps = config.plate_solver.expect("plate_solver should parse");
         assert_eq!(ps.url, "http://127.0.0.1:11131");
-        assert_eq!(ps.timeout, Duration::from_secs(60));
+        assert_eq!(ps.timeout, Duration::from_mins(1));
         assert!(ps.default_search_radius_deg.is_none());
         assert!(ps.auth.is_none());
     }

@@ -41,8 +41,7 @@ pub(super) async fn connect_observing_conditions(
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
             Err(_) => {
                 return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {:?}",
-                    GET_DEVICES_TIMEOUT
+                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
                 ));
             }
         };
@@ -120,7 +119,7 @@ mod tests {
         }
     }
 
-    /// Stub advertising two ObservingConditions devices that accept
+    /// Stub advertising two `ObservingConditions` devices that accept
     /// `set_connected(true)` — two so a `device_number = 1` connect has to
     /// skip past index 0.
     fn two_oc_router() -> Router {
@@ -177,7 +176,7 @@ mod tests {
         assert_eq!(entry.id, "ppba-weather");
     }
 
-    /// `device_number` indexes among the server's ObservingConditions
+    /// `device_number` indexes among the server's `ObservingConditions`
     /// devices, so connecting to index 1 must skip past index 0.
     #[tokio::test]
     async fn connect_observing_conditions_skips_to_the_requested_index() {
@@ -187,7 +186,7 @@ mod tests {
         assert!(entry.device.is_some(), "expected entry to hold a device");
     }
 
-    /// A server that answers but has no ObservingConditions at the
+    /// A server that answers but has no `ObservingConditions` at the
     /// requested index is a permanent failure — no retries, disconnected
     /// entry.
     #[tokio::test]

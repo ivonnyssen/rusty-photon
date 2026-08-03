@@ -221,7 +221,7 @@ async fn subscribe_events(
         mut receiver,
         ..
     } = subscription;
-    let shutdown = state.sse_shutdown.clone();
+    let shutdown = state.sse_shutdown;
 
     let stream = async_stream::stream! {
         // Lead with a stream_gap if the reconnect cursor predates retained
@@ -278,7 +278,7 @@ struct GapInfo {
 /// longer holds. A gap exists when the client's cursor is below the oldest
 /// retained seq minus one — i.e. the very next event it expected was already
 /// evicted.
-fn detect_gap(
+const fn detect_gap(
     requested_last_seq: Option<u64>,
     oldest_retained_seq: Option<u64>,
 ) -> Option<GapInfo> {
@@ -433,19 +433,19 @@ async fn get_image_pixels(
     Path(document_id): Path<String>,
 ) -> Response {
     let Some(cached) = state.image_cache.resolve(&document_id).await else {
-        return not_found(format!("document not found: {}", document_id));
+        return not_found(format!("document not found: {document_id}"));
     };
     let (width, height) = (cached.width, cached.height);
     let body = match &cached.pixels {
         CachedPixels::U16(arr) => imagebytes(width, height, TRANSMISSION_U16, |buf| {
             buf.reserve(arr.len() * 2);
-            for &v in arr.iter() {
+            for &v in arr {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
         }),
         CachedPixels::I32(arr) => imagebytes(width, height, TRANSMISSION_I32, |buf| {
             buf.reserve(arr.len() * 4);
-            for &v in arr.iter() {
+            for &v in arr {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
         }),
@@ -453,7 +453,7 @@ async fn get_image_pixels(
     imagebytes_response(body)
 }
 
-/// Build an Alpaca ImageBytes payload (44-byte header + raw little-endian
+/// Build an Alpaca `ImageBytes` payload (44-byte header + raw little-endian
 /// pixel bytes). The header layout mirrors `ascom-alpaca`'s
 /// `ImageBytesMetadata` (which is `pub(crate)` upstream, so we replicate
 /// it here). All fields are i32 little-endian.
@@ -544,7 +544,7 @@ mod tests {
             Arc::new(crate::session::SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let mcp = McpHandler::new(
             equipment.clone(),
-            event_bus.clone(),
+            event_bus,
             crate::session::SessionConfig {
                 data_directory: "/tmp".to_string(),
             },
@@ -882,7 +882,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "44444444-4444-4444-4444-444444444444";
         let uuid8 = &doc_uuid[..8];
-        let fits_path = dir.path().join(format!("{}.fits", uuid8));
+        let fits_path = dir.path().join(format!("{uuid8}.fits"));
         crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid)
             .await
             .unwrap();
@@ -903,7 +903,7 @@ mod tests {
             sections: serde_json::Map::new(),
         };
         std::fs::write(
-            dir.path().join(format!("{}.json", uuid8)),
+            dir.path().join(format!("{uuid8}.json")),
             serde_json::to_vec(&doc).unwrap(),
         )
         .unwrap();
@@ -1108,7 +1108,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Persist `config` to a fresh temp file and build an AppState whose
+    /// Persist `config` to a fresh temp file and build an `AppState` whose
     /// running config and config path both point at it — the state rp is in
     /// right after booting from that file.
     fn config_test_state(config: crate::config::Config) -> (AppState, tempfile::TempDir, PathBuf) {

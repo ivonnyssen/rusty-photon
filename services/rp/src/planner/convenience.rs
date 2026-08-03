@@ -100,6 +100,7 @@ struct MeridianStatusView {
 
 /// Status of the meridian-flip clock: time-to-flip from the mount's
 /// current pointing, plus the side of pier.
+#[must_use]
 pub fn meridian_status_view(
     site: &Site,
     mount_ra_hours: f64,

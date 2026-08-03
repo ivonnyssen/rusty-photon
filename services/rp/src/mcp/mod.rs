@@ -6,8 +6,8 @@
 //! observer site, planner targets, plate-solver client, guider
 //! client, target store) and exposes 63 tools across 14 categories:
 //! camera, imaging, filter wheel, cover/calibrator, focuser, mount,
-//! rotator, auto_focus (incl. refocus_train), plate_solve, guider,
-//! center_on_target, planner, targets, plan_schema.
+//! rotator, `auto_focus` (incl. `refocus_train`), `plate_solve`, guider,
+//! `center_on_target`, planner, targets, `plan_schema`.
 //!
 //! ## Layout
 //!

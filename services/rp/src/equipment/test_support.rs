@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 
 use axum::Router;
 
-pub(crate) struct AlpacaStub {
+pub struct AlpacaStub {
     addr: SocketAddr,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
@@ -33,7 +33,7 @@ impl Drop for AlpacaStub {
     }
 }
 
-pub(crate) async fn spawn_stub(router: Router) -> AlpacaStub {
+pub async fn spawn_stub(router: Router) -> AlpacaStub {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();

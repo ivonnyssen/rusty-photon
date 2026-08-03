@@ -179,6 +179,7 @@ impl EquipmentRegistry {
         }
     }
 
+    #[must_use]
     pub fn status(&self) -> EquipmentStatus {
         EquipmentStatus {
             cameras: self
@@ -259,45 +260,55 @@ impl EquipmentRegistry {
         }
     }
 
+    #[must_use]
     pub fn find_camera(&self, id: &str) -> Option<&CameraEntry> {
         self.cameras.iter().find(|c| c.id == id)
     }
 
+    #[must_use]
     pub fn find_filter_wheel(&self, id: &str) -> Option<&FilterWheelEntry> {
         self.filter_wheels.iter().find(|fw| fw.id == id)
     }
 
+    #[must_use]
     pub fn find_cover_calibrator(&self, id: &str) -> Option<&CoverCalibratorEntry> {
         self.cover_calibrators.iter().find(|cc| cc.id == id)
     }
 
+    #[must_use]
     pub fn find_focuser(&self, id: &str) -> Option<&FocuserEntry> {
         self.focusers.iter().find(|f| f.id == id)
     }
 
+    #[must_use]
     pub fn find_safety_monitor(&self, id: &str) -> Option<&SafetyMonitorEntry> {
         self.safety_monitors.iter().find(|sm| sm.id == id)
     }
 
+    #[must_use]
     pub fn find_switch(&self, id: &str) -> Option<&SwitchEntry> {
         self.switches.iter().find(|sw| sw.id == id)
     }
 
+    #[must_use]
     pub fn find_rotator(&self, id: &str) -> Option<&RotatorEntry> {
         self.rotators.iter().find(|r| r.id == id)
     }
 
+    #[must_use]
     pub fn find_observing_conditions(&self, id: &str) -> Option<&ObservingConditionsEntry> {
         self.observing_conditions.iter().find(|oc| oc.id == id)
     }
 
+    #[must_use]
     pub fn find_dome(&self, id: &str) -> Option<&DomeEntry> {
         self.domes.iter().find(|d| d.id == id)
     }
 
     /// Returns the singular mount entry, or `None` when no mount is
     /// configured. Singular: there is no `id` parameter.
-    pub fn find_mount(&self) -> Option<&MountEntry> {
+    #[must_use]
+    pub const fn find_mount(&self) -> Option<&MountEntry> {
         self.mount.as_ref()
     }
 

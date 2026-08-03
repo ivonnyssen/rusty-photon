@@ -23,7 +23,7 @@ async fn webhook_receiver_subscribed_to_two(world: &mut RpWorld, event1: String,
 }
 
 /// Comma-separated subscription list, for scenarios that assert
-/// ordering across more than two event types (motion_gate.feature).
+/// ordering across more than two event types (`motion_gate.feature`).
 #[given(expr = "a test webhook receiver subscribed to the events {string}")]
 async fn webhook_receiver_subscribed_to_list(world: &mut RpWorld, event_types: String) {
     setup_webhook_receiver(world).await;
@@ -39,7 +39,7 @@ async fn webhook_receiver_subscribed_to_list(world: &mut RpWorld, event_types: S
 #[given(
     expr = "the test webhook receiver acknowledges with estimated {int} seconds and max {int} seconds"
 )]
-fn webhook_ack_config(world: &mut RpWorld, estimated: i32, max: i32) {
+const fn webhook_ack_config(world: &mut RpWorld, estimated: i32, max: i32) {
     world.webhook_ack_config = Some((
         Duration::from_secs(estimated as u64),
         Duration::from_secs(max as u64),
@@ -138,8 +138,7 @@ async fn rp_running_with_camera_and_unreachable_plugin(world: &mut RpWorld) {
 async fn should_receive_event(world: &mut RpWorld, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
 }
 
@@ -147,8 +146,7 @@ async fn should_receive_event(world: &mut RpWorld, event_type: String) {
 async fn should_receive_event_a(world: &mut RpWorld, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
 }
 
@@ -198,24 +196,16 @@ async fn event_order(world: &mut RpWorld, first: String, second: String) {
     let first_time = events
         .iter()
         .find(|e| e.event_type == first)
-        .map(|e| e.received_at)
-        .unwrap_or_else(|| panic!("event '{}' not received", first));
+        .map_or_else(|| panic!("event '{first}' not received"), |e| e.received_at);
 
-    let second_time = events
-        .iter()
-        .find(|e| e.event_type == second)
-        .map(|e| e.received_at)
-        .unwrap_or_else(|| panic!("event '{}' not received", second));
+    let second_time = events.iter().find(|e| e.event_type == second).map_or_else(
+        || panic!("event '{second}' not received"),
+        |e| e.received_at,
+    );
 
     assert!(
         first_time < second_time,
-        "expected '{}' before '{}', but '{}' arrived at {:?} and '{}' at {:?}",
-        first,
-        second,
-        first,
-        first_time,
-        second,
-        second_time
+        "expected '{first}' before '{second}', but '{first}' arrived at {first_time:?} and '{second}' at {second_time:?}"
     );
 }
 
@@ -242,14 +232,13 @@ async fn event_payload_field_equals(
     // before reading it.
     assert!(
         world.wait_for_events(&event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
     let events = world.received_events.read().await;
     let event = events
         .iter()
         .find(|e| e.event_type == event_type)
-        .unwrap_or_else(|| panic!("no '{}' event found", event_type));
+        .unwrap_or_else(|| panic!("no '{event_type}' event found"));
 
     let actual = event
         .payload
@@ -272,14 +261,13 @@ async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, f
     // Same asynchronous-delivery wait as `event_payload_field_equals`.
     assert!(
         world.wait_for_events(&event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
     let events = world.received_events.read().await;
     let event = events
         .iter()
         .find(|e| e.event_type == event_type)
-        .unwrap_or_else(|| panic!("no '{}' event found", event_type));
+        .unwrap_or_else(|| panic!("no '{event_type}' event found"));
 
     assert!(
         event.payload.get(&field).is_some(),
@@ -302,8 +290,7 @@ async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, f
 async fn has_received_event_an(world: &mut RpWorld, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
 }
 
@@ -311,8 +298,7 @@ async fn has_received_event_an(world: &mut RpWorld, event_type: String) {
 async fn has_received_event_a(world: &mut RpWorld, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
 }
 
@@ -331,8 +317,7 @@ async fn has_received_event_a(world: &mut RpWorld, event_type: String) {
 async fn first_seq_of(world: &mut RpWorld, event_type: &str) -> u64 {
     assert!(
         world.wait_for_events(event_type, 1).await,
-        "expected to receive '{}' event within timeout",
-        event_type
+        "expected to receive '{event_type}' event within timeout"
     );
     let events = world.received_events.read().await;
     events
@@ -418,17 +403,14 @@ async fn should_not_receive_events(world: &mut RpWorld) {
 async fn should_receive_n_events(world: &mut RpWorld, count: i32, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, count as usize).await,
-        "expected {} '{}' events within timeout",
-        count,
-        event_type
+        "expected {count} '{event_type}' events within timeout"
     );
 
     let events = world.received_events.read().await;
     let actual = events.iter().filter(|e| e.event_type == event_type).count();
     assert_eq!(
         actual, count as usize,
-        "expected exactly {} '{}' events, got {}",
-        count, event_type, actual
+        "expected exactly {count} '{event_type}' events, got {actual}"
     );
 }
 
@@ -436,9 +418,7 @@ async fn should_receive_n_events(world: &mut RpWorld, count: i32, event_type: St
 async fn should_receive_at_least_n_events(world: &mut RpWorld, count: i32, event_type: String) {
     assert!(
         world.wait_for_events(&event_type, count as usize).await,
-        "expected at least {} '{}' event(s) within timeout",
-        count,
-        event_type
+        "expected at least {count} '{event_type}' event(s) within timeout"
     );
 }
 

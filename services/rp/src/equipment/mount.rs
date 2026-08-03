@@ -41,8 +41,7 @@ pub(super) async fn connect_mount(
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
             Err(_) => {
                 return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {:?}",
-                    GET_DEVICES_TIMEOUT
+                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
                 ));
             }
         };
@@ -286,7 +285,7 @@ mod tests {
 
     /// Build an `ok_mount_router` whose `SiteLatitude` / `SiteLongitude`
     /// endpoints respond with `NOT_IMPLEMENTED` (ASCOM error 0x400),
-    /// modelling a mount that lacks the property. The validate_site
+    /// modelling a mount that lacks the property. The `validate_site`
     /// path treats this as "skip validation" rather than "fail loud".
     fn mount_router_without_site() -> Router {
         ok_mount_router()
