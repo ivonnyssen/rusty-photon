@@ -53,7 +53,7 @@ pub struct Session<C: Codec> {
 }
 
 impl<C: Codec> Session<C> {
-    pub(crate) fn new(transport: Arc<SharedTransport<C>>, cell: ConnectionCell<C>) -> Self {
+    pub(crate) const fn new(transport: Arc<SharedTransport<C>>, cell: ConnectionCell<C>) -> Self {
         Self {
             transport: Some(transport),
             cell: Some(cell),
@@ -162,7 +162,7 @@ pub struct WhileOpen<C: Codec> {
 }
 
 impl<C: Codec> WhileOpen<C> {
-    pub(crate) fn new(connection: Arc<Connection<C>>, cancel: CancellationToken) -> Self {
+    pub(crate) const fn new(connection: Arc<Connection<C>>, cancel: CancellationToken) -> Self {
         Self { connection, cancel }
     }
 
@@ -181,6 +181,7 @@ impl<C: Codec> WhileOpen<C> {
 
     /// Returns `true` once teardown has fired the cancellation token.
     /// Non-blocking; useful for `if ctx.is_cancelled() { break; }`.
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
@@ -255,6 +256,7 @@ impl<C: Codec> Hooks<C> {
     /// background poll task. Useful as a base for `.handshake = ...`
     /// chains in tests, and as a sane default for services that don't
     /// need any of the four.
+    #[must_use]
     pub fn noop() -> Self {
         Self {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
@@ -276,7 +278,7 @@ impl<C: Codec> Default for Hooks<C> {
 // Rc, RefCell) this will fail at the call site, which is the desired
 // developer experience.
 const _: fn() = || {
-    fn assert_send<T: Send>() {}
+    const fn assert_send<T: Send>() {}
     assert_send::<BoxFuture<'static, ()>>();
 };
 
@@ -284,5 +286,5 @@ const _: fn() = || {
 // referenced directly by name elsewhere — explicit import keeps the
 // public API surface clear in docs.
 const _: fn() = || {
-    fn _assert_future<F: Future<Output = ()>>() {}
+    const fn _assert_future<F: Future<Output = ()>>() {}
 };

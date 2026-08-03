@@ -135,8 +135,8 @@ pub struct SharedTransport<C: Codec> {
     /// [`reconnect_now`](Self::reconnect_now) (or two concurrent
     /// `reconnect_now` callers). Without this both paths would call
     /// `attempt_reconnect` directly and could run overlapping
-    /// `factory.open` → handshake → cell swap → while_open respawn
-    /// sequences, producing extra open() calls and orphaned poll
+    /// `factory.open` → handshake → cell swap → `while_open` respawn
+    /// sequences, producing extra `open()` calls and orphaned poll
     /// tasks. With the mutex, at most one attempt runs at a time;
     /// the second caller blocks, then runs its own attempt (rare
     /// redundant work, but never inconsistent state).
@@ -319,11 +319,11 @@ impl<C: Codec> SharedTransport<C> {
 
             let mut signaled = false;
             tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = self.reconnect_signal.notified() => {
+                () = cancel.cancelled() => break,
+                () = self.reconnect_signal.notified() => {
                     signaled = true;
                 }
-                _ = tokio::time::sleep(interval) => {}
+                () = tokio::time::sleep(interval) => {}
             }
 
             if signaled {
@@ -481,15 +481,15 @@ impl<C: Codec> SharedTransport<C> {
         let supervisor = self.supervisor_state.lock().await.take();
         if let Some((mut handle, cancel)) = supervisor {
             cancel.cancel();
-            match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
-                Ok(_) => {}
-                Err(_) => {
-                    handle.abort();
-                    warn!(
-                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                        "supervisor task did not respond to cancellation; aborted"
-                    );
-                }
+            if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+                warn!(
+                    timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                    "supervisor task did not respond to cancellation; aborted"
+                );
             }
         }
 

@@ -12,7 +12,7 @@
 //!   supervisor task is wired so external observers can poll the state.
 //! - `shutdown()` cancels the supervisor cleanly.
 //!
-//! Notify-driven reconnect (Connection::request firing the signal on a
+//! Notify-driven reconnect (`Connection::request` firing the signal on a
 //! real transport error) lands the moment a real service's mock factory
 //! exercises a mid-stream drop in Phases 1-5; this file pins the
 //! supervisor / cell / `reconnect_now` mechanics in isolation.
