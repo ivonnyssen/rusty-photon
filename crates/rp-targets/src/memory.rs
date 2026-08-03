@@ -32,7 +32,10 @@ impl InMemoryTargetStore {
 impl TargetStore for InMemoryTargetStore {
     async fn upsert_target(&self, mut target: Target) -> Result<(), TargetStoreError> {
         validate_goals(&target.goals)?;
-        let mut targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
+        let mut targets = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(existing) = targets.get(target.slug.as_str()) {
             target.created_at.clone_from(&existing.created_at);
             target.created_by.clone_from(&existing.created_by);
@@ -42,17 +45,26 @@ impl TargetStore for InMemoryTargetStore {
     }
 
     async fn get_target(&self, slug: &TargetSlug) -> Result<Option<Target>, TargetStoreError> {
-        let targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
+        let targets = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(targets.get(slug.as_str()).cloned())
     }
 
     async fn list_targets(&self) -> Result<Vec<Target>, TargetStoreError> {
-        let targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
+        let targets = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(targets.values().cloned().collect())
     }
 
     async fn delete_target(&self, slug: &TargetSlug) -> Result<bool, TargetStoreError> {
-        let mut targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
+        let mut targets = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(targets.remove(slug.as_str()).is_some())
     }
 
@@ -63,7 +75,10 @@ impl TargetStore for InMemoryTargetStore {
         stamp: WriteStamp,
     ) -> Result<(), TargetStoreError> {
         validate_goals(&goals)?;
-        let mut targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
+        let mut targets = self
+            .targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let target = targets
             .get_mut(slug.as_str())
             .ok_or_else(|| TargetStoreError::NotFound {
