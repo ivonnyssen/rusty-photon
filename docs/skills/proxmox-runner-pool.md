@@ -70,6 +70,22 @@ triggerable by a fork must never target self-hosted runners.
 
 ## Operational Notes
 
+* **Org runner groups ship with "Allow public repositories" disabled.** A
+  freshly registered org runner then sits Idle while jobs from this (public)
+  repo stay queued forever — no error anywhere. Either check the box on the
+  Default group under the org's Actions → Runner groups settings, or use
+  the pool's own token against the GitHub REST API (find the group id via
+  `GET` on the same path):
+
+  ```sh
+  curl -X PATCH \
+    -H "Authorization: Bearer $(cat /etc/rp-runner/github-token)" \
+    -H "Accept: application/vnd.github+json" \
+    https://api.github.com/orgs/<org>/actions/runner-groups/<group-id> \
+    -d '{"allows_public_repositories": true}'
+  ```
+
+  This is part of the one-time setup contract.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
