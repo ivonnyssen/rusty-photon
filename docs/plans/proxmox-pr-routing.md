@@ -23,8 +23,8 @@ the full layered contract and its rationale.
 |-------|-------------|--------|-------------|
 | R1 | Isolation + credential hardening: runner VLAN (router + tagged template NIC), write credential removed from runner `.env`, fencing verified by dispatch job | **Done** (2026-08-02: probe matrix from inside a clone — GitHub + cache:8080 reachable, all other RFC1918 dropped; acceptance dispatch green through the fence) | infra only |
 | R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc updates | **Done** (2026-08-02: PR's own ubuntu leg self-tested on the pool pre-merge; first push-to-main ran on the pool and grew the LAN cache +894 objects via the write secret) | PR #849 |
-| R3 | Windows runner template: one-job service, template hygiene, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | **Template done** (2026-08-03: Server 2025 template VMID 904 builds `//...` green — 228/228 — and a linked clone boots to a responding agent in 10 s, waits for injection, consumes an injected config and powers off; msi measurement still outstanding) | PR #856, PR #857 |
-| R4 | Route Windows: `bazel / windows-latest` via the same expression, Windows kill switch; msi `build-verify` only if the R3 measurement beats hosted | Planned | — |
+| R3 | Windows runner template: one-job service, template hygiene, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | **Done** (2026-08-03: Server 2025 template VMID 904 builds `//...` green — 228/228; orchestrator deployed with three slots and all three JIT-registered within 17 s, including the first real Windows registration; msi measurement still outstanding) | PR #856, PR #857 |
+| R4 | Route Windows: `bazel / windows-latest` via the same expression, `RP_POOL_WINDOWS` kill switch; msi `build-verify` only if the R3 measurement beats hosted | **Bazel leg done**; msi still measurement-gated | this PR |
 | R5 | Route `bazel coverage`: same expression + provisioning guards in bazel-coverage.yml, Linux template warmed for the nightly/instrumented graph, shared `RP_POOL_LINUX` kill switch | Planned | — |
 
 R1 is strictly first (it closes residual risk before exposure increases).
@@ -59,13 +59,18 @@ In the table and throughout this plan, "cloud cache" means the Cloudflare
 R2-backed remote cache (`--config=remote-cache`) — spelled out to avoid
 colliding with the R1–R4 phase identifiers.
 
-| Event | Linux leg runs on | Cache | Cache writes |
+| Event | Linux + Windows legs run on | Cache | Cache writes |
 |---|---|---|---|
 | `pull_request`, same-repo branch | pool | LAN | no (anonymous read) |
 | `pull_request`, fork (after approval) | GitHub-hosted | cloud | no |
 | `push` to main | pool | LAN | yes (repo secret) |
 | nightly `schedule` | GitHub-hosted | cloud | yes (as today) |
-| macOS / Windows legs (until R4) | GitHub-hosted | cloud | as today |
+| macOS leg (always) | GitHub-hosted | cloud | as today |
+
+Each OS carries its own kill switch — `RP_POOL_LINUX` and `RP_POOL_WINDOWS`
+— because the two venues fail independently: a wedged Windows slot or a
+stale Windows template should not cost Linux its speed, and vice versa.
+Flipping one moves only that OS back to GitHub-hosted runners.
 
 The nightly schedule staying **hosted** is deliberate: it is what keeps the
 cloud cache's Linux entries warm, so a fork PR (which always runs hosted)
@@ -204,14 +209,31 @@ Mirrors the Linux template build (P2), with Windows specifics:
 ## R4 — Route the Windows legs
 
 1. `bazel / windows-latest` gets the R2 expression with
-   `vars.RP_POOL_WINDOWS` and the Windows pool labels; provisioning steps
-   gain the same `runner.environment` guards.
-2. msi.yml `build-verify` gets the same treatment (it is `pull_request`
-   path-triggered, so the same fork exclusion applies; it is not a required
-   check, so the blast radius of a pool hiccup is smaller).
+   `vars.RP_POOL_WINDOWS` and the Windows pool labels. The trusted-event
+   test is duplicated per OS rather than factored out: `runs-on` is
+   evaluated before the job exists, so neither the `env` context nor a job
+   output can hold it. The two copies must stay identical — a divergence is
+   a security boundary moving.
+2. Provisioning guards: the install steps were already gated on
+   `runner.environment == 'github-hosted'`, which is OS-agnostic, so they
+   needed no change. Two Windows steps deliberately stay **ungated**:
+   the long-paths registry key (downloads nothing, idempotent, and on the
+   pool it guards against template drift) and `--output_base=C:/b`, which is
+   load-bearing on the pool because C:\b is the output base the template
+   pre-warmed its external repos into.
 3. Cache flags: the Windows Bazel leg uses the LAN cache like Linux
    (bazel-remote is platform-agnostic; Windows actions populate under
-   distinct action keys). Write gating identical to R2.
+   distinct action keys). Write gating identical to R2. The Windows LAN
+   namespace starts **empty** — the template's acceptance build ran with
+   `--remote_upload_local_results=false` — so the first pool Windows job
+   compiles cold (~300–400 s with warm externals) and the first push to main
+   after this lands is what populates it.
+4. msi.yml `build-verify` is **not** routed here and stays hosted: the R3
+   timing measurement it was gated on has not been taken. It is Cargo, not
+   Bazel, so the LAN Bazel cache does not help it; the open questions are
+   raw cores versus hosted and whether `Swatinem/rust-cache` (which pulls
+   over the WAN) helps or hurts on this link. Route it in a follow-up only
+   if the measurement beats hosted.
 
 ## R5 — Route `bazel coverage`
 

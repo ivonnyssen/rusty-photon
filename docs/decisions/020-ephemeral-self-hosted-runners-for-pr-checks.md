@@ -62,8 +62,9 @@ failure of the others.
    Pool control runs over the QEMU guest agent, which needs no network
    path, so fencing cannot break pool mechanics.
 6. **A no-commit kill switch.** Routing is gated on a repo Actions variable
-   (opt-in), so a pool outage is a settings flip back to hosted runners,
-   not an emergency workflow PR while a required check blocks every merge.
+   (opt-in) — one per pool OS, since the venues fail independently — so a
+   pool outage is a settings flip back to hosted runners, not an emergency
+   workflow PR while a required check blocks every merge.
 
 Residual risk, with all layers up: an approved-despite-review malicious
 fork job steals one VM's CPU for at most the job timeout and has WAN egress

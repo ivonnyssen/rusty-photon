@@ -75,8 +75,9 @@ dangerous combination. The rule bifurcates by runner kind
   `pull_request` jobs under ADR-020's six-layer contract: a fork-excluding
   `runs-on` expression (every falsy branch lands on GitHub-hosted), the
   fork-PR approval checkpoint, JIT single-use VMs, no credentials on the
-  runner, VLAN fencing, and the `RP_POOL_LINUX` kill-switch variable.
-  bazel.yml's Linux leg is the implementation. **Approving a fork PR's
+  runner, VLAN fencing, and the per-OS kill-switch variables
+  (`RP_POOL_LINUX`, `RP_POOL_WINDOWS`).
+  bazel.yml's Linux and Windows legs are the implementation. **Approving a fork PR's
   workflow runs is the human layer: review the workflow-file diff first —
   a fork can only reach this pool by editing `runs-on`.**
 * Runners are **JIT-registered and single-use**: the config injected into a
@@ -122,17 +123,22 @@ dangerous combination. The rule bifurcates by runner kind
   ```
 
   This is part of the one-time setup contract.
-* **Kill switch:** routing of bazel.yml's Linux leg to the pool is gated on
-  the repo Actions variable `RP_POOL_LINUX` being `on`. If the pool host is
-  down, required checks sit queued with no error anywhere (GitHub cancels a
-  self-hosted job only after 24 hours in queue) — unset or flip the
-  variable (`gh variable set RP_POOL_LINUX --body off`) and re-run; jobs
-  route back to GitHub-hosted runners with no commit needed.
-* **Pins live in two places:** the hosted install steps in bazel.yml and
-  the pool template carry the same toolchain pins (bazelisk, OmniSim,
-  Pebble, camera SDKs). Bumping a pin in the workflow requires rebuilding
-  the template (procedure below) — the pool otherwise keeps running the old
-  pin silently.
+* **Kill switches, one per OS:** routing of bazel.yml's Linux leg is gated
+  on the repo Actions variable `RP_POOL_LINUX` being `on`, and its Windows
+  leg on `RP_POOL_WINDOWS`. They are separate because the venues fail
+  independently — a wedged Windows slot or a stale Windows template should
+  not cost Linux its speed. If the pool host is down, required checks sit
+  queued with no error anywhere (GitHub cancels a self-hosted job only after
+  24 hours in queue) — unset or flip the relevant variable
+  (`gh variable set RP_POOL_WINDOWS --body off`) and re-run; that OS routes
+  back to GitHub-hosted runners with no commit needed. A whole-pool
+  evacuation means flipping both.
+* **Pins live in three places:** the hosted install steps in bazel.yml and
+  *both* pool templates (Linux and Windows) carry the same toolchain pins
+  (bazelisk, OmniSim, Pebble, camera SDKs). Bumping a pin in the workflow
+  requires rebuilding both templates (procedure below) — the pool otherwise
+  keeps running the old pin silently, and a pin bumped on only one template
+  makes the two OS legs disagree about what they tested.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup

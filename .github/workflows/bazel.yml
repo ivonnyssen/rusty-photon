@@ -5,15 +5,19 @@
 # `bazel / <os>` required checks. Coverage is gated separately by
 # bazel-coverage.yml and Bazel/Cargo target parity by parity.yml.
 #
-# Venue routing (ADR-020, docs/plans/proxmox-pr-routing.md): the Linux leg
-# runs on the ephemeral self-hosted pool (docs/skills/proxmox-runner-pool.md)
-# for push-to-main and SAME-REPO pull requests, gated on the RP_POOL_LINUX
-# repo variable being 'on' (the no-commit kill switch — unset it to route
-# everything back to GitHub-hosted runners). Fork PRs, the nightly schedule,
-# and the macOS/Windows legs stay on GitHub-hosted runners; the check names
-# are identical on both venues. The schedule staying hosted is deliberate:
-# it keeps the cloud cache's Linux entries warm for fork PRs, while the LAN
-# cache is populated by every push to main.
+# Venue routing (ADR-020, docs/plans/proxmox-pr-routing.md): the Linux and
+# Windows legs run on the ephemeral self-hosted pool
+# (docs/skills/proxmox-runner-pool.md) for push-to-main and SAME-REPO pull
+# requests, each gated on its own repo variable — RP_POOL_LINUX and
+# RP_POOL_WINDOWS — being 'on' (the no-commit kill switches; unset one to
+# route that OS back to GitHub-hosted runners). The switches are separate
+# because the two venues fail independently: the Windows slot can be wedged
+# or its template stale while Linux is healthy, and evacuating one should
+# not cost the speed of the other. Fork PRs, the nightly schedule, and the
+# macOS leg stay on GitHub-hosted runners; the check names are identical on
+# both venues. The schedule staying hosted is deliberate: it keeps the cloud
+# cache warm for fork PRs, while the LAN cache is populated by every push to
+# main.
 permissions:
   contents: read
 on:
@@ -40,14 +44,25 @@ jobs:
     # land on the safe side. Same-repo detection compares the PR's head
     # repository to this repository; a fork can only reach the pool by
     # editing this file, which the fork-PR approval checkpoint reviews
-    # (ADR-020 layer 2).
+    # (ADR-020 layer 2). macOS has no pool venue and always falls through.
+    #
+    # The trusted-event test is spelled out once per OS rather than factored
+    # out: `runs-on` is evaluated before the job exists, so neither the `env`
+    # context nor a job output is available to hold it. Keep the two copies
+    # identical — a divergence here is a security boundary moving.
     runs-on: >-
-      ${{ matrix.os == 'ubuntu-latest'
-          && vars.RP_POOL_LINUX == 'on'
-          && (github.event_name == 'push'
-              || (github.event_name == 'pull_request'
-                  && github.event.pull_request.head.repo.full_name == github.repository))
-          && fromJSON('["self-hosted", "proxmox-ephemeral"]')
+      ${{ (matrix.os == 'ubuntu-latest'
+           && vars.RP_POOL_LINUX == 'on'
+           && (github.event_name == 'push'
+               || (github.event_name == 'pull_request'
+                   && github.event.pull_request.head.repo.full_name == github.repository))
+           && fromJSON('["self-hosted", "proxmox-ephemeral"]'))
+          || (matrix.os == 'windows-latest'
+              && vars.RP_POOL_WINDOWS == 'on'
+              && (github.event_name == 'push'
+                  || (github.event_name == 'pull_request'
+                      && github.event.pull_request.head.repo.full_name == github.repository))
+              && fromJSON('["self-hosted", "proxmox-ephemeral-windows"]'))
           || matrix.os }}
     name: bazel / ${{ matrix.os }}
     # Bazel's action-graph change detection figures out which targets actually
@@ -101,6 +116,11 @@ jobs:
       # The short --output_base below still helps because shorter paths
       # are faster to normalise, but the registry key is what actually
       # unblocks cl.exe.
+      # Deliberately NOT gated on runner.environment like the install steps
+      # below: it downloads nothing, is idempotent, and costs a fraction of a
+      # second. The pool template already sets both, so on the pool this is
+      # purely a guard against template drift silently reintroducing the
+      # 260-char ceiling.
       - name: Enable long paths (Windows MAX_PATH workaround)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -108,28 +128,33 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1
           git config --system core.longpaths true
 
-      # No Windows Defender exclusion step: GitHub's Windows runner images
-      # ship with Defender real-time protection disabled and C:\ / D:\
-      # excluded at the image level (actions/runner-images
-      # Configure-WindowsDefender.ps1), so Add-MpPreference exclusions here
-      # would be a no-op — Defender cannot be the cause of Windows file-access
-      # flakiness on these runners, and transient-denial suspicions belong at
-      # the Bazel/OS layer (see the process_wrapper_read_retry rules_rust
-      # patch in MODULE.bazel).
+      # No Windows Defender exclusion step, on either venue: GitHub's Windows
+      # runner images ship with Defender real-time protection disabled and
+      # C:\ / D:\ excluded at the image level (actions/runner-images
+      # Configure-WindowsDefender.ps1), and the pool template has the Defender
+      # feature removed outright (Tamper Protection blocks the Set-MpPreference
+      # route on Server 2025). Add-MpPreference exclusions here would be a
+      # no-op — Defender cannot be the cause of Windows file-access flakiness
+      # on these runners, and transient-denial suspicions belong at the
+      # Bazel/OS layer (see the process_wrapper_read_retry rules_rust patch in
+      # MODULE.bazel).
 
       # Using --output_base=C:/b eliminates the workspace-hash
       # subdirectory and saves ~50 characters vs the default
       # (rules_rust #1120). .bazelrc already imports user.bazelrc via
       # try-import, so this takes effect on the next bazel invocation.
+      # Also load-bearing on the pool, for a second reason: C:\b is the
+      # output base the Windows template pre-warmed its external repos into,
+      # so dropping this step would send every clone back to a cold fetch.
       - name: Shorten Bazel output base (Windows)
         if: runner.os == 'Windows'
         run: echo 'startup --output_base=C:/b' > user.bazelrc
 
-      # The provisioning steps below are hosted-only: the pool template
-      # ships lld, bazelisk, OmniSim, Pebble, and both camera SDKs at the
-      # same pins, and re-downloading them per ephemeral clone would defeat
-      # the pool's zero-WAN property. COUPLING: bumping a pin in any of
-      # these steps requires rebuilding the runner template — see
+      # The provisioning steps below are hosted-only: both pool templates
+      # ship lld (Linux), bazelisk, OmniSim, Pebble, and both camera SDKs at
+      # the same pins, and re-downloading them per ephemeral clone would
+      # defeat the pool's zero-WAN property. COUPLING: bumping a pin in any
+      # of these steps requires rebuilding BOTH runner templates — see
       # docs/skills/proxmox-runner-pool.md for the procedure.
       - name: Install lld
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
@@ -159,6 +184,11 @@ jobs:
       # search path) + apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE
       # (build.rs reads it via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew
       # libusb. Windows: SDK into $GITHUB_WORKSPACE/sdk_win64_<ver> (bundles libusb).
+      # On the Windows pool venue the SDK is installed once, machine-wide, and
+      # located by QHYCCD_SDK_DIR instead — build.rs prefers that over the
+      # GITHUB_WORKSPACE fallback, and .bazelrc forwards it through
+      # strict_action_env. It is unset on hosted runners, so their action keys
+      # are unchanged.
       - name: Install libusb (qhy-camera, Linux)
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         uses: awalsh128/cache-apt-pkgs-action@v1
