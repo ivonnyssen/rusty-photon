@@ -40,13 +40,13 @@ impl IcrsCoord {
 
     /// Right ascension in decimal hours, `[0, 24)`.
     #[must_use]
-    pub fn ra_hours(&self) -> f64 {
+    pub const fn ra_hours(&self) -> f64 {
         self.ra_hours
     }
 
     /// Declination in decimal degrees, `[-90, 90]`.
     #[must_use]
-    pub fn dec_degrees(&self) -> f64 {
+    pub const fn dec_degrees(&self) -> f64 {
         self.dec_degrees
     }
 }

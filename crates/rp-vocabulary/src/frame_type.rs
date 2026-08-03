@@ -31,12 +31,12 @@ impl FrameType {
     /// explicit target — the lowercased frame type. `None` for `Light`,
     /// which always requires an explicit target.
     #[must_use]
-    pub fn calibration_slug(self) -> Option<&'static str> {
+    pub const fn calibration_slug(self) -> Option<&'static str> {
         match self {
-            FrameType::Light => None,
-            FrameType::Dark => Some("dark"),
-            FrameType::Flat => Some("flat"),
-            FrameType::Bias => Some("bias"),
+            Self::Light => None,
+            Self::Dark => Some("dark"),
+            Self::Flat => Some("flat"),
+            Self::Bias => Some("bias"),
         }
     }
 }
@@ -47,10 +47,10 @@ impl FromStr for FrameType {
     /// The exact, case-sensitive inverse of the derived `Display`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Light" => Ok(FrameType::Light),
-            "Dark" => Ok(FrameType::Dark),
-            "Flat" => Ok(FrameType::Flat),
-            "Bias" => Ok(FrameType::Bias),
+            "Light" => Ok(Self::Light),
+            "Dark" => Ok(Self::Dark),
+            "Flat" => Ok(Self::Flat),
+            "Bias" => Ok(Self::Bias),
             _ => Err(FrameTypeParseError(s.to_string())),
         }
     }
