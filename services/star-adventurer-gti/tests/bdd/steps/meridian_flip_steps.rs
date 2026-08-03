@@ -1,10 +1,10 @@
-//! Steps for meridian_flip.feature.
+//! Steps for `meridian_flip.feature`.
 //!
 //! Most pier-side and connection steps are shared with
 //! `side_of_pier_steps.rs` and `connection_steps.rs`; this file only
 //! adds the steps unique to the Phase 6 meridian-flip behaviour
-//! (flip_policy config seeds, CanSetPierSide read, parametric
-//! SetSideOfPier setter, abort step).
+//! (`flip_policy` config seeds, `CanSetPierSide` read, parametric
+//! `SetSideOfPier` setter, abort step).
 
 #![allow(unused_variables)]
 

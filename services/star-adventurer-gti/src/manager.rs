@@ -143,12 +143,14 @@ impl MountManager {
     }
 
     /// Access the shared transport so devices can acquire sessions.
-    pub fn transport(&self) -> &Arc<SharedTransport<SkywatcherCodec>> {
+    #[must_use]
+    pub const fn transport(&self) -> &Arc<SharedTransport<SkywatcherCodec>> {
         &self.transport
     }
 
     /// Cheap, non-blocking snapshot — true between handshake completion
     /// and the start of teardown.
+    #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
     }
@@ -166,7 +168,8 @@ impl MountManager {
     /// Wire-protocol polling interval taken from the config block. Exposed
     /// so the slew-completion watcher can match the background poller's
     /// cadence.
-    pub fn polling_interval_for_watcher(&self) -> Duration {
+    #[must_use]
+    pub const fn polling_interval_for_watcher(&self) -> Duration {
         self.polling_interval
     }
 
@@ -180,6 +183,7 @@ impl MountManager {
     /// Ref-counted: each call increments a depth counter; polling
     /// resumes only when the last guard drops (counter back to 0).
     /// Safe to nest or overlap across paths.
+    #[must_use]
     pub fn pause_background_polling(&self) -> PollPauseGuard {
         self.poll_pause_depth.fetch_add(1, Ordering::SeqCst);
         PollPauseGuard {
@@ -257,7 +261,8 @@ impl MountManager {
     /// Exposed so handshake and poll loops can match the configured
     /// expectation; the shared-transport `FrameTransport`s already
     /// enforce the same value at the wire layer.
-    pub fn command_timeout(&self) -> Duration {
+    #[must_use]
+    pub const fn command_timeout(&self) -> Duration {
         self.command_timeout
     }
 }
@@ -471,7 +476,7 @@ async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
-            _ = ctx.cancelled() => {
+            () = ctx.cancelled() => {
                 debug!("sky-watcher poll loop received cancellation");
                 return;
             }
@@ -645,7 +650,7 @@ fn expect_status_runtime(r: Response) -> Result<AxisStatus> {
 /// [`Command::SetGotoTarget`], both of which call
 /// [`encode_position`](skywatcher_motor_protocol::codec::encode_position)
 /// on an `i32` tick value that must fit in signed-24-bit range
-/// (`[POSITION_MIN, POSITION_MAX]` ≈ ±2²³ ≈ ±8.4M). For the GTi's CPR
+/// (`[POSITION_MIN, POSITION_MAX]` ≈ ±2²³ ≈ ±8.4M). For the `GTi`'s CPR
 /// of ~3.6M, any in-range RA/Dec produces ticks well inside that
 /// envelope; this check is the safety net for misconfigured park
 /// targets, a future bug in coordinate-conversion math, or a different
@@ -1000,7 +1005,7 @@ mod tests {
             .iter()
             .rev()
             .take_while(|f| f.starts_with(b":L") || f.starts_with(b":K"))
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .collect();
         // We pushed in reverse: rev again to get forward order.
         let mut forward: Vec<&[u8]> = teardown_frames.into_iter().collect();
@@ -1035,7 +1040,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Transport whose first `recv_frame` returns the configured
-    /// `TransportError` variant (consumed once via the AtomicBool gate);
+    /// `TransportError` variant (consumed once via the `AtomicBool` gate);
     /// subsequent operations error with `Eof` so the test fails fast if
     /// the manager unexpectedly retries.
     struct FailingRecvTransport {
@@ -1346,12 +1351,12 @@ mod tests {
                 &mut self,
                 buf: &mut Vec<u8>,
             ) -> std::result::Result<(), TransportError> {
-                if !self.served.swap(true, Ordering::SeqCst) {
+                if self.served.swap(true, Ordering::SeqCst) {
+                    Err(TransportError::Eof)
+                } else {
                     buf.clear();
                     buf.extend_from_slice(b"=100\r");
                     Ok(())
-                } else {
-                    Err(TransportError::Eof)
                 }
             }
         }
@@ -1432,12 +1437,12 @@ mod tests {
                 &mut self,
                 buf: &mut Vec<u8>,
             ) -> std::result::Result<(), TransportError> {
-                if !self.served.swap(true, Ordering::SeqCst) {
+                if self.served.swap(true, Ordering::SeqCst) {
+                    Err(TransportError::Eof)
+                } else {
                     buf.clear();
                     buf.extend_from_slice(b"!0\r");
                     Ok(())
-                } else {
-                    Err(TransportError::Eof)
                 }
             }
         }
@@ -1493,8 +1498,7 @@ mod tests {
         };
         assert!(
             staradv.to_string().contains("returned unexpected data"),
-            "WrongDevice Display must say 'unexpected', not 'malformed'; got: {}",
-            staradv
+            "WrongDevice Display must say 'unexpected', not 'malformed'; got: {staradv}"
         );
     }
 

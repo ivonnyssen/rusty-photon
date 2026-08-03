@@ -152,7 +152,7 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     let log = world.command_log().await;
     let h1 = log
         .iter()
-        .find(|c| c.starts_with(":H1") && c.ends_with("\r"))
+        .find(|c| c.starts_with(":H1") && c.ends_with('\r'))
         .unwrap_or_else(|| panic!("no :H1 in log {log:?}"));
     // We assert against the *slew-issue* `:H2`, which is always the
     // first `:H2` in the log: it carries the magnitude of the full
@@ -163,7 +163,7 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     // near-zero Dec target.
     let h2 = log
         .iter()
-        .find(|c| c.starts_with(":H2") && c.ends_with("\r"))
+        .find(|c| c.starts_with(":H2") && c.ends_with('\r'))
         .unwrap_or_else(|| panic!("no :H2 in log {log:?}"));
     // :H<axis><6 hex bytes>\r — 10 bytes total.
     assert_eq!(h2.len(), 10, "malformed :H2 frame {h2:?}");
@@ -185,7 +185,7 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
         .expect(":H2 must be in the log we just found");
     let g2 = log[..h2_idx]
         .iter()
-        .rfind(|c| c.starts_with(":G2") && c.ends_with("\r"))
+        .rfind(|c| c.starts_with(":G2") && c.ends_with('\r'))
         .unwrap_or_else(|| panic!("no :G2 before the matched :H2 in log {log:?}"));
     // :G<axis><DB1_nibble><DB2_nibble>\r — 6 bytes total. Per the
     // Sky-Watcher motor-controller spec §5 each DB is one hex
@@ -195,16 +195,16 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     assert_eq!(g2.len(), 6, "malformed :G2 frame {g2:?}");
     let db2 = u8::from_str_radix(g2.get(4..5).expect("6-byte :G2 frame"), 16).expect("valid hex");
     let signed_ticks: i64 = if db2 & 0x1 != 0 {
-        -(dec_magnitude as i64)
+        -i64::from(dec_magnitude)
     } else {
-        dec_magnitude as i64
+        i64::from(dec_magnitude)
     };
 
     // Convert wire ticks back to degrees and compare against the
     // requested Dec, using the **Dec-axis** CPR (different from RA on
     // the GTi).
     const GTI_CPR_DEC: u32 = 0x002C_4C00;
-    let dec_actual = (signed_ticks as f64) * 360.0 / (GTI_CPR_DEC as f64);
+    let dec_actual = (signed_ticks as f64) * 360.0 / f64::from(GTI_CPR_DEC);
     let tol = 0.5; // 0.5° matches the BDD scenario's ±round-trip slop
     assert!(
         (dec_actual - dec).abs() < tol,
@@ -262,7 +262,7 @@ fn is_tracking_g1(frame: &str) -> bool {
     db1 & 0x1 != 0
 }
 
-fn hex_digit(b: u8) -> Option<u8> {
+const fn hex_digit(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),

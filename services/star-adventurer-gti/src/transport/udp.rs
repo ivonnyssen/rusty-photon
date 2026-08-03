@@ -37,7 +37,8 @@ impl UdpTransportFactory {
     /// timeout) at factory-construction time so [`TransportFactory::open`]
     /// can be retried by the shared-transport core without rethreading
     /// parameters.
-    pub fn new(config: UdpConfig) -> Self {
+    #[must_use]
+    pub const fn new(config: UdpConfig) -> Self {
         Self { config }
     }
 }
@@ -92,7 +93,7 @@ mod tests {
         UdpConfig {
             address: server_addr.ip(),
             port: server_addr.port(),
-            bind_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            bind_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             command_timeout: timeout,
             polling_interval: Duration::from_millis(200),
         }

@@ -65,7 +65,7 @@ fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
     let day = dt.day() as i32;
     let hh = dt.hour() as i32;
     let mm = dt.minute() as i32;
-    let seconds = dt.second() as f64 + (dt.nanosecond() as f64) * 1e-9;
+    let seconds = f64::from(dt.second()) + f64::from(dt.nanosecond()) * 1e-9;
 
     let (utc1, utc2) = Dtf2d(true, year, month, day, hh, mm, seconds)
         .map_err(|code| {
@@ -117,11 +117,12 @@ fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
 /// here; AP Park 5 N (saddle east, dec normal) reports `pierWest`.
 /// The encoder values for each park pose are still mechanically
 /// correct — only the operational-vs-geometric label disagrees.
+#[must_use]
 pub fn side_of_pier(dec_ticks: DecTicks, cpr_dec: Cpr, site_latitude_deg: f64) -> PierSide {
     if cpr_dec.get() == 0 {
         return PierSide::Unknown;
     }
-    let quarter = (cpr_dec.get() / 4) as i64;
+    let quarter = i64::from(cpr_dec.get() / 4);
     // Fold the raw counter into the canonical band before classifying:
     // raw can sit outside `[-cpr/2, +cpr/2)` after through-wrap flip
     // slews, and the half-classification only makes sense on the folded
@@ -134,7 +135,7 @@ pub fn side_of_pier(dec_ticks: DecTicks, cpr_dec: Cpr, site_latitude_deg: f64) -
     // post-meridian-flip / cross-axis-rotated-180° state. The
     // boundary at exactly ±90° is *not* East: the mount can sit at
     // the pole via normal-pointing slews without a flip.
-    let east_in_north = (folded as i64).abs() > quarter;
+    let east_in_north = i64::from(folded).abs() > quarter;
     let northern = site_latitude_deg >= 0.0;
     let east = if northern {
         east_in_north
@@ -156,6 +157,7 @@ pub fn side_of_pier(dec_ticks: DecTicks, cpr_dec: Cpr, site_latitude_deg: f64) -
 /// the Dec encoder is the celestial declination — the existing
 /// behaviour for every slew before Phase 6, extracted into a helper
 /// so [`target_encoder_flipped`] can share the structure.
+#[must_use]
 pub fn target_encoder_normal(
     ra: Ra,
     dec: Dec,
@@ -187,6 +189,7 @@ pub fn target_encoder_normal(
 /// `−180°` after fold). Both encoder values reduce to the same
 /// physical mechanical position at the encoder wrap; downstream
 /// callers don't distinguish between them.
+#[must_use]
 pub fn target_encoder_flipped(
     ra: Ra,
     dec: Dec,
@@ -217,6 +220,7 @@ pub fn target_encoder_flipped(
 /// encoder-direction RA/Dec rather than the OTA's celestial
 /// pointing, and the pickup loop would interpret a successful flip
 /// as a 12-hour RA residual and try to undo it.
+#[must_use]
 pub fn encoder_to_celestial(
     ra_ticks: RaTicks,
     dec_ticks: DecTicks,
@@ -249,7 +253,8 @@ pub fn encoder_to_celestial(
 
 /// Return the ASCOM-opposite pier side. `Unknown` maps to `Unknown`
 /// — the driver does not invent a side it has no information about.
-pub fn opposite_pier_side(side: PierSide) -> PierSide {
+#[must_use]
+pub const fn opposite_pier_side(side: PierSide) -> PierSide {
     match side {
         PierSide::West => PierSide::East,
         PierSide::East => PierSide::West,
@@ -264,7 +269,7 @@ pub fn opposite_pier_side(side: PierSide) -> PierSide {
 /// [§"Pier-side decision tree"](../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)):
 ///
 /// 1. If `policy.enabled == false`, return `current` unchanged.
-/// 2. Compute the target's celestial-HA and the resulting mech_HA on
+/// 2. Compute the target's celestial-HA and the resulting `mech_HA` on
 ///    each pier side (`mech_HA_normal = HA`; `mech_HA_flipped = HA + 12`
 ///    folded).
 /// 3. If the *current* side can reach the target without entering the
@@ -281,6 +286,7 @@ pub fn opposite_pier_side(side: PierSide) -> PierSide {
 /// `Unknown` regardless of policy — the driver has no encoder
 /// classification to anchor a flip decision on. This mirrors how
 /// [`side_of_pier`] degrades when `cpr_dec == 0`.
+#[must_use]
 pub fn select_pier_side_for_target(
     target_ra: Ra,
     lst: Lst,
@@ -335,8 +341,8 @@ pub fn select_pier_side_for_target(
 /// `mech_HA = LST(now) - target_RA` and aims the encoder there. But
 /// the slew takes ~one iteration to settle, by which time LST has
 /// advanced ~`projection × 15.04″/sec`. The next iteration sees the
-/// encoder is short of where it should be (because target_RA has the
-/// same value but mech_HA needed = LST_now+iter - target_RA is now
+/// encoder is short of where it should be (because `target_RA` has the
+/// same value but `mech_HA` needed = `LST_now+iter` - `target_RA` is now
 /// larger). Pickup is locked into chasing a moving target and the
 /// residual floor matches the per-iteration LST drift.
 ///
@@ -351,6 +357,7 @@ pub fn select_pier_side_for_target(
 /// On a per-`polling_interval` cadence the empirical observation is
 /// ~`polling_interval × 2` (one watcher sleep + one slew-settle
 /// + wire round-trips).
+#[must_use]
 pub fn pickup_target_ra_ticks(
     target_ra: Ra,
     current_lst: Lst,
@@ -371,6 +378,7 @@ pub fn pickup_target_ra_ticks(
 /// clockwise from north in the range `[0, 360)`. Refraction is **not**
 /// applied — the design doc keeps the driver refraction-free
 /// (`DoesRefraction = false`).
+#[must_use]
 pub fn ra_dec_to_alt_az(ra: Ra, dec: Dec, site_latitude_deg: f64, lst: Lst) -> (f64, f64) {
     let ha_rad = ((lst.value() - ra.value()) * 15.0).to_radians();
     let dec_rad = dec.value().to_radians();
@@ -400,14 +408,15 @@ pub fn ra_dec_to_alt_az(ra: Ra, dec: Dec, site_latitude_deg: f64, lst: Lst) -> (
 ///
 /// `period = tmr_freq * 86164.0905 / cpr`
 ///
-/// For the GTi defaults (`tmr_freq = 0xF42400 = 16_000_000`,
+/// For the `GTi` defaults (`tmr_freq = 0xF42400 = 16_000_000`,
 /// `cpr = 0x375F00 = 3_628_800`), this gives roughly `379,887`.
+#[must_use]
 pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: Cpr) -> u32 {
     if cpr_ra.get() == 0 {
         return 0;
     }
     let sidereal_seconds = 86164.0905_f64;
-    ((tmr_freq as f64) * sidereal_seconds / (cpr_ra.get() as f64)).round() as u32
+    (f64::from(tmr_freq) * sidereal_seconds / f64::from(cpr_ra.get())).round() as u32
 }
 
 /// Sidereal rate in degrees per second.
@@ -418,7 +427,7 @@ pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: Cpr) -> u32 {
 /// `(0, 1)` for the rate-shift math.
 pub const SIDEREAL_DEG_PER_SEC: f64 = 360.0 / 86164.0905;
 
-/// Rate-shifted step period for a PulseGuide burst, in timer-counter
+/// Rate-shifted step period for a `PulseGuide` burst, in timer-counter
 /// units (the same units `:I` takes).
 ///
 /// `rate_factor` is the target rate as a multiple of sidereal:
@@ -434,12 +443,13 @@ pub const SIDEREAL_DEG_PER_SEC: f64 = 360.0 / 86164.0905;
 /// positive — `pulse_guide`'s upstream validation rejects a guide-rate
 /// fraction outside `(0, 1)`, so the East formula `1 - fraction`
 /// stays in `(0, 1)` and never zeroes the divisor.
+#[must_use]
 pub fn pulse_guide_step_period(sidereal_period: u32, rate_factor: f64) -> u32 {
     debug_assert!(
         rate_factor > 0.0,
         "rate_factor must be positive (got {rate_factor})"
     );
-    ((sidereal_period as f64) / rate_factor).round() as u32
+    (f64::from(sidereal_period) / rate_factor).round() as u32
 }
 
 #[cfg(test)]
@@ -767,7 +777,7 @@ mod tests {
         // West at fraction = 0.5 → rate_factor = 1.5 → period = P_sid / 1.5.
         let p_sid = sidereal_step_period(0x00F4_2400, cpr());
         let shifted = pulse_guide_step_period(p_sid, 1.5);
-        let expected = ((p_sid as f64) / 1.5).round() as u32;
+        let expected = (f64::from(p_sid) / 1.5).round() as u32;
         assert_eq!(shifted, expected);
         // Sanity: must be smaller than sidereal (faster rate ⇒ shorter
         // period).
@@ -793,7 +803,7 @@ mod tests {
             target_encoder_normal(Ra::new(12.0), Dec::new(30.0), Lst::new(12.0), cpr(), cpr());
         assert_eq!(ra_ticks.value(), 0);
         // Dec encoder at 30° / 360° × CPR.
-        let expected_dec = (30.0 * (GTI_CPR as f64) / 360.0).round() as i32;
+        let expected_dec = (30.0 * f64::from(GTI_CPR) / 360.0).round() as i32;
         assert_eq!(dec_ticks.value(), expected_dec);
     }
 

@@ -87,7 +87,7 @@ pub struct StarAdventurerWorld {
     pub last_error: Option<String>,
     pub last_error_code: Option<u16>,
     /// Last successful `DestinationSideOfPier` result. Set by the
-    /// "I read DestinationSideOfPier ..." step so the matching
+    /// "I read `DestinationSideOfPier` ..." step so the matching
     /// `Then DestinationSideOfPier should be ...` step can assert on
     /// it without re-issuing the wire call.
     pub last_destination_pier_side: Option<PierSide>,
@@ -106,7 +106,7 @@ pub struct StarAdventurerWorld {
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<Value>,
-    /// Result of the last supported_actions query.
+    /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
@@ -190,7 +190,7 @@ impl StarAdventurerWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
+    pub const fn bound_port(&self) -> u16 {
         self.service_handle
             .as_ref()
             .expect("service not started")
@@ -284,7 +284,7 @@ impl StarAdventurerWorld {
         }
     }
 
-    /// Queue a single seed value to be POSTed to `/debug/v1/mock-state`.
+    /// Queue a single seed value to be `POSTed` to `/debug/v1/mock-state`.
     ///
     /// If the service is already running, the seed is applied
     /// immediately — this lets `Given` steps that follow "a running
@@ -407,7 +407,7 @@ impl StarAdventurerWorld {
     }
 
     /// Re-read the config file the running service was started with and
-    /// parse it back into a [`Config`]. Used by SetPark scenarios to
+    /// parse it back into a [`Config`]. Used by `SetPark` scenarios to
     /// assert the file was rewritten in-place.
     pub fn read_persisted_config(&self) -> Config {
         let dir = self

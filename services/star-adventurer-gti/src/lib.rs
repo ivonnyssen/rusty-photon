@@ -1,5 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! Star Adventurer GTi ASCOM Alpaca driver.
+//! Star Adventurer `GTi` ASCOM Alpaca driver.
 //!
 //! See [`docs/services/star-adventurer-gti.md`](../../../docs/services/star-adventurer-gti.md)
 //! for the design contract this crate implements.
@@ -75,10 +75,12 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = config;
         self
@@ -90,6 +92,7 @@ impl ServerBuilder {
     /// `SetPark` writes the captured encoder pair back into the file via
     /// atomic rename. When omitted (e.g. `main.rs` ran without
     /// `--config`), `CanSetPark` is `false`.
+    #[must_use]
     pub fn with_config_file_path(mut self, path: Option<PathBuf>) -> Self {
         self.config_file_path = path;
         self
@@ -98,6 +101,7 @@ impl ServerBuilder {
     /// Hand the mount device the in-process reload trigger fired after a
     /// `config.apply` that needs a reload. Combined with a config file path,
     /// this enables `config.get` / `config.apply` / `config.schema`.
+    #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
         self
@@ -241,7 +245,7 @@ impl ServerBuilder {
             // and the only stdout consumer (bdd-infra's port parser) never runs
             // services with --service.
             if !rusty_photon_service_lifecycle::is_scm_service() {
-                println!("Bound Alpaca server bound_addr={}", local_addr);
+                println!("Bound Alpaca server bound_addr={local_addr}");
             }
             info!("Bound Alpaca server bound_addr={}", local_addr);
 
@@ -288,7 +292,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -310,16 +314,12 @@ impl BoundServer {
             manager,
         } = self;
         let serve = async {
-            match tls {
-                Some(ref tls_config) => {
-                    info!("star-adventurer-gti started on {} (TLS)", local_addr);
-                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                        .await
-                }
-                None => {
-                    info!("star-adventurer-gti started on {}", local_addr);
-                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
-                }
+            if let Some(ref tls_config) = tls {
+                info!("star-adventurer-gti started on {} (TLS)", local_addr);
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+            } else {
+                info!("star-adventurer-gti started on {}", local_addr);
+                rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
             }
         };
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
@@ -382,7 +382,7 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
     fn parse_position_ticks(v: &serde_json::Value) -> Option<i32> {
         use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
         let n = v.as_i64()?;
-        if (POSITION_MIN as i64..=POSITION_MAX as i64).contains(&n) {
+        if (i64::from(POSITION_MIN)..=i64::from(POSITION_MAX)).contains(&n) {
             Some(n as i32)
         } else {
             None
@@ -458,22 +458,28 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
         if let Some(v) = dec_goto_target {
             s.dec.goto_target_ticks = v;
         }
-        if let Some(v) = obj.get("ra_running").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("ra_running").and_then(serde_json::Value::as_bool) {
             s.ra.running = v;
         }
-        if let Some(v) = obj.get("ra_goto").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("ra_goto").and_then(serde_json::Value::as_bool) {
             s.ra.goto = v;
         }
-        if let Some(v) = obj.get("ra_initialized").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj
+            .get("ra_initialized")
+            .and_then(serde_json::Value::as_bool)
+        {
             s.ra.initialized = v;
         }
-        if let Some(v) = obj.get("dec_running").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("dec_running").and_then(serde_json::Value::as_bool) {
             s.dec.running = v;
         }
-        if let Some(v) = obj.get("dec_goto").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj.get("dec_goto").and_then(serde_json::Value::as_bool) {
             s.dec.goto = v;
         }
-        if let Some(v) = obj.get("dec_initialized").and_then(|v| v.as_bool()) {
+        if let Some(v) = obj
+            .get("dec_initialized")
+            .and_then(serde_json::Value::as_bool)
+        {
             s.dec.initialized = v;
         }
         Ok(Json(json!({"ok": true})))
@@ -620,7 +626,7 @@ mod tests {
         let (addr, _state) = spawn_debug_router().await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/debug/v1/mock-state"))
-            .json(&json!({"ra_ticks": POSITION_MAX as i64 + 1}))
+            .json(&json!({"ra_ticks": i64::from(POSITION_MAX) + 1}))
             .send()
             .await
             .unwrap();

@@ -1,4 +1,4 @@
-//! Steps for altitude_floor.feature.
+//! Steps for `altitude_floor.feature`.
 //!
 //! Apparent altitude is a function of the target's *hour angle*, not
 //! its RA, so these steps address targets by HA and compute

@@ -1,6 +1,6 @@
-//! ASCOM Alpaca Telescope device for the Star Adventurer GTi.
+//! ASCOM Alpaca Telescope device for the Star Adventurer `GTi`.
 //!
-//! This is the surface that Alpaca clients (NINA, SGPro, `rp`, ...) talk to.
+//! This is the surface that Alpaca clients (NINA, `SGPro`, `rp`, ...) talk to.
 //! Capability-flag overrides match the design doc's
 //! [§"Capability flags"](../../../docs/services/star-adventurer-gti.md#capability-flags)
 //! table; defaulted methods that the MVP does not implement are left to the
@@ -69,7 +69,7 @@ pub use park_persistence::{
 const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
 
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
-/// AtPark flag, last target). The values that come from the wire (current
+/// `AtPark` flag, last target). The values that come from the wire (current
 /// RA/Dec, Slewing) are read through [`MountManager`].
 #[derive(Debug)]
 struct DriverState {
@@ -111,17 +111,17 @@ struct DriverState {
     /// Dec encoder is past the pole, and a pre-flip encoder target
     /// would order a slew back through the pole).
     target_pier_side: Option<PierSide>,
-    /// PulseGuide rate on the RA axis as a fraction of sidereal in
+    /// `PulseGuide` rate on the RA axis as a fraction of sidereal in
     /// `(0, 1)`. `GuideRateRightAscension` is this × `SIDEREAL_DEG_PER_SEC`.
     /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
     guide_rate_ra_fraction: f64,
     guide_rate_dec_fraction: f64,
-    /// `true` between issuing a PulseGuide on this axis and the
+    /// `true` between issuing a `PulseGuide` on this axis and the
     /// watcher clearing the flag after the pulse `duration` has
     /// elapsed (or earlier, via the cancellation rule — any
     /// axis-mutating operation clears the flag before issuing its own
     /// wire commands so the watcher's post-sleep restore bails out).
-    /// See §"PulseGuide lifecycle" in the design doc.
+    /// See §"`PulseGuide` lifecycle" in the design doc.
     pulse_guiding_ra: bool,
     pulse_guiding_dec: bool,
 }
@@ -180,7 +180,7 @@ impl DriverState {
     ///     the now-closed transport; cancellation is implicit.
     ///   - `guide_rate_*_fraction` — re-initialise to the default,
     ///     matching INDI's per-session reset.
-    fn reset_for_disconnect(&mut self) {
+    const fn reset_for_disconnect(&mut self) {
         self.target_ra_hours = None;
         self.target_dec_degrees = None;
         self.tracking_requested = false;
@@ -219,7 +219,7 @@ pub struct MountDevice {
     /// rather than a [`DriverState`] field so [`SlewReservation`] can
     /// roll it back **synchronously** from `Drop` — a `Drop` impl can't
     /// `.await` the `state` `RwLock`. Set by the slew / park reservation,
-    /// ORed into `slewing()` and the concurrent-motion refusals, and
+    /// `ORed` into `slewing()` and the concurrent-motion refusals, and
     /// cleared by the completion watchers, `AbortSlew`, and disconnect.
     slew_in_progress: Arc<AtomicBool>,
     #[debug(skip)]
@@ -232,6 +232,7 @@ pub struct MountDevice {
 }
 
 impl MountDevice {
+    #[must_use]
     pub fn new(config: MountConfig, manager: Arc<MountManager>) -> Self {
         Self::with_config_file_path(config, manager, None)
     }
@@ -239,6 +240,7 @@ impl MountDevice {
     /// Construct with an optional config-file path. `Some(path)` enables
     /// `CanSetPark` / `SetPark` persistence; `None` leaves
     /// `CanSetPark = false` and `SetPark = NOT_IMPLEMENTED`.
+    #[must_use]
     pub fn with_config_file_path(
         config: MountConfig,
         manager: Arc<MountManager>,
@@ -256,6 +258,7 @@ impl MountDevice {
     }
 
     /// Attach the config-action context, enabling the config vendor actions.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<StarAdvDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self

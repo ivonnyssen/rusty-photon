@@ -1,4 +1,4 @@
-//! Steps for connection_lifecycle.feature.
+//! Steps for `connection_lifecycle.feature`.
 
 use crate::world::{CommandLogTimeout, StarAdventurerWorld, DEBUG_RETRY_WINDOW};
 use cucumber::gherkin::Step;

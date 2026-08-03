@@ -74,7 +74,7 @@ impl AxisSimState {
         if self.blocked {
             n1 |= 0x2; // bit 1: 1 = Blocked
         }
-        let n2 = if self.initialized { 0x1 } else { 0 };
+        let n2 = u8::from(self.initialized);
         [nibble_to_hex(n0), nibble_to_hex(n1), nibble_to_hex(n2)]
     }
 
@@ -88,7 +88,7 @@ impl AxisSimState {
     /// hardware the encoder advances continuously while tracking, so
     /// the resulting `RightAscension` reading stays constant after a
     /// slew completes. Without this, post-slew `RA` reads drift at
-    /// sidereal rate (one of the issues ConformU's slew tests flag).
+    /// sidereal rate (one of the issues `ConformU`'s slew tests flag).
     ///
     /// The tracking-mode chunk is chosen to approximate one sidereal
     /// "step" per `:j` poll given the default polling cadence
@@ -149,7 +149,7 @@ impl AxisSimState {
 /// signed-24-bit range. Used by [`AxisSimState::advance_one_step`] so
 /// a long-running tracking mock can't drift past `POSITION_MAX` and
 /// panic the next `:j` handler when `encode_position` rejects the
-/// out-of-range value. Real GTi firmware saturates here too.
+/// out-of-range value. Real `GTi` firmware saturates here too.
 fn clamp_to_wire_range(ticks: i32) -> i32 {
     use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
     ticks.clamp(POSITION_MIN, POSITION_MAX)
@@ -172,22 +172,22 @@ fn nibble_to_hex(n: u8) -> u8 {
 pub struct MockMountState {
     pub ra: AxisSimState,
     pub dec: AxisSimState,
-    /// Counts per revolution on the RA axis. Defaults to the GTi value
+    /// Counts per revolution on the RA axis. Defaults to the `GTi` value
     /// `0x375F00` (3,628,800); tests can override.
     pub cpr_ra: u32,
-    /// Counts per revolution on the Dec axis. Defaults to the GTi value
+    /// Counts per revolution on the Dec axis. Defaults to the `GTi` value
     /// `0x2C4C00` (2,903,040 — hardware-measured `:a2` reply `=004C2C`;
     /// deliberately **different** from the RA CPR so any code path that
     /// uses the wrong axis' CPR in a conversion fails tests loudly
     /// instead of passing on identical values); tests can override.
     pub cpr_dec: u32,
-    /// Timer-interrupt frequency. Defaults to the GTi value `0xF42400`
+    /// Timer-interrupt frequency. Defaults to the `GTi` value `0xF42400`
     /// (≈ 16 MHz).
     pub tmr_freq: u32,
     pub high_speed_ratio_ra: u32,
     pub high_speed_ratio_dec: u32,
     /// Motor-board version. Defaults to `0x000C_3003` — the decode of the
-    /// GTi probe table's wire reply `=03300C\r` (mount-type byte `0x03` in
+    /// `GTi` probe table's wire reply `=03300C\r` (mount-type byte `0x03` in
     /// the low byte, fw `0x30`/`0x0C` above it).
     pub motor_board_version: u32,
     /// Every command frame received, in arrival order. Tests assert against
@@ -229,7 +229,7 @@ impl Default for MockMountState {
 }
 
 impl MockMountState {
-    fn axis_mut(&mut self, axis: u8) -> Option<&mut AxisSimState> {
+    const fn axis_mut(&mut self, axis: u8) -> Option<&mut AxisSimState> {
         match axis {
             b'1' => Some(&mut self.ra),
             b'2' => Some(&mut self.dec),
@@ -237,7 +237,7 @@ impl MockMountState {
         }
     }
 
-    fn cpr(&self, axis: u8) -> Option<u32> {
+    const fn cpr(&self, axis: u8) -> Option<u32> {
         match axis {
             b'1' => Some(self.cpr_ra),
             b'2' => Some(self.cpr_dec),
@@ -245,7 +245,7 @@ impl MockMountState {
         }
     }
 
-    fn high_speed_ratio(&self, axis: u8) -> Option<u32> {
+    const fn high_speed_ratio(&self, axis: u8) -> Option<u32> {
         match axis {
             b'1' => Some(self.high_speed_ratio_ra),
             b'2' => Some(self.high_speed_ratio_dec),
@@ -274,8 +274,7 @@ impl MockMountState {
             b'a' => {
                 // CPR per axis (24-bit unsigned)
                 self.cpr(axis)
-                    .map(|cpr| ack_with(&encode_u24(cpr)))
-                    .unwrap_or_else(|| err_reply(0))
+                    .map_or_else(|| err_reply(0), |cpr| ack_with(&encode_u24(cpr)))
             }
             b'b' => {
                 // TMR_Freq, axis 1 only.
@@ -287,8 +286,7 @@ impl MockMountState {
             }
             b'g' => self
                 .high_speed_ratio(axis)
-                .map(|hsr| ack_with(&encode_u24(hsr)))
-                .unwrap_or_else(|| err_reply(0)),
+                .map_or_else(|| err_reply(0), |hsr| ack_with(&encode_u24(hsr))),
             b'e' => {
                 // Motor board version, returned for either axis.
                 if axis == b'1' || axis == b'2' {
@@ -333,19 +331,17 @@ impl MockMountState {
                 // nibble — DB1 (high nibble of the byte, mode info)
                 // and DB2 (low nibble, direction / variant). See
                 // `skywatcher_motor_protocol::MotionMode`.
-                let bytes: [u8; 2] = match payload.try_into() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(1));
-                        return;
-                    }
+                let bytes: [u8; 2] = if let Ok(b) = payload.try_into() {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(1));
+                    return;
                 };
-                let mode_byte = match decode_u8(bytes) {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(3));
-                        return;
-                    }
+                let mode_byte = if let Ok(b) = decode_u8(bytes) {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(3));
+                    return;
                 };
                 let db1 = (mode_byte >> 4) & 0x0F;
                 let db2 = mode_byte & 0x0F;
@@ -371,19 +367,17 @@ impl MockMountState {
             }
             b'S' => {
                 // Set goto target absolute: 6-byte signed/biased payload.
-                let bytes: &[u8; 6] = match payload.try_into() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(1));
-                        return;
-                    }
+                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(1));
+                    return;
                 };
-                let ticks = match decode_position(bytes) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(3));
-                        return;
-                    }
+                let ticks = if let Ok(t) = decode_position(bytes) {
+                    t
+                } else {
+                    self.pending_replies.push_back(err_reply(3));
+                    return;
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.goto_target_ticks = ticks;
@@ -398,19 +392,17 @@ impl MockMountState {
                 // `:G` left on the axis. The mount computes the
                 // absolute target by adding the signed delta to the
                 // current encoder position.
-                let bytes: &[u8; 6] = match payload.try_into() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(1));
-                        return;
-                    }
+                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(1));
+                    return;
                 };
-                let increment = match decode_u24(bytes) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(3));
-                        return;
-                    }
+                let increment = if let Ok(t) = decode_u24(bytes) {
+                    t
+                } else {
+                    self.pending_replies.push_back(err_reply(3));
+                    return;
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     let sign: i32 = if ax.ccw { -1 } else { 1 };
@@ -427,12 +419,11 @@ impl MockMountState {
                 // accepts and ignores the value — running through
                 // `:j` polling already lands on `goto_target_ticks`
                 // without overshoot.
-                let bytes: &[u8; 6] = match payload.try_into() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(1));
-                        return;
-                    }
+                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(1));
+                    return;
                 };
                 if decode_u24(bytes).is_err() {
                     self.pending_replies.push_back(err_reply(3));
@@ -446,19 +437,17 @@ impl MockMountState {
             }
             b'I' => {
                 // Set step period: 6-byte u24 payload.
-                let bytes: &[u8; 6] = match payload.try_into() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(1));
-                        return;
-                    }
+                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(1));
+                    return;
                 };
-                let period = match decode_u24(bytes) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(3));
-                        return;
-                    }
+                let period = if let Ok(p) = decode_u24(bytes) {
+                    p
+                } else {
+                    self.pending_replies.push_back(err_reply(3));
+                    return;
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.step_period = period;
@@ -469,19 +458,17 @@ impl MockMountState {
             }
             b'E' => {
                 // Sync: write encoder position. 6-byte signed/biased payload.
-                let bytes: &[u8; 6] = match payload.try_into() {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(1));
-                        return;
-                    }
+                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
+                    b
+                } else {
+                    self.pending_replies.push_back(err_reply(1));
+                    return;
                 };
-                let ticks = match decode_position(bytes) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        self.pending_replies.push_back(err_reply(3));
-                        return;
-                    }
+                let ticks = if let Ok(t) = decode_position(bytes) {
+                    t
+                } else {
+                    self.pending_replies.push_back(err_reply(3));
+                    return;
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.position_ticks = ticks;
@@ -602,6 +589,7 @@ pub struct CapturingMockFactory {
 }
 
 impl CapturingMockFactory {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -785,8 +773,8 @@ mod tests {
         assert!(matches!(err, TransportError::Framing(_)));
     }
 
-    /// Test matrix for the per-command CommandLengthError (`!01\r`) +
-    /// InvalidCharacter (`!03\r`) branches in `process_command`. Real
+    /// Test matrix for the per-command `CommandLengthError` (`!01\r`) +
+    /// `InvalidCharacter` (`!03\r`) branches in `process_command`. Real
     /// drivers never emit malformed payloads, so these branches are
     /// only reachable from direct `send_frame` calls with bogus
     /// frames. Exercising them here keeps the mock's defensive

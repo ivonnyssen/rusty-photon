@@ -1,4 +1,4 @@
-//! Steps for side_of_pier.feature.
+//! Steps for `side_of_pier.feature`.
 
 #![allow(unused_variables)]
 
@@ -14,7 +14,7 @@ async fn dec_encoder_reports_angle(world: &mut StarAdventurerWorld, deg: f64) {
     // the RA axis). Each scenario in this feature pins the per-axis
     // CPR pair to the mock defaults.
     const GTI_CPR_DEC: u32 = 0x002C_4C00;
-    let ticks = (deg * (GTI_CPR_DEC as f64) / 360.0).round() as i32;
+    let ticks = (deg * f64::from(GTI_CPR_DEC) / 360.0).round() as i32;
     world.queue_seed("dec_ticks", ticks.into()).await;
 }
 

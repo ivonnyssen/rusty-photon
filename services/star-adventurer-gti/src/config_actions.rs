@@ -3,7 +3,7 @@
 //! The generic `config.get` / `config.apply` / `config.schema` action dispatch
 //! the mount device delegates to (alongside its existing `ApParkAction` vendor
 //! actions) lives in [`rusty_photon_driver`]; this module supplies only what
-//! varies for the GTi — its `Config`, validation, secrets, and editability tiers.
+//! varies for the `GTi` — its `Config`, validation, secrets, and editability tiers.
 //!
 //! The mount's parse-don't-validate config types (`FlipRangeHours`, `MinAltitudeDegrees`,
 //! the `Usb|Udp` transport enum, the custom-serde `ApPark`, …) self-validate at

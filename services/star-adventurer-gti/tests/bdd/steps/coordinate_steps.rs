@@ -1,4 +1,4 @@
-//! Steps for coordinate_reads.feature.
+//! Steps for `coordinate_reads.feature`.
 
 use crate::world::StarAdventurerWorld;
 use cucumber::{given, then, when};

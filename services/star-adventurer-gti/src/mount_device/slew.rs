@@ -1,5 +1,5 @@
 //! Slew-axis wire helpers and slew-geometry math for the Star
-//! Adventurer GTi driver.
+//! Adventurer `GTi` driver.
 //!
 //! The watcher loops in [`super::watchers`] orchestrate slews and
 //! pickups; the inherent slew planner on [`super::MountDevice`] composes
@@ -30,7 +30,7 @@ use crate::units::{Cpr, RaTicks};
 /// Upper bound on how long [`stop_axis_and_wait`] will poll `:f<axis>`
 /// after a `:K` (decelerate stop) before giving up. The firmware
 /// finishes deceleration within ~1 s for typical Goto-Fast slew
-/// rates on the GTi; 2 s is a comfortable margin for the slow
+/// rates on the `GTi`; 2 s is a comfortable margin for the slow
 /// case, and bounding the wait prevents a stuck axis from wedging
 /// a slew indefinitely.
 pub(super) const AXIS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -198,7 +198,7 @@ pub(super) async fn pickup_reslew_axis(
 
 /// Force a flip slew's RA delta to keep the polar-axis sweep out of
 /// the CW exclusion zone `mech_HA ∈ (zone_min, zone_max)`
-/// (default `(+0.95, +11.05)` on the GTi — the arc where the CW
+/// (default `(+0.95, +11.05)` on the `GTi` — the arc where the CW
 /// rises more than 0.95 h above horizontal).
 ///
 /// The CW exclusion zone is at positive `mech_HA` only and is a
@@ -206,7 +206,7 @@ pub(super) async fn pickup_reslew_axis(
 /// latitude. Both forward flips (pre-flip → post-flip) and flip-backs
 /// (post-flip → pre-flip) need their RA paths constrained.
 ///
-/// Strategy: take the canonical short path unless its linear mech_HA
+/// Strategy: take the canonical short path unless its linear `mech_HA`
 /// sweep from `current_ticks` through `current_ticks + canonical_delta`
 /// crosses the CW exclusion zone (modulo the 24-hour wrap). If it would,
 /// try the long way around (`canonical ± cpr_i`) which lands at the
@@ -242,7 +242,7 @@ pub(super) fn flip_slew_ra_delta(
     let cur_ha = RaTicks::new(current_ticks)
         .to_mech_ha(Cpr::new(cpr))
         .value();
-    let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
+    let delta_ha = f64::from(canonical_delta) * 24.0 / f64::from(cpr);
     if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(canonical_delta);
     }
@@ -251,7 +251,7 @@ pub(super) fn flip_slew_ra_delta(
     } else {
         canonical_delta + cpr_i
     };
-    let long_delta_ha = (long_way as f64) * 24.0 / (cpr as f64);
+    let long_delta_ha = f64::from(long_way) * 24.0 / f64::from(cpr);
     if !canonical_path_crosses_binding_zone(cur_ha, long_delta_ha, binding_zone_hours) {
         return Ok(long_way);
     }
@@ -285,7 +285,7 @@ pub(super) fn check_non_flip_ra_path(
     let cur_ha = RaTicks::new(current_ticks)
         .to_mech_ha(Cpr::new(cpr))
         .value();
-    let delta_ha = (canonical_delta as f64) * 24.0 / (cpr as f64);
+    let delta_ha = f64::from(canonical_delta) * 24.0 / f64::from(cpr);
     if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(());
     }
@@ -300,7 +300,7 @@ pub(super) fn check_non_flip_ra_path(
     ))
 }
 
-/// Does the linear mech_HA sweep from `start_ha` by `delta_ha` enter
+/// Does the linear `mech_HA` sweep from `start_ha` by `delta_ha` enter
 /// `(zone_min, zone_max)` (modulo 24 h)? The sweep is the open
 /// interval `(min(start, start+delta), max(start, start+delta))`; the
 /// CW exclusion zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
@@ -356,7 +356,7 @@ fn canonical_path_crosses_binding_zone(
 /// structure, and is naturally robust to `current_ticks` outside the
 /// canonical band (the modular-replica scan covers all continuous
 /// sweeps regardless of where raw has accumulated).
-pub(super) fn flip_slew_dec_delta(
+pub(super) const fn flip_slew_dec_delta(
     canonical_delta: i32,
     current_ticks: i32,
     cpr_dec: u32,
@@ -383,13 +383,13 @@ pub(super) fn flip_slew_dec_delta(
 /// the below-horizon pole.
 ///
 /// `start` can sit anywhere in the signed-24-bit wire range
-/// (`±2²³ ≈ ±8.4M ticks`), which for the GTi's `cpr_dec ≈ 3.6M` puts
+/// (`±2²³ ≈ ±8.4M ticks`), which for the `GTi`'s `cpr_dec ≈ 3.6M` puts
 /// the relevant modular replica index up to `k = ±3` away from zero.
 /// Rather than enumerating a fixed `k` window, the check shifts the
 /// sweep into pole-relative coordinates `[a, b] = [lo − pole, hi − pole]`
 /// and tests whether that interval contains any integer multiple of
 /// `cpr` — equivalent to the largest multiple `≤ b` being `≥ a`.
-pub(super) fn canonical_path_crosses_pole(
+pub(super) const fn canonical_path_crosses_pole(
     start: i32,
     delta: i32,
     pole_ticks: i32,
