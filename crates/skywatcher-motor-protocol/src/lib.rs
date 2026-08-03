@@ -3,7 +3,7 @@
 //!
 //! Pure encoder/decoder for the request/response ASCII protocol described in
 //! the [Sky-Watcher motor-controller command set] PDF. The same wire protocol
-//! runs on USB-CDC serial (9600 or 115200 8N1) and on UDP/11880 (mount in WiFi
+//! runs on USB-CDC serial (9600 or 115200 8N1) and on UDP/11880 (mount in `WiFi`
 //! AP mode); this crate is transport-agnostic.
 //!
 //! Two implementation gotchas the codec isolates from callers:

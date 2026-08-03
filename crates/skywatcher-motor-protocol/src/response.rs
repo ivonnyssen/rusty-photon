@@ -92,7 +92,7 @@ pub enum Response {
     Ack,
     /// Single-byte payload, unpacked from two ASCII hex digits.
     U8(u8),
-    /// 24-bit unsigned payload (e.g. CPR, TMR_Freq, high-speed ratio).
+    /// 24-bit unsigned payload (e.g. CPR, `TMR_Freq`, high-speed ratio).
     U24(u32),
     /// 24-bit signed payload with the `0x800000` bias removed (encoder
     /// position).
@@ -194,7 +194,8 @@ impl Response {
 
     /// Helper: return the [`Axis`] the reply pertains to. Always derived from
     /// the originating command — the reply itself does not echo the axis.
-    pub fn axis_of(in_reply_to: &Command) -> Option<Axis> {
+    #[must_use]
+    pub const fn axis_of(in_reply_to: &Command) -> Option<Axis> {
         match in_reply_to {
             Command::Initialize(a)
             | Command::InquireCpr(a)

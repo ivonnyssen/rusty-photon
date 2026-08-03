@@ -21,7 +21,7 @@ pub enum Axis {
 }
 
 impl Axis {
-    fn wire_byte(self) -> u8 {
+    const fn wire_byte(self) -> u8 {
         match self {
             Self::Ra => b'1',
             Self::Dec => b'2',
@@ -75,7 +75,7 @@ pub struct MotionMode {
     pub speed: Speed,
     /// `true` = CCW (counter-clockwise); `false` = CW. Encoder convention
     /// is mount- and axis-specific — empirically on the Star Adventurer
-    /// GTi CW corresponds to increasing encoder counts on both axes.
+    /// `GTi` CW corresponds to increasing encoder counts on both axes.
     pub ccw: bool,
 }
 
@@ -120,6 +120,7 @@ impl MotionMode {
 
     /// Pack this mode into the two ASCII hex bytes the `:G` command
     /// expects on the wire (DB1 first, then DB2).
+    #[must_use]
     pub fn to_wire_bytes(self) -> [u8; 2] {
         // DB1 (high nibble): bit 0 = Tracking flag; bit 1 = Slow/Fast
         // selector whose meaning inverts between Goto and Tracking.
@@ -202,7 +203,7 @@ pub enum Command {
     StartMotion(Axis),
     /// `:K<axis>` — stop motion (decelerate).
     StopMotion(Axis),
-    /// `:L<axis>` — instant stop (used for AbortSlew).
+    /// `:L<axis>` — instant stop (used for `AbortSlew`).
     InstantStop(Axis),
 }
 

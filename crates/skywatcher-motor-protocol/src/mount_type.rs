@@ -3,7 +3,7 @@
 //! The `:e<axis>` (motor-board-version) reply is the only Sky-Watcher command
 //! that meaningfully identifies the device on the wire. After the codec's
 //! low-byte-first hex decode, its 24-bit payload packs the mount-type ID in
-//! the **low** byte and the firmware version in the upper bytes — the GTi's
+//! the **low** byte and the firmware version in the upper bytes — the `GTi`'s
 //! wire reply `=03300C\r` (measured on the real mount) decodes to:
 //!
 //! ```text
@@ -44,19 +44,19 @@ pub enum MountType {
     Heq5,
     /// `0x02` — EQ5 / EQ5 Pro German Equatorial.
     Eq5,
-    /// `0x03` — EQ3 / EQ3-2 / Star Adventurer GTi German Equatorial.
-    /// The Star Adventurer GTi reports as this family; see the hardware probe
+    /// `0x03` — EQ3 / EQ3-2 / Star Adventurer `GTi` German Equatorial.
+    /// The Star Adventurer `GTi` reports as this family; see the hardware probe
     /// table in `docs/references/skywatcher-motor-controller-command-set.md`.
     Eq3,
     /// `0x04` — EQ8 German Equatorial.
     Eq8,
-    /// `0x05` — AZ-EQ6 dual-mode (GEM + AltAz).
+    /// `0x05` — AZ-EQ6 dual-mode (GEM + `AltAz`).
     AzEq6,
-    /// `0x06` — AZ-EQ5 dual-mode (GEM + AltAz).
+    /// `0x06` — AZ-EQ5 dual-mode (GEM + `AltAz`).
     AzEq5,
-    /// `0x80` — Star Adventurer (the original single-axis tracker, not the GTi).
+    /// `0x80` — Star Adventurer (the original single-axis tracker, not the `GTi`).
     StarAdventurer,
-    /// `0x82` — AZ-GTi / Star Adventurer GTi (AltAz firmware variant).
+    /// `0x82` — AZ-GTi / Star Adventurer `GTi` (`AltAz` firmware variant).
     AzGti,
 }
 
@@ -67,18 +67,18 @@ impl MountType {
     /// `version` is the [`crate::Response::U24`] payload of the
     /// [`crate::Command::InquireMotorBoardVersion`] reply, with the codec's
     /// low-byte-first hex decoding (see [`crate::codec::decode_u24`])
-    /// already applied — i.e. for the GTi probe the wire reply
+    /// already applied — i.e. for the `GTi` probe the wire reply
     /// `=03300C\r` decodes to `0x000C_3003`, which is what the caller
     /// passes in. The mount-type ID rides in the low byte of that value
     /// (`0x03`), the upper bytes are the firmware version — the same
     /// split INDI eqmod applies (`MountCode = MCVersion & 0xFF`,
     /// `indi-eqmod/skywatcher.cpp`) and the split verified against the
-    /// real Star Adventurer GTi over USB.
+    /// real Star Adventurer `GTi` over USB.
     ///
     /// Returns `Ok(MountType)` when the low byte is in the whitelist;
     /// returns `Err(byte)` carrying the unrecognised mount-type byte
     /// otherwise so the driver can quote it in operator-facing diagnostics.
-    pub fn from_motor_board_version(version: u32) -> Result<Self, u8> {
+    pub const fn from_motor_board_version(version: u32) -> Result<Self, u8> {
         let mount_id = (version & 0xFF) as u8;
         match mount_id {
             0x00 => Ok(Self::Eq6),
