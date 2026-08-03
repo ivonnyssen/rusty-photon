@@ -4,7 +4,7 @@
 //! Behaviour is ported from the author's standalone `qhyccd-alpaca` driver and
 //! re-expressed against rusty-photon conventions, with these deliberate
 //! divergences (see `docs/services/qhy-camera.md`):
-//! - **MaxADU** = `2^transfer_bits - 1` (65535 for the 16-bit container we set at
+//! - **`MaxADU`** = `2^transfer_bits - 1` (65535 for the 16-bit container we set at
 //!   connect), from `GetQHYCCDChipInfo`'s reported bit depth — *not*
 //!   `2^OutputDataActualBits - 1`. The SDK left-shifts each raw sensor reading to
 //!   fill the container (12-bit IMX290 → values up to 0xFFF0, 14-bit IMX178 →
@@ -16,7 +16,7 @@
 //! - **Dark frames** return `NOT_IMPLEMENTED` (qhyccd-rs 0.1.9 has no shutter
 //!   actuation; contract E4 degraded form).
 //! - A real **`Error` `CameraState`** (E9) when a mid-exposure SDK call fails.
-//! - **PercentCompleted** is percent *done*, clamped, 100 when idle (E6).
+//! - **`PercentCompleted`** is percent *done*, clamped, 100 when idle (E6).
 //!
 //! Blocking exposure SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
@@ -103,7 +103,7 @@ struct DeviceState {
     /// Set on a mid-exposure SDK failure → `CameraState::Error` (E9).
     last_error: Mutex<Option<String>>,
     /// Serializes the capture task's "check generation + commit result" against
-    /// `cancel_exposure`'s "bump generation + clear image_ready", so an abort
+    /// `cancel_exposure`'s "bump generation + clear `image_ready`", so an abort
     /// landing at the wrong instant can't leave a stale `ImageReady = true`.
     result_lock: Mutex<()>,
     /// Notified the instant the detached capture task clears
@@ -211,7 +211,7 @@ impl QhyCameraDevice {
     /// Shorten the SDK drain deadline so a test can reach the refuse-to-close
     /// branch without waiting out [`CAPTURE_DRAIN_TIMEOUT`].
     #[cfg(test)]
-    fn with_drain_timeout(mut self, timeout: Duration) -> Self {
+    const fn with_drain_timeout(mut self, timeout: Duration) -> Self {
         self.drain_timeout = timeout;
         self
     }
@@ -501,7 +501,7 @@ fn max_adu_from_bits(bits: u32) -> u32 {
 }
 
 /// Bayer-pattern → ASCOM `BayerOffsetX/Y`.
-fn bayer_offsets(mode: BayerPattern) -> (u8, u8) {
+const fn bayer_offsets(mode: BayerPattern) -> (u8, u8) {
     match mode {
         BayerPattern::GBRG => (0, 1),
         BayerPattern::GRBG => (1, 0),
@@ -1168,7 +1168,7 @@ impl Camera for QhyCameraDevice {
             .handle
             .is_control_available(ControlType::CamColor)
             .ok_or(ASCOMError::INVALID_VALUE)?;
-        let mode = BayerPattern::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
+        let mode = BayerPattern::try_from(raw).map_err(|()| ASCOMError::INVALID_VALUE)?;
         Ok(bayer_offsets(mode).0)
     }
 
@@ -1185,7 +1185,7 @@ impl Camera for QhyCameraDevice {
             .handle
             .is_control_available(ControlType::CamColor)
             .ok_or(ASCOMError::INVALID_VALUE)?;
-        let mode = BayerPattern::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
+        let mode = BayerPattern::try_from(raw).map_err(|()| ASCOMError::INVALID_VALUE)?;
         Ok(bayer_offsets(mode).1)
     }
 
@@ -1891,7 +1891,7 @@ mod tests {
         );
         assert_eq!(
             device.exposure_max().await.unwrap(),
-            Duration::from_micros(3_600_000_000)
+            Duration::from_hours(1)
         );
         assert_eq!(
             device.exposure_resolution().await.unwrap(),

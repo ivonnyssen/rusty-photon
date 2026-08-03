@@ -1,5 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! qhy-camera — ASCOM Alpaca **Camera** (+ optional **FilterWheel**) driver for
+//! qhy-camera — ASCOM Alpaca **Camera** (+ optional **`FilterWheel`**) driver for
 //! real QHYCCD hardware, built natively on the published `qhyccd-rs` crate.
 //!
 //! The service enumerates every connected QHY camera (and any CFW discovered on
@@ -58,6 +58,7 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -241,7 +242,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -258,16 +259,12 @@ impl BoundServer {
             _sdk,
         } = self;
         let serve = async {
-            let result = match tls {
-                Some(ref tls_config) => {
-                    debug!("serving over TLS");
-                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                        .await
-                }
-                None => {
-                    debug!("serving plain HTTP");
-                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
-                }
+            let result = if let Some(ref tls_config) = tls {
+                debug!("serving over TLS");
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+            } else {
+                debug!("serving plain HTTP");
+                rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
             };
             result.map_err(|e| QhyCameraError::Server(e.to_string()))
         };

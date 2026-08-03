@@ -38,7 +38,7 @@ type BackendResult<T> = std::result::Result<T, BackendError>;
 /// into a caller-owned buffer and returns only a [`qhyccd_rs::FrameInfo`]; this
 /// pairs that buffer with the metadata as the currency between
 /// [`CameraHandle::get_single_frame`] and the ASCOM device's image conversion.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageData {
     /// raw pixel bytes (`bits_per_pixel` / `channels` describe the layout)
     pub data: Vec<u8>,
@@ -173,7 +173,7 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
 // --- production wrappers over qhyccd-rs ----------------------------------------
 
 /// One physical QHYCCD connection shared by the Camera and (when present) the
-/// FilterWheel ASCOM devices that map to the same SDK id. A QHY CFW is wired to
+/// `FilterWheel` ASCOM devices that map to the same SDK id. A QHY CFW is wired to
 /// the camera's USB and driven through the camera handle (`ControlType::CfwPort`), so
 /// both ASCOM devices must talk to ONE physical `OpenQHYCCD` handle. We refcount
 /// logical connects and only `CloseQHYCCD` on the LAST disconnect: opening the
@@ -189,6 +189,7 @@ pub struct SharedCameraConnection {
 }
 
 impl SharedCameraConnection {
+    #[must_use]
     pub fn new(camera: qhyccd_rs::Camera) -> Arc<Self> {
         Arc::new(Self {
             camera,
@@ -199,7 +200,7 @@ impl SharedCameraConnection {
     /// The shared `qhyccd-rs` camera both ASCOM devices operate through. The CFW
     /// device clones it (the clone shares the same internal handle `Arc`) so a
     /// single `OpenQHYCCD` serves both imaging and filter-wheel control.
-    pub fn camera(&self) -> &qhyccd_rs::Camera {
+    pub const fn camera(&self) -> &qhyccd_rs::Camera {
         &self.camera
     }
 
@@ -251,7 +252,7 @@ pub struct QhyCameraHandle {
 }
 
 impl QhyCameraHandle {
-    pub fn new(conn: Arc<SharedCameraConnection>) -> Self {
+    pub const fn new(conn: Arc<SharedCameraConnection>) -> Self {
         Self {
             conn,
             connected: AtomicBool::new(false),
@@ -486,7 +487,7 @@ pub(crate) mod mock {
     use std::time::Duration;
 
     #[derive(Debug)]
-    pub(crate) struct MockCameraHandle {
+    pub struct MockCameraHandle {
         pub id: String,
         pub model: String,
         open: AtomicBool,
@@ -831,7 +832,7 @@ pub(crate) mod mock {
     }
 
     #[derive(Debug)]
-    pub(crate) struct MockFilterWheelHandle {
+    pub struct MockFilterWheelHandle {
         pub id: String,
         open: AtomicBool,
         filters: u32,
@@ -910,7 +911,7 @@ pub(crate) mod mock {
 // --- shared-connection refcount tests ------------------------------------------
 
 /// Tests for [`SharedCameraConnection`] — the refcount that makes the Camera and
-/// FilterWheel devices share ONE physical handle so disconnecting one does not
+/// `FilterWheel` devices share ONE physical handle so disconnecting one does not
 /// tear down the other (the real-hardware bug fixed 2026-06-18). They exercise
 /// the refcount against the `qhyccd-rs` simulation backend (`Sdk::new()`
 /// fabricates a QHY178M-Simulated camera + CFW), so they need no hardware.

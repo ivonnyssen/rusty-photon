@@ -13,7 +13,7 @@
 //! `crates/qhyccd-rs/libqhyccd-sys/build.rs` next to the link directives —
 //! because `cargo:rustc-link-arg` applies only to the emitting package's own
 //! link targets and does NOT propagate from a dependency's build script to
-//! the final binary (verified empirically; rules_rust likewise propagates
+//! the final binary (verified empirically; `rules_rust` likewise propagates
 //! only `-l`/`-L` from dependency build scripts). The hand-written
 //! BUILD.bazel mirrors these flags on the real-SDK targets via `rustc_flags`.
 
