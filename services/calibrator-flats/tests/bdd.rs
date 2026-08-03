@@ -1,6 +1,6 @@
 //! BDD test entry point for the calibrator-flats service.
 //!
-//! These tests spawn three processes — OmniSim, rp, and calibrator-flats —
+//! These tests spawn three processes — `OmniSim`, rp, and calibrator-flats —
 //! and drive the flat calibration workflow end-to-end via rp's REST API.
 
 #![allow(clippy::expect_used, clippy::panic)]

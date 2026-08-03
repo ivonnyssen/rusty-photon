@@ -20,10 +20,12 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { plan: None }
     }
 
+    #[must_use]
     pub fn with_plan(mut self, plan: FlatPlan) -> Self {
         self.plan = Some(plan);
         self
@@ -62,7 +64,7 @@ impl ServerBuilder {
         // and the only stdout consumer (bdd-infra's port parser) never runs
         // services with --service.
         if !rusty_photon_service_lifecycle::is_scm_service() {
-            println!("Bound calibrator-flats server bound_addr={}", local_addr);
+            println!("Bound calibrator-flats server bound_addr={local_addr}");
         }
         info!("calibrator-flats service bound on {}", local_addr);
 
@@ -90,7 +92,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -101,7 +103,7 @@ impl BoundServer {
             Some(ref tls) => {
                 rusty_photon_tls::server::serve_tls(self.listener, self.router, tls, shutdown)
                     .await
-                    .map_err(|e| crate::error::CalibratorFlatsError::Server(e.to_string()))?
+                    .map_err(|e| crate::error::CalibratorFlatsError::Server(e.to_string()))?;
             }
             None => axum::serve(self.listener, self.router)
                 .with_graceful_shutdown(shutdown)

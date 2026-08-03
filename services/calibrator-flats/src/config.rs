@@ -47,7 +47,7 @@ pub struct FlatPlan {
     /// Starting exposure time (humantime, e.g. `"1s"`, `"500ms"`)
     #[serde(default = "default_initial_duration", with = "humantime_serde")]
     pub initial_duration: Duration,
-    /// Calibrator brightness (null/absent = max_brightness)
+    /// Calibrator brightness (null/absent = `max_brightness`)
     #[serde(default)]
     pub brightness: Option<u32>,
     /// Filters to capture flats for
@@ -67,11 +67,13 @@ pub struct FlatPlan {
 impl FlatPlan {
     /// The filter wheel to drive, with the no-wheel spellings (absent,
     /// `null`, `""`) normalized to `None`.
+    #[must_use]
     pub fn filter_wheel(&self) -> Option<&str> {
         self.filter_wheel_id.as_deref().filter(|id| !id.is_empty())
     }
 
-    pub fn rp_auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
+    #[must_use]
+    pub const fn rp_auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
         self.service_auth.as_ref()
     }
 
@@ -99,7 +101,7 @@ pub struct CliOverrides {
 
 impl CliOverrides {
     /// Apply the overrides onto `plan` in place.
-    pub fn apply(&self, plan: &mut FlatPlan) {
+    pub const fn apply(&self, plan: &mut FlatPlan) {
         if let Some(port) = self.port {
             plan.server.port = port;
         }
@@ -109,19 +111,19 @@ impl CliOverrides {
     }
 }
 
-fn default_target_adu_fraction() -> f64 {
+const fn default_target_adu_fraction() -> f64 {
     0.5
 }
 
-fn default_tolerance() -> f64 {
+const fn default_tolerance() -> f64 {
     0.05
 }
 
-fn default_max_iterations() -> u32 {
+const fn default_max_iterations() -> u32 {
     10
 }
 
-fn default_initial_duration() -> Duration {
+const fn default_initial_duration() -> Duration {
     Duration::from_secs(1)
 }
 

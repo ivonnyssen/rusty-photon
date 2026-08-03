@@ -67,7 +67,7 @@ pub struct FilterResult {
 pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
     // 1. Get camera info
     let camera_info = mcp.get_camera_info(&plan.camera_id).await?;
-    let target_adu = (camera_info.max_adu as f64 * plan.target_adu_fraction) as u32;
+    let target_adu = (f64::from(camera_info.max_adu) * plan.target_adu_fraction) as u32;
 
     info!(
         max_adu = camera_info.max_adu,
@@ -187,7 +187,7 @@ fn next_duration(
     let adjusted = if last_median == 0 {
         current.saturating_mul(2)
     } else {
-        let ratio = target_adu as f64 / last_median as f64;
+        let ratio = f64::from(target_adu) / f64::from(last_median);
         current.mul_f64(ratio)
     };
     adjusted.max(exposure_min).min(exposure_max)
@@ -195,7 +195,7 @@ fn next_duration(
 
 /// Fractional deviation of a measured ADU from the target.
 fn deviation(target_adu: u32, last_median: u32) -> f64 {
-    (last_median as f64 - target_adu as f64).abs() / target_adu as f64
+    (f64::from(last_median) - f64::from(target_adu)).abs() / f64::from(target_adu)
 }
 
 /// Find a converged exposure for one capture group, halving the panel
@@ -307,7 +307,7 @@ mod tests {
     use std::time::Duration;
 
     const MIN: Duration = Duration::from_micros(10);
-    const MAX: Duration = Duration::from_secs(3600);
+    const MAX: Duration = Duration::from_hours(1);
 
     fn camera_info() -> CameraInfo {
         CameraInfo {
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn next_duration_zero_signal_clamps_to_exposure_max() {
         // Doubling guard would still exceed MAX.
-        let next = next_duration(Duration::from_secs(2400), 32_000, 0, MIN, MAX);
+        let next = next_duration(Duration::from_mins(40), 32_000, 0, MIN, MAX);
         assert_eq!(next, MAX);
     }
 
@@ -451,15 +451,12 @@ mod tests {
         mock.expect_measure().times(2).returning(move |_, d| {
             let n = call_for_mock.fetch_add(1, Ordering::SeqCst) + 1;
             Box::pin(async move {
-                match n {
-                    1 => {
-                        assert_eq!(d, Duration::from_secs(1));
-                        Ok(16_000) // half of target -> ratio 2x
-                    }
-                    _ => {
-                        assert_eq!(d, Duration::from_secs(2));
-                        Ok(32_000)
-                    }
+                if n == 1 {
+                    assert_eq!(d, Duration::from_secs(1));
+                    Ok(16_000) // half of target -> ratio 2x
+                } else {
+                    assert_eq!(d, Duration::from_secs(2));
+                    Ok(32_000)
                 }
             })
         });

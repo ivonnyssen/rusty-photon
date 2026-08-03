@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! BDD test world for the calibrator-flats service.
 //!
-//! Holds the three external processes (OmniSim, rp, calibrator-flats) plus
+//! Holds the three external processes (`OmniSim`, rp, calibrator-flats) plus
 //! an in-process webhook receiver. The shared harness types come from
 //! `bdd_infra::rp_harness`; everything below is just the per-scenario
 //! accumulator state for this service's tests.

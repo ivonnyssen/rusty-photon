@@ -1,7 +1,7 @@
 //! BDD step definitions for the end-to-end calibrator-flats orchestrator
 //! workflow.
 //!
-//! The scenarios spawn three processes: OmniSim (Alpaca simulator), rp
+//! The scenarios spawn three processes: `OmniSim` (Alpaca simulator), rp
 //! (equipment gateway + session orchestrator), and calibrator-flats (the
 //! orchestrator plugin being tested). All three are coordinated via
 //! `bdd_infra::rp_harness` helpers; this file holds only the Gherkin step
@@ -153,8 +153,7 @@ async fn session_status_is(world: &mut CalibratorFlatsWorld, expected: String) {
 
     assert_eq!(
         actual, expected,
-        "expected session status '{}' but got '{}'",
-        expected, actual
+        "expected session status '{expected}' but got '{actual}'"
     );
 }
 
@@ -166,9 +165,7 @@ async fn should_receive_at_least_n_events(
 ) {
     assert!(
         world.wait_for_events(&event_type, count).await,
-        "expected at least {} '{}' event(s) within timeout",
-        count,
-        event_type
+        "expected at least {count} '{event_type}' event(s) within timeout"
     );
 }
 
@@ -257,7 +254,11 @@ fn register_calibrator_flats_plugin(world: &mut CalibratorFlatsWorld) {
 }
 
 async fn start_rp_service(world: &mut CalibratorFlatsWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
+    if world
+        .rp
+        .as_ref()
+        .is_some_and(bdd_infra::ServiceHandle::is_running)
+    {
         return;
     }
 
