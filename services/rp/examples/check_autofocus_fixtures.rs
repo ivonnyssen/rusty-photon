@@ -32,7 +32,7 @@ fn fixture_path(d: i32) -> PathBuf {
     let name = if d < 0 {
         format!("pos_m{:03}.fits", d.unsigned_abs())
     } else {
-        format!("pos_p{:03}.fits", d as u32)
+        format!("pos_p{:03}.fits", d.cast_unsigned())
     };
     dir.join(name)
 }

@@ -61,10 +61,10 @@ pub(crate) fn lst_for_datetime(dt: DateTime<Utc>, site_longitude_deg: f64) -> Re
 
 fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
     let year = dt.year();
-    let month = dt.month() as i32;
-    let day = dt.day() as i32;
-    let hh = dt.hour() as i32;
-    let mm = dt.minute() as i32;
+    let month = dt.month().cast_signed();
+    let day = dt.day().cast_signed();
+    let hh = dt.hour().cast_signed();
+    let mm = dt.minute().cast_signed();
     let seconds = f64::from(dt.second()) + f64::from(dt.nanosecond()) * 1e-9;
 
     let (utc1, utc2) = Dtf2d(true, year, month, day, hh, mm, seconds)
@@ -522,7 +522,7 @@ mod tests {
         // Any encoder magnitude up to and including ±cpr/4 (= ±90°)
         // is reachable without a meridian flip. ConformU's SOPPierTest
         // exercises these cases; all four must read pierWest.
-        let quarter = (GTI_CPR / 4) as i32;
+        let quarter = (GTI_CPR / 4).cast_signed();
         assert_eq!(
             side_of_pier(DecTicks::new(quarter / 3), cpr(), 47.6),
             PierSide::West
@@ -550,7 +550,7 @@ mod tests {
         // Dec encoder magnitude past 90° means the mount has rotated
         // the Dec axis beyond the celestial pole — the post-flip /
         // counterweight-up state, which ASCOM names pierEast.
-        let quarter = (GTI_CPR / 4) as i32;
+        let quarter = (GTI_CPR / 4).cast_signed();
         assert_eq!(
             side_of_pier(DecTicks::new(quarter + 1), cpr(), 47.6),
             PierSide::East
@@ -560,7 +560,7 @@ mod tests {
             PierSide::East
         );
         // Mid-flip and "full flip to equator on the opposite side".
-        let half = (GTI_CPR / 2) as i32;
+        let half = (GTI_CPR / 2).cast_signed();
         assert_eq!(
             side_of_pier(DecTicks::new(quarter + half / 4), cpr(), 47.6),
             PierSide::East
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn side_of_pier_southern_hemisphere_inverts() {
         // Mirror of the northern split.
-        let quarter = (GTI_CPR / 4) as i32;
+        let quarter = (GTI_CPR / 4).cast_signed();
         assert_eq!(side_of_pier(DecTicks::new(0), cpr(), -33.9), PierSide::East);
         assert_eq!(
             side_of_pier(DecTicks::new(quarter / 3), cpr(), -33.9),
@@ -616,7 +616,7 @@ mod tests {
         // counter value. Raw in `(3·cpr/4, 5·cpr/4)` folds to within
         // `(-cpr/4, +cpr/4)` — i.e. pre-flip → pierWest for a Northern
         // observer.
-        let cpr_i = GTI_CPR as i32;
+        let cpr_i = GTI_CPR.cast_signed();
         let raw_positive_zone = cpr_i * 7 / 8; // 7·cpr/8, folds to -cpr/8
         assert!(raw_positive_zone.abs() > cpr_i / 4);
         let folded = DecTicks::new(raw_positive_zone)
@@ -1211,7 +1211,7 @@ mod tests {
         // returns East in north (past 90°); celestial dec = -1 *
         // (180 - 180) = 0. RA mapping uses the post-flip +12h shift.
         let lst = 12.0;
-        let half_cpr = (GTI_CPR / 2) as i32;
+        let half_cpr = (GTI_CPR / 2).cast_signed();
         let (_ra, dec) = encoder_to_celestial(
             RaTicks::new(0),
             DecTicks::new(half_cpr),

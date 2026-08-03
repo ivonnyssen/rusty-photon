@@ -51,7 +51,7 @@ fn configured_with_camera_at(world: &mut RpWorld, url: String, device_number: i3
     world.cameras.push(CameraConfig {
         id: "main-cam".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         cooler_targets_c: Vec::new(),
     });
 }
@@ -61,7 +61,7 @@ fn configured_with_filter_wheel_at(world: &mut RpWorld, url: String, device_numb
     world.filter_wheels.push(FilterWheelConfig {
         id: "main-fw".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         filters: vec![
             "Luminance".to_string(),
             "Red".to_string(),
@@ -77,7 +77,7 @@ fn configured_with_camera_at_simulator_device(world: &mut RpWorld, device_number
     world.cameras.push(CameraConfig {
         id: "main-cam".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         cooler_targets_c: Vec::new(),
     });
 }
@@ -88,7 +88,7 @@ fn configured_with_filter_wheel_at_simulator_device(world: &mut RpWorld, device_
     world.filter_wheels.push(FilterWheelConfig {
         id: "main-fw".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         filters: vec![
             "Luminance".to_string(),
             "Red".to_string(),
@@ -113,7 +113,7 @@ fn configured_with_switch_at(world: &mut RpWorld, url: String, device_number: i3
     world.switches.push(SwitchConfig {
         id: "main-switch".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
     });
 }
 
@@ -132,7 +132,7 @@ fn configured_with_rotator_at(world: &mut RpWorld, url: String, device_number: i
     world.rotators.push(RotatorConfig {
         id: "main-rotator".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
     });
 }
 
@@ -151,7 +151,7 @@ fn configured_with_observing_conditions_at(world: &mut RpWorld, url: String, dev
     world.observing_conditions.push(ObservingConditionsConfig {
         id: "main-oc".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
     });
 }
 
@@ -170,7 +170,7 @@ fn configured_with_dome_at(world: &mut RpWorld, url: String, device_number: i32)
     world.domes.push(DomeConfig {
         id: "main-dome".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
     });
 }
 

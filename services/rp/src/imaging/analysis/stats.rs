@@ -64,7 +64,7 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
     // (over-subtraction during dark correction, electronic offsets), and
     // when they do, callers see a uniform "negatives become zero" rather
     // than a min/max/median of 0 alongside a negative mean.
-    let clamp = |v: i32| -> u32 { v.max(0) as u32 };
+    let clamp = |v: i32| -> u32 { v.max(0).cast_unsigned() };
 
     Some(ImageStats {
         median_adu: clamp(median),

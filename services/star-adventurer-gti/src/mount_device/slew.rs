@@ -238,7 +238,7 @@ pub(super) fn flip_slew_ra_delta(
     if cpr == 0 || canonical_delta == 0 {
         return Ok(canonical_delta);
     }
-    let cpr_i = cpr as i32;
+    let cpr_i = cpr.cast_signed();
     let cur_ha = RaTicks::new(current_ticks)
         .to_mech_ha(Cpr::new(cpr))
         .value();
@@ -365,7 +365,7 @@ pub(super) const fn flip_slew_dec_delta(
     if cpr_dec == 0 || canonical_delta == 0 {
         return canonical_delta;
     }
-    let cpr_i = cpr_dec as i32;
+    let cpr_i = cpr_dec.cast_signed();
     let unsafe_pole = if northern { -cpr_i / 4 } else { cpr_i / 4 };
     if !canonical_path_crosses_pole(current_ticks, canonical_delta, unsafe_pole, cpr_dec) {
         return canonical_delta;
@@ -395,7 +395,7 @@ pub(super) const fn canonical_path_crosses_pole(
     pole_ticks: i32,
     cpr: u32,
 ) -> bool {
-    let cpr_i = cpr as i32;
+    let cpr_i = cpr.cast_signed();
     let end = start + delta;
     let (lo, hi) = if end >= start {
         (start, end)

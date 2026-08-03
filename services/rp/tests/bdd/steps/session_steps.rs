@@ -30,7 +30,10 @@ async fn flat_calibration_orchestrator(
     count2: i32,
     filter2: String,
 ) {
-    let plan = vec![(filter1, count1 as u32), (filter2, count2 as u32)];
+    let plan = vec![
+        (filter1, count1.cast_unsigned()),
+        (filter2, count2.cast_unsigned()),
+    ];
     world.flat_plan = plan.clone();
     setup_orchestrator(world, OrchestratorBehavior::FlatCalibration(plan)).await;
     add_orchestrator_plugin(world);

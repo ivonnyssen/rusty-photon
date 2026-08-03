@@ -967,7 +967,7 @@ impl McpHandler {
             let shape = (width as usize, height as usize);
             let cached_pixels: Option<CachedPixels> = match captured_max_adu {
                 Some(max_adu) if u16::try_from(max_adu).is_ok() => {
-                    let max_adu_i32 = max_adu as i32;
+                    let max_adu_i32 = max_adu.cast_signed();
                     let u16_pixels: Vec<u16> = image_array
                         .iter()
                         .map(|&p| p.clamp(0, max_adu_i32) as u16)
@@ -2061,7 +2061,7 @@ pub(crate) fn stats_outcome<T: imaging::Pixel>(
     // Negative pixels are clamped to 0 inside `compute_stats`, so the
     // `to_u32() as i32` round-trip is safe for realistic camera
     // ranges (u16 cameras + i32 scientific HDR ≤ i32::MAX).
-    let mut pixels: Vec<i32> = view.iter().map(|p| p.to_u32() as i32).collect();
+    let mut pixels: Vec<i32> = view.iter().map(|p| p.to_u32().cast_signed()).collect();
     imaging::compute_stats(&mut pixels)
         .ok_or_else(|| crate::error::RpError::Imaging("image has no pixels".into()))
 }

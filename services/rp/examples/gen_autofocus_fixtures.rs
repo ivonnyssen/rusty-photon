@@ -133,13 +133,13 @@ fn render(hfr: f64, seed: u64) -> Vec<u16> {
     for &cx in &STAR_X {
         for &cy in &STAR_Y {
             for dy in -radius..=radius {
-                let y = cy as i32 + dy;
-                if y < 0 || y >= HEIGHT as i32 {
+                let y = cy.cast_signed() + dy;
+                if y < 0 || y >= HEIGHT.cast_signed() {
                     continue;
                 }
                 for dx in -radius..=radius {
-                    let x = cx as i32 + dx;
-                    if x < 0 || x >= WIDTH as i32 {
+                    let x = cx.cast_signed() + dx;
+                    if x < 0 || x >= WIDTH.cast_signed() {
                         continue;
                     }
                     let r2 = f64::from(dx * dx + dy * dy);
@@ -184,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // noise pattern; offset-by-200 keeps |d|=0 from collapsing to
         // an all-zeros seed.
         let seed = 0xCAFE_BABE_DEAD_BEEF_u64
-            .wrapping_add(i64::from(d) as u64)
+            .wrapping_add(i64::from(d).cast_unsigned())
             .wrapping_add(200);
         let pixels = render(hfr, seed);
 
@@ -195,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name = if d < 0 {
             format!("pos_m{:03}.fits", d.unsigned_abs())
         } else {
-            format!("pos_p{:03}.fits", d as u32)
+            format!("pos_p{:03}.fits", d.cast_unsigned())
         };
         let path = out_dir.join(&name);
 

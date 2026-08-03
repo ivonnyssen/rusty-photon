@@ -908,13 +908,13 @@ impl Camera for SvbonyCamera {
     async fn exposure_min(&self) -> ASCOMResult<Duration> {
         self.ensure_connected()?;
         let (min, _) = (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(min.max(0) as u64))
+        Ok(Duration::from_micros(min.max(0).cast_unsigned()))
     }
 
     async fn exposure_max(&self) -> ASCOMResult<Duration> {
         self.ensure_connected()?;
         let (_, max) = (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(max.max(0) as u64))
+        Ok(Duration::from_micros(max.max(0).cast_unsigned()))
     }
 
     async fn exposure_resolution(&self) -> ASCOMResult<Duration> {

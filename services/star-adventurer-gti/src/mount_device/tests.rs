@@ -487,7 +487,7 @@ async fn auto_flip_tick_ignores_the_post_flip_side() {
     // the pole so side_of_pier reads the post-flip side.
     let (d, mock) = auto_flip_device(0.0).await;
     seed_mech_ha(&d, &mock, 0.2).await;
-    let cpr = d.manager.parameters().await.unwrap().cpr_dec as i32;
+    let cpr = d.manager.parameters().await.unwrap().cpr_dec.cast_signed();
     mock.lock().await.dec.position_ticks = cpr / 2;
     d.manager.seed_dec_position(cpr / 2).await;
     d.state.write().await.tracking_requested = true;
@@ -507,7 +507,7 @@ async fn auto_flip_tick_stays_latched_at_the_post_flip_fold_with_a_negative_offs
     // any flip on the flipped side regardless of latch state.
     let (d, mock) = auto_flip_device(-0.25).await;
     seed_mech_ha(&d, &mock, 11.75).await;
-    let cpr = d.manager.parameters().await.unwrap().cpr_dec as i32;
+    let cpr = d.manager.parameters().await.unwrap().cpr_dec.cast_signed();
     mock.lock().await.dec.position_ticks = cpr / 2;
     d.manager.seed_dec_position(cpr / 2).await;
     d.state.write().await.tracking_requested = true;
@@ -527,7 +527,7 @@ async fn auto_flip_tick_rearms_after_the_fold_with_a_negative_offset() {
     // natural-side crossing.
     let (d, mock) = auto_flip_device(-0.25).await;
     seed_mech_ha(&d, &mock, -11.9).await;
-    let cpr = d.manager.parameters().await.unwrap().cpr_dec as i32;
+    let cpr = d.manager.parameters().await.unwrap().cpr_dec.cast_signed();
     mock.lock().await.dec.position_ticks = cpr / 2;
     d.manager.seed_dec_position(cpr / 2).await;
     d.state.write().await.tracking_requested = true;
@@ -3561,7 +3561,7 @@ fn flip_slew_ra_delta_forward_flip_from_pre_flip_zero_uses_natural_ccw() {
     // Canonical CCW; path stays in negative half. Safe.
     let cpr = GTI_CPR;
     let current = 0;
-    let canonical = -(cpr as i32 / 2);
+    let canonical = -(cpr.cast_signed() / 2);
     let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
     assert_eq!(issued, canonical, "natural CCW already in the safe half");
 }
@@ -3579,7 +3579,7 @@ fn flip_slew_ra_delta_forward_flip_target_minus_half_h_takes_long_way() {
     let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
     assert!(issued < 0, "must force CCW long way");
     assert_eq!(
-        (issued - canonical).rem_euclid(cpr as i32),
+        (issued - canonical).rem_euclid(cpr.cast_signed()),
         0,
         "same modular destination"
     );
@@ -3596,8 +3596,8 @@ fn flip_slew_ra_delta_flip_back_from_minus_half_cpr_uses_natural_cw() {
     // rule forced -3*cpr/4 here, routing through +6 to +9 binding
     // zone and slamming the CW shaft into the pier.
     let cpr = GTI_CPR;
-    let current = -(cpr as i32 / 2);
-    let canonical = cpr as i32 / 4;
+    let current = -(cpr.cast_signed() / 2);
+    let canonical = cpr.cast_signed() / 4;
     let issued = flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).unwrap();
     assert_eq!(
         issued, canonical,
@@ -3615,8 +3615,8 @@ fn flip_slew_ra_delta_flip_back_from_plus_half_cpr_forces_cw_through_wrap() {
     // half going from +cpr/2 → +cpr/2 + cpr/4 = +3cpr/4 raw
     // (modular: -cpr/4 = mech_HA -6).
     let cpr = GTI_CPR;
-    let current = cpr as i32 / 2;
-    let canonical_raw = -(cpr as i32 / 4) - current; // -3cpr/4
+    let current = cpr.cast_signed() / 2;
+    let canonical_raw = -(cpr.cast_signed() / 4) - current; // -3cpr/4
     let canonical = RaTicks::new(canonical_raw)
         .fold_to_canonical_band(Cpr::new(cpr))
         .value(); // +cpr/4
@@ -3677,8 +3677,8 @@ fn flip_slew_ra_delta_empty_binding_zone_always_uses_canonical() {
     let cpr = GTI_CPR;
     let empty_zone = (24.0_f64, 0.0_f64);
     for (current, canonical) in [
-        (0_i32, -(cpr as i32 / 2)),
-        (-(cpr as i32 / 2), cpr as i32 / 4),
+        (0_i32, -(cpr.cast_signed() / 2)),
+        (-(cpr.cast_signed() / 2), cpr.cast_signed() / 4),
         (-1_810_272_i32, -3_798_i32),
     ] {
         assert_eq!(
@@ -3700,8 +3700,8 @@ fn flip_slew_ra_delta_refuses_when_both_directions_cross_zone() {
     // mech_HA -6 → 0 → +6, crossing the wide zone directly at
     // (+0.95, +6). Both directions unsafe → refuse.
     let cpr = GTI_CPR;
-    let current = -(cpr as i32 / 4); // mech_HA = -6
-    let canonical = -(cpr as i32 / 2); // -12 h CCW, canonical-fold boundary
+    let current = -(cpr.cast_signed() / 4); // mech_HA = -6
+    let canonical = -(cpr.cast_signed() / 2); // -12 h CCW, canonical-fold boundary
     let err =
         flip_slew_ra_delta(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE).expect_err("both cross");
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
@@ -3751,7 +3751,7 @@ fn flip_slew_ra_delta_wide_zone_picks_long_way_for_zone_boundary_traversal() {
         "canonical CCW sweeps the entire zone; must force CW long way (got {issued})"
     );
     assert_eq!(
-        (issued - canonical).rem_euclid(cpr as i32),
+        (issued - canonical).rem_euclid(cpr.cast_signed()),
         0,
         "same modular destination"
     );
@@ -3765,8 +3765,8 @@ fn check_non_flip_ra_path_refuses_when_canonical_sweep_crosses_zone() {
     // interior. Today's destination-only `check_within_safe_envelope`
     // would let this through; the path-aware check refuses it.
     let cpr = GTI_CPR;
-    let current = (cpr as i32) / 48; // mech_HA = +0.5
-    let canonical = (cpr as i32) * 11 / 24; // +11 h CW
+    let current = (cpr.cast_signed()) / 48; // mech_HA = +0.5
+    let canonical = (cpr.cast_signed()) * 11 / 24; // +11 h CW
     let err = check_non_flip_ra_path(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE)
         .expect_err("path crosses zone");
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
@@ -3783,8 +3783,8 @@ fn check_non_flip_ra_path_accepts_clean_sweep() {
     // mech_HA = -3 h, canonical -2 h CCW → sweep [-5, -3]. No
     // overlap with the wide zone or its k=-1 mirror. Returns Ok.
     let cpr = GTI_CPR;
-    let current = -(cpr as i32) / 8; // mech_HA = -3
-    let canonical = -(cpr as i32) / 12; // -2 h CCW
+    let current = -(cpr.cast_signed()) / 8; // mech_HA = -3
+    let canonical = -(cpr.cast_signed()) / 12; // -2 h CCW
     check_non_flip_ra_path(canonical, current, cpr, GTI_CW_EXCLUSION_ZONE)
         .expect("sweep [-5, -3] doesn't touch the wide zone");
 }
@@ -3805,7 +3805,7 @@ fn flip_slew_dec_delta_north_park3_start_to_post_flip_positive_uses_natural_cw()
     // Natural delta = +cpr/8 (positive CW). Path stays in upper
     // half, doesn't touch SCP. Use canonical.
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
+    let quarter = cpr.cast_signed() / 4;
     let current = quarter; // +90° encoder
     let target = (f64::from(cpr) * 3.0 / 8.0).round() as i32; // +135°
     let canonical = target - current; // +cpr/8
@@ -3827,8 +3827,8 @@ fn flip_slew_dec_delta_north_pre_flip_zero_to_post_flip_dec_zero_takes_long_way(
     // the Dec axis through −cpr/4 (SCP, below horizon for north).
     // The fix forces the CW long way through +cpr/4 (NCP).
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
-    let half_cpr = cpr as i32 / 2;
+    let quarter = cpr.cast_signed() / 4;
+    let half_cpr = cpr.cast_signed() / 2;
     let canonical = -half_cpr; // post-flip target for celestial dec = 0
     let issued = flip_slew_dec_delta(canonical, 0, cpr, true);
     assert_eq!(issued, half_cpr, "must force CW through NCP");
@@ -3844,7 +3844,7 @@ fn flip_slew_dec_delta_north_flip_back_from_upper_post_flip_uses_natural_ccw() {
     // CCW (negative direction) crosses +cpr/4 (NCP). Don't take
     // the long way — CCW is safe here.
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
+    let quarter = cpr.cast_signed() / 4;
     let current = (f64::from(cpr) * 3.0 / 8.0).round() as i32;
     let target = 0;
     let canonical = target - current; // negative
@@ -3864,9 +3864,9 @@ fn flip_slew_dec_delta_north_below_equator_pre_flip_to_post_flip_positive_uses_c
     // (= -45°). Target = +3*cpr/8 (= +135° encoder, post-flip
     // dec=+45). CW path: -45 → 0 → +90 (NCP) → +135. SAFE.
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
-    let current = -(cpr as i32 / 8);
-    let target = (cpr as i32 * 3) / 8;
+    let quarter = cpr.cast_signed() / 4;
+    let current = -(cpr.cast_signed() / 8);
+    let target = (cpr.cast_signed() * 3) / 8;
     let canonical = target - current; // positive, half cpr
     let issued = flip_slew_dec_delta(canonical, current, cpr, true);
     assert_eq!(issued, canonical, "natural CW direction is safe");
@@ -3881,15 +3881,15 @@ fn flip_slew_dec_delta_north_below_equator_pre_flip_to_post_flip_negative_forces
     // -cpr/8 → -cpr/4 (SCP) → -3*cpr/8. UNSAFE. Force long-way CW:
     // -cpr/8 → +cpr/4 (NCP) → +cpr/2 → wraps → -3*cpr/8. SAFE.
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
-    let current = -(cpr as i32 / 8);
-    let target_canonical = -(cpr as i32 * 3) / 8;
+    let quarter = cpr.cast_signed() / 4;
+    let current = -(cpr.cast_signed() / 8);
+    let target_canonical = -(cpr.cast_signed() * 3) / 8;
     let canonical = target_canonical - current; // negative
     let issued = flip_slew_dec_delta(canonical, current, cpr, true);
     // Forced to positive direction (long way).
     assert!(issued > 0);
     // Lands at the same modular destination.
-    assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
+    assert_eq!((issued - canonical).rem_euclid(cpr.cast_signed()), 0);
     // Path crosses NCP, not SCP.
     assert!(canonical_path_crosses_pole(current, issued, quarter, cpr));
     assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
@@ -3903,12 +3903,12 @@ fn flip_slew_dec_delta_north_lower_post_flip_to_pre_flip_uses_ccw_through_wrap()
     // UNSAFE. Force CCW (negative) long-way: -3*cpr/8 →
     // -cpr/2 → wraps → +cpr/2 → +cpr/4 (NCP) → 0. SAFE.
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
-    let current = -((cpr as i32 * 3) / 8);
+    let quarter = cpr.cast_signed() / 4;
+    let current = -((cpr.cast_signed() * 3) / 8);
     let canonical = 0 - current; // positive
     let issued = flip_slew_dec_delta(canonical, current, cpr, true);
     assert!(issued < 0, "must force CCW long way");
-    assert_eq!((issued - canonical).rem_euclid(cpr as i32), 0);
+    assert_eq!((issued - canonical).rem_euclid(cpr.cast_signed()), 0);
     assert!(canonical_path_crosses_pole(current, issued, quarter, cpr));
     assert!(!canonical_path_crosses_pole(current, issued, -quarter, cpr));
 }
@@ -3920,9 +3920,9 @@ fn flip_slew_dec_delta_south_inverts_safe_pole() {
     // start at encoder = -cpr/4 (Park 3 south = SCP). Target =
     // -3*cpr/8. Natural CCW (negative). Should be used as-is.
     let cpr = GTI_CPR;
-    let quarter = cpr as i32 / 4;
+    let quarter = cpr.cast_signed() / 4;
     let current = -quarter; // SCP for southern Park 3
-    let target = -((cpr as i32 * 3) / 8);
+    let target = -((cpr.cast_signed() * 3) / 8);
     let canonical = target - current; // negative
     let issued = flip_slew_dec_delta(canonical, current, cpr, false);
     assert_eq!(
@@ -3957,7 +3957,7 @@ fn flip_slew_dec_delta_handles_raw_current_outside_canonical_band() {
     // have misread as post-flip and routed the long way through the
     // below-horizon pole) passes through unchanged.
     let cpr = GTI_CPR;
-    let cpr_i = cpr as i32;
+    let cpr_i = cpr.cast_signed();
     let raw = cpr_i * 7 / 8; // 7·cpr/8, folds to -cpr/8
     let canonical = 100_000_i32;
     // Sweep [+3,175,200, +3,275,200]. The unsafe pole at -cpr/4
@@ -3980,7 +3980,7 @@ fn canonical_path_crosses_pole_north_detects_k_plus_3_replica_at_positive_wire_b
     // The prior hardcoded `k ∈ -2..=2` scan missed this band; the
     // div_euclid check finds it.
     let cpr = GTI_CPR;
-    let cpr_i = cpr as i32;
+    let cpr_i = cpr.cast_signed();
     let pole = -cpr_i / 4; // SCP for N
     let start = 8_300_000_i32; // near +wire/2 (= +8.39M)
     let delta = 1_700_000_i32; // sweep end at +10M, containing +9.98M
@@ -4011,7 +4011,7 @@ fn canonical_path_crosses_pole_south_detects_k_minus_3_replica_at_negative_wire_
     // same div_euclid check (the helper has no hemisphere-specific
     // branches) must find it.
     let cpr = GTI_CPR;
-    let cpr_i = cpr as i32;
+    let cpr_i = cpr.cast_signed();
     let pole = cpr_i / 4; // NCP, unsafe for S
     let start = -10_000_000_i32; // near -wire/2
     let delta = 1_700_000_i32; // sweep end at -8.3M, containing -9.98M

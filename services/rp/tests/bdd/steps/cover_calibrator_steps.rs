@@ -23,7 +23,7 @@ async fn rp_running_with_cover_calibrator_at(world: &mut RpWorld, url: String, d
     world.cover_calibrators.push(CoverCalibratorConfig {
         id: "flat-panel".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         poll_interval: Some(std::time::Duration::from_millis(100)),
     });
     start_rp(world).await;
@@ -58,7 +58,7 @@ async fn mcp_call_calibrator_on_brightness(
         world,
         "calibrator_on",
         &calibrator_id,
-        Some(brightness as u32),
+        Some(brightness.cast_unsigned()),
     )
     .await;
 }

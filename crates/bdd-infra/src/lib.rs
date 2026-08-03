@@ -860,7 +860,7 @@ fn send_sigterm(pid: u32) {
     #[cfg(unix)]
     {
         // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
-        let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        let ret = unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) };
         if ret != 0 {
             debug!(
                 "failed to send SIGTERM to pid {}: {}",
