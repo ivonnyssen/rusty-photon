@@ -1,4 +1,4 @@
-//! Step definitions for switch_control.feature
+//! Step definitions for `switch_control.feature`
 //!
 //! Also defines the shared "Given a running PPBA server with the switch connected"
 //! and "Given a running PPBA server with auto-dew enabled" steps used by other features.
@@ -73,10 +73,7 @@ async fn switch_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
         .unwrap();
     assert!(
         (value - expected).abs() < f64::EPSILON,
-        "switch {} value: expected {}, got {}",
-        id,
-        expected,
-        value
+        "switch {id} value: expected {expected}, got {value}"
     );
 }
 
@@ -84,8 +81,7 @@ async fn switch_value_should_be(world: &mut PpbaWorld, id: i32, expected: f64) {
 async fn switch_boolean_should_be_true(world: &mut PpbaWorld, id: i32) {
     assert!(
         world.switch_ref().get_switch(id as usize).await.unwrap(),
-        "switch {} should be true",
-        id
+        "switch {id} should be true"
     );
 }
 
@@ -104,8 +100,7 @@ async fn switches_should_be_writable(world: &mut PpbaWorld, from: i32, to: i32) 
     for id in from..=to {
         assert!(
             switch.can_write(id as usize).await.unwrap(),
-            "switch {} should be writable",
-            id
+            "switch {id} should be writable"
         );
     }
 }
@@ -116,8 +111,7 @@ async fn switches_should_not_be_writable(world: &mut PpbaWorld, from: i32, to: i
     for id in from..=to {
         assert!(
             !switch.can_write(id as usize).await.unwrap(),
-            "switch {} should not be writable",
-            id
+            "switch {id} should not be writable"
         );
     }
 }
@@ -126,8 +120,7 @@ async fn switches_should_not_be_writable(world: &mut PpbaWorld, from: i32, to: i
 async fn switch_should_not_be_writable(world: &mut PpbaWorld, id: i32) {
     assert!(
         !world.switch_ref().can_write(id as usize).await.unwrap(),
-        "switch {} should not be writable",
-        id
+        "switch {id} should not be writable"
     );
 }
 
@@ -135,8 +128,7 @@ async fn switch_should_not_be_writable(world: &mut PpbaWorld, id: i32) {
 async fn switch_should_be_writable(world: &mut PpbaWorld, id: i32) {
     assert!(
         world.switch_ref().can_write(id as usize).await.unwrap(),
-        "switch {} should be writable",
-        id
+        "switch {id} should be writable"
     );
 }
 

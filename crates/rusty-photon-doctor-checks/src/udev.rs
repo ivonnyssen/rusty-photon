@@ -8,12 +8,14 @@
 /// The group names assigned anywhere in the rule content (`GROUP="x"` and
 /// the final-assignment form `GROUP:="x"`), deduplicated, in order of
 /// first appearance. Comment lines are skipped.
+#[must_use]
 pub fn group_assignments(content: &str) -> Vec<String> {
     scan(content, "GROUP")
 }
 
 /// The `idVendor` values the rule matches (`ATTRS{idVendor}=="xxxx"`),
 /// deduplicated, in order of first appearance.
+#[must_use]
 pub fn vendor_matches(content: &str) -> Vec<String> {
     scan(content, "ATTRS{idVendor}")
 }

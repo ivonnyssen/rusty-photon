@@ -61,7 +61,7 @@ pub struct PlateSolverWorld {
     pub last_wrapper_exit_code: Option<i32>,
 
     /// For the Scenario Outline that POSTs with a single hint set,
-    /// step state populated by the "with that fits_path and hint X
+    /// step state populated by the "with that `fits_path` and hint X
     /// set to Y" When step.
     pub pending_hint: Option<(String, f64)>,
 
@@ -181,7 +181,7 @@ impl PlateSolverWorld {
     }
 
     /// Build a config pointing at `mock_astap` with the configured
-    /// mode (if any), write it under temp_dir, and start the wrapper
+    /// mode (if any), write it under `temp_dir`, and start the wrapper
     /// via `ServiceHandle`. Stores all paths in the world.
     pub async fn start_wrapper_with_mock(&mut self) {
         let mock_path = Self::mock_astap_path();

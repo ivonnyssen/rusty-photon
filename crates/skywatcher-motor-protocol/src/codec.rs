@@ -26,7 +26,8 @@ pub const POSITION_MAX: i32 = (1 << 23) - 1;
 const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 /// Encode a `u8` as two ASCII hex bytes (high nibble first, upper-case).
-pub fn encode_u8(value: u8) -> [u8; 2] {
+#[must_use]
+pub const fn encode_u8(value: u8) -> [u8; 2] {
     [
         HEX_UPPER[(value >> 4) as usize],
         HEX_UPPER[(value & 0x0F) as usize],
@@ -55,7 +56,8 @@ fn decode_nibble(b: u8) -> Result<u8> {
 ///
 /// Only the low 24 bits of `value` are used. For example, `0x12_3456` encodes
 /// as `[b'5', b'6', b'3', b'4', b'1', b'2']`.
-pub fn encode_u24(value: u32) -> [u8; 6] {
+#[must_use]
+pub const fn encode_u24(value: u32) -> [u8; 6] {
     let lo = (value & 0xFF) as u8;
     let mid = ((value >> 8) & 0xFF) as u8;
     let hi = ((value >> 16) & 0xFF) as u8;

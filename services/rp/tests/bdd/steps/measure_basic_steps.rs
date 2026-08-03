@@ -79,18 +79,15 @@ async fn fetch_exposure_document(world: &mut RpWorld) {
     let url = format!("{}/api/documents/{}", world.rp_url(), document_id);
     let client = reqwest::Client::new();
 
-    match client.get(&url).send().await {
-        Ok(resp) => {
-            world.last_api_status = Some(resp.status().as_u16());
-            match resp.json::<Value>().await {
-                Ok(body) => world.last_exposure_document = Some(body),
-                Err(_) => world.last_exposure_document = None,
-            }
+    if let Ok(resp) = client.get(&url).send().await {
+        world.last_api_status = Some(resp.status().as_u16());
+        match resp.json::<Value>().await {
+            Ok(body) => world.last_exposure_document = Some(body),
+            Err(_) => world.last_exposure_document = None,
         }
-        Err(_) => {
-            world.last_api_status = None;
-            world.last_exposure_document = None;
-        }
+    } else {
+        world.last_api_status = None;
+        world.last_exposure_document = None;
     }
 }
 
@@ -101,109 +98,82 @@ fn measure_basic_contains_field(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
     assert!(
         result.get(&field).is_some(),
-        "expected '{}' in measure_basic result, got: {:?}",
-        field,
-        result
+        "expected '{field}' in measure_basic result, got: {result:?}"
     );
 }
 
 #[then(expr = "the measure_basic result should contain {string} as a non-negative integer")]
 fn measure_basic_contains_non_negative_integer(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in measure_basic result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_basic result, got: {result:?}"));
 
     assert!(
         value.as_u64().is_some() || value.as_i64().is_some_and(|v| v >= 0),
-        "expected '{}' to be a non-negative integer, got: {:?}",
-        field,
-        value
+        "expected '{field}' to be a non-negative integer, got: {value:?}"
     );
 }
 
 #[then(expr = "the measure_basic result should contain {string} as a non-negative number")]
 fn measure_basic_contains_non_negative_number(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in measure_basic result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_basic result, got: {result:?}"));
 
     let num = value
         .as_f64()
-        .unwrap_or_else(|| panic!("expected '{}' to be a number, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
 
     assert!(
         num >= 0.0,
-        "expected '{}' to be non-negative, got: {}",
-        field,
-        num
+        "expected '{field}' to be non-negative, got: {num}"
     );
 }
 
 #[then(expr = "the measure_basic result should contain {string} as a positive integer")]
 fn measure_basic_contains_positive_integer(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in measure_basic result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_basic result, got: {result:?}"));
 
     let num = value.as_u64().unwrap_or_else(|| {
-        panic!(
-            "expected '{}' to be a non-negative integer, got: {:?}",
-            field, value
-        )
+        panic!("expected '{field}' to be a non-negative integer, got: {value:?}")
     });
 
-    assert!(num > 0, "expected '{}' to be positive, got: {}", field, num);
+    assert!(num > 0, "expected '{field}' to be positive, got: {num}");
 }
 
 #[then(expr = "the measure_basic result should contain {string} with value null")]
 fn measure_basic_field_is_null(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in measure_basic result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_basic result, got: {result:?}"));
 
     assert!(
         value.is_null(),
-        "expected '{}' to be null, got: {:?}",
-        field,
-        value
+        "expected '{field}' to be null, got: {value:?}"
     );
 }
 
 #[then(expr = "the measure_basic result should contain {string} with value {int}")]
 fn measure_basic_field_equals_int(world: &mut RpWorld, field: String, expected: i64) {
     let result = result_or_panic(world);
-    let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in measure_basic result, got: {:?}",
-            field, result
-        )
-    });
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_basic result, got: {result:?}"));
 
     let actual = value
         .as_i64()
         .or_else(|| value.as_u64().map(|v| v as i64))
-        .unwrap_or_else(|| panic!("expected '{}' to be an integer, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be an integer, got: {value:?}"));
 
     assert_eq!(
         actual, expected,
-        "expected '{}' to equal {}, got: {}",
-        field, expected, actual
+        "expected '{field}' to equal {expected}, got: {actual}"
     );
 }
 
@@ -216,13 +186,11 @@ fn exposure_document_has_section(world: &mut RpWorld, section_name: String) {
 
     let sections = doc
         .get("sections")
-        .unwrap_or_else(|| panic!("exposure document has no 'sections' field, got: {:?}", doc));
+        .unwrap_or_else(|| panic!("exposure document has no 'sections' field, got: {doc:?}"));
 
     assert!(
         sections.get(&section_name).is_some(),
-        "expected section '{}' in exposure document, got sections: {:?}",
-        section_name,
-        sections
+        "expected section '{section_name}' in exposure document, got sections: {sections:?}"
     );
 }
 
@@ -237,18 +205,12 @@ fn section_contains_field(world: &mut RpWorld, section_name: String, field: Stri
         .get("sections")
         .and_then(|s| s.get(&section_name))
         .unwrap_or_else(|| {
-            panic!(
-                "expected section '{}' in exposure document, got: {:?}",
-                section_name, doc
-            )
+            panic!("expected section '{section_name}' in exposure document, got: {doc:?}")
         });
 
     assert!(
         section.get(&field).is_some(),
-        "expected '{}' in '{}' section, got: {:?}",
-        field,
-        section_name,
-        section
+        "expected '{field}' in '{section_name}' section, got: {section:?}"
     );
 }
 
@@ -295,7 +257,7 @@ fn record_result(world: &mut RpWorld, result: Result<Value, String>) {
     world.last_tool_result = Some(result);
 }
 
-fn result_or_panic(world: &RpWorld) -> &Value {
+const fn result_or_panic(world: &RpWorld) -> &Value {
     world
         .last_measure_basic_result
         .as_ref()

@@ -52,17 +52,20 @@ impl EphemerisCtx {
     }
 
     /// Local sidereal time in hours [0, 24).
+    #[must_use]
     pub fn lst_hours(&self, time: DateTime<Utc>) -> f64 {
         self.eph.sidereal_time(&self.site, time).lst_hours
     }
 
     /// +1.0 north of the equator, -1.0 south of it.
-    pub fn hemisphere_sign(&self) -> f64 {
+    #[must_use]
+    pub const fn hemisphere_sign(&self) -> f64 {
         self.hemisphere_sign
     }
 
     /// The visible celestial pole's ICRS direction — the sign picker
     /// for the three-point axis fit.
+    #[must_use]
     pub fn pole_hemisphere_unit(&self) -> Vec3 {
         unit_from_radec(0.0, 90.0 * self.hemisphere_sign)
     }
@@ -70,6 +73,7 @@ impl EphemerisCtx {
     /// The pole target in observed coordinates: azimuth 0 (north
     /// hemisphere) or 180 (south), altitude |latitude|. No refraction
     /// term — see the module doc.
+    #[must_use]
     pub fn pole_target_alt_az(&self) -> AltAz {
         AltAz {
             azimuth_degrees: if self.hemisphere_sign >= 0.0 {

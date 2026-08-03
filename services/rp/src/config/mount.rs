@@ -3,12 +3,12 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Conservative default GoTo slew rate: 2°/s = 7200 arcsec/s. Deliberately
-/// slower than real GoTo mounts (3–4°/s) so the predicted slew duration
+/// Conservative default `GoTo` slew rate: 2°/s = 7200 arcsec/s. Deliberately
+/// slower than real `GoTo` mounts (3–4°/s) so the predicted slew duration
 /// over-estimates and the deadline won't false-abort a healthy slew.
 const DEFAULT_SLEW_RATE_ARCSEC_PER_SEC: f64 = 7200.0;
 
-/// Assumed mount GoTo slew rate in arcsec/sec, feeding the predictive slew
+/// Assumed mount `GoTo` slew rate in arcsec/sec, feeding the predictive slew
 /// deadline (`predicted = great-circle distance / rate + settle`). The
 /// generic Alpaca `Telescope` trait exposes no GoTo-rate property, so this
 /// config value is the rate source; set it per-rig for a tighter deadline.
@@ -35,7 +35,8 @@ impl SlewRateArcsecPerSec {
     }
 
     /// The rate in arcsec/sec.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -73,7 +74,7 @@ pub struct MountConfig {
     #[serde(default, with = "humantime_serde")]
     #[schemars(with = "Option<String>")]
     pub settle_after_slew: Option<Duration>,
-    /// Assumed mount GoTo slew rate (arcsec/sec) used to size the
+    /// Assumed mount `GoTo` slew rate (arcsec/sec) used to size the
     /// predictive slew deadline. Defaults to 7200 (2°/s), a conservative
     /// slow-stepper rate; set per-rig for a tighter bound.
     #[serde(default)]

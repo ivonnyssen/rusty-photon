@@ -99,7 +99,7 @@ fn parse_locale(s: &str) -> LanguageIdentifier {
     bare.parse().unwrap_or_else(|_| en())
 }
 
-fn en() -> LanguageIdentifier {
+const fn en() -> LanguageIdentifier {
     // Parsed at compile time via `unic_langid::langid!` so this is
     // panic-free at runtime *and* guaranteed to yield the English
     // identifier (rather than `LanguageIdentifier::default()`, which
@@ -160,6 +160,7 @@ pub fn select_best<A: I18nAssets>(
 }
 
 /// Why a [`select_best`] / [`init`] call did not load the requested locale.
+///
 /// The binary continues to function via Fluent's English fallback either way;
 /// this is surfaced for callers that want to log or telemeter the miss.
 ///
@@ -240,6 +241,7 @@ pub fn init<A: I18nAssets>(
 /// The loader registered by the most recent [`init`] call on this thread,
 /// if any. Used by `clap` `value_parser` callbacks (which run inside
 /// `get_matches()` and so cannot capture the loader by reference).
+#[must_use]
 pub fn active_loader() -> Option<Arc<FluentLanguageLoader>> {
     ACTIVE_LOADER.with(|cell| cell.get().cloned())
 }

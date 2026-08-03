@@ -23,7 +23,7 @@ use tracing::debug;
 use crate::error::{Result, TlsError};
 
 /// How often, at most, a handshake re-stats the configured pair.
-const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_mins(1);
 
 /// A `ResolvesServerCert` that serves the pair at `cert_path`/`key_path`
 /// and hot-swaps it when the files change on disk.
@@ -78,7 +78,7 @@ impl ReloadableCertResolver {
     /// Override the throttle — `Duration::ZERO` checks on every handshake
     /// (the test affordance).
     #[must_use]
-    pub fn with_check_interval(mut self, check_interval: Duration) -> Self {
+    pub const fn with_check_interval(mut self, check_interval: Duration) -> Self {
         self.check_interval = check_interval;
         self
     }
@@ -200,7 +200,7 @@ mod tests {
 
     fn backdate(path: &Path) {
         let file = std::fs::File::options().write(true).open(path).unwrap();
-        file.set_modified(SystemTime::now() - Duration::from_secs(3600))
+        file.set_modified(SystemTime::now() - Duration::from_hours(1))
             .unwrap();
     }
 
@@ -338,7 +338,7 @@ mod tests {
         let (dir, cert, key) = stage_pair();
         let resolver = ReloadableCertResolver::load(&cert, &key)
             .unwrap()
-            .with_check_interval(Duration::from_secs(3600));
+            .with_check_interval(Duration::from_hours(1));
         let before = cert_der(&resolver);
 
         regenerate_pair(dir.path());

@@ -89,7 +89,8 @@ pub struct ServiceHealthSupervisor {
 }
 
 impl ServiceHealthSupervisor {
-    pub fn new(name: String, ctx: SupervisionContext) -> Self {
+    #[must_use]
+    pub const fn new(name: String, ctx: SupervisionContext) -> Self {
         Self { name, ctx }
     }
 
@@ -202,7 +203,7 @@ impl ServiceHealthSupervisor {
                 notifier_type: notifier.type_name().to_string(),
                 message: message.clone(),
                 success: result.is_ok(),
-                error: result.as_ref().err().map(|e| e.to_string()),
+                error: result.as_ref().err().map(std::string::ToString::to_string),
                 timestamp_epoch_ms: now_ms,
             };
             self.ctx.state.write().await.add_notification(record);
@@ -271,8 +272,8 @@ impl ServiceHealthSupervisor {
                 // Removed from the registry; the reconciler will cancel us on
                 // its next pass. Idle until then.
                 tokio::select! {
-                    _ = tokio::time::sleep(policy.poll_interval) => continue,
-                    _ = cancel.cancelled() => return,
+                    () = tokio::time::sleep(policy.poll_interval) => continue,
+                    () = cancel.cancelled() => return,
                 }
             };
 
@@ -376,7 +377,7 @@ impl ServiceHealthSupervisor {
                             result = self.ctx.restarts.restart(&self.name) => result,
                             // A cancelled restart drops its gate slot; the
                             // platform command runs to completion detached.
-                            _ = cancel.cancelled() => return,
+                            () = cancel.cancelled() => return,
                         };
                         match attempt {
                             Ok(report) => {
@@ -428,8 +429,8 @@ impl ServiceHealthSupervisor {
             }
 
             tokio::select! {
-                _ = tokio::time::sleep(policy.poll_interval) => {}
-                _ = cancel.cancelled() => return,
+                () = tokio::time::sleep(policy.poll_interval) => {}
+                () = cancel.cancelled() => return,
             }
         }
     }
@@ -505,7 +506,7 @@ impl DiscoverySupervisor {
 
 #[async_trait]
 impl EventMonitor for DiscoverySupervisor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Service Discovery"
     }
 
@@ -541,8 +542,8 @@ impl EventMonitor for DiscoverySupervisor {
             }
 
             tokio::select! {
-                _ = tokio::time::sleep(self.ctx.policy.discovery_interval) => {}
-                _ = cancel.cancelled() => break,
+                () = tokio::time::sleep(self.ctx.policy.discovery_interval) => {}
+                () = cancel.cancelled() => break,
             }
         }
 
@@ -735,7 +736,7 @@ mod tests {
 
     #[async_trait]
     impl Notifier for RecordingNotifier {
-        fn type_name(&self) -> &str {
+        fn type_name(&self) -> &'static str {
             "recorder"
         }
 

@@ -325,7 +325,10 @@ impl SessionManager {
         // path re-invokes the orchestrator without passing through
         // here, so a resumed session keeps its progress.
         if let Some(progress) = &self.planner_progress {
-            progress.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
             debug!("planner progress counters cleared for the fresh session");
         }
         self.persist(&state).await;
@@ -635,7 +638,9 @@ impl SessionManager {
                     crate::planner::progress::SessionProgress::default()
                 })
             };
-            *store.lock().unwrap_or_else(|e| e.into_inner()) = restored;
+            *store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = restored;
         }
 
         let restored_status = if conditions_safe {
@@ -736,7 +741,9 @@ impl SessionManager {
         };
         let progress = match &self.planner_progress {
             Some(store) => {
-                let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                let store = store
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 serde_json::to_value(&*store).unwrap_or(Value::Null)
             }
             None => Value::Null,
@@ -1689,7 +1696,7 @@ mod tests {
         let manager = manager_with_auth(&format!("http://127.0.0.1:{port}/invoke"), None);
         manager.start().await.unwrap();
 
-        let outcome = tokio::time::timeout(Duration::from_secs(600), async {
+        let outcome = tokio::time::timeout(Duration::from_mins(10), async {
             while manager.status().await != "idle" {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

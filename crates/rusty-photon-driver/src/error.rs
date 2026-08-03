@@ -17,6 +17,7 @@ use rusty_photon_config::actions::ApplyError;
 /// A free function rather than `impl From<ApplyError> for ASCOMError`: the orphan
 /// rule forbids that impl in this crate (both `ApplyError` and `ASCOMError` are
 /// foreign here), and the dispatch is the only caller.
+#[must_use]
 pub fn apply_error_to_ascom(err: ApplyError) -> ASCOMError {
     let code = match &err {
         ApplyError::Parse(_) => ASCOMErrorCode::INVALID_VALUE,

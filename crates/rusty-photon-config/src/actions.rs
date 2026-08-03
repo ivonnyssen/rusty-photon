@@ -59,11 +59,13 @@ pub enum ConfigAction {
 
 impl ConfigAction {
     /// The action's wire name.
+    #[must_use]
     pub fn name(self) -> &'static str {
         self.into()
     }
 
     /// The action a wire name denotes, or `None` if it denotes none.
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         name.parse().ok()
     }
@@ -127,12 +129,14 @@ pub trait ConfigurableDriver {
 
     /// Identity fields (e.g. a device `unique_id`) — read-only by default in the
     /// UI behind an explicit "unlock to edit" escape hatch.
+    #[must_use]
     fn locked_paths() -> &'static [&'static str] {
         &[]
     }
 
     /// Hard read-only fields the UI must never let the user edit (e.g. a
     /// `server.port` the BFF could not follow across a rebind).
+    #[must_use]
     fn read_only_paths() -> &'static [&'static str] {
         &[]
     }
@@ -141,6 +145,7 @@ pub trait ConfigurableDriver {
     /// [`ApplyDisposition::Reload`] — matches the Alpaca drivers, which run
     /// under `ServiceRunner::run_with_reload`; services with no in-process
     /// reload (rp) override to [`ApplyDisposition::Restart`].
+    #[must_use]
     fn apply_disposition() -> ApplyDisposition {
         ApplyDisposition::Reload
     }
@@ -210,7 +215,8 @@ pub struct ConfigApplyResponse {
 
 impl ConfigApplyResponse {
     /// Build the validation-failure response (`status:"invalid"`, file unchanged).
-    pub fn invalid(errors: Vec<FieldError>) -> Self {
+    #[must_use]
+    pub const fn invalid(errors: Vec<FieldError>) -> Self {
         Self {
             status: ApplyStatus::Invalid,
             applied: Vec::new(),
@@ -259,6 +265,7 @@ pub fn config_get<D: ConfigurableDriver>(
 /// `config.schema`: a JSON Schema for the driver's config plus its editability
 /// tiers. The schema shapes the form; the tier lists gate which fields the UI
 /// lets the user edit (JSON Schema cannot express "identity" / "read-only").
+#[must_use]
 pub fn config_schema<D: ConfigurableDriver>() -> ConfigSchemaResponse {
     let schema = schema_for!(D::Config);
     ConfigSchemaResponse {
@@ -390,6 +397,7 @@ pub fn config_apply<D: ConfigurableDriver>(
 /// Expansion names leaves in **one** value; pairing a round-tripped sentinel
 /// with its stored prior across the submitted and on-disk values is
 /// `prior_secret_pointer`'s job (array elements pair by `id`, not index).
+#[must_use]
 pub fn expand_secret_pointer(pattern: &str, value: &Value) -> Vec<String> {
     if pattern.is_empty() {
         // `Value::pointer("")` resolves to the root.
@@ -866,8 +874,7 @@ mod tests {
         assert!(resp
             .config
             .pointer("/server/auth")
-            .map(Value::is_null)
-            .unwrap_or(true));
+            .is_none_or(Value::is_null));
         assert!(resp.overrides.is_empty());
     }
 
@@ -1006,7 +1013,7 @@ mod tests {
             serial_port: Some("/dev/ttyACM9".to_string()),
         };
         // Effective (running) config reflects the override.
-        let mut running = file_cfg.clone();
+        let mut running = file_cfg;
         TestDriver::apply_overrides(&mut running, &overrides);
 
         // Submission carries the override value (as config.get would have shown)

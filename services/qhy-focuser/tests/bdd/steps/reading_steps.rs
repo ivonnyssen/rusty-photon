@@ -1,4 +1,4 @@
-//! Step definitions for focuser_readings.feature
+//! Step definitions for `focuser_readings.feature`
 
 use crate::world::QhyFocuserWorld;
 use ascom_alpaca::ASCOMErrorCode;
@@ -68,9 +68,7 @@ async fn temperature_should_be_approx(world: &mut QhyFocuserWorld, expected: f64
     let temp = world.focuser().temperature().await.unwrap();
     assert!(
         (temp - expected).abs() < 0.001,
-        "expected temperature ~{}, got {}",
-        expected,
-        temp
+        "expected temperature ~{expected}, got {temp}"
     );
 }
 
@@ -92,7 +90,6 @@ fn operation_should_fail_not_connected(world: &mut QhyFocuserWorld) {
     assert_eq!(
         code,
         ASCOMErrorCode::NOT_CONNECTED.raw(),
-        "expected NOT_CONNECTED error code, got: {}",
-        code
+        "expected NOT_CONNECTED error code, got: {code}"
     );
 }

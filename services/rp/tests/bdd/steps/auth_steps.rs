@@ -14,7 +14,7 @@ use crate::world::RpWorld;
 // ---------------------------------------------------------------------------
 
 #[given("rp is configured with TLS and auth enabled")]
-fn rp_configured_with_tls_and_auth(_world: &mut RpWorld) {
+const fn rp_configured_with_tls_and_auth(_world: &mut RpWorld) {
     // Marker — config is built in the When step
 }
 
@@ -46,7 +46,7 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
     let pki = world.pki();
     let client = pki.https_client();
     let port = world.rp.as_ref().unwrap().port;
-    let url = format!("https://localhost:{}/health", port);
+    let url = format!("https://localhost:{port}/health");
     wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
 
@@ -59,7 +59,7 @@ async fn health_responds_with_auth(world: &mut RpWorld) {
     let pki = world.pki();
     let client = pki.https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
-    let url = format!("https://localhost:{}/health", port);
+    let url = format!("https://localhost:{port}/health");
 
     let resp = client
         .get(&url)
@@ -75,7 +75,7 @@ async fn health_rejects_wrong_credentials(world: &mut RpWorld) {
     let pki = world.pki();
     let client = pki.https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
-    let url = format!("https://localhost:{}/health", port);
+    let url = format!("https://localhost:{port}/health");
 
     let resp = client
         .get(&url)
@@ -90,7 +90,7 @@ async fn health_rejects_wrong_credentials(world: &mut RpWorld) {
 async fn health_rejects_missing_credentials(world: &mut RpWorld) {
     let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
-    let url = format!("https://localhost:{}/health", port);
+    let url = format!("https://localhost:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);
@@ -100,7 +100,7 @@ async fn health_rejects_missing_credentials(world: &mut RpWorld) {
 async fn rp_401_includes_www_authenticate(world: &mut RpWorld) {
     let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
-    let url = format!("https://localhost:{}/health", port);
+    let url = format!("https://localhost:{port}/health");
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);

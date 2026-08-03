@@ -16,7 +16,7 @@ use crate::units::{MechanicalDegrees, Steps};
 ///   must never issue.
 /// - `SD:<deg>` (device-side sync) — would rewrite the Falcon's stored
 ///   counter and change `MechanicalPosition`, violating ASCOM `Sync`'s
-///   "leave MechanicalPosition unchanged" contract. ASCOM `Sync` is
+///   "leave `MechanicalPosition` unchanged" contract. ASCOM `Sync` is
 ///   implemented as a driver-side offset instead; see
 ///   `docs/services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd`.
 ///
@@ -59,21 +59,22 @@ impl Command {
     /// Degree values use the wire format the Falcon documents (`MD:nn.nn`):
     /// two-decimal-place fixed-point, which limits commandable precision to
     /// 0.01° regardless of the `f64` the caller hands in.
+    #[must_use]
     pub fn to_command_string(&self) -> String {
         match self {
-            Command::Ping => "F#".to_string(),
-            Command::FullStatus => "FA".to_string(),
-            Command::FirmwareVersion => "FV".to_string(),
-            Command::PositionDeg => "FD".to_string(),
-            Command::PositionSteps => "FP".to_string(),
-            Command::Voltage => "VS".to_string(),
-            Command::DerotationOff => "DR:0".to_string(),
-            Command::DerotationRate(ms) => format!("DR:{ms}"),
-            Command::MoveDeg(deg) => format!("MD:{:.2}", deg.value()),
-            Command::MoveSteps(steps) => format!("MS:{}", steps.value()),
-            Command::Halt => "FH".to_string(),
-            Command::IsRunning => "FR".to_string(),
-            Command::SetReverse(on) => format!("FN:{}", if *on { 1 } else { 0 }),
+            Self::Ping => "F#".to_string(),
+            Self::FullStatus => "FA".to_string(),
+            Self::FirmwareVersion => "FV".to_string(),
+            Self::PositionDeg => "FD".to_string(),
+            Self::PositionSteps => "FP".to_string(),
+            Self::Voltage => "VS".to_string(),
+            Self::DerotationOff => "DR:0".to_string(),
+            Self::DerotationRate(ms) => format!("DR:{ms}"),
+            Self::MoveDeg(deg) => format!("MD:{:.2}", deg.value()),
+            Self::MoveSteps(steps) => format!("MS:{}", steps.value()),
+            Self::Halt => "FH".to_string(),
+            Self::IsRunning => "FR".to_string(),
+            Self::SetReverse(on) => format!("FN:{}", i32::from(*on)),
         }
     }
 
@@ -87,7 +88,7 @@ impl Command {
     /// public `send_command` entry point. `to_command_string` stays
     /// infallible.
     pub fn validate(&self) -> Result<()> {
-        if let Command::MoveDeg(deg) = self {
+        if let Self::MoveDeg(deg) = self {
             if !deg.value().is_finite() {
                 return Err(FalconRotatorError::InvalidValue(format!(
                     "MoveDeg target must be finite, got {}",

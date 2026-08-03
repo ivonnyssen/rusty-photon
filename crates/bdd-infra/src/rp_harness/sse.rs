@@ -35,7 +35,8 @@ pub struct SseFrame {
 
 impl SseFrame {
     /// The parsed `data` payload (`Null` if it didn't parse).
-    pub fn json(&self) -> &Value {
+    #[must_use]
+    pub const fn json(&self) -> &Value {
         &self.parsed
     }
 
@@ -48,6 +49,7 @@ impl SseFrame {
     }
 
     /// The `event` type, falling back to the `data` envelope's `event` field.
+    #[must_use]
     pub fn event_type(&self) -> Option<String> {
         self.event.clone().or_else(|| {
             self.parsed

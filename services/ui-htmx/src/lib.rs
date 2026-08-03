@@ -132,12 +132,12 @@ pub struct AppState {
 
 impl AppState {
     /// The rp-backed surface state, when an `rp` target is configured.
-    pub(crate) fn rp(&self) -> Option<&Arc<RpState>> {
+    pub(crate) const fn rp(&self) -> Option<&Arc<RpState>> {
         self.rp.as_ref()
     }
 
     /// The token that ends open SSE streams on shutdown.
-    pub(crate) fn sse_shutdown(&self) -> &tokio_util::sync::CancellationToken {
+    pub(crate) const fn sse_shutdown(&self) -> &tokio_util::sync::CancellationToken {
         &self.sse_shutdown
     }
 

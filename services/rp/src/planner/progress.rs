@@ -26,6 +26,7 @@ use super::progress_scan::GoalProgress;
 /// Normalise an optional filter name to the map key: the unfiltered
 /// slot (absent, `null`, or `""` in tool parameters and target plans)
 /// is the empty string.
+#[must_use]
 pub fn filter_key(filter: Option<&str>) -> String {
     filter.unwrap_or("").to_string()
 }
@@ -46,6 +47,7 @@ impl SessionProgress {
     }
 
     /// Filter key of the most recently recorded frame.
+    #[must_use]
     pub fn last_filter_key(&self) -> Option<&str> {
         self.last_filter_key.as_deref()
     }
@@ -111,6 +113,7 @@ impl PlanProgress {
     /// Goals are met on `good`, not `total`: a rejected frame does not
     /// advance a plan, so a night of poor seeing keeps recommending the
     /// same entry rather than retiring it.
+    #[must_use]
     pub fn next_incomplete_entry<'a>(&self, target: &'a PlannerTarget) -> Option<&'a ExposureSpec> {
         target
             .exposures
@@ -126,6 +129,7 @@ impl PlanProgress {
     /// Whether every entry of the target's plan has met its `count`.
     /// A target with no plan (or any uncounted entry) has no finite
     /// integration goal and is never exhausted.
+    #[must_use]
     pub fn is_exhausted(&self, target: &PlannerTarget) -> bool {
         !target.exposures.is_empty() && self.next_incomplete_entry(target).is_none()
     }
@@ -134,6 +138,7 @@ impl PlanProgress {
     /// (clamped per entry, so an over-shot goal doesn't inflate it).
     /// A target with no counted entries reports 0.0 — it has no goal to
     /// progress toward, so bullet 3 keeps preferring it.
+    #[must_use]
     pub fn fraction(&self, target: &PlannerTarget) -> f64 {
         let mut done: u32 = 0;
         let mut goal_total: u32 = 0;

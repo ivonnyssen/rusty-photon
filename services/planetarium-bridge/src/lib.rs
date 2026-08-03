@@ -2,7 +2,7 @@
 //! planetarium-bridge
 //!
 //! Serves a **virtual ASCOM Alpaca Telescope** that planetarium apps
-//! (SkySafari, Stellarium, Cartes du Ciel) connect to as if it were a
+//! (`SkySafari`, Stellarium, Cartes du Ciel) connect to as if it were a
 //! mount. Pressing **Align** imports the selected coordinates as a paused
 //! target into rp's target store; slews are simulated motion and never
 //! import. The service never touches hardware and is never on the imaging
@@ -51,7 +51,8 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
-    pub fn new(config: Config) -> Self {
+    #[must_use]
+    pub const fn new(config: Config) -> Self {
         Self { config }
     }
 
@@ -190,7 +191,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -212,27 +213,24 @@ impl BoundServer {
 
         type ServeResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
         let serve = async {
-            let result: ServeResult = match tls {
-                Some(ref tls_config) => {
-                    // The TLS accept path serves the router without
-                    // per-connection info, so imports carry
-                    // `client: "unknown"` — acceptable: planetarium
-                    // clients speak plain HTTP (P3a).
-                    info!("planetarium-bridge started on {local_addr} (TLS)");
-                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                        .await
-                        .map_err(Into::into)
-                }
-                None => {
-                    info!("planetarium-bridge started on {local_addr}");
-                    axum::serve(
-                        listener,
-                        router.into_make_service_with_connect_info::<SocketAddr>(),
-                    )
-                    .with_graceful_shutdown(shutdown)
+            let result: ServeResult = if let Some(ref tls_config) = tls {
+                // The TLS accept path serves the router without
+                // per-connection info, so imports carry
+                // `client: "unknown"` — acceptable: planetarium
+                // clients speak plain HTTP (P3a).
+                info!("planetarium-bridge started on {local_addr} (TLS)");
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
                     .await
                     .map_err(Into::into)
-                }
+            } else {
+                info!("planetarium-bridge started on {local_addr}");
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(shutdown)
+                .await
+                .map_err(Into::into)
             };
             result
         };

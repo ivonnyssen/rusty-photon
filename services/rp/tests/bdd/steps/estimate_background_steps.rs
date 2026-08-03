@@ -106,21 +106,16 @@ async fn mcp_call_no_args(world: &mut RpWorld) {
 fn result_contains_non_negative_number(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
     let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in estimate_background result, got: {:?}",
-            field, result
-        )
+        panic!("expected '{field}' in estimate_background result, got: {result:?}")
     });
 
     let num = value
         .as_f64()
-        .unwrap_or_else(|| panic!("expected '{}' to be a number, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
 
     assert!(
         num >= 0.0,
-        "expected '{}' to be non-negative, got: {}",
-        field,
-        num
+        "expected '{field}' to be non-negative, got: {num}"
     );
 }
 
@@ -128,20 +123,14 @@ fn result_contains_non_negative_number(world: &mut RpWorld, field: String) {
 fn result_contains_positive_integer(world: &mut RpWorld, field: String) {
     let result = result_or_panic(world);
     let value = result.get(&field).unwrap_or_else(|| {
-        panic!(
-            "expected '{}' in estimate_background result, got: {:?}",
-            field, result
-        )
+        panic!("expected '{field}' in estimate_background result, got: {result:?}")
     });
 
     let num = value.as_u64().unwrap_or_else(|| {
-        panic!(
-            "expected '{}' to be a non-negative integer, got: {:?}",
-            field, value
-        )
+        panic!("expected '{field}' to be a non-negative integer, got: {value:?}")
     });
 
-    assert!(num > 0, "expected '{}' to be positive, got: {}", field, num);
+    assert!(num > 0, "expected '{field}' to be positive, got: {num}");
 }
 
 // --- Helpers ---
@@ -185,7 +174,7 @@ fn record_result(world: &mut RpWorld, result: Result<Value, String>) {
     world.last_tool_result = Some(result);
 }
 
-fn result_or_panic(world: &RpWorld) -> &Value {
+const fn result_or_panic(world: &RpWorld) -> &Value {
     world
         .last_estimate_background_result
         .as_ref()

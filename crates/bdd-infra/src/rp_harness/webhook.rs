@@ -133,7 +133,7 @@ impl WebhookReceiver {
         });
 
         Self {
-            url: format!("http://127.0.0.1:{}/webhook", port),
+            url: format!("http://127.0.0.1:{port}/webhook"),
             port,
             events,
             shutdown_tx: Some(shutdown_tx),
@@ -174,9 +174,9 @@ async fn webhook_handler(
     let str_field = |key: &str| {
         body.get(key)
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     };
-    let u64_field = |key: &str| body.get(key).and_then(|v| v.as_u64());
+    let u64_field = |key: &str| body.get(key).and_then(serde_json::Value::as_u64);
     let event = ReceivedEvent {
         event_id: str_field("event_id").unwrap_or_default(),
         event_type: str_field("event").unwrap_or_default(),

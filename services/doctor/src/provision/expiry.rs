@@ -16,6 +16,7 @@ pub fn not_after(cert_pem: &str) -> Result<time::OffsetDateTime, String> {
 /// IPs in string form. Empty when the certificate cannot be parsed or
 /// carries none — renewal treats an unreadable SAN list as "nothing extra
 /// to preserve".
+#[must_use]
 pub fn sans(cert_pem: &str) -> Vec<String> {
     with_leaf(cert_pem, |cert| {
         let mut sans = Vec::new();
@@ -70,9 +71,12 @@ mod tests {
 
     /// A self-signed certificate with a known validity window and SAN set.
     fn cert_pem(not_after: time::OffsetDateTime, sans: &[&str]) -> String {
-        let mut params =
-            rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-                .unwrap();
+        let mut params = rcgen::CertificateParams::new(
+            sans.iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         params.not_before = not_after - time::Duration::days(365);
         params.not_after = not_after;
         let key = rcgen::KeyPair::generate().unwrap();

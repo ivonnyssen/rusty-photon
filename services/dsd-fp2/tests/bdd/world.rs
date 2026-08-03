@@ -131,7 +131,7 @@ impl Fp2World {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
+    pub const fn bound_port(&self) -> u16 {
         self.handle.as_ref().expect("service not started").port
     }
 

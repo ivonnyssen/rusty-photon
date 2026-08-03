@@ -2,7 +2,7 @@
 //! `GET /api/documents/{document_id}`.
 //!
 //! Also hosts the lifecycle/configuration steps the cross-restart and
-//! eviction scenarios rely on (data_directory pinning, imaging cache
+//! eviction scenarios rely on (`data_directory` pinning, imaging cache
 //! overrides, rp restart). These don't fit cleanly under any other
 //! existing step module — they're specific to exercising the
 //! "live as long as the file is on disk" contract.
@@ -24,7 +24,7 @@ fn pin_data_directory(world: &mut RpWorld) {
 
 #[given(expr = "rp's image cache holds at most {int} image")]
 #[given(expr = "rp's image cache holds at most {int} images")]
-fn pin_imaging_cache_max_images(world: &mut RpWorld, max_images: usize) {
+const fn pin_imaging_cache_max_images(world: &mut RpWorld, max_images: usize) {
     // A generous MiB budget keeps the image-count cap as the operative
     // limit — exactly what the eviction scenario wants.
     world.pinned_imaging_overrides = Some((1024, max_images));
@@ -76,7 +76,7 @@ async fn fetch_document_remembered(world: &mut RpWorld, name: String) {
         .remembered_document_ids
         .get(&name)
         .cloned()
-        .unwrap_or_else(|| panic!("no remembered document_id under name {:?}", name));
+        .unwrap_or_else(|| panic!("no remembered document_id under name {name:?}"));
     fetch_document(world, &document_id).await;
 }
 
@@ -107,9 +107,7 @@ fn document_body_contains_field(world: &mut RpWorld, field: String) {
     let body = body_or_panic(world);
     assert!(
         body.get(&field).is_some(),
-        "expected '{}' in document body, got: {:?}",
-        field,
-        body
+        "expected '{field}' in document body, got: {body:?}"
     );
 }
 
@@ -118,18 +116,16 @@ fn document_sections_contains(world: &mut RpWorld, section: String) {
     let body = body_or_panic(world);
     let sections = body
         .get("sections")
-        .unwrap_or_else(|| panic!("expected 'sections' in document body, got: {:?}", body));
+        .unwrap_or_else(|| panic!("expected 'sections' in document body, got: {body:?}"));
     assert!(
         sections.get(&section).is_some(),
-        "expected section '{}' in document body sections, got: {:?}",
-        section,
-        sections
+        "expected section '{section}' in document body sections, got: {sections:?}"
     );
 }
 
 // --- Helpers ---
 
-fn body_or_panic(world: &RpWorld) -> &Value {
+const fn body_or_panic(world: &RpWorld) -> &Value {
     world
         .last_document_response_body
         .as_ref()

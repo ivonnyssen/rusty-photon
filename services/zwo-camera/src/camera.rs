@@ -91,7 +91,7 @@ struct DeviceState {
     /// Set on a mid-exposure SDK failure → `CameraState::Error` (E9).
     last_error: Mutex<Option<String>>,
     /// Serializes the capture task's "check generation + commit result" against
-    /// `cancel_exposure`'s "bump generation + clear image_ready".
+    /// `cancel_exposure`'s "bump generation + clear `image_ready`".
     result_lock: Mutex<()>,
     /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
     /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
@@ -99,7 +99,7 @@ struct DeviceState {
 }
 
 impl DeviceState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             bin: AtomicU8::new(1),
             readout_mode: AtomicU8::new(0),
@@ -388,7 +388,7 @@ fn lcm(a: u32, b: u32) -> u32 {
 /// frame divided by *every* supported bin is a valid ASI ROI — i.e. the binned
 /// extent is a multiple of `unit` (8 for width, 2 for height).
 ///
-/// ConformU takes a full frame at every bin via `NumX = CameraXSize / bin` (and
+/// `ConformU` takes a full frame at every bin via `NumX = CameraXSize / bin` (and
 /// likewise `NumY`), so reporting the raw sensor size makes those binned full
 /// frames unachievable whenever `raw / bin` is not a multiple of `unit` (e.g. an
 /// ASI2600's 6248 / 2 = 3124, not a multiple of 8). Reducing the reported extent
@@ -414,7 +414,7 @@ fn max_adu_from_bit_depth(bit_depth: u32) -> u32 {
 }
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y`.
-fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
+const fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
     match pattern {
         BayerPattern::Rg => (0, 0),
         BayerPattern::Bg => (1, 1),
@@ -424,7 +424,7 @@ fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
 }
 
 /// Map an ASCOM guide direction onto the `zwo-rs` one.
-fn guide_direction(direction: GuideDirection) -> zwo_rs::GuideDirection {
+const fn guide_direction(direction: GuideDirection) -> zwo_rs::GuideDirection {
     match direction {
         GuideDirection::North => zwo_rs::GuideDirection::North,
         GuideDirection::South => zwo_rs::GuideDirection::South,
@@ -1443,7 +1443,7 @@ mod tests {
         );
         assert_eq!(
             device.exposure_max().await.unwrap(),
-            Duration::from_micros(2_000_000_000)
+            Duration::from_secs(2000)
         );
         assert_eq!(
             device.exposure_resolution().await.unwrap(),
@@ -1875,7 +1875,7 @@ mod tests {
         let device = connected_device(MockCameraHandle::default());
         assert!(!device.is_pulse_guiding().await.unwrap());
         device
-            .pulse_guide(GuideDirection::North, Duration::from_secs(60))
+            .pulse_guide(GuideDirection::North, Duration::from_mins(1))
             .await
             .unwrap();
         assert!(device.is_pulse_guiding().await.unwrap());

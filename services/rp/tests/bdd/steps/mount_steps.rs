@@ -71,7 +71,7 @@ async fn rp_running_with_mount_and_settle(world: &mut RpWorld, settle_ms: i64) {
 /// Used by slew-and-related scenarios as a self-documenting
 /// precondition ("this scenario requires the mount to be unparked").
 /// The per-scenario `before` hook in `bdd.rs` calls
-/// `OmniSimHandle::reset_telescope`, which already leaves OmniSim's
+/// `OmniSimHandle::reset_telescope`, which already leaves `OmniSim`'s
 /// telescope at AtPark=false — so this step is functionally
 /// redundant on the standard run path. It exists for readability and
 /// as a safety net if the reset endpoint ever changes or is bypassed.
@@ -224,10 +224,10 @@ async fn mcp_call_abort_slew(world: &mut RpWorld) {
 
 // --- Then steps ---
 
-/// OmniSim's slew echo carries sub-arcsecond drift (likely from
+/// `OmniSim`'s slew echo carries sub-arcsecond drift (likely from
 /// internal topocentric ↔ J2000 transforms), so we assert tolerance,
 /// not exact equality. `0.001` hours ≈ 3.6 arcsec on RA — well under
-/// any centering workflow's tolerance and well above OmniSim's drift.
+/// any centering workflow's tolerance and well above `OmniSim`'s drift.
 const SLEW_ECHO_TOLERANCE: f64 = 0.001;
 
 #[then(expr = "the slew result actual_ra should be {float}")]
@@ -235,7 +235,7 @@ fn slew_actual_ra(world: &mut RpWorld, expected: f64) {
     let result = unwrap_ok(world);
     let actual = result
         .get("actual_ra")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("expected actual_ra field, got: {result:?}"));
     assert!(
         (actual - expected).abs() < SLEW_ECHO_TOLERANCE,
@@ -248,7 +248,7 @@ fn slew_actual_dec(world: &mut RpWorld, expected: f64) {
     let result = unwrap_ok(world);
     let actual = result
         .get("actual_dec")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("expected actual_dec field, got: {result:?}"));
     assert!(
         (actual - expected).abs() < SLEW_ECHO_TOLERANCE,
@@ -261,7 +261,7 @@ fn get_mount_position_ra(world: &mut RpWorld, expected: f64) {
     let result = unwrap_ok(world);
     let actual = result
         .get("ra")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("expected ra field, got: {result:?}"));
     assert_eq!(actual, expected, "expected ra {expected}, got {actual}");
 }
@@ -271,7 +271,7 @@ fn get_mount_position_dec(world: &mut RpWorld, expected: f64) {
     let result = unwrap_ok(world);
     let actual = result
         .get("dec")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("expected dec field, got: {result:?}"));
     assert_eq!(actual, expected, "expected dec {expected}, got {actual}");
 }
@@ -286,7 +286,7 @@ fn get_tracking_tracking(world: &mut RpWorld, expected: String) {
     };
     let actual = result
         .get("tracking")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or_else(|| panic!("expected tracking bool field, got: {result:?}"));
     assert_eq!(
         actual, expected,
@@ -304,7 +304,7 @@ fn get_tracking_can_set_tracking(world: &mut RpWorld, expected: String) {
     };
     let actual = result
         .get("can_set_tracking")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or_else(|| panic!("expected can_set_tracking bool field, got: {result:?}"));
     assert_eq!(
         actual, expected,
@@ -322,7 +322,7 @@ fn get_park_state_field(world: &mut RpWorld, field: String, expected: String) {
     };
     let actual = result
         .get(&field)
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or_else(|| panic!("expected {field} bool field, got: {result:?}"));
     assert_eq!(
         actual, expected,

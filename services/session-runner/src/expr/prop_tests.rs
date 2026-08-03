@@ -162,7 +162,7 @@ fn arb_expr() -> BoxedStrategy<Expr> {
                     .prop_map(|(a, b, c)| call("clamp", vec![a, b, c])),
                 (
                     prop::sample::select(&["min", "max"][..]),
-                    prop::collection::vec(inner.clone(), 2..4)
+                    prop::collection::vec(inner, 2..4)
                 )
                     .prop_map(|(f, args)| call(f, args)),
                 arb_path().prop_map(|p| call("has", vec![p])),

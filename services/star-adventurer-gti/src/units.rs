@@ -82,7 +82,7 @@ fn through_pole(deg: f64) -> f64 {
 /// through-wrap slew can leave it outside the band; this collapses it to the
 /// shortest equivalent. `cpr == 0` (parameter cache not populated) passes the
 /// value through unchanged.
-fn fold_ticks_canonical(value: i32, cpr: u32) -> i32 {
+const fn fold_ticks_canonical(value: i32, cpr: u32) -> i32 {
     if cpr == 0 {
         return value;
     }
@@ -107,12 +107,14 @@ pub struct Cpr(u32);
 
 impl Cpr {
     /// Construct from a raw counts-per-revolution value.
-    pub fn new(cpr: u32) -> Self {
+    #[must_use]
+    pub const fn new(cpr: u32) -> Self {
         Self(cpr)
     }
 
     /// The underlying counts-per-revolution.
-    pub fn get(self) -> u32 {
+    #[must_use]
+    pub const fn get(self) -> u32 {
         self.0
     }
 }
@@ -125,17 +127,20 @@ pub struct Lst(f64);
 
 impl Lst {
     /// Construct from hours, normalising into `[0, 24)`.
+    #[must_use]
     pub fn new(hours: f64) -> Self {
         Self(hours.rem_euclid(24.0))
     }
 
     /// The underlying value in hours `[0, 24)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 
     /// Celestial hour angle of a target: `HA = LST - RA`, folded to
     /// `[-12, +12)`.
+    #[must_use]
     pub fn hour_angle_of(self, ra: Ra) -> HourAngle {
         HourAngle::new(self.0 - ra.0)
     }
@@ -147,12 +152,14 @@ pub struct Ra(f64);
 
 impl Ra {
     /// Construct from hours, normalising into `[0, 24)`.
+    #[must_use]
     pub fn new(hours: f64) -> Self {
         Self(hours.rem_euclid(24.0))
     }
 
     /// The underlying value in hours `[0, 24)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -165,18 +172,21 @@ pub struct HourAngle(f64);
 
 impl HourAngle {
     /// Construct from hours, folding into `[-12, +12)`.
+    #[must_use]
     pub fn new(hours: f64) -> Self {
         Self(fold_to_signed(hours, 24.0))
     }
 
     /// The underlying value in signed hours `[-12, +12)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 
     /// Mechanical hour angle for the **pre-flip** (normal) pointing side,
     /// where mechanical HA equals celestial HA. Use [`MechHa::flipped`] for
     /// the post-flip mirror.
+    #[must_use]
     pub fn to_mech(self) -> MechHa {
         MechHa::new(self.0)
     }
@@ -190,37 +200,43 @@ pub struct MechHa(f64);
 
 impl MechHa {
     /// Construct from hours, folding into `[-12, +12)`.
+    #[must_use]
     pub fn new(hours: f64) -> Self {
         Self(fold_to_signed(hours, 24.0))
     }
 
     /// The underlying value in signed hours `[-12, +12)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 
     /// The post-meridian-flip mirror of this mechanical HA: `mech_HA + 12 h`,
     /// folded back into `[-12, +12)`. Self-inverse.
-    pub fn flipped(self) -> MechHa {
-        MechHa::new(self.0 + 12.0)
+    #[must_use]
+    pub fn flipped(self) -> Self {
+        Self::new(self.0 + 12.0)
     }
 
     /// Convert to RA-axis encoder ticks. `Cpr(0)` yields `RaTicks(0)`.
+    #[must_use]
     pub fn to_ticks(self, cpr: Cpr) -> RaTicks {
         if cpr.0 == 0 {
             return RaTicks(0);
         }
-        RaTicks((self.0 * (cpr.0 as f64) / 24.0).round() as i32)
+        RaTicks((self.0 * f64::from(cpr.0) / 24.0).round() as i32)
     }
 
     /// ASCOM right ascension for the **pre-flip** side: `RA = (LST - mech_HA)`,
     /// folded to `[0, 24)`.
+    #[must_use]
     pub fn to_ra(self, lst: Lst) -> Ra {
         Ra::new(lst.0 - self.0)
     }
 
     /// ASCOM right ascension for the **post-flip** side:
     /// `RA = (LST - mech_HA + 12)`, folded to `[0, 24)`.
+    #[must_use]
     pub fn to_ra_flipped(self, lst: Lst) -> Ra {
         Ra::new(lst.0 - self.0 + 12.0)
     }
@@ -233,28 +249,32 @@ pub struct RaTicks(i32);
 
 impl RaTicks {
     /// Construct from a raw RA-axis encoder count.
-    pub fn new(ticks: i32) -> Self {
+    #[must_use]
+    pub const fn new(ticks: i32) -> Self {
         Self(ticks)
     }
 
     /// The underlying signed encoder count.
-    pub fn value(self) -> i32 {
+    #[must_use]
+    pub const fn value(self) -> i32 {
         self.0
     }
 
     /// Convert to a mechanical hour angle, folded to `[-12, +12)`. `Cpr(0)`
     /// yields `MechHa(0)`.
+    #[must_use]
     pub fn to_mech_ha(self, cpr: Cpr) -> MechHa {
         if cpr.0 == 0 {
             return MechHa(0.0);
         }
-        MechHa::new((self.0 as f64) * 24.0 / (cpr.0 as f64))
+        MechHa::new(f64::from(self.0) * 24.0 / f64::from(cpr.0))
     }
 
     /// Collapse a raw counter (or tick delta) to its canonical-band
     /// equivalent in `[-cpr/2, +cpr/2)`.
-    pub fn fold_to_canonical_band(self, cpr: Cpr) -> RaTicks {
-        RaTicks(fold_ticks_canonical(self.0, cpr.0))
+    #[must_use]
+    pub const fn fold_to_canonical_band(self, cpr: Cpr) -> Self {
+        Self(fold_ticks_canonical(self.0, cpr.0))
     }
 }
 
@@ -269,23 +289,27 @@ pub struct Dec(f64);
 
 impl Dec {
     /// Construct from a celestial declination in degrees.
-    pub fn new(degrees: f64) -> Self {
+    #[must_use]
+    pub const fn new(degrees: f64) -> Self {
         Self(degrees)
     }
 
     /// The underlying declination in degrees.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 
     /// Mechanical (encoder) declination for the **pre-flip** side, where the
     /// encoder degree equals the celestial declination.
+    #[must_use]
     pub fn to_mech(self) -> MechDec {
         MechDec::new(self.0)
     }
 
     /// Mechanical (encoder) declination for the **post-flip** side: the OTA
     /// has rotated through the celestial pole, `sign(dec) * (180 - |dec|)`.
+    #[must_use]
     pub fn to_mech_flipped(self) -> MechDec {
         MechDec::new(through_pole(self.0))
     }
@@ -299,32 +323,37 @@ pub struct MechDec(f64);
 
 impl MechDec {
     /// Construct from degrees, folding into `[-180, +180)`.
+    #[must_use]
     pub fn new(degrees: f64) -> Self {
         Self(fold_to_signed(degrees, 360.0))
     }
 
     /// The underlying encoder declination in degrees `[-180, +180)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 
     /// Celestial declination for the **pre-flip** side (value preserved).
-    pub fn to_dec(self) -> Dec {
+    #[must_use]
+    pub const fn to_dec(self) -> Dec {
         Dec::new(self.0)
     }
 
     /// Celestial declination for the **post-flip** side: undo the through-pole
     /// rotation, `sign(d) * (180 - |d|)`. Inverse of [`Dec::to_mech_flipped`].
+    #[must_use]
     pub fn to_dec_flipped(self) -> Dec {
         Dec::new(through_pole(self.0))
     }
 
     /// Convert to Dec-axis encoder ticks. `Cpr(0)` yields `DecTicks(0)`.
+    #[must_use]
     pub fn to_ticks(self, cpr: Cpr) -> DecTicks {
         if cpr.0 == 0 {
             return DecTicks(0);
         }
-        DecTicks((self.0 * (cpr.0 as f64) / 360.0).round() as i32)
+        DecTicks((self.0 * f64::from(cpr.0) / 360.0).round() as i32)
     }
 }
 
@@ -334,28 +363,32 @@ pub struct DecTicks(i32);
 
 impl DecTicks {
     /// Construct from a raw Dec-axis encoder count.
-    pub fn new(ticks: i32) -> Self {
+    #[must_use]
+    pub const fn new(ticks: i32) -> Self {
         Self(ticks)
     }
 
     /// The underlying signed encoder count.
-    pub fn value(self) -> i32 {
+    #[must_use]
+    pub const fn value(self) -> i32 {
         self.0
     }
 
     /// Convert to a mechanical declination, folded to `[-180, +180)`. `Cpr(0)`
     /// yields `MechDec(0)`.
+    #[must_use]
     pub fn to_mech_dec(self, cpr: Cpr) -> MechDec {
         if cpr.0 == 0 {
             return MechDec(0.0);
         }
-        MechDec::new((self.0 as f64) * 360.0 / (cpr.0 as f64))
+        MechDec::new(f64::from(self.0) * 360.0 / f64::from(cpr.0))
     }
 
     /// Collapse a raw counter (or tick delta) to its canonical-band
     /// equivalent in `[-cpr/2, +cpr/2)`.
-    pub fn fold_to_canonical_band(self, cpr: Cpr) -> DecTicks {
-        DecTicks(fold_ticks_canonical(self.0, cpr.0))
+    #[must_use]
+    pub const fn fold_to_canonical_band(self, cpr: Cpr) -> Self {
+        Self(fold_ticks_canonical(self.0, cpr.0))
     }
 }
 
@@ -367,7 +400,7 @@ mod tests {
     use super::*;
 
     const EPS: f64 = 1e-9;
-    /// GTi counts-per-revolution (`0x0037_5F00`), both axes.
+    /// `GTi` counts-per-revolution (`0x0037_5F00`), both axes.
     const GTI_CPR: u32 = 0x0037_5F00;
 
     fn cpr() -> Cpr {

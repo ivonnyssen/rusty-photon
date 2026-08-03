@@ -68,7 +68,7 @@ impl Default for MockDeviceState {
             average_amps: 2.5,
             amp_hours: 10.5,
             watt_hours: 126.0,
-            uptime: Duration::from_secs(3600),
+            uptime: Duration::from_hours(1),
         }
     }
 }
@@ -82,12 +82,12 @@ impl MockDeviceState {
             self.temperature,
             self.humidity as u8,
             self.dewpoint,
-            if self.quad_12v { 1 } else { 0 },
-            if self.adjustable { 1 } else { 0 },
+            i32::from(self.quad_12v),
+            i32::from(self.adjustable),
             self.dew_a,
             self.dew_b,
-            if self.auto_dew { 1 } else { 0 },
-            if self.power_warning { 1 } else { 0 },
+            i32::from(self.auto_dew),
+            i32::from(self.power_warning),
             0 // power adjust
         )
     }
@@ -129,33 +129,33 @@ impl MockState {
         } else if let Some(value) = command.strip_prefix("P1:") {
             let state = value == "1";
             self.device_state.quad_12v = state;
-            format!("P1:{}", if state { 1 } else { 0 })
+            format!("P1:{}", i32::from(state))
         } else if let Some(value) = command.strip_prefix("P2:") {
             let state = value == "1";
             self.device_state.adjustable = state;
-            format!("P2:{}", if state { 1 } else { 0 })
+            format!("P2:{}", i32::from(state))
         } else if let Some(value) = command.strip_prefix("P3:") {
             if let Ok(pwm) = value.parse::<u8>() {
                 self.device_state.dew_a = pwm;
-                format!("P3:{}", pwm)
+                format!("P3:{pwm}")
             } else {
                 "ERR".to_string()
             }
         } else if let Some(value) = command.strip_prefix("P4:") {
             if let Ok(pwm) = value.parse::<u8>() {
                 self.device_state.dew_b = pwm;
-                format!("P4:{}", pwm)
+                format!("P4:{pwm}")
             } else {
                 "ERR".to_string()
             }
         } else if let Some(value) = command.strip_prefix("PU:") {
             let state = value == "1";
             self.device_state.usb_hub = state;
-            format!("PU:{}", if state { 1 } else { 0 })
+            format!("PU:{}", i32::from(state))
         } else if let Some(value) = command.strip_prefix("PD:") {
             let state = value == "1";
             self.device_state.auto_dew = state;
-            format!("PD:{}", if state { 1 } else { 0 })
+            format!("PD:{}", i32::from(state))
         } else {
             debug!(command, "mock: unknown command");
             "ERR".to_string()

@@ -9,16 +9,16 @@
 use super::ast::Expr;
 use super::ExprError;
 
-pub(crate) const NAMESPACES: &[&str] = &["params", "session", "result", "event", "error"];
+pub const NAMESPACES: &[&str] = &["params", "session", "result", "event", "error"];
 
-pub(crate) struct FuncSig {
+pub struct FuncSig {
     pub(crate) name: &'static str,
     pub(crate) min_args: usize,
     pub(crate) max_args: usize,
 }
 
 /// The v1 function set per `docs/services/session-runner.md` § Expressions.
-pub(crate) const FUNCTIONS: &[FuncSig] = &[
+pub const FUNCTIONS: &[FuncSig] = &[
     FuncSig {
         name: "abs",
         min_args: 1,
@@ -77,7 +77,7 @@ pub(crate) const FUNCTIONS: &[FuncSig] = &[
 ];
 
 /// Comma-separated list of the built-in function names, for diagnostics.
-pub(crate) fn function_names() -> String {
+pub fn function_names() -> String {
     FUNCTIONS
         .iter()
         .map(|f| f.name)
@@ -94,7 +94,7 @@ fn is_path(expr: &Expr) -> bool {
     }
 }
 
-pub(crate) fn check(expr: &Expr) -> Result<(), ExprError> {
+pub fn check(expr: &Expr) -> Result<(), ExprError> {
     match expr {
         Expr::Null(..) | Expr::Bool(..) | Expr::Num(..) | Expr::Str(..) => Ok(()),
         Expr::Ident(name, span) => {

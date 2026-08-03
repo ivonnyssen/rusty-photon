@@ -91,11 +91,11 @@ fn push_gated_unit(world: &mut DoctorWorld, unit: String, gate: PathBuf) {
 }
 
 #[given("the platform facts say no polkit rule grants sentinel restarts")]
-fn polkit_absent(world: &mut DoctorWorld) {
+const fn polkit_absent(world: &mut DoctorWorld) {
     world.facts.polkit_grants_sentinel_restart = Some(false);
 }
 
 #[given("the platform facts say a polkit rule grants sentinel restarts")]
-fn polkit_present(world: &mut DoctorWorld) {
+const fn polkit_present(world: &mut DoctorWorld) {
     world.facts.polkit_grants_sentinel_restart = Some(true);
 }

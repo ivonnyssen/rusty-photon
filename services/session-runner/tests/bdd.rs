@@ -1,6 +1,6 @@
 //! BDD test entry point for the session-runner service.
 //!
-//! These tests spawn three processes — OmniSim, rp, and session-runner —
+//! These tests spawn three processes — `OmniSim`, rp, and session-runner —
 //! and drive workflow documents end-to-end via rp's REST API.
 
 #![allow(clippy::expect_used, clippy::panic)]

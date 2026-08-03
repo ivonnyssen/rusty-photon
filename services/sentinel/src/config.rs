@@ -23,6 +23,7 @@ const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
 pub struct ProbeDomain(String);
 
 impl ProbeDomain {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -201,15 +202,17 @@ pub enum MonitorConfig {
 }
 
 impl MonitorConfig {
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            MonitorConfig::AlpacaSafetyMonitor { name, .. } => name,
+            Self::AlpacaSafetyMonitor { name, .. } => name,
         }
     }
 
-    pub fn polling_interval(&self) -> Duration {
+    #[must_use]
+    pub const fn polling_interval(&self) -> Duration {
         match self {
-            MonitorConfig::AlpacaSafetyMonitor {
+            Self::AlpacaSafetyMonitor {
                 polling_interval, ..
             } => *polling_interval,
         }
@@ -243,9 +246,10 @@ pub enum NotifierConfig {
 }
 
 impl NotifierConfig {
-    pub fn type_name(&self) -> &str {
+    #[must_use]
+    pub const fn type_name(&self) -> &str {
         match self {
-            NotifierConfig::Pushover { .. } => "pushover",
+            Self::Pushover { .. } => "pushover",
         }
     }
 }
@@ -374,11 +378,11 @@ fn default_host() -> String {
     "localhost".to_string()
 }
 
-fn default_alpaca_port() -> u16 {
+const fn default_alpaca_port() -> u16 {
     11111
 }
 
-fn default_polling_interval() -> Duration {
+const fn default_polling_interval() -> Duration {
     Duration::from_secs(30)
 }
 
@@ -394,7 +398,7 @@ fn default_message_template() -> String {
     "{monitor_name} changed to {new_state}".to_string()
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -404,15 +408,15 @@ fn default_server() -> rusty_photon_server_config::ServerConfig {
     rusty_photon_server_config::ServerConfig::new(11114)
 }
 
-fn default_reconnect_max_attempts() -> u32 {
+const fn default_reconnect_max_attempts() -> u32 {
     5
 }
 
-fn default_reconnect_backoff() -> Duration {
+const fn default_reconnect_backoff() -> Duration {
     Duration::from_secs(5)
 }
 
-fn default_watchdog_buffer() -> Duration {
+const fn default_watchdog_buffer() -> Duration {
     Duration::from_secs(10)
 }
 
@@ -420,14 +424,14 @@ fn default_watchdog_message_template() -> String {
     "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}".to_string()
 }
 
-fn default_history_size() -> usize {
+const fn default_history_size() -> usize {
     100
 }
 
 /// Load configuration from a JSON file
 pub fn load_config(path: &Path) -> crate::Result<Config> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        crate::SentinelError::Config(format!("Failed to read config file {:?}: {}", path, e))
+        crate::SentinelError::Config(format!("Failed to read config file {path:?}: {e}"))
     })?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -547,7 +551,7 @@ mod tests {
 
     #[test]
     fn parse_minimal_config() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let config: Config = serde_json::from_str(json).unwrap();
 
         assert!(config.monitors.is_empty());

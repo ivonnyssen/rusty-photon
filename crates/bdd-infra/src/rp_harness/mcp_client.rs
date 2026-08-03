@@ -30,7 +30,7 @@ use serde_json::Value;
 /// (the 300 s slew/park deadlines), so a genuinely slow-but-progressing call
 /// still completes and a *server-produced* error still propagates with its
 /// real message; only a true hang trips this bound.
-const MCP_CALL_TIMEOUT: Duration = Duration::from_secs(360);
+const MCP_CALL_TIMEOUT: Duration = Duration::from_mins(6);
 
 /// A persistent MCP client backed by a single session.
 pub struct McpTestClient {
@@ -43,7 +43,7 @@ impl McpTestClient {
     pub async fn connect(mcp_url: &str) -> Result<Self, String> {
         let client = RpMcpClient::connect(mcp_url, None, None)
             .await
-            .map_err(|e| format!("MCP connect: {}", e))?;
+            .map_err(|e| format!("MCP connect: {e}"))?;
         Ok(Self { client })
     }
 
@@ -53,12 +53,12 @@ impl McpTestClient {
     pub async fn connect_tls(mcp_url: &str, ca_cert: &Path) -> Result<Self, String> {
         let client = RpMcpClient::connect(mcp_url, None, Some(ca_cert))
             .await
-            .map_err(|e| format!("MCP connect: {}", e))?;
+            .map_err(|e| format!("MCP connect: {e}"))?;
         Ok(Self { client })
     }
 
     /// Connect over TLS presenting HTTP Basic credentials — the
-    /// authenticated path the mcp_auth scenarios exercise. `ca_cert` is the
+    /// authenticated path the `mcp_auth` scenarios exercise. `ca_cert` is the
     /// scenario CA (e.g. `PkiFixture::ca_path`); per the ADR-017 policy the
     /// credential is only sent because the CA is given and the URL is https.
     pub async fn connect_authed(
@@ -73,7 +73,7 @@ impl McpTestClient {
         };
         let client = RpMcpClient::connect(mcp_url, Some(&auth), Some(ca_cert))
             .await
-            .map_err(|e| format!("MCP connect: {}", e))?;
+            .map_err(|e| format!("MCP connect: {e}"))?;
         Ok(Self { client })
     }
 
@@ -90,7 +90,7 @@ impl McpTestClient {
             )),
             Ok(Err(McpCallError::Tool(message))) => Err(message),
             Ok(Err(e @ (McpCallError::Request(_) | McpCallError::Malformed(_)))) => {
-                Err(format!("{}: {}", tool_name, e))
+                Err(format!("{tool_name}: {e}"))
             }
             Ok(Ok(value)) => Ok(value),
         }
@@ -107,7 +107,7 @@ impl McpTestClient {
                     MCP_CALL_TIMEOUT.as_secs()
                 )
             })?
-            .map_err(|e| format!("list_tools: {}", e))?;
+            .map_err(|e| format!("list_tools: {e}"))?;
 
         Ok(tools.into_iter().map(|t| t.name).collect())
     }

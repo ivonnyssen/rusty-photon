@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tempfile::TempDir;
 
-/// Behaviour the SkyView stub is currently configured with. Cloned
+/// Behaviour the `SkyView` stub is currently configured with. Cloned
 /// out of the `RwLock` in the request handler, so each variant must
 /// own its data.
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ pub enum MountStubBehavior {
     /// drives F2.
     AscomError,
     /// `/management/v1/configureddevices` returns an empty list, so
-    /// device resolution fails — drives the DeviceNotFound branch.
+    /// device resolution fails — drives the `DeviceNotFound` branch.
     NoTelescope,
 }
 
@@ -120,7 +120,7 @@ pub struct SkySurveyCameraWorld {
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<Value>,
-    /// Result of the last supported_actions query.
+    /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
     /// ASCOM error code (raw) from the last config action that failed.
     pub last_action_error_code: Option<u16>,
@@ -138,7 +138,7 @@ pub struct SkySurveyCameraWorld {
     pub initial_dec_deg: f64,
     pub initial_rotation_deg: f64,
 
-    /// Override for cache_dir; if set it's substituted into the config
+    /// Override for `cache_dir`; if set it's substituted into the config
     /// instead of the default `<temp_dir>/cache`. Used to feed
     /// connection-lifecycle scenarios a deliberately non-writable path.
     pub cache_dir_override: Option<PathBuf>,
@@ -146,7 +146,7 @@ pub struct SkySurveyCameraWorld {
     /// Override for the survey endpoint URL injected into config.
     pub survey_endpoint_override: Option<String>,
 
-    /// Shared state of the SkyView stub server (None until spawned).
+    /// Shared state of the `SkyView` stub server (None until spawned).
     pub stub_state: Option<Arc<StubState>>,
 
     /// Shared state of the ASCOM Telescope stub (None until spawned).
@@ -219,7 +219,7 @@ impl TlsAuthSmokeWorld for SkySurveyCameraWorld {
 
     /// The `build_config_json` defaults, minus the two runtime-dependent
     /// `survey` fields (`endpoint`, `cache_dir`) that
-    /// [`Self::start_with_tls_auth`] fills in once the SkyView stub and the
+    /// [`Self::start_with_tls_auth`] fills in once the `SkyView` stub and the
     /// temp dir exist.
     fn base_test_config(&self) -> serde_json::Value {
         serde_json::json!({
@@ -344,7 +344,7 @@ impl SkySurveyCameraWorld {
         })
     }
 
-    /// Spawn a stub SkyView server on `127.0.0.1:0` whose behaviour is
+    /// Spawn a stub `SkyView` server on `127.0.0.1:0` whose behaviour is
     /// stored in shared state and can be mutated mid-scenario. Points
     /// the survey endpoint at the stub and seeds the world's
     /// `stub_state` so step bodies can switch behaviours and inspect
@@ -473,8 +473,7 @@ impl SkySurveyCameraWorld {
     pub fn stub_get_count(&self) -> u32 {
         self.stub_state
             .as_ref()
-            .map(|s| s.get_count.load(Ordering::Relaxed))
-            .unwrap_or(0)
+            .map_or(0, |s| s.get_count.load(Ordering::Relaxed))
     }
 
     /// Point the survey endpoint at `127.0.0.1:1`, a low-numbered
@@ -521,7 +520,7 @@ impl SkySurveyCameraWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
+    pub const fn bound_port(&self) -> u16 {
         self.service.as_ref().expect("service not started").port
     }
 
@@ -617,7 +616,7 @@ impl SkySurveyCameraWorld {
         if let Ok(value) = serde_json::from_str::<Value>(&body) {
             err_num = value
                 .get("ErrorNumber")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0) as u32;
             if err_num != 0 {
                 self.last_ascom_error = Some(err_num);
@@ -636,7 +635,7 @@ impl SkySurveyCameraWorld {
         err_num
     }
 
-    /// Set BinX/BinY/NumX/NumY/StartX/StartY then call StartExposure.
+    /// Set BinX/BinY/NumX/NumY/StartX/StartY then call `StartExposure`.
     /// Stops at the first ASCOM error so the captured `last_ascom_error`
     /// matches what the test scenario expects.
     #[allow(clippy::too_many_arguments)]
@@ -676,7 +675,7 @@ impl SkySurveyCameraWorld {
         self.put_camera("startexposure", &extra).await;
     }
 
-    /// Drive a StartExposure with `Light = false` and the default
+    /// Drive a `StartExposure` with `Light = false` and the default
     /// 640×480 sub-frame used by the survey scenarios.
     pub async fn drive_start_exposure_dark(&mut self) {
         self.last_ascom_error = None;
@@ -687,7 +686,7 @@ impl SkySurveyCameraWorld {
         self.put_camera("startexposure", &extra).await;
     }
 
-    /// Drive a StartExposure with `Light = true` and the default
+    /// Drive a `StartExposure` with `Light = true` and the default
     /// sub-frame (full sensor).
     pub async fn drive_start_exposure_default(&mut self) {
         self.last_ascom_error = None;
@@ -724,7 +723,7 @@ impl SkySurveyCameraWorld {
     }
 
     /// GET /api/v1/camera/0/imagearray and return its dimensions.
-    /// The ASCOM ImageArray response is `{ ..., "Value": { "Type",
+    /// The ASCOM `ImageArray` response is `{ ..., "Value": { "Type",
     /// "Rank", "Value": [[...]] } }` — a nested envelope. The pixel
     /// array is indexed `[X][Y]` per the ASCOM spec, so the outer
     /// length is `NumX` and the inner length is `NumY`.
@@ -767,7 +766,7 @@ impl SkySurveyCameraWorld {
         response.json().await.expect("response not JSON")
     }
 
-    /// Pre-seed the cache_dir with a FITS file matching the cache key
+    /// Pre-seed the `cache_dir` with a FITS file matching the cache key
     /// the next exposure will compute. Slice 4 derives the same key
     /// formula in `survey::SurveyRequest::cache_key` so we re-use it
     /// here (via a tiny dependency-free reimplementation in the

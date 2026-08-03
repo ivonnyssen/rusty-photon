@@ -1,4 +1,4 @@
-//! Steps for device_contract.feature: the capability matrix, Target*
+//! Steps for `device_contract.feature`: the capability matrix, Target*
 //! propagation, the simulated-slew lifecycle, and site/UTC writes.
 
 use std::time::{Duration, SystemTime};

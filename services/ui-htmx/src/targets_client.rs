@@ -79,6 +79,7 @@ impl McpTargetsClient {
     /// Build from the BFF's `rp` target block: `base_url` + `/mcp`, the
     /// same credential and CA the REST legs use. The ADR-017 credential
     /// policy applies at connect time (Basic only over verified HTTPS).
+    #[must_use]
     pub fn new(
         base_url: &str,
         auth: Option<&crate::config::DriverAuth>,

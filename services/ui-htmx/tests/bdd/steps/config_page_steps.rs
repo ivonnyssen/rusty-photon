@@ -1,4 +1,4 @@
-//! Step definitions for config_page.feature.
+//! Step definitions for `config_page.feature`.
 //!
 //! Every scenario drives the real BFF over HTTP against a real dsd-fp2 driver
 //! (see [`crate::world::UiWorld`]); the Then-steps assert on the HTML the BFF

@@ -1,4 +1,4 @@
-//! Steps for pulse_guide.feature.
+//! Steps for `pulse_guide.feature`.
 
 use crate::world::StarAdventurerWorld;
 use cucumber::{then, when};

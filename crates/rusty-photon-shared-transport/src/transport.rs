@@ -93,7 +93,7 @@ pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// `io::Error`; callers branch on the variant rather than the
 /// duration, so this is honest enough.
 ///
-/// All other [`io::Error`] kinds (BrokenPipe, ConnectionReset, write
+/// All other [`io::Error`] kinds (`BrokenPipe`, `ConnectionReset`, write
 /// errors, etc.) become [`TransportError::Io`] verbatim.
 fn classify_io_error(e: io::Error, on_timeout: Duration) -> TransportError {
     if e.kind() == io::ErrorKind::TimedOut {
@@ -148,7 +148,7 @@ where
     /// Override the per-`recv_frame` timeout. Default is
     /// [`DEFAULT_IO_TIMEOUT`].
     #[must_use]
-    pub fn with_read_timeout(mut self, d: Duration) -> Self {
+    pub const fn with_read_timeout(mut self, d: Duration) -> Self {
         self.read_timeout = d;
         self
     }
@@ -156,7 +156,7 @@ where
     /// Override the per-`send_frame` timeout. Default is
     /// [`DEFAULT_IO_TIMEOUT`].
     #[must_use]
-    pub fn with_write_timeout(mut self, d: Duration) -> Self {
+    pub const fn with_write_timeout(mut self, d: Duration) -> Self {
         self.write_timeout = d;
         self
     }
@@ -271,7 +271,7 @@ impl UdpFrameTransport {
     /// the socket over; this constructor is intentionally low-level so
     /// services can apply their own bind-address rules
     /// (e.g. SAG-GTI requires binding inside the mount's subnet).
-    pub fn new(socket: UdpSocket, max_frame_size: usize) -> Self {
+    pub const fn new(socket: UdpSocket, max_frame_size: usize) -> Self {
         Self {
             socket,
             max_frame_size,
@@ -282,14 +282,14 @@ impl UdpFrameTransport {
 
     /// Override the per-`recv_frame` timeout.
     #[must_use]
-    pub fn with_read_timeout(mut self, d: Duration) -> Self {
+    pub const fn with_read_timeout(mut self, d: Duration) -> Self {
         self.read_timeout = d;
         self
     }
 
     /// Override the per-`send_frame` timeout.
     #[must_use]
-    pub fn with_write_timeout(mut self, d: Duration) -> Self {
+    pub const fn with_write_timeout(mut self, d: Duration) -> Self {
         self.write_timeout = d;
         self
     }

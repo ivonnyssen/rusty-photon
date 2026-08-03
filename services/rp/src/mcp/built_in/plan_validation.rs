@@ -131,6 +131,7 @@ pub fn validate_goals(
 }
 
 /// Validates the per-target scheduling overrides.
+#[must_use]
 pub fn validate_scheduling(wire: &SchedulingWire, path_prefix: &str) -> Vec<FieldError> {
     let mut errors = Vec::new();
     let at = |field: &str| format!("{path_prefix}.{field}");
@@ -167,6 +168,7 @@ pub fn validate_scheduling(wire: &SchedulingWire, path_prefix: &str) -> Vec<Fiel
 /// Validates the per-target grading overrides: every supplied threshold
 /// must be finite and non-negative (the same rule config load applies to
 /// `target_store.default_grading`).
+#[must_use]
 pub fn validate_grading(wire: &GradingWire, path_prefix: &str) -> Vec<FieldError> {
     let mut errors = Vec::new();
     let at = |field: &str| format!("{path_prefix}.{field}");
@@ -186,12 +188,13 @@ pub fn validate_grading(wire: &GradingWire, path_prefix: &str) -> Vec<FieldError
 
 /// Validates a framing angle against the same domain as the per-train
 /// config default ([`crate::config::PositionAngleDegrees`]).
+#[must_use]
 pub fn validate_position_angle(value: Option<f64>, path: &str) -> Vec<FieldError> {
     match value {
         None => Vec::new(),
         Some(v) => match crate::config::PositionAngleDegrees::try_new(v) {
             Ok(_) => Vec::new(),
-            Err(e) => vec![err(path, e.to_string())],
+            Err(e) => vec![err(path, e)],
         },
     }
 }
@@ -199,6 +202,7 @@ pub fn validate_position_angle(value: Option<f64>, path: &str) -> Vec<FieldError
 /// Validates a coordinate pair through the one validator
 /// ([`IcrsCoord::try_new`]), attributing the failure to whichever field
 /// the typed error names.
+#[must_use]
 pub fn validate_coord(ra_hours: f64, dec_degrees: f64) -> Vec<FieldError> {
     match IcrsCoord::try_new(ra_hours, dec_degrees) {
         Ok(_) => Vec::new(),
@@ -213,6 +217,7 @@ pub fn validate_coord(ra_hours: f64, dec_degrees: f64) -> Vec<FieldError> {
 
 /// Validates the naming-pattern payload against the same token rules
 /// config load applies (`crate::config::naming_template`).
+#[must_use]
 pub fn validate_naming_patterns(
     file_naming_pattern: Option<&str>,
     directory_pattern: Option<&str>,
@@ -234,6 +239,7 @@ pub fn validate_naming_patterns(
 /// The rig's configured filter names, the union across every wheel.
 /// Empty when no wheels are configured, which the goal rules read as
 /// permissive.
+#[must_use]
 pub fn filter_roster(equipment: &EquipmentRegistry) -> Vec<String> {
     equipment
         .filter_wheels
@@ -248,6 +254,7 @@ pub fn filter_roster(equipment: &EquipmentRegistry) -> Vec<String> {
 ///
 /// `defaults` supplies the goals used when the payload omits them
 /// (`target_store.default_goals`), matching what the write would store.
+#[must_use]
 pub fn validate_add_target(
     params: &AddTargetParams,
     defaults: &[AcquisitionGoal],

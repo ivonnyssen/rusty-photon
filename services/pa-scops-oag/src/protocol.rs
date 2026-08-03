@@ -13,7 +13,7 @@
 use crate::error::{Result, ScopsOagError};
 
 /// Commands the driver issues to the Scops OAG.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// `#` — identify / handshake. Expect `OK_SCOPS`.
     Handshake,
@@ -32,13 +32,14 @@ impl Command {
     /// Render the command into the exact ASCII payload the Scops OAG expects
     /// (without the LF terminator; the codec appends that). The `M:`/`W:` forms
     /// use the clean Pegasus syntax with no trailing `d` byte.
+    #[must_use]
     pub fn to_command_string(&self) -> String {
         match self {
-            Command::Handshake => "#".to_string(),
-            Command::Status => "A".to_string(),
-            Command::MoveAbsolute { position } => format!("M:{position}"),
-            Command::SyncPosition { position } => format!("W:{position}"),
-            Command::Halt => "H".to_string(),
+            Self::Handshake => "#".to_string(),
+            Self::Status => "A".to_string(),
+            Self::MoveAbsolute { position } => format!("M:{position}"),
+            Self::SyncPosition { position } => format!("W:{position}"),
+            Self::Halt => "H".to_string(),
         }
     }
 }
@@ -48,7 +49,7 @@ impl Command {
 /// Only the fields the ASCOM Focuser surface needs are retained; the
 /// motor-type, temperature, LED, reverse, encoder, and backlash slots are
 /// parsed for position but not surfaced (see the design doc).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopsStatus {
     /// Firmware version (field 2), e.g. `1.2`.
     pub firmware_version: String,

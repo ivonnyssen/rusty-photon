@@ -23,7 +23,7 @@ use tempfile::TempDir;
 use crate::browser::BrowserSession;
 use crate::dom;
 
-/// The dsd-fp2 CoverCalibrator action endpoint the BFF (and these helpers) call.
+/// The dsd-fp2 `CoverCalibrator` action endpoint the BFF (and these helpers) call.
 const DRIVER_ACTION_PATH: &str = "/api/v1/covercalibrator/0/action";
 
 /// A reserved, low-numbered loopback port that reliably refuses connections —
@@ -471,7 +471,7 @@ impl UiWorld {
 
     /// Spawn a real dsd-fp2 (mock hardware), then rp with that driver in its
     /// roster as cover calibrator `id` — the all-first-party managed-device
-    /// stack (no OmniSim).
+    /// stack (no `OmniSim`).
     pub async fn start_driver_and_rp_with_cover_calibrator(&mut self, id: &str) {
         self.start_driver_and_rp_with_cover_calibrator_config(id, "/dev/ttyACM0", 4096)
             .await;
@@ -873,7 +873,7 @@ impl UiWorld {
     }
 
     /// The live browser session (panics if no `@browser` step started one).
-    pub fn browser(&self) -> &BrowserSession {
+    pub const fn browser(&self) -> &BrowserSession {
         self.browser
             .as_ref()
             .expect("browser session not started — is this an @browser scenario?")
@@ -889,7 +889,7 @@ impl UiWorld {
 
     /// Tear down in the **correct** order — browser first, then the BFF — and time
     /// the BFF stop (plan §9 Tier 0 step 3). Quitting the browser first closes its
-    /// WebDriver session (and so Firefox's held connections to the BFF), so the
+    /// `WebDriver` session (and so Firefox's held connections to the BFF), so the
     /// BFF's graceful shutdown completes promptly instead of blocking until the
     /// 5s SIGKILL grace and losing its `.profraw` coverage flush (testing.md
     /// §5.4). Both handles are taken, so the `after`-hook teardown skips them.

@@ -49,6 +49,7 @@ impl SessionConfig {
     /// The resolved session-state-file path: `session_state_file` when
     /// set, else `<data_directory>/session_state.json`. Kept on the
     /// config type so every consumer derives the same path.
+    #[must_use]
     pub fn session_state_path(&self) -> PathBuf {
         if self.session_state_file.is_empty() {
             PathBuf::from(&self.data_directory).join("session_state.json")

@@ -63,7 +63,8 @@ impl MountErrorCode {
     /// first. The named variants (`UnknownCommand`..=`NoValidPecData`)
     /// correspond to the single-nibble codes the spec lists; everything else
     /// maps to [`MountErrorCode::Unknown`].
-    pub fn from_byte(code: u8) -> Self {
+    #[must_use]
+    pub const fn from_byte(code: u8) -> Self {
         match code {
             0 => Self::UnknownCommand,
             1 => Self::CommandLengthError,

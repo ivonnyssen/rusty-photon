@@ -20,11 +20,11 @@ impl Default for ImagingConfig {
     }
 }
 
-fn default_cache_max_mib() -> usize {
+const fn default_cache_max_mib() -> usize {
     1024
 }
 
-fn default_cache_max_images() -> usize {
+const fn default_cache_max_images() -> usize {
     8
 }
 

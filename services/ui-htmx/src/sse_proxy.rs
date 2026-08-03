@@ -587,7 +587,7 @@ mod tests {
     }
 
     /// A canned rp session: a keep-alive comment, two envelopes, a lag gap,
-    /// and a degenerate stream_error frame — then the body ends.
+    /// and a degenerate `stream_error` frame — then the body ends.
     fn scripted_body() -> String {
         format!(
             ": keep-alive\n\nid: 41\nevent: exposure_started\ndata: {}\n\nid: 42\nevent: session_started\ndata: {}\n\nevent: stream_gap\ndata: {{\"event\":\"stream_gap\",\"lagged\":3}}\n\nevent: stream_error\n\n",
@@ -606,7 +606,7 @@ mod tests {
 
     /// The full translation pipeline over a scripted rp stream: slot frames
     /// precede each feed frame, the `id` rides the feed frame alone, gap and
-    /// stream_error frames stay id-less, and the stream ends with the
+    /// `stream_error` frames stay id-less, and the stream ends with the
     /// unreachable operation frame when rp's body ends.
     #[tokio::test]
     async fn proxy_translates_a_scripted_rp_stream_in_order() {
@@ -724,7 +724,7 @@ mod tests {
         assert!(blocks[0].contains("rp unreachable"), "{collected}");
     }
 
-    /// (d) The eviction-shaped stream_gap becomes an id-less feed divider.
+    /// (d) The eviction-shaped `stream_gap` becomes an id-less feed divider.
     #[tokio::test]
     async fn proxy_translates_an_eviction_gap_without_an_id() {
         let body = "event: stream_gap\ndata: {\"event\":\"stream_gap\",\"requested_after\":5,\"oldest_available\":9}\n\n".to_string();

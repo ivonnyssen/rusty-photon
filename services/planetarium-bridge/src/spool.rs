@@ -89,14 +89,17 @@ impl Spool {
         (spool, dropped)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[must_use]
     pub fn head(&self) -> Option<&SpoolEntry> {
         self.entries.front()
     }

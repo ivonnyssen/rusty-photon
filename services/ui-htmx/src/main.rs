@@ -22,7 +22,7 @@ struct Args {
     /// Path to the BFF configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/ui-htmx.json` on
     /// Linux); created with defaults on first start if absent (binds
-    /// 0.0.0.0:11120, targets dsd-fp2 at http://127.0.0.1:11119).
+    /// 0.0.0.0:11120, targets dsd-fp2 at <http://127.0.0.1:11119>).
     #[arg(short, long)]
     config: Option<PathBuf>,
 

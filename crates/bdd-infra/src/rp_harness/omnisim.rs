@@ -1,9 +1,9 @@
-//! OmniSim (ASCOM Alpaca simulator) process management for BDD tests.
+//! `OmniSim` (ASCOM Alpaca simulator) process management for BDD tests.
 //!
-//! A single OmniSim process is shared across all scenarios in a test binary
+//! A single `OmniSim` process is shared across all scenarios in a test binary
 //! via a [`tokio::sync::OnceCell`]. Each test process spawns its **own**
 //! instance on a **dynamically chosen port**, passing `--multi-instance` —
-//! the flag added to our OmniSim fork (`ivonnyssen/ASCOM.Alpaca.Simulators`,
+//! the flag added to our `OmniSim` fork (`ivonnyssen/ASCOM.Alpaca.Simulators`,
 //! release `v0.5.0-467.1`) that skips upstream's machine-global
 //! single-instance guard (a named Mutex keyed on a fixed GUID, backed by a
 //! file under `/tmp/.dotnet/shm/` on Unix). Combined with a per-instance
@@ -15,7 +15,7 @@
 //!
 //! The settings dir is passed via `OMNISIM_SETTINGS_DIR` (fork release
 //! `v0.5.0-467.2`, the version floor), NOT `XDG_CONFIG_HOME`: .NET honors
-//! XDG only on non-macOS Unix, so on macOS OmniSim's profile store defaults
+//! XDG only on non-macOS Unix, so on macOS `OmniSim`'s profile store defaults
 //! to the shared `~/Library/Application Support` (and on Windows to
 //! `%USERPROFILE%\.ASCOM`), neither redirectable by any environment
 //! variable. Concurrent instances sharing one profile store race their
@@ -32,19 +32,19 @@ use std::time::Duration;
 
 use tokio::sync::OnceCell;
 
-/// Attempts to spawn OmniSim before giving up. Each attempt picks a fresh
+/// Attempts to spawn `OmniSim` before giving up. Each attempt picks a fresh
 /// ephemeral port, so a lost bind race (another process grabbed the port
-/// between our probe and OmniSim's bind) just costs one retry.
+/// between our probe and `OmniSim`'s bind) just costs one retry.
 const SPAWN_ATTEMPTS: u32 = 3;
 
-/// Shared OmniSim info returned to each scenario.
+/// Shared `OmniSim` info returned to each scenario.
 #[derive(Debug, Clone)]
 pub struct OmniSimHandle {
     pub base_url: String,
     pub port: u16,
 }
 
-/// Singleton that owns the OmniSim child process for the entire test run.
+/// Singleton that owns the `OmniSim` child process for the entire test run.
 #[derive(Debug)]
 struct OmniSimProcess {
     _child: std::process::Child,
@@ -52,10 +52,10 @@ struct OmniSimProcess {
     port: u16,
 }
 
-/// Global singleton — one OmniSim process shared by all scenarios.
+/// Global singleton — one `OmniSim` process shared by all scenarios.
 static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 
-/// Process-wide serialization of `/restart` PUTs. OmniSim's restart
+/// Process-wide serialization of `/restart` PUTs. `OmniSim`'s restart
 /// handler (`DriverManager.Load{Class}(n)`) mutates unsynchronised
 /// process-wide static state, so concurrent restarts race inside the
 /// simulator. `reset_all_devices` already issues its per-device PUTs
@@ -64,25 +64,25 @@ static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 /// concurrently-drawn scenario runs its own before-hook. In the
 /// pi-nightly failure behind #431 the 11 non-`@serial` rp scenarios
 /// were all drawn at once after the `@serial` queue drained, their 11
-/// hooks issued ~11 concurrent restarts per device class, and OmniSim
+/// hooks issued ~11 concurrent restarts per device class, and `OmniSim`
 /// deadlocked mid-wave (log torn then silent, no stderr, subsequent
 /// PUTs timing out) — failing the remaining hooks loud. Holding this
 /// mutex across each PUT caps in-flight restarts at one per test
 /// process. A process-wide mutex is also *sufficient* now: every test
-/// process owns a private OmniSim instance (`--multi-instance` +
+/// process owns a private `OmniSim` instance (`--multi-instance` +
 /// dynamic port), so no other process can send restarts to ours — the
 /// old cross-process caveat about two Bazel actions sharing one
-/// OmniSim on port 32323 no longer applies.
+/// `OmniSim` on port 32323 no longer applies.
 static RESTART_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 impl OmniSimHandle {
-    /// Get or start this process's private OmniSim. Returns a lightweight
+    /// Get or start this process's private `OmniSim`. Returns a lightweight
     /// handle.
     ///
     /// The first call spawns a fresh instance with `--multi-instance` on a
     /// dynamically chosen `127.0.0.1` port (with `PR_SET_PDEATHSIG` on Linux
     /// so the kernel kills it when the test process exits); subsequent calls
-    /// share it. A pre-existing OmniSim — a dev instance on the default port,
+    /// share it. A pre-existing `OmniSim` — a dev instance on the default port,
     /// or another test process's instance — is never reused: private
     /// instances are what allow OmniSim-backed suites and shards to run
     /// concurrently, and what stopped cross-session dev instances from
@@ -109,33 +109,33 @@ impl OmniSimHandle {
         }
     }
 
-    /// Reset the telescope simulator device 0 to its OmniSim default state.
+    /// Reset the telescope simulator device 0 to its `OmniSim` default state.
     /// See [`Self::restart_device`] for the underlying mechanism.
     pub async fn reset_telescope() -> Result<(), String> {
         Self::restart_device("telescope", 0).await
     }
 
-    /// Reset the camera simulator device 0 to its OmniSim default state.
+    /// Reset the camera simulator device 0 to its `OmniSim` default state.
     pub async fn reset_camera() -> Result<(), String> {
         Self::restart_device("camera", 0).await
     }
 
-    /// Reset the filter-wheel simulator device 0 to its OmniSim default state.
+    /// Reset the filter-wheel simulator device 0 to its `OmniSim` default state.
     pub async fn reset_filter_wheel() -> Result<(), String> {
         Self::restart_device("filterwheel", 0).await
     }
 
-    /// Reset the focuser simulator device 0 to its OmniSim default state.
+    /// Reset the focuser simulator device 0 to its `OmniSim` default state.
     pub async fn reset_focuser() -> Result<(), String> {
         Self::restart_device("focuser", 0).await
     }
 
-    /// Reset the cover-calibrator simulator device 0 to its OmniSim default state.
+    /// Reset the cover-calibrator simulator device 0 to its `OmniSim` default state.
     pub async fn reset_cover_calibrator() -> Result<(), String> {
         Self::restart_device("covercalibrator", 0).await
     }
 
-    /// Reset the safety-monitor simulator device 0 to its OmniSim default
+    /// Reset the safety-monitor simulator device 0 to its `OmniSim` default
     /// state. `restart` reloads the device from its persisted profile, and
     /// [`Self::set_safety_monitor_is_safe`] writes only the in-memory
     /// setting — so this restores the profile's `IsSafe` (true in our
@@ -144,23 +144,23 @@ impl OmniSimHandle {
         Self::restart_device("safetymonitor", 0).await
     }
 
-    /// Reset the switch simulator device 0 to its OmniSim default state.
+    /// Reset the switch simulator device 0 to its `OmniSim` default state.
     pub async fn reset_switch() -> Result<(), String> {
         Self::restart_device("switch", 0).await
     }
 
-    /// Reset the rotator simulator device 0 to its OmniSim default state.
+    /// Reset the rotator simulator device 0 to its `OmniSim` default state.
     pub async fn reset_rotator() -> Result<(), String> {
         Self::restart_device("rotator", 0).await
     }
 
-    /// Reset the observing-conditions simulator device 0 to its OmniSim
+    /// Reset the observing-conditions simulator device 0 to its `OmniSim`
     /// default state.
     pub async fn reset_observing_conditions() -> Result<(), String> {
         Self::restart_device("observingconditions", 0).await
     }
 
-    /// Reset the dome simulator device 0 to its OmniSim default state.
+    /// Reset the dome simulator device 0 to its `OmniSim` default state.
     pub async fn reset_dome() -> Result<(), String> {
         Self::restart_device("dome", 0).await
     }
@@ -168,9 +168,9 @@ impl OmniSimHandle {
     /// Reset every device class our BDD suites currently exercise
     /// (telescope, camera, filter wheel, focuser, cover calibrator,
     /// safety monitor, switch, rotator, observing conditions, dome) to
-    /// OmniSim defaults. Issued **sequentially** — one PUT at a time.
+    /// `OmniSim` defaults. Issued **sequentially** — one PUT at a time.
     ///
-    /// Why not parallel? OmniSim's `DriverManager.Load{Class}(n)`
+    /// Why not parallel? `OmniSim`'s `DriverManager.Load{Class}(n)`
     /// mutates a process-wide `static List<AlpacaConfiguredDevice>
     /// AlpacaDevices` via unsynchronised `List.Remove(...)` +
     /// `List.Add(...)`. When two of our PUTs landed on different
@@ -183,7 +183,7 @@ impl OmniSimHandle {
     /// Sequential PUTs eliminate that race *within* one hook; the
     /// process-wide [`RESTART_SERIALIZER`] taken inside each PUT
     /// eliminates it *across* concurrently-running hooks too — the
-    /// end-of-run burst of non-`@serial` scenarios deadlocked OmniSim
+    /// end-of-run burst of non-`@serial` scenarios deadlocked `OmniSim`
     /// on the Pi nightly (#431).
     ///
     /// The wall-time cost is small: 6 localhost round-trips serialised
@@ -228,13 +228,13 @@ impl OmniSimHandle {
         }
     }
 
-    /// Reset a single OmniSim device by class and instance number to
+    /// Reset a single `OmniSim` device by class and instance number to
     /// its default state without restarting the simulator process.
     ///
-    /// Posts to OmniSim's private `PUT /simulator/v1/{class}/{n}/restart`
+    /// Posts to `OmniSim`'s private `PUT /simulator/v1/{class}/{n}/restart`
     /// endpoint, which calls `DriverManager.Load{Class}(n)` server-side.
-    /// The result is equivalent to OmniSim having just started for that
-    /// device — e.g. for telescope: AtPark false, Tracking false,
+    /// The result is equivalent to `OmniSim` having just started for that
+    /// device — e.g. for telescope: `AtPark` false, Tracking false,
     /// position at the configured startup alt/az (default ≈ alt 38.9°
     /// az 165° — above horizon).
     ///
@@ -242,11 +242,11 @@ impl OmniSimHandle {
     /// with a string suitable for inclusion in a panic message. The
     /// endpoint is OmniSim-only (not part of standard Alpaca), so
     /// older or alternative simulators may 404 — those are surfaced as
-    /// errors today; we run only against OmniSim and want to know if
+    /// errors today; we run only against `OmniSim` and want to know if
     /// that ever changes. Errors used to be silently swallowed here,
     /// which masked intermittent macOS failures.
     ///
-    /// `class` must match one of OmniSim's device class slugs:
+    /// `class` must match one of `OmniSim`'s device class slugs:
     /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
     /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
     /// `switch`.
@@ -256,10 +256,10 @@ impl OmniSimHandle {
     }
 
     /// Set what the safety-monitor simulator device 0 reports for
-    /// `IsSafe`, via OmniSim's private
+    /// `IsSafe`, via `OmniSim`'s private
     /// `PUT /simulator/v1/safetymonitor/{n}/issafesetting` endpoint.
     ///
-    /// This writes the device's in-memory setting only (OmniSim persists
+    /// This writes the device's in-memory setting only (`OmniSim` persists
     /// it to the profile on its own save path, which this endpoint does
     /// not trigger), so [`Self::reset_safety_monitor`] — or the next
     /// process restart — restores the profile default (safe). Safety
@@ -272,9 +272,9 @@ impl OmniSimHandle {
 
     /// Drive the cover-calibrator simulator's cover fully open or
     /// closed via the standard Alpaca device API (`opencover` /
-    /// `closecover`, then `coverstate` polling; CoverState 1 = Closed,
+    /// `closecover`, then `coverstate` polling; `CoverState` 1 = Closed,
     /// 3 = Open). Connects the device first — the scenario's `Given`
-    /// runs before rp does. OmniSim's cover sweep takes a few seconds;
+    /// runs before rp does. `OmniSim`'s cover sweep takes a few seconds;
     /// polls up to 30 s.
     pub async fn set_cover_closed(closed: bool) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
@@ -353,10 +353,7 @@ impl OmniSimHandle {
         n: u32,
         is_safe: bool,
     ) -> Result<(), String> {
-        let url = format!(
-            "{}/simulator/v1/safetymonitor/{}/issafesetting",
-            base_url, n
-        );
+        let url = format!("{base_url}/simulator/v1/safetymonitor/{n}/issafesetting");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -381,14 +378,14 @@ impl OmniSimHandle {
     /// site at runtime must teach the simulated mount the same one
     /// before rp starts.
     ///
-    /// **The write outlives the scenario.** OmniSim treats the site as
+    /// **The write outlives the scenario.** `OmniSim` treats the site as
     /// a profile *setting*, not runtime state: the per-scenario
     /// `restart` does NOT restore the default (unlike tracking or the
     /// mount position), and on platforms without `PR_SET_PDEATHSIG`
-    /// (macOS, Windows) the OmniSim process itself outlives the test
+    /// (macOS, Windows) the `OmniSim` process itself outlives the test
     /// binary, so a leaked site poisons the *next* suite that reuses
     /// the instance — rp's planner scenarios pin their config to
-    /// OmniSim's default site and fail mount-site validation against a
+    /// `OmniSim`'s default site and fail mount-site validation against a
     /// leftover computed one. Scenarios that call this must capture
     /// the prior site via [`Self::get_telescope_site`] and restore it
     /// when they finish.
@@ -430,7 +427,7 @@ impl OmniSimHandle {
         n: u32,
         property: &str,
     ) -> Result<f64, String> {
-        let url = format!("{}/api/v1/telescope/{}/{}", base_url, n, property);
+        let url = format!("{base_url}/api/v1/telescope/{n}/{property}");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -452,7 +449,7 @@ impl OmniSimHandle {
         // it rather than treating it as success.
         let error_number = body
             .get("ErrorNumber")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| {
                 format!("GET {url} returned a body without a numeric ErrorNumber: {body}")
             })?;
@@ -466,12 +463,12 @@ impl OmniSimHandle {
             ));
         }
         body.get("Value")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .ok_or_else(|| format!("GET {url} returned no numeric Value: {body}"))
     }
 
     /// Enable or disable the telescope simulator's sidereal tracking
-    /// (`Tracking`, standard Alpaca). OmniSim requires tracking to be
+    /// (`Tracking`, standard Alpaca). `OmniSim` requires tracking to be
     /// on before `SyncToCoordinates` — call this before
     /// [`Self::sync_telescope_to`].
     pub async fn set_telescope_tracking(enabled: bool) -> Result<(), String> {
@@ -492,7 +489,7 @@ impl OmniSimHandle {
     /// (`SyncToCoordinates`, standard Alpaca): teleports the mount's
     /// coordinate frame without physical motion, so a scenario can
     /// start a session with the mount already "pointing" near its
-    /// target and every document slew stays sub-degree (OmniSim slews
+    /// target and every document slew stays sub-degree (`OmniSim` slews
     /// at real-mount speed — a tens-of-degrees slew costs minutes).
     /// Requires tracking on (OmniSim-imposed; see
     /// [`Self::set_telescope_tracking`]).
@@ -510,14 +507,14 @@ impl OmniSimHandle {
         .await
     }
 
-    /// The shared singleton's base URL, starting this process's OmniSim
+    /// The shared singleton's base URL, starting this process's `OmniSim`
     /// first if no scenario has done so yet. There is no fixed fallback
     /// port anymore — with per-process instances on dynamic ports, "the"
-    /// OmniSim is always the one this process owns, so the state-arranging
+    /// `OmniSim` is always the one this process owns, so the state-arranging
     /// helpers (`restart_device`, the telescope-site/tracking/sync setters,
     /// the safety-monitor override) simply ensure it exists.
     async fn singleton_base_url() -> String {
-        OmniSimHandle::start().await.base_url
+        Self::start().await.base_url
     }
 
     /// One form-encoded PUT against the standard Alpaca telescope API
@@ -531,7 +528,7 @@ impl OmniSimHandle {
         property: &str,
         form: &[(&str, String)],
     ) -> Result<(), String> {
-        let url = format!("{}/api/v1/telescope/{}/{}", base_url, n, property);
+        let url = format!("{base_url}/api/v1/telescope/{n}/{property}");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -554,7 +551,7 @@ impl OmniSimHandle {
         // it rather than treating it as success.
         let error_number = body
             .get("ErrorNumber")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| {
                 format!("PUT {url} returned a body without a numeric ErrorNumber: {body}")
             })?;
@@ -578,9 +575,9 @@ impl OmniSimHandle {
     /// The PUT is issued under [`RESTART_SERIALIZER`], so at most one
     /// restart is in flight per test process no matter how many
     /// scenario hooks run concurrently — see the mutex docs for the
-    /// OmniSim deadlock (#431) this prevents.
+    /// `OmniSim` deadlock (#431) this prevents.
     async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
-        let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
+        let url = format!("{base_url}/simulator/v1/{class}/{n}/restart");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -613,22 +610,21 @@ impl OmniSimProcess {
             }
         }
         panic!(
-            "failed to start OmniSim binary '{}' after {} attempts: {}. \
+            "failed to start OmniSim binary '{binary}' after {SPAWN_ATTEMPTS} attempts: {last_failure}. \
              Note: bdd-infra spawns OmniSim with --multi-instance and \
              OMNISIM_SETTINGS_DIR, which need the patched fork \
              (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.2 or \
              newer) — an older binary exits at startup when any other \
-             OmniSim instance is running on the host.",
-            binary, SPAWN_ATTEMPTS, last_failure
+             OmniSim instance is running on the host."
         );
     }
 
-    /// One spawn attempt: launch OmniSim on `port` and wait for it to become
+    /// One spawn attempt: launch `OmniSim` on `port` and wait for it to become
     /// healthy. Returns `Err` with a diagnostic when the child exits early
     /// (lost the port-bind race, or the binary predates `--multi-instance`)
     /// or never turns healthy; the caller retries on a fresh port.
     async fn spawn_on_port(binary: &str, port: u16) -> Result<Self, String> {
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         // Capture OmniSim's stdout/stderr to per-run log files under the
         // cargo target tree. The previous `Stdio::null()` dropped every
@@ -644,7 +640,7 @@ impl OmniSimProcess {
         // .NET runtime isn't broken by LD_PRELOAD injection from ASAN/LSAN.
         let mut cmd = std::process::Command::new(binary);
         cmd.arg("--multi-instance")
-            .arg(format!("--urls={}", base_url))
+            .arg(format!("--urls={base_url}"))
             .stdout(stdout_target)
             .stderr(stderr_target)
             .env_remove("LD_PRELOAD")
@@ -672,7 +668,7 @@ impl OmniSimProcess {
             }
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {}", e))?;
+        let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
 
         match Self::wait_healthy(&mut child, &base_url).await {
             Ok(()) => Ok(Self {
@@ -690,36 +686,38 @@ impl OmniSimProcess {
 
     /// Probe the OS for a free `127.0.0.1` port by binding an ephemeral
     /// listener and immediately dropping it. Another process can grab the
-    /// port in the window before OmniSim binds it — that lost race surfaces
+    /// port in the window before `OmniSim` binds it — that lost race surfaces
     /// as an early child exit in [`Self::wait_healthy`] and costs one retry
     /// in [`Self::get_or_spawn`].
     fn pick_free_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0))
             .and_then(|listener| listener.local_addr())
-            .map(|addr| addr.port())
-            .unwrap_or_else(|e| panic!("failed to probe a free port for OmniSim: {}", e))
+            .map_or_else(
+                |e| panic!("failed to probe a free port for OmniSim: {e}"),
+                |addr| addr.port(),
+            )
     }
 
-    /// Seed a per-instance `OMNISIM_SETTINGS_DIR` for OmniSim and return
+    /// Seed a per-instance `OMNISIM_SETTINGS_DIR` for `OmniSim` and return
     /// its path. The seed is a recursive copy of the checked-in
     /// `crates/bdd-infra/omnisim-config/` tree, whose layout mirrors what
     /// the fork puts under the settings root
     /// (`ascom-alpaca-simulator/<device>/v1/instance-0.xml`; the lowercase
     /// names also satisfy Windows' case-insensitive lookups of its
-    /// platform-cased paths). OmniSim writes back to this directory on
-    /// startup (e.g. emitting missing UniqueIDs, persisting full default
+    /// platform-cased paths). `OmniSim` writes back to this directory on
+    /// startup (e.g. emitting missing `UniqueIDs`, persisting full default
     /// profiles), so we MUST copy the source into a scratch location and
-    /// never let OmniSim see the repository copy directly.
+    /// never let `OmniSim` see the repository copy directly.
     ///
     /// The destination is suffixed with the test process's PID
     /// (`bdd-infra-omnisim-<pid>/`) under [`Self::state_root`]: with
-    /// parallel suites and shards each spawning a private OmniSim,
+    /// parallel suites and shards each spawning a private `OmniSim`,
     /// instances must not share a writable profile dir either — a shared
     /// dir would race the startup write-backs and leak profile *settings*
     /// (e.g. the telescope site, which `restart` does not reset) between
     /// concurrently running suites. That leak is not hypothetical: it
     /// failed 4 of 8 rp:bdd shards on macOS CI when isolation still rode
-    /// on XDG_CONFIG_HOME, which .NET ignores there. We fully reseed on
+    /// on `XDG_CONFIG_HOME`, which .NET ignores there. We fully reseed on
     /// every spawn so a write-back from a prior run can't leak into this
     /// one.
     ///
@@ -802,18 +800,21 @@ impl OmniSimProcess {
         if let Some(tmp) = std::env::var_os("TEST_TMPDIR") {
             return PathBuf::from(tmp);
         }
-        std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+            || {
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .parent()
                     .and_then(|p| p.parent())
-                    .map(|workspace| workspace.join("target"))
-                    .unwrap_or_else(|| PathBuf::from("target"))
-            })
+                    .map_or_else(
+                        || PathBuf::from("target"),
+                        |workspace| workspace.join("target"),
+                    )
+            },
+            PathBuf::from,
+        )
     }
 
-    /// Resolve the log directory for OmniSim's captured stdout/stderr.
+    /// Resolve the log directory for `OmniSim`'s captured stdout/stderr.
     /// Lives at `<CARGO_TARGET_DIR>/bdd-infra-omnisim-logs/` (or
     /// `<workspace>/target/bdd-infra-omnisim-logs/` if unset). Kept
     /// outside the seeded settings dir so `prepare_settings_dir`'s
@@ -835,21 +836,24 @@ impl OmniSimProcess {
                 return Some(dest);
             }
         }
-        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+            || {
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .parent()
                     .and_then(|p| p.parent())
-                    .map(|workspace| workspace.join("target"))
-                    .unwrap_or_else(|| PathBuf::from("target"))
-            });
+                    .map_or_else(
+                        || PathBuf::from("target"),
+                        |workspace| workspace.join("target"),
+                    )
+            },
+            PathBuf::from,
+        );
         let dest = target_dir.join("bdd-infra-omnisim-logs");
         std::fs::create_dir_all(&dest).ok()?;
         Some(dest)
     }
 
-    /// Open fresh (truncating) log files for OmniSim's stdout and
+    /// Open fresh (truncating) log files for `OmniSim`'s stdout and
     /// stderr, returning `Stdio` handles ready to attach to the
     /// `Command`. Falls back to `Stdio::null()` for either stream
     /// individually if its file can't be opened.
@@ -870,8 +874,7 @@ impl OmniSimProcess {
             .and_then(|d| {
                 std::fs::File::create(d.join(format!("omnisim.{pid}.{port}.stdout.log"))).ok()
             })
-            .map(Stdio::from)
-            .unwrap_or_else(Stdio::null);
+            .map_or_else(Stdio::null, Stdio::from);
         // Under Bazel, inherit OmniSim's stderr into the test process so a
         // crash / unhandled exception (the cause of the rp:bdd / calibrator-flats
         // OmniSim cascades) shows up in the failed test output (`--test_output=errors`)
@@ -885,8 +888,7 @@ impl OmniSimProcess {
                 .and_then(|d| {
                     std::fs::File::create(d.join(format!("omnisim.{pid}.{port}.stderr.log"))).ok()
                 })
-                .map(Stdio::from)
-                .unwrap_or_else(Stdio::null)
+                .map_or_else(Stdio::null, Stdio::from)
         };
         (stdout, stderr)
     }
@@ -930,11 +932,11 @@ impl OmniSimProcess {
             .timeout(Duration::from_secs(2))
             .build()
             .expect("failed to build reqwest client");
-        let url = format!("{}/api/v1/camera/0/connected", base_url);
+        let url = format!("{base_url}/api/v1/camera/0/connected");
         matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
     }
 
-    /// Poll `base_url` until OmniSim answers, watching the child so an
+    /// Poll `base_url` until `OmniSim` answers, watching the child so an
     /// early exit (lost port-bind race; a pre-`--multi-instance` binary
     /// deferring to another running instance) fails fast with its exit
     /// status instead of burning the full 30-second health window.
@@ -943,9 +945,8 @@ impl OmniSimProcess {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!(
-                    "OmniSim exited during startup ({}) — lost the port-bind \
-                     race, or the binary does not support --multi-instance",
-                    status
+                    "OmniSim exited during startup ({status}) — lost the port-bind \
+                     race, or the binary does not support --multi-instance"
                 ));
             }
             if Self::is_healthy(base_url).await {
@@ -953,8 +954,7 @@ impl OmniSimProcess {
             }
         }
         Err(format!(
-            "OmniSim did not become healthy at {} within 30 seconds",
-            base_url
+            "OmniSim did not become healthy at {base_url} within 30 seconds"
         ))
     }
 }
@@ -985,7 +985,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        (format!("http://127.0.0.1:{}", port), tx)
+        (format!("http://127.0.0.1:{port}"), tx)
     }
 
     /// Stub server that responds to `PUT /simulator/v1/{class}/{n}/restart`
@@ -1011,7 +1011,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        (format!("http://127.0.0.1:{}", port), tx)
+        (format!("http://127.0.0.1:{port}"), tx)
     }
 
     #[tokio::test]
@@ -1157,7 +1157,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         OmniSimHandle::set_safety_monitor_is_safe_at(&base_url, 0, false)
             .await
@@ -1184,7 +1184,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         let err = OmniSimHandle::set_safety_monitor_is_safe_at(&base_url, 0, true)
             .await
@@ -1250,7 +1250,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        (format!("http://127.0.0.1:{}", port), rx_seen, tx)
+        (format!("http://127.0.0.1:{port}"), rx_seen, tx)
     }
 
     #[tokio::test]
@@ -1308,7 +1308,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         let lat = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
             .await
@@ -1352,7 +1352,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
             .await
@@ -1371,8 +1371,8 @@ mod tests {
         let _ = tx.send(());
     }
 
-    /// Serializes tests that mutate the process-wide OMNISIM_PATH /
-    /// OMNISIM_DIR env vars (`find_binary` reads them). tokio's Mutex so
+    /// Serializes tests that mutate the process-wide `OMNISIM_PATH` /
+    /// `OMNISIM_DIR` env vars (`find_binary` reads them). tokio's Mutex so
     /// async tests can hold the guard across `.await` without tripping
     /// `clippy::await_holding_lock`; sync tests use `blocking_lock`.
     static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -1385,8 +1385,8 @@ mod tests {
     }
 
     /// A PATH-resolvable binary that exits quickly (with an error) when
-    /// handed OmniSim's `--multi-instance --urls=...` args — a stand-in
-    /// for a pre-fork OmniSim losing the port-bind race or bailing out.
+    /// handed `OmniSim`'s `--multi-instance --urls=...` args — a stand-in
+    /// for a pre-fork `OmniSim` losing the port-bind race or bailing out.
     fn quick_fail_binary() -> &'static str {
         if cfg!(windows) {
             // whoami rejects unknown arguments and exits fast.
@@ -1489,7 +1489,7 @@ mod tests {
             .downcast::<String>()
             .expect("panic payload is the formatted message");
         assert!(
-            message.contains(&format!("after {} attempts", SPAWN_ATTEMPTS)),
+            message.contains(&format!("after {SPAWN_ATTEMPTS} attempts")),
             "{message}"
         );
         assert!(message.contains("v0.5.0-467.2"), "{message}");
@@ -1558,7 +1558,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
             .await
@@ -1584,7 +1584,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let base_url = format!("http://127.0.0.1:{port}");
 
         let err = OmniSimHandle::put_telescope_form_at(
             &base_url,

@@ -29,7 +29,7 @@ impl MockPhd2Server {
         Self { listener, port }
     }
 
-    fn port(&self) -> u16 {
+    const fn port(&self) -> u16 {
         self.port
     }
 
@@ -43,7 +43,7 @@ impl MockPhd2Server {
                 // Send version event immediately on connect
                 let version_event =
                     r#"{"Event":"Version","PHDVersion":"2.6.11","PHDSubver":"","MsgVersion":1}"#;
-                writeln!(stream, "{}", version_event).ok();
+                writeln!(stream, "{version_event}").ok();
                 stream.flush().ok();
 
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -55,7 +55,7 @@ impl MockPhd2Server {
                         Ok(0) => break, // Connection closed
                         Ok(_) => {
                             if let Some(response) = response_iter.next() {
-                                writeln!(stream, "{}", response).ok();
+                                writeln!(stream, "{response}").ok();
                                 stream.flush().ok();
                             }
                         }
@@ -79,7 +79,7 @@ impl MockPhd2Server {
                 // Send version event immediately on connect
                 let version_event =
                     r#"{"Event":"Version","PHDVersion":"2.6.11","PHDSubver":"","MsgVersion":1}"#;
-                writeln!(stream, "{}", version_event).ok();
+                writeln!(stream, "{version_event}").ok();
                 stream.flush().ok();
 
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -90,7 +90,7 @@ impl MockPhd2Server {
                         Ok(0) => break,
                         Ok(_) => {
                             let response = handler(&line);
-                            writeln!(stream, "{}", response).ok();
+                            writeln!(stream, "{response}").ok();
                             stream.flush().ok();
                         }
                         Err(_) => break,
@@ -111,12 +111,12 @@ impl MockPhd2Server {
                 // Send version event immediately on connect
                 let version_event =
                     r#"{"Event":"Version","PHDVersion":"2.6.11","PHDSubver":"","MsgVersion":1}"#;
-                writeln!(stream, "{}", version_event).ok();
+                writeln!(stream, "{version_event}").ok();
                 stream.flush().ok();
 
                 // Send initial messages (events, empty lines, malformed JSON, etc.)
                 for msg in initial_messages {
-                    writeln!(stream, "{}", msg).ok();
+                    writeln!(stream, "{msg}").ok();
                     stream.flush().ok();
                     // Small delay between messages
                     thread::sleep(Duration::from_millis(10));
@@ -131,7 +131,7 @@ impl MockPhd2Server {
                         Ok(0) => break,
                         Ok(_) => {
                             if let Some(response) = response_iter.next() {
-                                writeln!(stream, "{}", response).ok();
+                                writeln!(stream, "{response}").ok();
                                 stream.flush().ok();
                             }
                         }
@@ -152,7 +152,7 @@ impl MockPhd2Server {
                 // Send version event
                 let version_event =
                     r#"{"Event":"Version","PHDVersion":"2.6.11","PHDSubver":"","MsgVersion":1}"#;
-                writeln!(stream, "{}", version_event).ok();
+                writeln!(stream, "{version_event}").ok();
                 stream.flush().ok();
 
                 // Wait then disconnect
@@ -263,7 +263,7 @@ async fn test_get_app_state() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":"Guiding","id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":"Guiding","id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -286,7 +286,7 @@ async fn test_get_app_state_stopped() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":"Stopped","id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":"Stopped","id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -313,7 +313,7 @@ async fn test_is_equipment_connected() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":true,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":true,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -337,8 +337,7 @@ async fn test_get_profiles() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","result":[{{"id":1,"name":"Default"}},{{"id":2,"name":"Simulator"}}],"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","result":[{{"id":1,"name":"Default"}},{{"id":2,"name":"Simulator"}}],"id":{id}}}"#
         )
     });
 
@@ -366,10 +365,7 @@ async fn test_get_current_profile() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(
-            r#"{{"jsonrpc":"2.0","result":{{"id":1,"name":"Default"}},"id":{}}}"#,
-            id
-        )
+        format!(r#"{{"jsonrpc":"2.0","result":{{"id":1,"name":"Default"}},"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -394,8 +390,7 @@ async fn test_get_current_equipment() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","result":{{"camera":{{"name":"Simulator","connected":true}},"mount":{{"name":"On-camera","connected":true}},"aux_mount":null,"AO":null,"rotator":null}},"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","result":{{"camera":{{"name":"Simulator","connected":true}},"mount":{{"name":"On-camera","connected":true}},"aux_mount":null,"AO":null,"rotator":null}},"id":{id}}}"#
         )
     });
 
@@ -424,7 +419,7 @@ async fn test_start_guiding() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -450,7 +445,7 @@ async fn test_start_guiding_with_roi() {
         let id = req["id"].as_u64().unwrap();
         // Verify ROI is in the request
         assert!(req["params"]["roi"].is_array());
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -475,7 +470,7 @@ async fn test_stop_guiding() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -498,7 +493,7 @@ async fn test_pause_and_resume() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -522,7 +517,7 @@ async fn test_dither() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -550,7 +545,7 @@ async fn test_find_star() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -573,7 +568,7 @@ async fn test_get_lock_position() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":[256.5,512.3],"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":[256.5,512.3],"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -597,7 +592,7 @@ async fn test_get_lock_position_no_star() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":null,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":null,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -620,7 +615,7 @@ async fn test_set_lock_position() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -647,7 +642,7 @@ async fn test_is_calibrated() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":true,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":true,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -671,8 +666,7 @@ async fn test_get_calibration_data() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","result":{{"calibrated":true,"xAngle":45.5,"xRate":15.2,"xParity":"+","yAngle":135.5,"yRate":14.8,"yParity":"-"}},"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","result":{{"calibrated":true,"xAngle":45.5,"xRate":15.2,"xParity":"+","yAngle":135.5,"yRate":14.8,"yParity":"-"}},"id":{id}}}"#
         )
     });
 
@@ -700,7 +694,7 @@ async fn test_clear_calibration() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -725,7 +719,7 @@ async fn test_flip_calibration() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -752,7 +746,7 @@ async fn test_get_exposure() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":2000,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":2000,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -775,7 +769,7 @@ async fn test_set_exposure() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -798,10 +792,7 @@ async fn test_get_exposure_durations() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(
-            r#"{{"jsonrpc":"2.0","result":[100,200,500,1000,2000],"id":{}}}"#,
-            id
-        )
+        format!(r#"{{"jsonrpc":"2.0","result":[100,200,500,1000,2000],"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -825,7 +816,7 @@ async fn test_get_camera_frame_size() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":[1280,960],"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":[1280,960],"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -849,7 +840,7 @@ async fn test_capture_single_frame() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -877,8 +868,7 @@ async fn test_get_algo_param_names() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","result":["Aggressiveness","HysteresisPercentage","MinMove"],"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","result":["Aggressiveness","HysteresisPercentage","MinMove"],"id":{id}}}"#
         )
     });
 
@@ -903,7 +893,7 @@ async fn test_get_algo_param() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0.75,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0.75,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -929,7 +919,7 @@ async fn test_set_algo_param() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -956,7 +946,7 @@ async fn test_get_ccd_temperature() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":-10.5,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":-10.5,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -980,8 +970,7 @@ async fn test_get_cooler_status() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","result":{{"temperature":-10.0,"coolerOn":true,"setpoint":-10.0,"power":45.0}},"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","result":{{"temperature":-10.0,"coolerOn":true,"setpoint":-10.0,"power":45.0}},"id":{id}}}"#
         )
     });
 
@@ -1006,7 +995,7 @@ async fn test_set_cooler_state() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":0,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -1034,8 +1023,7 @@ async fn test_get_star_image() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","result":{{"frame":1,"width":32,"height":32,"star_pos":[16.0,16.0],"pixels":"AAAA"}},"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","result":{{"frame":1,"width":32,"height":32,"star_pos":[16.0,16.0],"pixels":"AAAA"}},"id":{id}}}"#
         )
     });
 
@@ -1061,10 +1049,7 @@ async fn test_save_image() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(
-            r#"{{"jsonrpc":"2.0","result":"/path/to/image.fits","id":{}}}"#,
-            id
-        )
+        format!(r#"{{"jsonrpc":"2.0","result":"/path/to/image.fits","id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -1092,8 +1077,7 @@ async fn test_rpc_error_response() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         format!(
-            r#"{{"jsonrpc":"2.0","error":{{"code":-32600,"message":"Invalid request"}},"id":{}}}"#,
-            id
+            r#"{{"jsonrpc":"2.0","error":{{"code":-32600,"message":"Invalid request"}},"id":{id}}}"#
         )
     });
 
@@ -1118,7 +1102,7 @@ async fn test_invalid_response_format() {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
         // Return wrong type (number instead of string for app state)
-        format!(r#"{{"jsonrpc":"2.0","result":123,"id":{}}}"#, id)
+        format!(r#"{{"jsonrpc":"2.0","result":123,"id":{id}}}"#)
     });
 
     let config = create_test_config(port);
@@ -1372,7 +1356,7 @@ async fn test_empty_line_handling() {
 
     // Send empty lines and then a response
     let initial_messages = vec![
-        "".to_string(),    // Empty line
+        String::new(),     // Empty line
         "   ".to_string(), // Whitespace only
         "\t".to_string(),  // Tab only
     ];

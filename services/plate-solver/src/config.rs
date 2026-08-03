@@ -45,14 +45,14 @@ pub struct Config {
 fn default_server() -> ServerConfig {
     ServerConfig::new(11131)
 }
-fn default_max_concurrency() -> usize {
+const fn default_max_concurrency() -> usize {
     1
 }
-fn default_solve_timeout() -> Duration {
+const fn default_solve_timeout() -> Duration {
     Duration::from_secs(30)
 }
-fn default_max_solve_timeout() -> Duration {
-    Duration::from_secs(120)
+const fn default_max_solve_timeout() -> Duration {
+    Duration::from_mins(2)
 }
 
 #[derive(Debug, Error)]
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(cfg.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(cfg.max_concurrency, 1);
         assert_eq!(cfg.default_solve_timeout, Duration::from_secs(30));
-        assert_eq!(cfg.max_solve_timeout, Duration::from_secs(120));
+        assert_eq!(cfg.max_solve_timeout, Duration::from_mins(2));
     }
 
     #[test]
@@ -277,7 +277,7 @@ mod tests {
             astap_binary_path: bin,
             astap_db_directory: db,
             max_concurrency: 1,
-            default_solve_timeout: Duration::from_secs(60),
+            default_solve_timeout: Duration::from_mins(1),
             max_solve_timeout: Duration::from_secs(30),
             astap_extra_env: Default::default(),
         };

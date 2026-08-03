@@ -36,7 +36,7 @@ use crate::units::{MechanicalDegrees, Steps, STEPS_PER_DEGREE};
 /// Firmware-enforced CW soft limit, in degrees. A target beyond this is only
 /// reachable the long way round (CCW past the 0° home), which the firmware
 /// reports as a *negative* signed step count. Modelled here so the mock
-/// reproduces the real-hardware behaviour ConformU exercises (firmware 1.5).
+/// reproduces the real-hardware behaviour `ConformU` exercises (firmware 1.5).
 const FALCON_CW_LIMIT_DEG: f64 = 220.0;
 
 /// Default raw ADC voltage reading returned by `VS`.
@@ -97,7 +97,7 @@ impl MockDeviceState {
 
     /// The `[0, 360)` mechanical angle the firmware reports for `FD` and the
     /// `FA` degree field.
-    fn mech_position_deg(&self) -> f64 {
+    const fn mech_position_deg(&self) -> f64 {
         self.mech.value()
     }
 
@@ -115,11 +115,7 @@ impl MockDeviceState {
 }
 
 fn bit(b: bool) -> u8 {
-    if b {
-        1
-    } else {
-        0
-    }
+    u8::from(b)
 }
 
 /// Map a mechanical angle to the Falcon's *signed* step counter, modelling the
@@ -248,7 +244,7 @@ impl MockState {
 }
 
 /// One open mock transport. Shares state with the factory so persistent
-/// device settings (mechanical position, motor_reverse, …) survive across
+/// device settings (mechanical position, `motor_reverse`, …) survive across
 /// reconnect cycles.
 struct MockFalconFrameTransport {
     state: Arc<Mutex<MockState>>,
@@ -304,7 +300,7 @@ impl MockFalconTransportFactory {
 
     /// Read the mock's current mechanical position. Used by tests that
     /// verify a code path *did not* mutate the device counter (e.g. ASCOM
-    /// Sync, which must leave MechanicalPosition untouched).
+    /// Sync, which must leave `MechanicalPosition` untouched).
     pub async fn mech_position_deg(&self) -> f64 {
         self.state.lock().await.device_state.mech_position_deg()
     }

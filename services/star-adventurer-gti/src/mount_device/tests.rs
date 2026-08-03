@@ -182,7 +182,7 @@ async fn seed_mech_ha(
     mech_ha: f64,
 ) {
     let cpr = d.manager.parameters().await.unwrap().cpr_ra;
-    let ticks = (mech_ha * cpr as f64 / 24.0) as i32;
+    let ticks = (mech_ha * f64::from(cpr) / 24.0) as i32;
     mock.lock().await.ra.position_ticks = ticks;
     d.manager.seed_ra_position(ticks).await;
 }
@@ -377,8 +377,8 @@ async fn tracking_guard_tick_leaves_tracking_set_when_stop_fails() {
     );
 }
 
-/// Build a device with auto-flip armed (flip_policy enabled +
-/// auto_flip_during_tracking) at the given meridian offset, the CW
+/// Build a device with auto-flip armed (`flip_policy` enabled +
+/// `auto_flip_during_tracking`) at the given meridian offset, the CW
 /// exclusion zone disabled, and the altitude floor neutralised (the
 /// flip target's apparent altitude depends on wallclock LST). The
 /// session is established directly — no background watcher; these
@@ -405,7 +405,7 @@ async fn auto_flip_device(
 }
 
 /// The through-wrap flip slew's RA goto: `:G1` mode `01` =
-/// Goto + Fast + CCW (matches the assertion meridian_flip.feature
+/// Goto + Fast + CCW (matches the assertion `meridian_flip.feature`
 /// pins for `SetSideOfPier`).
 fn log_has_flip_goto(log: &[Vec<u8>]) -> bool {
     log.iter().any(|f| f == b":G101\r")
@@ -673,7 +673,10 @@ async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
     d.set_tracking(true).await.unwrap();
 
     let log = mock.lock().await.command_log.clone();
-    let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+    let new_frames: Vec<&[u8]> = log[baseline_len..]
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
     // Look only at setter / motion-start frames on the RA axis:
     // `:G1`, `:I1`, `:J1`, `:K1` (in order of appearance). The
     // polling task's `:f1` / `:j1` / `:f2` / `:j2` inquiries are
@@ -831,14 +834,14 @@ async fn fast_settle_connected() -> MountDevice {
 /// reaches its goto target. The settle never actually elapses — the test
 /// runtime is torn down first.
 async fn slow_settle_connected() -> MountDevice {
-    let d = device_with_settle(Duration::from_secs(600));
+    let d = device_with_settle(Duration::from_mins(10));
     d.set_connected(true).await.unwrap();
     d
 }
 
 /// Like `fast_settle_connected`, but with a narrow CW exclusion zone
 /// so the safety-gate tests can land target coords that are clearly
-/// inside it without first needing to push past the GTi default
+/// inside it without first needing to push past the `GTi` default
 /// `(0.95, 11.05)`.
 async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     let mut cfg = base_config();
@@ -1157,7 +1160,10 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     // may re-enter the sequence and add more frames; we only
     // care about the first-pass wire frames here.
     let log = mock.lock().await.command_log.clone();
-    let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+    let new_frames: Vec<&[u8]> = log[baseline_len..]
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
 
     // Helper: extract setter / motion-start frames for `axis_byte`.
     let interesting = |axis_byte: u8| -> Vec<&[u8]> {
@@ -1696,7 +1702,7 @@ async fn sync_failure_does_not_clobber_target() {
 
 /// Frame-transport that always reports `running = true` on `:f<axis>`
 /// and acks `:K<axis>` without changing state. Other handshake commands
-/// get plausibly-shaped replies (CPR, TMR_Freq, etc.) so the shared
+/// get plausibly-shaped replies (CPR, `TMR_Freq`, etc.) so the shared
 /// transport's handshake completes. Used to drive `stop_axis_and_wait`
 /// into its timeout branch — real hardware never gets stuck like this,
 /// but the regular mock processes `:K` instantaneously.
@@ -1705,7 +1711,7 @@ struct StuckAxisFrameTransport {
 }
 
 impl StuckAxisFrameTransport {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             pending: std::collections::VecDeque::new(),
         }
@@ -1874,7 +1880,7 @@ fn device_with_path_and_mock(
 }
 
 /// Helper: write a default `Config` to `path` as pretty JSON. Used as
-/// the seed file for SetPark round-trip tests.
+/// the seed file for `SetPark` round-trip tests.
 fn seed_default_config(path: &Path) {
     let cfg = base_config();
     let json = serde_json::to_string_pretty(&cfg).unwrap();
@@ -2053,7 +2059,7 @@ async fn debug_impl_includes_config_file_path() {
     // hides it.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
-    let d = device_with_path(path.clone());
+    let d = device_with_path(path);
     let s = format!("{d:?}");
     assert!(s.contains("MountDevice"), "{s}");
     assert!(s.contains("config_file_path"), "{s}");
@@ -3237,7 +3243,10 @@ async fn pulse_guide_zero_duration_is_no_op() {
         .await
         .unwrap();
     let log = mock.lock().await.command_log.clone();
-    let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+    let new_frames: Vec<&[u8]> = log[baseline_len..]
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
     let dec_setters: Vec<&&[u8]> = new_frames
         .iter()
         .filter(|f| {
@@ -3274,7 +3283,10 @@ async fn pulse_guide_north_issues_tracking_cw_on_dec_axis() {
         .unwrap();
     // Immediately read the log; the watcher is asleep.
     let log = mock.lock().await.command_log.clone();
-    let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+    let new_frames: Vec<&[u8]> = log[baseline_len..]
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
     let dec_setters: Vec<&&[u8]> = new_frames
         .iter()
         .filter(|f| {
@@ -3316,7 +3328,10 @@ async fn pulse_guide_south_issues_tracking_ccw_on_dec_axis() {
         .await
         .unwrap();
     let log = mock.lock().await.command_log.clone();
-    let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+    let new_frames: Vec<&[u8]> = log[baseline_len..]
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
     let g2 = new_frames
         .iter()
         .find(|f| f.starts_with(b":G2"))
@@ -3345,7 +3360,10 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
         .await
         .unwrap();
     let log = mock.lock().await.command_log.clone();
-    let new_frames: Vec<&[u8]> = log[baseline_len..].iter().map(|v| v.as_slice()).collect();
+    let new_frames: Vec<&[u8]> = log[baseline_len..]
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
     // First `:I1` after pulse_guide start: payload should be
     // 2 × P_sid (rate factor = 0.5 → period doubles).
     let i1 = new_frames
@@ -3531,7 +3549,7 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
 
 const GTI_CPR: u32 = 0x0037_5F00; // 3,628,800
 
-/// Hardware-verified GTi CW exclusion zone — the contiguous arc
+/// Hardware-verified `GTi` CW exclusion zone — the contiguous arc
 /// where the CW shaft rises more than 0.95 h above horizontal.
 /// Matches `default_binding_zone_min/max_hours` in `config.rs`.
 const GTI_CW_EXCLUSION_ZONE: (f64, f64) = (0.95, 11.05);
@@ -3722,8 +3740,8 @@ fn flip_slew_ra_delta_wide_zone_picks_long_way_for_zone_boundary_traversal() {
     let cpr = GTI_CPR;
     let cur_h = 11.1_f64;
     let target_h = 0.9_f64;
-    let current = (cur_h * cpr as f64 / 24.0).round() as i32;
-    let target = (target_h * cpr as f64 / 24.0).round() as i32;
+    let current = (cur_h * f64::from(cpr) / 24.0).round() as i32;
+    let target = (target_h * f64::from(cpr) / 24.0).round() as i32;
     let canonical = RaTicks::new(target - current)
         .fold_to_canonical_band(Cpr::new(cpr))
         .value();
@@ -3789,7 +3807,7 @@ fn flip_slew_dec_delta_north_park3_start_to_post_flip_positive_uses_natural_cw()
     let cpr = GTI_CPR;
     let quarter = cpr as i32 / 4;
     let current = quarter; // +90° encoder
-    let target = (cpr as f64 * 3.0 / 8.0).round() as i32; // +135°
+    let target = (f64::from(cpr) * 3.0 / 8.0).round() as i32; // +135°
     let canonical = target - current; // +cpr/8
     assert_eq!(
         flip_slew_dec_delta(canonical, current, cpr, true),
@@ -3827,7 +3845,7 @@ fn flip_slew_dec_delta_north_flip_back_from_upper_post_flip_uses_natural_ccw() {
     // the long way — CCW is safe here.
     let cpr = GTI_CPR;
     let quarter = cpr as i32 / 4;
-    let current = (cpr as f64 * 3.0 / 8.0).round() as i32;
+    let current = (f64::from(cpr) * 3.0 / 8.0).round() as i32;
     let target = 0;
     let canonical = target - current; // negative
     let issued = flip_slew_dec_delta(canonical, current, cpr, true);

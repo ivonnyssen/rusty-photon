@@ -201,8 +201,7 @@ fn result_has_image_path(world: &mut RpWorld) {
 
     assert!(
         result.get("image_path").and_then(|v| v.as_str()).is_some(),
-        "expected image_path in tool result, got: {:?}",
-        result
+        "expected image_path in tool result, got: {result:?}"
     );
 }
 
@@ -217,8 +216,7 @@ fn result_has_document_id(world: &mut RpWorld) {
 
     assert!(
         result.get("document_id").and_then(|v| v.as_str()).is_some(),
-        "expected document_id in tool result, got: {:?}",
-        result
+        "expected document_id in tool result, got: {result:?}"
     );
 }
 
@@ -239,8 +237,7 @@ fn tool_call_returned_error(world: &mut RpWorld) {
 
     assert!(
         result.is_err(),
-        "expected tool call to return an error, got: {:?}",
-        result
+        "expected tool call to return an error, got: {result:?}"
     );
 }
 
@@ -253,9 +250,7 @@ fn error_message_contains(world: &mut RpWorld, expected: String) {
 
     assert!(
         err_msg.contains(&expected),
-        "expected error message to contain '{}', got: '{}'",
-        expected,
-        err_msg
+        "expected error message to contain '{expected}', got: '{err_msg}'"
     );
 }
 
@@ -265,9 +260,7 @@ fn tool_list_includes(world: &mut RpWorld, tool_name: String) {
 
     assert!(
         tools.contains(&tool_name),
-        "expected tool '{}' in catalog, got: {:?}",
-        tool_name,
-        tools
+        "expected tool '{tool_name}' in catalog, got: {tools:?}"
     );
 }
 
@@ -320,7 +313,11 @@ pub fn add_filter_wheel(world: &mut RpWorld) {
 }
 
 pub async fn start_rp(world: &mut RpWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
+    if world
+        .rp
+        .as_ref()
+        .is_some_and(bdd_infra::ServiceHandle::is_running)
+    {
         return;
     }
 

@@ -91,8 +91,9 @@ pub enum RunState {
 
 impl RunState {
     /// Whether autonomous supervision probes/restarts this state.
-    pub fn supervised(self) -> bool {
-        matches!(self, RunState::Running | RunState::Failed)
+    #[must_use]
+    pub const fn supervised(self) -> bool {
+        matches!(self, Self::Running | Self::Failed)
     }
 }
 
@@ -106,6 +107,7 @@ pub struct DiscoveredUnit {
 
 impl DiscoveredUnit {
     /// The service name — the unit minus the `rusty-photon-` prefix.
+    #[must_use]
     pub fn service_name(&self) -> Option<&str> {
         self.unit
             .strip_prefix(UNIT_PREFIX)
@@ -218,12 +220,12 @@ pub struct SupervisionPolicy {
 impl Default for SupervisionPolicy {
     fn default() -> Self {
         Self {
-            discovery_interval: Duration::from_secs(60),
+            discovery_interval: Duration::from_mins(1),
             poll_interval: Duration::from_secs(30),
             failure_threshold: 3,
-            restart_backoff: Duration::from_secs(60),
-            restart_backoff_max: Duration::from_secs(900),
-            restart_budget: Duration::from_secs(300),
+            restart_backoff: Duration::from_mins(1),
+            restart_backoff_max: Duration::from_mins(15),
+            restart_budget: Duration::from_mins(5),
         }
     }
 }
@@ -615,7 +617,8 @@ pub struct StubServiceManager {
 }
 
 impl StubServiceManager {
-    pub fn new(dir: PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(dir: PathBuf) -> Self {
         Self {
             dir,
             state_lock: std::sync::Mutex::new(()),
@@ -627,7 +630,10 @@ impl StubServiceManager {
     }
 
     fn read_units(&self) -> Vec<DiscoveredUnit> {
-        let _guard = self.state_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self
+            .state_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Ok(content) = std::fs::read_to_string(self.units_path()) else {
             return Vec::new();
         };
@@ -656,7 +662,10 @@ impl StubServiceManager {
     }
 
     fn set_unit_state(&self, unit: &str, state: &str) {
-        let _guard = self.state_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self
+            .state_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Ok(content) = std::fs::read_to_string(self.units_path()) else {
             return;
         };
@@ -1048,11 +1057,11 @@ mod tests {
     #[test]
     fn policy_defaults_are_the_plan_constants() {
         let p = SupervisionPolicy::default();
-        assert_eq!(p.discovery_interval, Duration::from_secs(60));
+        assert_eq!(p.discovery_interval, Duration::from_mins(1));
         assert_eq!(p.poll_interval, Duration::from_secs(30));
         assert_eq!(p.failure_threshold, 3);
-        assert_eq!(p.restart_backoff, Duration::from_secs(60));
-        assert_eq!(p.restart_backoff_max, Duration::from_secs(900));
-        assert_eq!(p.restart_budget, Duration::from_secs(300));
+        assert_eq!(p.restart_backoff, Duration::from_mins(1));
+        assert_eq!(p.restart_backoff_max, Duration::from_mins(15));
+        assert_eq!(p.restart_budget, Duration::from_mins(5));
     }
 }

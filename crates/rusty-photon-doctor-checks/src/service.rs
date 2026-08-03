@@ -64,6 +64,7 @@ pub fn full_shape_check(
 /// `fail`: this binary cannot see unit state, so unplugged-on-purpose and
 /// unplugged-by-accident are indistinguishable here — central doctor's
 /// unit-aware hardware checks carry that judgment.
+#[must_use]
 pub fn sdk_devices_check(outcome: SdkOutcome) -> Check {
     match outcome {
         SdkOutcome::Devices(models) if models.is_empty() => Check::warn(
@@ -114,6 +115,7 @@ pub fn run(
 /// composition point for services whose subcommand carries extra checks
 /// beyond the standard pair (qhy-camera's Windows DLL diagnostics). Most
 /// services go through [`run`] instead.
+#[must_use]
 pub fn emit(
     service: &str,
     version: &str,

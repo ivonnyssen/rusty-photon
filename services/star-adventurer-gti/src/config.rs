@@ -29,7 +29,7 @@ impl Default for Config {
     }
 }
 
-/// Transport block — `usb` (serial) or `udp` (WiFi).
+/// Transport block — `usb` (serial) or `udp` (`WiFi`).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TransportConfig {
@@ -57,6 +57,7 @@ impl TransportConfig {
     ///   form a tool like `nc -u` accepts.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
+    #[must_use]
     pub fn port_label(&self) -> String {
         match self {
             Self::Usb(u) => u.port.clone(),
@@ -104,8 +105,8 @@ pub struct MountConfig {
     pub name: String,
     /// Spec-compliant ASCOM `UniqueID`. Ships **empty** so that
     /// [`rusty_photon_config::materialize_identity`] mints a persistent
-    /// UUIDv4 on first run (see the design doc's
-    /// [§"Device identity (UniqueID)"](../../../docs/services/star-adventurer-gti.md#device-identity-uniqueid)).
+    /// `UUIDv4` on first run (see the design doc's
+    /// [§"Device identity (`UniqueID`)"](../../../docs/services/star-adventurer-gti.md#device-identity-uniqueid)).
     /// `#[serde(default)]` lets the field be absent on disk: the
     /// startup materialize step fills it into the file's `mount` object
     /// before the config is loaded, so the running driver always sees a
@@ -139,7 +140,7 @@ pub struct MountConfig {
     /// slews additionally check that the *path swept* by the polar
     /// axis stays clear of the zone — see [`flip_slew_ra_delta`].
     ///
-    /// The physical constraint on the GTi is "the counterweights
+    /// The physical constraint on the `GTi` is "the counterweights
     /// must not rise more than 0.95 h (≈ 14°) above horizontal at
     /// any point." This carves a one-sided arc on the positive
     /// `mech_HA` side: the CW shaft crosses horizontal at
@@ -298,7 +299,7 @@ pub struct MountConfig {
 #[serde(into = "FlipPolicyWire", try_from = "FlipPolicyWire")]
 pub struct FlipPolicy {
     /// Master switch. Defaults `false` until the first real-hardware
-    /// meridian flip on a GTi has been verified.
+    /// meridian flip on a `GTi` has been verified.
     pub enabled: bool,
 
     /// Half-width of the target-HA window around the meridian where
@@ -313,7 +314,7 @@ pub struct FlipPolicy {
     /// Opt-in driver-initiated meridian flip while tracking. When
     /// `true` (and `enabled` is `true`), the tracking watcher issues
     /// the same through-wrap flip slew `SetSideOfPier` would once the
-    /// live encoder mech_HA reaches
+    /// live encoder `mech_HA` reaches
     /// `auto_flip_at_meridian_offset_hours`, then re-engages tracking
     /// on the new pier side. Defaults `false` — hosts like NINA / SGP
     /// own flip timing themselves, and a mid-exposure auto-flip breaks
@@ -438,7 +439,8 @@ impl FlipRangeHours {
         Ok(Self(hours))
     }
     /// The underlying value in hours.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -478,7 +480,8 @@ impl TrackingGuardMarginHours {
         Ok(Self(hours))
     }
     /// The underlying value in hours.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -496,7 +499,7 @@ impl From<TrackingGuardMarginHours> for f64 {
     }
 }
 
-/// An active CW exclusion interval in encoder mech_HA (signed hours, folded
+/// An active CW exclusion interval in encoder `mech_HA` (signed hours, folded
 /// `[-12, +12)`): `-12 <= min_hours < max_hours <= 12`. JSON form is
 /// `{ "min_hours": .., "max_hours": .. }`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -522,7 +525,7 @@ impl ActiveZone {
         }
     }
     /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
-    /// unless `-12 <= min_hours < max_hours <= 12` (folded mech_HA);
+    /// unless `-12 <= min_hours < max_hours <= 12` (folded `mech_HA`);
     /// `null`/[`CwExclusionZone::Disabled`] is how a zone is turned off,
     /// so an inverted interval is rejected rather than silently disabling.
     pub fn try_new(min_hours: f64, max_hours: f64) -> std::result::Result<Self, String> {
@@ -548,10 +551,12 @@ impl ActiveZone {
             max_hours,
         })
     }
-    pub fn min_hours(self) -> f64 {
+    #[must_use]
+    pub const fn min_hours(self) -> f64 {
         self.min_hours
     }
-    pub fn max_hours(self) -> f64 {
+    #[must_use]
+    pub const fn max_hours(self) -> f64 {
         self.max_hours
     }
 }
@@ -589,7 +594,8 @@ impl CwExclusionZone {
     /// `(+∞, −∞)` — `min > max` strictly, which every consumer
     /// (`canonical_path_crosses_binding_zone`, `tracking_guard_breached`,
     /// `select_pier_side_for_target`) treats as "no zone".
-    pub fn bounds(self) -> (f64, f64) {
+    #[must_use]
+    pub const fn bounds(self) -> (f64, f64) {
         match self {
             Self::Active(z) => (z.min_hours(), z.max_hours()),
             Self::Disabled => (f64::INFINITY, f64::NEG_INFINITY),
@@ -635,7 +641,8 @@ impl MinAltitudeDegrees {
         Ok(Self(degrees))
     }
     /// The underlying value in degrees.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -781,7 +788,7 @@ pub enum ApPark {
     /// magnitude as Park 1 but reached from the post-flip side, so
     /// the post-flip Dec encoder = `±(90 + |latitude|)` (sign matches
     /// the hemisphere). Codebase reading: `mech_HA = 0` (target on
-    /// the anti-meridian, post-flip wrap brings mech_HA back to 0),
+    /// the anti-meridian, post-flip wrap brings `mech_HA` back to 0),
     /// `dec_encoder = ±(90 + |latitude|)`.
     ///
     /// (`Note: Park 5 shown below is only available in APCC and the
@@ -795,7 +802,8 @@ impl ApPark {
     /// source of truth for the string form used in config JSON
     /// (`Serialize`/`Deserialize` delegate here), ASCOM `Action`
     /// parameters, and `Action` return values.
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ApPark0 => "ap_park_0",
             Self::ApPark1 => "ap_park_1",
@@ -881,9 +889,9 @@ impl ApPark {
     /// North and the **flipped side** in the South — and its encoder
     /// representation differs accordingly.
     ///
-    /// - **Natural side** (mech_HA = celestial HA): used when the
+    /// - **Natural side** (`mech_HA` = celestial HA): used when the
     ///   pose's mechanical pier matches the hemisphere's natural pier.
-    /// - **Flipped side** (mech_HA = celestial HA + 12, folded): used
+    /// - **Flipped side** (`mech_HA` = celestial HA + 12, folded): used
     ///   when the pose is on the opposite mechanical pier.
     ///
     /// | Pose | Celestial HA | Mech. pier | N: nat / flip | S: nat / flip |
@@ -904,9 +912,10 @@ impl ApPark {
     ///   pole dec rotation).
     /// - Park 5 N: saddle east → `mech_HA = −12` (encoder wrap;
     ///   OTA reaches north horizon via natural-side dec rotation).
-    /// - Parks 2 and 3 are hemisphere-neutral for mech_HA (`−6`,
+    /// - Parks 2 and 3 are hemisphere-neutral for `mech_HA` (`−6`,
     ///   saddle in the south-up direction, neither east nor west).
-    pub fn codebase_mech_ha_hours(&self, _latitude_deg: f64) -> Option<f64> {
+    #[must_use]
+    pub const fn codebase_mech_ha_hours(&self, _latitude_deg: f64) -> Option<f64> {
         // We don't case-split on hemisphere for mech_HA: the saddle
         // east/west position is a function of the encoder alone,
         // which is hemisphere-independent. The dec encoder *is*
@@ -940,9 +949,10 @@ impl ApPark {
     ///
     /// Hemisphere-dependent because the OTA points at the visible
     /// pole / horizon, which has opposite celestial-Dec signs between
-    /// hemispheres. The codebase dec_enc value is the rotation angle
+    /// hemispheres. The codebase `dec_enc` value is the rotation angle
     /// around the dec axis from the dec=0 reference (which itself is
-    /// hemisphere-dependent at fixed mech_HA).
+    /// hemisphere-dependent at fixed `mech_HA`).
+    #[must_use]
     pub fn codebase_dec_encoder_degrees(&self, latitude_deg: f64) -> Option<f64> {
         let northern = latitude_deg >= 0.0;
         let lat_abs = latitude_deg.abs();
@@ -1003,28 +1013,28 @@ pub enum TrackingRateName {
     Sidereal,
 }
 
-fn default_baud_rate() -> u32 {
+const fn default_baud_rate() -> u32 {
     115_200
 }
-fn default_command_timeout() -> Duration {
+const fn default_command_timeout() -> Duration {
     Duration::from_secs(2)
 }
-fn default_polling_interval() -> Duration {
+const fn default_polling_interval() -> Duration {
     Duration::from_millis(200)
 }
-fn default_udp_port() -> u16 {
+const fn default_udp_port() -> u16 {
     11_880
 }
-fn default_settle_after_slew() -> Duration {
+const fn default_settle_after_slew() -> Duration {
     Duration::from_secs(2)
 }
-fn default_flip_policy_enabled() -> bool {
+const fn default_flip_policy_enabled() -> bool {
     false
 }
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
-fn default_unpark_from_ap_position() -> ApPark {
+const fn default_unpark_from_ap_position() -> ApPark {
     // Ship default: "current position" — the only honest value when the
     // operator has asserted nothing about the physical pose. The frame
     // stays unanchored (Park stops in place) until a plate-solve sync,
@@ -1034,7 +1044,7 @@ fn default_unpark_from_ap_position() -> ApPark {
     // get an anchored frame and a zero-distance park from connect.
     ApPark::ApPark0
 }
-fn default_preferred_ap_park() -> ApPark {
+const fn default_preferred_ap_park() -> ApPark {
     // Sky-Watcher's stock power-up pose (OTA along the polar axis at
     // the visible celestial pole) — a sensible default `Park()` target.
     ApPark::ApPark3

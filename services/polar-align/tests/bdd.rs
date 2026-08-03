@@ -1,6 +1,6 @@
 //! BDD test entry point for the polar-align service.
 //!
-//! These tests spawn OmniSim, rp, and polar-align (plus an in-process
+//! These tests spawn `OmniSim`, rp, and polar-align (plus an in-process
 //! plate-solver stub) and drive the polar-alignment workflow
 //! end-to-end via rp's REST API and the plugin's /status endpoint.
 

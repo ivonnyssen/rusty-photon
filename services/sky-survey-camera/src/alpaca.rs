@@ -16,7 +16,7 @@ use rp_auth::config::ClientAuthConfig;
 /// `Authorization` header when `auth` is present. This is offline —
 /// it constructs the HTTP client only; device discovery happens lazily
 /// on the first read (per F3, construction never blocks on the device).
-pub(crate) fn build_alpaca_client(
+pub fn build_alpaca_client(
     url: &str,
     auth: Option<&ClientAuthConfig>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {

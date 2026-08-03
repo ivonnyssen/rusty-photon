@@ -117,7 +117,7 @@ pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
     // Upper bound on the unclamped grid size: 2·half_width steps from
     // start to end, plus the start point itself. Computed in i64 so
     // an extreme half_width can't overflow before the cap check fires.
-    let estimated = (2_i64 * params.half_width as i64 / params.step_size as i64) + 1;
+    let estimated = (2_i64 * i64::from(params.half_width) / i64::from(params.step_size)) + 1;
     if estimated > MAX_GRID_POINTS as i64 {
         return Err(AutoFocusError::GridTooLarge {
             requested: estimated.max(0) as usize,
@@ -136,6 +136,7 @@ pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
 /// `≤ end`. Out-of-range points (those failing the `[min_bound,
 /// max_bound]` clamp) are dropped, not coerced — coercion would
 /// produce duplicate samples at a bound and distort the parabola fit.
+#[must_use]
 pub fn build_grid(
     current: i32,
     step: i32,
@@ -165,9 +166,10 @@ pub fn build_grid(
 }
 
 /// Result of fitting `hfr = a·x'² + b·x' + c` where `x' = x − offset_x`.
+///
 /// The fit is performed in the recentered frame so the normal-equations
 /// determinant doesn't lose precision at real-world focuser positions
-/// (~5_000–50_000 steps); see `fit_parabola` for the rationale. The
+/// (~`5_000–50_000` steps); see `fit_parabola` for the rationale. The
 /// vertex sits at `(round(−b/2a + offset_x), c − b²/(4a))` in the
 /// original frame — `vertex_position` rounds the recovered original-x
 /// after adding `offset_x` (which is generally non-integer because it's
@@ -181,10 +183,12 @@ pub struct ParabolaFit {
 }
 
 impl ParabolaFit {
+    #[must_use]
     pub fn vertex_position(&self) -> i32 {
         (-self.b / (2.0 * self.a) + self.offset_x).round() as i32
     }
 
+    #[must_use]
     pub fn vertex_value(&self) -> f64 {
         self.c - (self.b * self.b) / (4.0 * self.a)
     }
@@ -211,7 +215,7 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
     let filtered: Vec<(f64, f64, f64)> = samples
         .iter()
         .filter(|(_, _, w)| *w > 0)
-        .map(|(x, y, w)| (*x as f64, *y, *w as f64))
+        .map(|(x, y, w)| (f64::from(*x), *y, f64::from(*w)))
         .collect();
     if filtered.len() < 3 {
         return Err(AutoFocusError::NotEnoughStars {
@@ -264,8 +268,7 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
     let det_scale = (m4.abs() * m2.abs() * m0.abs()).max(1.0);
     if det.abs() < det_scale * 1e-12 {
         return Err(AutoFocusError::MonotonicCurve(format!(
-            "design matrix is singular (det={:.3e}, scale={:.3e})",
-            det, det_scale
+            "design matrix is singular (det={det:.3e}, scale={det_scale:.3e})"
         )));
     }
     let det_a = t2 * (m2 * m0 - m1 * m1) - m3 * (t1 * m0 - m1 * t0) + m2 * (t1 * m1 - m2 * t0);
@@ -276,8 +279,7 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
     let c = det_c / det;
     if a <= 0.0 {
         return Err(AutoFocusError::MonotonicCurve(format!(
-            "non-positive leading coefficient (a={:.3e})",
-            a
+            "non-positive leading coefficient (a={a:.3e})"
         )));
     }
     Ok(ParabolaFit { a, b, c, offset_x })
@@ -375,8 +377,7 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
     };
     if best_position < grid_min || best_position > grid_max {
         return Err(AutoFocusError::MonotonicCurve(format!(
-            "fitted vertex {} is outside sampled grid [{}, {}]",
-            best_position, grid_min, grid_max
+            "fitted vertex {best_position} is outside sampled grid [{grid_min}, {grid_max}]"
         )));
     }
     let best_hfr = fit.vertex_value();
@@ -487,7 +488,7 @@ mod tests {
                 assert!(requested > max, "expected requested > max");
                 assert_eq!(max, MAX_GRID_POINTS);
             }
-            other => panic!("expected GridTooLarge, got {:?}", other),
+            other => panic!("expected GridTooLarge, got {other:?}"),
         }
     }
 
@@ -529,7 +530,7 @@ mod tests {
         (vertex_x - 200..=vertex_x + 200)
             .step_by(50)
             .map(|x| {
-                let dx = (x - vertex_x) as f64;
+                let dx = f64::from(x - vertex_x);
                 let y = curvature * dx * dx + vertex_y;
                 (x, y, 100)
             })
@@ -565,7 +566,7 @@ mod tests {
         let samples: Vec<_> = (0..10).map(|i| (40_000 + i * 100, 5.0, 100)).collect();
         match fit_parabola(&samples) {
             Err(AutoFocusError::MonotonicCurve(_)) => {}
-            other => panic!("expected MonotonicCurve, got {:?}", other),
+            other => panic!("expected MonotonicCurve, got {other:?}"),
         }
     }
 
@@ -574,15 +575,15 @@ mod tests {
         let samples: Vec<_> = (0..10)
             .map(|i| {
                 let x = 40_000 + i * 50;
-                let dx = (x - 40_100) as f64;
+                let dx = f64::from(x - 40_100);
                 (x, 5.0 - 1e-4 * dx * dx, 100)
             })
             .collect();
         match fit_parabola(&samples) {
             Err(AutoFocusError::MonotonicCurve(msg)) => {
-                assert!(msg.contains("non-positive"), "got msg: {}", msg);
+                assert!(msg.contains("non-positive"), "got msg: {msg}");
             }
-            other => panic!("expected MonotonicCurve, got {:?}", other),
+            other => panic!("expected MonotonicCurve, got {other:?}"),
         }
     }
 
@@ -591,7 +592,7 @@ mod tests {
         let samples = vec![(0, 1.0, 100), (10, 2.0, 100)];
         match fit_parabola(&samples) {
             Err(AutoFocusError::NotEnoughStars { got: 2, needed: 3 }) => {}
-            other => panic!("expected NotEnoughStars, got {:?}", other),
+            other => panic!("expected NotEnoughStars, got {other:?}"),
         }
     }
 
@@ -658,7 +659,7 @@ mod tests {
                 .rsplit_once("pos")
                 .and_then(|(_, s)| s.parse().ok())
                 .ok_or_else(|| format!("bad document_id: {document_id}"))?;
-            let dx = (pos - self.vertex) as f64;
+            let dx = f64::from(pos - self.vertex);
             let hfr = self.curvature * dx * dx + self.vertex_y;
             Ok(HfrSample {
                 hfr: Some(hfr),
@@ -870,10 +871,9 @@ mod tests {
         match err {
             Err(AutoFocusError::Equipment(msg)) => assert!(
                 msg.contains("readout aborted"),
-                "expected propagated message, got: {}",
-                msg
+                "expected propagated message, got: {msg}"
             ),
-            other => panic!("expected Equipment, got {:?}", other),
+            other => panic!("expected Equipment, got {other:?}"),
         }
     }
 
@@ -922,10 +922,9 @@ mod tests {
         match err {
             Err(AutoFocusError::Equipment(msg)) => assert!(
                 msg.contains("FITS decode failed"),
-                "expected propagated message, got: {}",
-                msg
+                "expected propagated message, got: {msg}"
             ),
-            other => panic!("expected Equipment, got {:?}", other),
+            other => panic!("expected Equipment, got {other:?}"),
         }
     }
 
@@ -971,11 +970,10 @@ mod tests {
             Err(AutoFocusError::MonotonicCurve(msg)) => {
                 assert!(
                     msg.contains("outside sampled grid"),
-                    "expected vertex-outside-grid message, got: {}",
-                    msg
+                    "expected vertex-outside-grid message, got: {msg}"
                 );
             }
-            other => panic!("expected MonotonicCurve, got {:?}", other),
+            other => panic!("expected MonotonicCurve, got {other:?}"),
         }
     }
 

@@ -77,7 +77,7 @@ impl FilemonitorWorld {
         path
     }
 
-    /// Convenience accessor for the typed SafetyMonitor device.
+    /// Convenience accessor for the typed `SafetyMonitor` device.
     pub fn monitor(&self) -> &Arc<dyn SafetyMonitor> {
         self.monitor.as_ref().expect("monitor not acquired")
     }
@@ -89,11 +89,10 @@ impl FilemonitorWorld {
 
     /// Build a JSON config from the accumulated world state.
     pub fn build_config_json(&self) -> Value {
-        let file_path = self
-            .temp_file_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "nonexistent.txt".to_string());
+        let file_path = self.temp_file_path.as_ref().map_or_else(
+            || "nonexistent.txt".to_string(),
+            |p| p.to_string_lossy().to_string(),
+        );
 
         let rules: Vec<Value> = self
             .rules
@@ -171,7 +170,7 @@ impl FilemonitorWorld {
         self.filemonitor = Some(handle);
     }
 
-    /// Poll until the server returns a SafetyMonitor device via the typed client.
+    /// Poll until the server returns a `SafetyMonitor` device via the typed client.
     pub async fn acquire_monitor(&self, handle: &ServiceHandle) -> Arc<dyn SafetyMonitor> {
         let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
         let client = AlpacaClient::new_from_addr(addr);
@@ -187,7 +186,7 @@ impl FilemonitorWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
+    pub const fn bound_port(&self) -> u16 {
         self.filemonitor.as_ref().expect("service not started").port
     }
 

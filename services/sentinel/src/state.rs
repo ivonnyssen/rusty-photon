@@ -26,7 +26,7 @@ pub struct MonitorStatus {
 /// Health of a discovered service as seen by its health supervisor.
 ///
 /// The two casings below are deliberately different and must not be unified:
-/// `Display` yields the PascalCase variant name, which is the operator-facing
+/// `Display` yields the `PascalCase` variant name, which is the operator-facing
 /// text (the dashboard badge), while serde yields lowercase, which is the
 /// JSON wire form served by `GET /api/services`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
@@ -83,7 +83,8 @@ pub struct ServiceHealthStatus {
 
 impl ServiceHealthStatus {
     /// The unprobed snapshot a newly discovered service starts from.
-    pub fn unknown(
+    #[must_use]
+    pub const fn unknown(
         name: String,
         unit: String,
         run_state: RunState,
@@ -118,6 +119,7 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    #[must_use]
     pub fn new(monitors_with_intervals: Vec<(String, Duration)>, history_max_size: usize) -> Self {
         let monitors = monitors_with_intervals
             .into_iter()
@@ -145,12 +147,11 @@ impl SharedState {
     /// supervisor's local state machine is authoritative; this is push-only.
     /// An unseeded name is inserted defensively, keeping name order.
     pub fn set_service_health(&mut self, status: ServiceHealthStatus) {
-        match self.services.iter_mut().find(|s| s.name == status.name) {
-            Some(slot) => *slot = status,
-            None => {
-                self.services.push(status);
-                self.services.sort_by(|a, b| a.name.cmp(&b.name));
-            }
+        if let Some(slot) = self.services.iter_mut().find(|s| s.name == status.name) {
+            *slot = status
+        } else {
+            self.services.push(status);
+            self.services.sort_by(|a, b| a.name.cmp(&b.name));
         }
     }
 
@@ -218,6 +219,7 @@ impl SharedState {
     }
 
     /// Get a monitor's current state
+    #[must_use]
     pub fn get_monitor_state(&self, name: &str) -> Option<MonitorState> {
         self.monitors
             .iter()
@@ -226,12 +228,12 @@ impl SharedState {
     }
 
     /// Get a monitor's previous state (before last update) — uses current state as proxy
+    #[must_use]
     pub fn get_monitor_consecutive_errors(&self, name: &str) -> u32 {
         self.monitors
             .iter()
             .find(|m| m.name == name)
-            .map(|m| m.consecutive_errors)
-            .unwrap_or(0)
+            .map_or(0, |m| m.consecutive_errors)
     }
 
     /// Add a notification to history
@@ -246,6 +248,7 @@ impl SharedState {
 /// Thread-safe shared state handle
 pub type StateHandle = Arc<RwLock<SharedState>>;
 
+#[must_use]
 pub fn new_state_handle(
     monitors_with_intervals: Vec<(String, Duration)>,
     history_max_size: usize,
@@ -291,7 +294,7 @@ mod tests {
         let state = SharedState::new(
             vec![
                 ("m1".to_string(), Duration::from_secs(30)),
-                ("m2".to_string(), Duration::from_secs(60)),
+                ("m2".to_string(), Duration::from_mins(1)),
             ],
             10,
         );
@@ -299,7 +302,7 @@ mod tests {
         assert_eq!(state.monitors[0].state, MonitorState::Unknown);
         assert_eq!(state.monitors[0].polling_interval, Duration::from_secs(30));
         assert_eq!(state.monitors[1].state, MonitorState::Unknown);
-        assert_eq!(state.monitors[1].polling_interval, Duration::from_secs(60));
+        assert_eq!(state.monitors[1].polling_interval, Duration::from_mins(1));
     }
 
     #[test]
@@ -352,9 +355,9 @@ mod tests {
         let mut state = SharedState::new(vec![], 2);
         for i in 0..5 {
             state.add_notification(NotificationRecord {
-                monitor_name: format!("m{}", i),
+                monitor_name: format!("m{i}"),
                 notifier_type: "pushover".to_string(),
-                message: format!("msg{}", i),
+                message: format!("msg{i}"),
                 success: true,
                 error: None,
                 timestamp_epoch_ms: i * 1000,

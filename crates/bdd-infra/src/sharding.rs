@@ -2,7 +2,7 @@
 //!
 //! Bazel splits a test target into `shard_count` separate test actions, each
 //! running the same binary with `TEST_SHARD_INDEX` / `TEST_TOTAL_SHARDS` set
-//! (and each getting its own OmniSim via the per-process singleton in
+//! (and each getting its own `OmniSim` via the per-process singleton in
 //! `rp_harness::omnisim`). cucumber has no native support for those env vars,
 //! so suites opt in by calling [`scenario_in_current_shard`] from the filter
 //! closure they pass to `filter_run_and_exit`:
@@ -24,7 +24,7 @@
 //! order, environment, or platform. `@serial` semantics are unaffected:
 //! cucumber still serializes `@serial` scenarios *within* a shard, and
 //! cross-shard isolation comes from each shard process owning its own
-//! OmniSim instance.
+//! `OmniSim` instance.
 //!
 //! A target that sets `shard_count` without wiring its filter through
 //! [`scenario_in_current_shard`] still passes — every shard just runs the
@@ -71,6 +71,7 @@ pub fn advertise_bazel_sharding_support() {
 ///
 /// Takes primitives instead of `gherkin` types so the base `bdd-infra`
 /// crate doesn't grow a cucumber dependency.
+#[must_use]
 pub fn scenario_in_current_shard(
     feature_path: Option<&Path>,
     feature_name: &str,
@@ -119,10 +120,10 @@ fn shard_for_scenario(
     scenario_line: usize,
     total: u64,
 ) -> u64 {
-    let file_name = feature_path
-        .and_then(Path::file_name)
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| feature_name.to_string());
+    let file_name = feature_path.and_then(Path::file_name).map_or_else(
+        || feature_name.to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     let key = format!("{file_name}:{scenario_line}");
     fnv1a(key.as_bytes()) % total
 }
@@ -240,14 +241,14 @@ mod tests {
 
     /// Serializes the tests that mutate the process-wide
     /// `TEST_SHARD_STATUS_FILE` env var. Recovers from poisoning so a
-    /// panicking sibling (the should-fail test below uses catch_unwind,
+    /// panicking sibling (the should-fail test below uses `catch_unwind`,
     /// but belt-and-braces) can't cascade.
     static STATUS_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn lock_status_env() -> std::sync::MutexGuard<'static, ()> {
         STATUS_FILE_ENV_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]

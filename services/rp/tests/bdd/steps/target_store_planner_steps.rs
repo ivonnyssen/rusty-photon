@@ -1,7 +1,7 @@
 //! BDD step definitions for planner altitude-gating parity against the
 //! target store (`target_store_planner.feature`, Decision 9, P1).
 //!
-//! Unlike the other target_store_*.feature suites these scenarios boot
+//! Unlike the other `target_store`_*.feature suites these scenarios boot
 //! rp the ordinary OmniSim/mount way (`tool_steps::start_rp`), matching
 //! `planner.feature`'s convention, since they exercise `get_next_target`
 //! against a real site/ephemeris — `write_target_store_config`'s

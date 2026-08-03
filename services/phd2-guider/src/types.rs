@@ -13,7 +13,8 @@ pub struct Rect {
 
 impl Rect {
     /// Create a new rectangle
-    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
+    #[must_use]
+    pub const fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
         Self {
             x,
             y,
@@ -70,26 +71,28 @@ pub enum CalibrationTarget {
     Mount,
     /// Adaptive optics device
     AO,
-    /// Both mount and AO (only valid for clear_calibration)
+    /// Both mount and AO (only valid for `clear_calibration`)
     Both,
 }
 
 impl CalibrationTarget {
-    /// Get the string representation for get_calibration_data API (capitalized)
-    pub fn to_get_api_string(&self) -> &'static str {
+    /// Get the string representation for `get_calibration_data` API (capitalized)
+    #[must_use]
+    pub const fn to_get_api_string(&self) -> &'static str {
         match self {
-            CalibrationTarget::Mount => "Mount",
-            CalibrationTarget::AO => "AO",
-            CalibrationTarget::Both => "Mount", // Default to Mount for get operations
+            Self::Mount => "Mount",
+            Self::AO => "AO",
+            Self::Both => "Mount", // Default to Mount for get operations
         }
     }
 
-    /// Get the string representation for clear_calibration API (lowercase)
-    pub fn to_clear_api_string(&self) -> &'static str {
+    /// Get the string representation for `clear_calibration` API (lowercase)
+    #[must_use]
+    pub const fn to_clear_api_string(&self) -> &'static str {
         match self {
-            CalibrationTarget::Mount => "mount",
-            CalibrationTarget::AO => "ao",
-            CalibrationTarget::Both => "both",
+            Self::Mount => "mount",
+            Self::AO => "ao",
+            Self::Both => "both",
         }
     }
 }
@@ -109,10 +112,11 @@ pub enum GuideAxis {
 
 impl GuideAxis {
     /// Get the string representation for the PHD2 API
-    pub fn to_api_string(&self) -> &'static str {
+    #[must_use]
+    pub const fn to_api_string(&self) -> &'static str {
         match self {
-            GuideAxis::Ra => "ra",
-            GuideAxis::Dec => "dec",
+            Self::Ra => "ra",
+            Self::Dec => "dec",
         }
     }
 }

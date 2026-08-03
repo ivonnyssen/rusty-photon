@@ -1,6 +1,6 @@
 //! ppba-driver's [`ConfigurableDriver`] implementation.
 //!
-//! The driver registers **two** ASCOM devices (Switch + ObservingConditions)
+//! The driver registers **two** ASCOM devices (Switch + `ObservingConditions`)
 //! backed by one config file. The generic `config.get` / `config.apply` /
 //! `config.schema` action dispatch both devices delegate to lives in
 //! [`rusty_photon_driver`]; this module supplies only what varies for the PPBA —

@@ -5,31 +5,31 @@
 //! stop poll observe.
 //!
 //! Usage:
-//!   mock_phd2 [--port PORT]
+//!   `mock_phd2` [--port PORT]
 //!
 //! Environment variables:
-//!   MOCK_PHD2_PORT - Port to listen on (0 = auto-assign, default: 4400)
-//!   MOCK_PHD2_MODE - Operating mode for testing different scenarios:
+//!   `MOCK_PHD2_PORT` - Port to listen on (0 = auto-assign, default: 4400)
+//!   `MOCK_PHD2_MODE` - Operating mode for testing different scenarios:
 //!     - "normal" (default): Standard mock server behavior
-//!     - "exit_immediately": Exit with code 42 without starting server
-//!     - "no_listen": Sleep without binding to port (tests connection timeout)
-//!     - "slow_start": Wait 5 seconds before binding (tests startup timing)
-//!     - "shutdown_fails": Ignore shutdown commands (tests fallback to force kill)
-//!   MOCK_PHD2_SETTLE_MODE - What follows a `guide`/`dither` RPC:
-//!     - "settle_ok" (default): emit Settling, two fixed GuideStep events
-//!       (RADistanceRaw +0.3/-0.3, DECDistanceRaw -0.4/+0.4 so the RMS is
+//!     - "`exit_immediately"`: Exit with code 42 without starting server
+//!     - "`no_listen"`: Sleep without binding to port (tests connection timeout)
+//!     - "`slow_start"`: Wait 5 seconds before binding (tests startup timing)
+//!     - "`shutdown_fails"`: Ignore shutdown commands (tests fallback to force kill)
+//!   `MOCK_PHD2_SETTLE_MODE` - What follows a `guide`/`dither` RPC:
+//!     - "`settle_ok`" (default): emit Settling, two fixed `GuideStep` events
+//!       (`RADistanceRaw` +0.3/-0.3, `DECDistanceRaw` -0.4/+0.4 so the RMS is
 //!       deterministic: 0.3 / 0.4 / 0.5), then SettleDone{Status: 0}
-//!     - "settle_fail": same lead-in, then
+//!     - "`settle_fail"`: same lead-in, then
 //!       SettleDone{Status: 1, Error: "Mock star lost"}
-//!     - "never_settle": emit Settling and GuideSteps but no SettleDone
-//!       (drives the service's settle_timeout backstop)
-//!   MOCK_PHD2_STOP_MODE - stop_capture behavior:
+//!     - "`never_settle"`: emit Settling and `GuideSteps` but no `SettleDone`
+//!       (drives the service's `settle_timeout` backstop)
+//!   `MOCK_PHD2_STOP_MODE` - `stop_capture` behavior:
 //!     - "stops" (default): application state transitions to Stopped
-//!     - "never_stops": state stays Guiding (drives stop_timeout)
-//!   MOCK_PHD2_RPC_LOG - Path to a JSON-lines file each received
+//!     - "`never_stops"`: state stays Guiding (drives `stop_timeout`)
+//!   `MOCK_PHD2_RPC_LOG` - Path to a JSON-lines file each received
 //!     {"method", "params"} is appended to (request-forwarding assertions;
-//!     the MOCK_ASTAP_ARGV_OUT equivalent)
-//!   MOCK_PHD2_ROTATOR - "connected" populates get_current_equipment's
+//!     the `MOCK_ASTAP_ARGV_OUT` equivalent)
+//!   `MOCK_PHD2_ROTATOR` - "connected" populates `get_current_equipment`'s
 //!     rotator slot ({"name": "Mock Rotator", "connected": true});
 //!     unset/anything else reports null (no rotator in the profile)
 //!
@@ -37,7 +37,7 @@
 //! Default port is 4400 (same as PHD2).
 //!
 //! When binding succeeds, the actual port is printed to stdout as:
-//!   MOCK_PHD2_PORT:12345
+//!   `MOCK_PHD2_PORT:12345`
 //! This allows tests to discover the port when using auto-assign (port 0).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -77,7 +77,7 @@ fn main() {
             // Continue to normal startup
         }
         _ => {
-            eprintln!("Mock PHD2: unknown mode '{}', using normal", mode);
+            eprintln!("Mock PHD2: unknown mode '{mode}', using normal");
         }
     }
 
@@ -103,10 +103,10 @@ fn main() {
         mode
     );
 
-    let listener = match TcpListener::bind(format!("127.0.0.1:{}", requested_port)) {
+    let listener = match TcpListener::bind(format!("127.0.0.1:{requested_port}")) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("Failed to bind to port {}: {}", requested_port, e);
+            eprintln!("Failed to bind to port {requested_port}: {e}");
             std::process::exit(1);
         }
     };
@@ -126,9 +126,9 @@ fn main() {
         .expect("Cannot set non-blocking");
 
     // Print actual port to stdout for test discovery (parseable format)
-    println!("MOCK_PHD2_PORT:{}", actual_port);
+    println!("MOCK_PHD2_PORT:{actual_port}");
 
-    eprintln!("Mock PHD2 listening on port {}", actual_port);
+    eprintln!("Mock PHD2 listening on port {actual_port}");
 
     // Store mode for use in request handler
     let ignore_shutdown = mode == "shutdown_fails";
@@ -136,7 +136,7 @@ fn main() {
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, addr)) => {
-                eprintln!("Connection from {}", addr);
+                eprintln!("Connection from {addr}");
                 let shutdown_clone = shutdown.clone();
                 let ignore_shutdown_clone = ignore_shutdown;
                 let app_state_clone = app_state.clone();
@@ -157,7 +157,7 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(e) => {
-                eprintln!("Accept error: {}", e);
+                eprintln!("Accept error: {e}");
             }
         }
     }
@@ -169,12 +169,12 @@ fn main() {
 /// and the response path never interleave mid-line.
 fn write_line(writer: &Arc<Mutex<TcpStream>>, line: &str) -> std::io::Result<()> {
     let mut stream = writer.lock().unwrap();
-    writeln!(stream, "{}", line)?;
+    writeln!(stream, "{line}")?;
     stream.flush()
 }
 
 /// Append the received RPC to the JSON-lines log named by
-/// MOCK_PHD2_RPC_LOG, when set. One process, many threads: a global
+/// `MOCK_PHD2_RPC_LOG`, when set. One process, many threads: a global
 /// lock serializes appends.
 fn log_rpc(method: &str, params: &serde_json::Value) {
     static LOG_LOCK: Mutex<()> = Mutex::new(());
@@ -188,14 +188,14 @@ fn log_rpc(method: &str, params: &serde_json::Value) {
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(file, "{}", line);
+        let _ = writeln!(file, "{line}");
     }
 }
 
 /// Emit the event sequence that follows a `guide` or `dither` RPC,
-/// per MOCK_PHD2_SETTLE_MODE. Runs on its own thread so the request
-/// loop keeps answering RPCs (the service polls get_app_state and
-/// waits for SettleDone concurrently).
+/// per `MOCK_PHD2_SETTLE_MODE`. Runs on its own thread so the request
+/// loop keeps answering RPCs (the service polls `get_app_state` and
+/// waits for `SettleDone` concurrently).
 fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
     let settle_mode =
         std::env::var("MOCK_PHD2_SETTLE_MODE").unwrap_or_else(|_| "settle_ok".to_string());
@@ -274,11 +274,11 @@ fn handle_client(
                     continue;
                 }
 
-                eprintln!("Received: {}", request);
+                eprintln!("Received: {request}");
 
                 let response =
                     handle_request(&request, &shutdown, ignore_shutdown, &app_state, &writer);
-                eprintln!("Sending: {}", response);
+                eprintln!("Sending: {response}");
 
                 if write_line(&writer, &response).is_err() {
                     break;
@@ -435,11 +435,10 @@ fn handle_request(
         }
         _ => {
             return format!(
-                r#"{{"jsonrpc":"2.0","error":{{"code":-32601,"message":"Method not found: {}"}},"id":{}}}"#,
-                method, id
+                r#"{{"jsonrpc":"2.0","error":{{"code":-32601,"message":"Method not found: {method}"}},"id":{id}}}"#
             );
         }
     };
 
-    format!(r#"{{"jsonrpc":"2.0","result":{},"id":{}}}"#, result, id)
+    format!(r#"{{"jsonrpc":"2.0","result":{result},"id":{id}}}"#)
 }

@@ -62,18 +62,15 @@ pub async fn spawn_with_deadline(
             let status = result?;
             SpawnOutcome::Exited { status, stderr_tail: String::new() }
         }
-        _ = tokio::time::sleep(deadline) => {
+        () = tokio::time::sleep(deadline) => {
             // Deadline. Send graceful signal, wait grace period, escalate.
             send_graceful(pid);
-            match tokio::time::timeout(GRACE_PERIOD, child.wait()).await {
-                Ok(_status) => SpawnOutcome::TimedOutTerminated,
-                Err(_) => {
-                    // Force-kill. tokio's Child::kill sends SIGKILL on Unix
-                    // and TerminateProcess on Windows.
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    SpawnOutcome::TimedOutKilled
-                }
+            if let Ok(_status) = tokio::time::timeout(GRACE_PERIOD, child.wait()).await { SpawnOutcome::TimedOutTerminated } else {
+                // Force-kill. tokio's Child::kill sends SIGKILL on Unix
+                // and TerminateProcess on Windows.
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                SpawnOutcome::TimedOutKilled
             }
         }
     };

@@ -1,10 +1,10 @@
-//! ConformU compliance tests for pa-falcon-rotator
+//! `ConformU` compliance tests for pa-falcon-rotator
 //!
 //! Verifies ASCOM Alpaca compliance for both the Rotator and the Status
-//! Switch device by running the ConformU test suite against the driver
+//! Switch device by running the `ConformU` test suite against the driver
 //! running in mock mode. Each test enables only the device it exercises so
 //! the conformance run targets a single ASCOM class — mirroring the
-//! ppba-driver split between its Switch and ObservingConditions tests.
+//! ppba-driver split between its Switch and `ObservingConditions` tests.
 // The std::Mutex is intentional here: it serializes sequential test runs because
 // the ASCOM Alpaca discovery service binds to a fixed address.
 #![cfg(feature = "conformu")]
@@ -20,7 +20,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 // concurrently would race for that UDP socket regardless of the HTTP port.
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
-/// Settings block shared by both tests. ConformU silently overwrites
+/// Settings block shared by both tests. `ConformU` silently overwrites
 /// partial settings files with defaults, so this carries the full template
 /// produced by `echo '{}' > settings.json && conformu conformance
 /// --settingsfile settings.json …` (see [`ConformUTestBuilder::settings_file`]

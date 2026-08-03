@@ -23,19 +23,19 @@ pub trait Pixel: Copy + Send + Sync + 'static {
 impl Pixel for u16 {
     #[inline]
     fn to_f64(self) -> f64 {
-        self as f64
+        f64::from(self)
     }
 
     #[inline]
     fn to_u32(self) -> u32 {
-        self as u32
+        u32::from(self)
     }
 }
 
 impl Pixel for i32 {
     #[inline]
     fn to_f64(self) -> f64 {
-        self as f64
+        f64::from(self)
     }
 
     #[inline]

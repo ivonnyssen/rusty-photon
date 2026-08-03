@@ -86,7 +86,7 @@ fn normalize_filter(filter: &str) -> String {
 
 /// Whether `thresholds` judges anything at all. All-`None` means no
 /// sidecar can contradict it, which lets the scan skip every file open.
-fn judges_anything(thresholds: &GradingThresholds) -> bool {
+const fn judges_anything(thresholds: &GradingThresholds) -> bool {
     thresholds.max_hfr_pixels.is_some()
         || thresholds.min_star_count.is_some()
         || thresholds.max_eccentricity.is_some()
@@ -537,7 +537,7 @@ mod tests {
         AcquisitionGoal {
             filter: filter.to_string(),
             binning: Binning { x: 1, y: 1 },
-            exposure_duration: Duration::from_secs(300),
+            exposure_duration: Duration::from_mins(5),
             desired_count,
         }
     }

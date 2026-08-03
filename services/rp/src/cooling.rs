@@ -340,46 +340,43 @@ impl CoolingController {
                 .iter()
                 .copied()
                 .find(|r| f64::from(*r) >= floor + self.config.regulation_margin_c && *r > target);
-            match next {
-                Some(next_rung) => {
-                    debug!(
-                        camera_id,
-                        floor_c = floor,
-                        from_c = target,
-                        to_c = next_rung,
-                        "floor detected; snapping up to the lowest rung above it"
-                    );
-                    if let Err(e) = cam.set_set_ccd_temperature(f64::from(next_rung)).await {
-                        warn!(camera_id, error = %e,
-                              "SetCCDTemperature failed mid-pass; switching the cooler off");
-                        if let Err(e) = cam.set_cooler_on(false).await {
-                            warn!(camera_id, error = %e, "CoolerOn(false) failed");
-                        }
-                        self.clear_state(camera_id);
-                        return;
-                    }
-                    target = next_rung;
-                    self.set_rung(camera_id, target);
-                    samples.clear();
-                    phase_start = now;
-                }
-                None => {
-                    warn!(camera_id, floor_c = floor, warmest_target_c = ?ladder.last(),
-                          "no dark-library rung reachable tonight; switching the cooler off — the session proceeds uncooled");
+            if let Some(next_rung) = next {
+                debug!(
+                    camera_id,
+                    floor_c = floor,
+                    from_c = target,
+                    to_c = next_rung,
+                    "floor detected; snapping up to the lowest rung above it"
+                );
+                if let Err(e) = cam.set_set_ccd_temperature(f64::from(next_rung)).await {
+                    warn!(camera_id, error = %e,
+                          "SetCCDTemperature failed mid-pass; switching the cooler off");
                     if let Err(e) = cam.set_cooler_on(false).await {
                         warn!(camera_id, error = %e, "CoolerOn(false) failed");
                     }
                     self.clear_state(camera_id);
-                    self.event_bus.emit(
-                        "cooler_unreachable",
-                        serde_json::json!({
-                            "camera_id": camera_id,
-                            "floor_c": floor,
-                            "warmest_target_c": ladder.last(),
-                        }),
-                    );
                     return;
                 }
+                target = next_rung;
+                self.set_rung(camera_id, target);
+                samples.clear();
+                phase_start = now;
+            } else {
+                warn!(camera_id, floor_c = floor, warmest_target_c = ?ladder.last(),
+                      "no dark-library rung reachable tonight; switching the cooler off — the session proceeds uncooled");
+                if let Err(e) = cam.set_cooler_on(false).await {
+                    warn!(camera_id, error = %e, "CoolerOn(false) failed");
+                }
+                self.clear_state(camera_id);
+                self.event_bus.emit(
+                    "cooler_unreachable",
+                    serde_json::json!({
+                        "camera_id": camera_id,
+                        "floor_c": floor,
+                        "warmest_target_c": ladder.last(),
+                    }),
+                );
+                return;
             }
         }
     }
@@ -456,7 +453,9 @@ impl CoolingController {
     }
 
     fn lock_states(&self) -> std::sync::MutexGuard<'_, HashMap<String, CameraCooling>> {
-        self.states.lock().unwrap_or_else(|e| e.into_inner())
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn abort_task(&self, camera_id: &str) {
@@ -521,15 +520,15 @@ pub(crate) mod test_support {
     /// milliseconds of real time (`start_paused` virtual time would
     /// fire the Alpaca connect timeout before real socket I/O
     /// completes). The trajectory shape itself is the simulator's job
-    /// (BDD, camera_cooling.feature).
-    pub(crate) struct CoolerSim {
+    /// (BDD, `camera_cooling.feature`).
+    pub struct CoolerSim {
         pub(crate) can_set: bool,
         pub(crate) can_get_power: bool,
         /// When false the stub answers every `CCDTemperature` read with
         /// an ASCOM error — the backstop-with-no-reading regression.
         pub(crate) temp_readable: bool,
         /// `Some` makes `HeatSinkTemperature` readable (warm-up ramps to
-        /// it); `None` answers NOT_IMPLEMENTED (fallback to config).
+        /// it); `None` answers `NOT_IMPLEMENTED` (fallback to config).
         pub(crate) heatsink_c: Option<f64>,
         /// Fail `SetCCDTemperature` writes once this many have
         /// succeeded (the mid-pass command-failure branch).
@@ -576,13 +575,13 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) type Sim = Arc<Mutex<CoolerSim>>;
+    pub type Sim = Arc<Mutex<CoolerSim>>;
 
     fn ok_value(value: serde_json::Value) -> Json<serde_json::Value> {
         Json(json!({ "Value": value, "ErrorNumber": 0, "ErrorMessage": "" }))
     }
 
-    pub(crate) fn stub_router(sim: Sim) -> Router {
+    pub fn stub_router(sim: Sim) -> Router {
         Router::new()
             .route(
                 "/management/v1/configureddevices",
@@ -693,7 +692,7 @@ pub(crate) mod test_support {
 
     /// Fast timing profile — every wait collapses under
     /// `start_paused` virtual time.
-    pub(crate) fn fast_config() -> CoolingConfig {
+    pub fn fast_config() -> CoolingConfig {
         CoolingConfig {
             poll_interval: Duration::from_millis(50),
             plateau_window: Duration::from_millis(200),
@@ -707,7 +706,7 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) async fn controller_for(
+    pub async fn controller_for(
         url: &str,
         ladder: &[i32],
     ) -> (
@@ -717,7 +716,7 @@ pub(crate) mod test_support {
         controller_with_config(url, ladder, fast_config()).await
     }
 
-    pub(crate) async fn controller_with_config(
+    pub async fn controller_with_config(
         url: &str,
         ladder: &[i32],
         config: CoolingConfig,
@@ -744,7 +743,7 @@ pub(crate) mod test_support {
         (ctrl, rx)
     }
 
-    pub(crate) fn drain(
+    pub fn drain(
         rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
     ) -> Vec<crate::events::EventEnvelope> {
         let mut events = Vec::new();

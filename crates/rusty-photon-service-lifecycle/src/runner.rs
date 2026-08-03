@@ -83,7 +83,7 @@ pub fn report_from_boxed(e: RunError) -> color_eyre::Report {
 /// panics *before* the runner — config load, identity minting — render the
 /// same formatted report) and the runner (so a service skipping
 /// `init_tracing` still gets the hooks).
-pub(crate) fn install_error_reporting() {
+pub fn install_error_reporting() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         if let Err(e) = color_eyre::install() {
@@ -128,7 +128,7 @@ pub fn is_scm_service() -> bool {
 /// property. Compiled on every target so the flag contract stays
 /// unit-testable cross-platform.
 #[cfg_attr(not(all(windows, feature = "scm")), allow(dead_code))]
-pub(crate) fn set_scm_service() {
+pub fn set_scm_service() {
     SCM_SERVICE_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -176,7 +176,8 @@ pub struct ServiceRunner {
 impl ServiceRunner {
     /// Create a runner with the given service name. The name is used for
     /// SCM registration (when `scm_mode` is on) and is otherwise informational.
-    pub fn new(name: &'static str) -> Self {
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
         Self {
             name,
             reload: false,
@@ -190,7 +191,7 @@ impl ServiceRunner {
     /// (Unix) or accepts `ServiceControl::ParamChange` (Windows SCM mode).
     /// Each event wakes the [`ReloadSignal`] passed to the user closure.
     #[must_use]
-    pub fn with_reload(mut self) -> Self {
+    pub const fn with_reload(mut self) -> Self {
         self.reload = true;
         self
     }
@@ -206,7 +207,7 @@ impl ServiceRunner {
     /// — call sites do not need `cfg` gates. Service binaries typically
     /// wire `enable` to a hidden CLI flag passed by SCM (`--service`).
     #[must_use]
-    pub fn scm_mode(mut self, enable: bool) -> Self {
+    pub const fn scm_mode(mut self, enable: bool) -> Self {
         self.scm_mode = enable;
         self
     }

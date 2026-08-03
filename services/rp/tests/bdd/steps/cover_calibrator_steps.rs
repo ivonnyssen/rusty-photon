@@ -1,4 +1,4 @@
-//! BDD step definitions for CoverCalibrator MCP tools
+//! BDD step definitions for `CoverCalibrator` MCP tools
 
 use cucumber::{given, then, when};
 
@@ -86,8 +86,7 @@ fn tool_call_succeeded(world: &mut RpWorld) {
 
     assert!(
         result.is_ok(),
-        "expected tool call to succeed, got error: {:?}",
-        result
+        "expected tool call to succeed, got error: {result:?}"
     );
 }
 

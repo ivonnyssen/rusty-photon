@@ -1,4 +1,4 @@
-//! Step definitions for position_reads.feature
+//! Step definitions for `position_reads.feature`
 
 use crate::world::FalconRotatorWorld;
 use cucumber::{given, then, when};

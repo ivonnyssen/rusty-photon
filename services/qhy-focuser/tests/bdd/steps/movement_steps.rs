@@ -1,4 +1,4 @@
-//! Step definitions for movement_control.feature
+//! Step definitions for `movement_control.feature`
 
 use crate::world::QhyFocuserWorld;
 use ascom_alpaca::ASCOMErrorCode;
@@ -70,7 +70,6 @@ fn operation_should_fail_invalid_value(world: &mut QhyFocuserWorld) {
     assert_eq!(
         code,
         ASCOMErrorCode::INVALID_VALUE.raw(),
-        "expected INVALID_VALUE error code, got: {}",
-        code
+        "expected INVALID_VALUE error code, got: {code}"
     );
 }

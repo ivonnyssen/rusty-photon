@@ -47,11 +47,11 @@ impl Default for CenteringConfig {
     }
 }
 
-fn default_solve_time_estimate() -> Duration {
+const fn default_solve_time_estimate() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_slew_overhead_estimate() -> Duration {
+const fn default_slew_overhead_estimate() -> Duration {
     Duration::from_secs(10)
 }
 

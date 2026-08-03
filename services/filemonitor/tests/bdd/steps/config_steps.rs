@@ -22,12 +22,12 @@ async fn filemonitor_running_with_config(world: &mut FilemonitorWorld, path: Str
 }
 
 #[when("I load the configuration")]
-fn load_configuration(_world: &mut FilemonitorWorld) {
+const fn load_configuration(_world: &mut FilemonitorWorld) {
     // Config was already loaded in the given step
 }
 
 #[when("I try to load the configuration")]
-fn try_load_configuration(_world: &mut FilemonitorWorld) {
+const fn try_load_configuration(_world: &mut FilemonitorWorld) {
     // Same as load - error was already captured in given step
 }
 

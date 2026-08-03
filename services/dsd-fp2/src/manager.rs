@@ -138,21 +138,22 @@ impl FlatPanelManager {
 
     /// Clone the inner `Arc<SharedTransport<Fp2Codec>>` so a device can
     /// acquire a [`Session`](rusty_photon_shared_transport::Session).
-    pub fn transport(&self) -> &Arc<SharedTransport<Fp2Codec>> {
+    #[must_use]
+    pub const fn transport(&self) -> &Arc<SharedTransport<Fp2Codec>> {
         &self.transport
     }
 
     /// Shared snapshot for read-side device methods.
+    #[must_use]
     pub fn snapshot(&self) -> Arc<RwLock<CachedState>> {
         self.cached_state.clone()
     }
 
     /// Clamp + validate brightness against the FP2's hardware ceiling.
     pub fn validate_brightness(value: u32) -> Result<u16> {
-        if value > MAX_BRIGHTNESS as u32 {
+        if value > u32::from(MAX_BRIGHTNESS) {
             return Err(DsdFp2Error::InvalidValue(format!(
-                "brightness {} exceeds maximum {}",
-                value, MAX_BRIGHTNESS
+                "brightness {value} exceeds maximum {MAX_BRIGHTNESS}"
             )));
         }
         Ok(value as u16)
@@ -170,7 +171,7 @@ async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
-            _ = ctx.cancelled() => {
+            () = ctx.cancelled() => {
                 debug!("FP2 poll loop cancelled");
                 break;
             }
@@ -250,14 +251,14 @@ mod tests {
     fn validate_brightness_accepts_zero_and_max() {
         assert_eq!(FlatPanelManager::validate_brightness(0).unwrap(), 0);
         assert_eq!(
-            FlatPanelManager::validate_brightness(MAX_BRIGHTNESS as u32).unwrap(),
+            FlatPanelManager::validate_brightness(u32::from(MAX_BRIGHTNESS)).unwrap(),
             MAX_BRIGHTNESS
         );
     }
 
     #[test]
     fn validate_brightness_rejects_above_max() {
-        let err = FlatPanelManager::validate_brightness(MAX_BRIGHTNESS as u32 + 1).unwrap_err();
+        let err = FlatPanelManager::validate_brightness(u32::from(MAX_BRIGHTNESS) + 1).unwrap_err();
         assert!(matches!(err, DsdFp2Error::InvalidValue(_)));
     }
 
@@ -287,7 +288,7 @@ mod mock_tests {
         Config {
             serial: crate::config::SerialConfig {
                 port: "/dev/mock".to_string(),
-                polling_interval: Duration::from_secs(60),
+                polling_interval: Duration::from_mins(1),
                 ..Default::default()
             },
             server: crate::config::AlpacaServerConfig::new(0),

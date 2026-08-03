@@ -24,7 +24,8 @@ use crate::Ephemeris;
 pub struct ErfarsEphemeris;
 
 impl ErfarsEphemeris {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 
@@ -140,21 +141,21 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-fn nan_alt_az() -> AltAz {
+const fn nan_alt_az() -> AltAz {
     AltAz {
         altitude_degrees: f64::NAN,
         azimuth_degrees: f64::NAN,
     }
 }
 
-fn nan_icrs() -> IcrsCoord {
+const fn nan_icrs() -> IcrsCoord {
     IcrsCoord {
         ra_hours: f64::NAN,
         dec_degrees: f64::NAN,
     }
 }
 
-fn nan_time_jds() -> TimeJds {
+const fn nan_time_jds() -> TimeJds {
     TimeJds {
         utc1: f64::NAN,
         utc2: f64::NAN,
@@ -167,7 +168,7 @@ fn nan_time_jds() -> TimeJds {
 
 /// JD pairs for the time scales we care about. Computed once per call
 /// to avoid hammering ERFA's leapsecond table four times in a row.
-pub(crate) struct TimeJds {
+pub struct TimeJds {
     pub utc1: f64,
     pub utc2: f64,
     pub tt1: f64,
@@ -185,7 +186,7 @@ pub(crate) struct TimeJds {
 /// up in the dashboard or alpaca client rather than crashing the
 /// service. The handler bodies live in `dtf2d_jds` and `utctai_pair`
 /// so they're directly unit-testable.
-pub(crate) fn time_jds(time: DateTime<Utc>) -> TimeJds {
+pub fn time_jds(time: DateTime<Utc>) -> TimeJds {
     // The first `eraDat` call ERFA ever makes lazily initializes a
     // non-thread-safe file-static table; force that to happen once,
     // single-threaded, before the concurrent `Dtf2d`/`Utctai` calls below
@@ -197,7 +198,7 @@ pub(crate) fn time_jds(time: DateTime<Utc>) -> TimeJds {
     let day = time.day() as i32;
     let hh = time.hour() as i32;
     let mm = time.minute() as i32;
-    let seconds = time.second() as f64 + time.nanosecond() as f64 * 1e-9;
+    let seconds = f64::from(time.second()) + f64::from(time.nanosecond()) * 1e-9;
 
     let Some((utc1, utc2)) = dtf2d_jds(Dtf2d(true, year, month, day, hh, mm, seconds), time) else {
         return nan_time_jds();
@@ -258,12 +259,12 @@ fn utctai_pair(result: ERFAResult<(f64, f64)>, time: DateTime<Utc>) -> Option<(f
 }
 
 /// Greenwich apparent sidereal time, in radians, at the given JDs.
-pub(crate) fn gast_radians(jds: &TimeJds) -> f64 {
+pub fn gast_radians(jds: &TimeJds) -> f64 {
     Gst06a(jds.ut11, jds.ut12, jds.tt1, jds.tt2)
 }
 
 /// Local apparent sidereal time at `site`, in hours `[0, 24)`.
-pub(crate) fn lst_hours(site: &Site, jds: &TimeJds) -> f64 {
+pub fn lst_hours(site: &Site, jds: &TimeJds) -> f64 {
     let gast_hours = gast_radians(jds) * 12.0 / ERFA_DPI;
     (gast_hours + site.longitude_degrees / 15.0).rem_euclid(24.0)
 }
@@ -271,11 +272,7 @@ pub(crate) fn lst_hours(site: &Site, jds: &TimeJds) -> f64 {
 /// Topocentric alt/az for an ICRS target at the given UTC time, under
 /// the default amateur-rig refraction conditions documented on the
 /// trait.
-pub(crate) fn alt_az_at(
-    site: &Site,
-    target: IcrsCoord,
-    jds: &TimeJds,
-) -> Result<AltAz, EphemerisError> {
+pub fn alt_az_at(site: &Site, target: IcrsCoord, jds: &TimeJds) -> Result<AltAz, EphemerisError> {
     alt_az_conditions_at(site, target, jds, Some(RefractionConditions::default()))
 }
 
@@ -283,7 +280,7 @@ pub(crate) fn alt_az_at(
 /// `None` disables refraction entirely: ERFA's `Refco` yields zero
 /// refraction constants for non-positive pressure, so the transform
 /// degrades to the pure geometric (unrefracted) one.
-fn erfa_refraction_inputs(refraction: Option<RefractionConditions>) -> (f64, f64, f64, f64) {
+const fn erfa_refraction_inputs(refraction: Option<RefractionConditions>) -> (f64, f64, f64, f64) {
     match refraction {
         Some(c) => (c.pressure_hpa, c.temperature_c, 0.5, 0.55),
         None => (0.0, 10.0, 0.5, 0.55),
@@ -292,7 +289,7 @@ fn erfa_refraction_inputs(refraction: Option<RefractionConditions>) -> (f64, f64
 
 /// Topocentric alt/az for an ICRS target with explicit refraction
 /// conditions (`None` = unrefracted).
-pub(crate) fn alt_az_conditions_at(
+pub fn alt_az_conditions_at(
     site: &Site,
     target: IcrsCoord,
     jds: &TimeJds,
@@ -320,7 +317,7 @@ pub(crate) fn alt_az_conditions_at(
 /// ICRS coordinates whose observed position at `site` is the given
 /// alt/az — the inverse of [`alt_az_conditions_at`], via ERFA's
 /// `Atoc13` with observed type `'A'` (azimuth / zenith distance).
-pub(crate) fn icrs_conditions_at(
+pub fn icrs_conditions_at(
     site: &Site,
     observed: AltAz,
     jds: &TimeJds,
@@ -352,7 +349,7 @@ pub(crate) fn icrs_conditions_at(
 /// — so production code stays panic-free if the upstream contract
 /// ever changes. The handler lives in `epv00_heliocentric` so it's
 /// directly unit-testable.
-pub(crate) fn sun_icrs(jds: &TimeJds) -> IcrsCoord {
+pub fn sun_icrs(jds: &TimeJds) -> IcrsCoord {
     let Some(pvh) = epv00_heliocentric(Epv00(jds.tt1, jds.tt2), jds) else {
         return nan_icrs();
     };
@@ -383,7 +380,7 @@ fn epv00_heliocentric(result: ERFAResult<([f64; 6], [f64; 6])>, jds: &TimeJds) -
 }
 
 /// Geocentric Moon coordinates from `Moon98` (GCRS ≈ ICRS).
-pub(crate) fn moon_icrs(jds: &TimeJds) -> IcrsCoord {
+pub fn moon_icrs(jds: &TimeJds) -> IcrsCoord {
     let pv = Moon98(jds.tt1, jds.tt2);
     cartesian_to_icrs(pv[0], pv[1], pv[2])
 }
@@ -403,7 +400,7 @@ fn cartesian_to_icrs(x: f64, y: f64, z: f64) -> IcrsCoord {
 
 /// Angular separation between two ICRS coordinates, in degrees.
 /// Uses the spherical law of cosines.
-pub(crate) fn angular_separation_degrees(a: IcrsCoord, b: IcrsCoord) -> f64 {
+pub fn angular_separation_degrees(a: IcrsCoord, b: IcrsCoord) -> f64 {
     let ra_a = a.ra_hours * 15.0 * ERFA_DD2R;
     let dec_a = a.dec_degrees * ERFA_DD2R;
     let ra_b = b.ra_hours * 15.0 * ERFA_DD2R;
@@ -596,10 +593,7 @@ mod tests {
             let ddec_arcsec = (back.dec_degrees - target.dec_degrees) * 3600.0;
             assert!(
                 dra_arcsec.abs() < 1.0 && ddec_arcsec.abs() < 1.0,
-                "round trip (refraction {:?}) off by ({:.3}\", {:.3}\")",
-                refraction,
-                dra_arcsec,
-                ddec_arcsec
+                "round trip (refraction {refraction:?}) off by ({dra_arcsec:.3}\", {ddec_arcsec:.3}\")"
             );
         }
     }

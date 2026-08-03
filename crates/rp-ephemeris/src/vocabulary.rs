@@ -32,7 +32,7 @@ use crate::types::IcrsCoord;
 /// `PlanCoord` is valid by construction, so this never fails.
 impl From<PlanCoord> for IcrsCoord {
     fn from(c: PlanCoord) -> Self {
-        IcrsCoord {
+        Self {
             ra_hours: c.ra_hours(),
             dec_degrees: c.dec_degrees(),
         }
@@ -46,7 +46,7 @@ impl TryFrom<IcrsCoord> for PlanCoord {
     type Error = CoordError;
 
     fn try_from(c: IcrsCoord) -> Result<Self, Self::Error> {
-        PlanCoord::try_new(c.ra_hours, c.dec_degrees)
+        Self::try_new(c.ra_hours, c.dec_degrees)
     }
 }
 

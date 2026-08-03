@@ -1,17 +1,17 @@
-//! ConformU compliance tests for the planetarium-bridge virtual Telescope.
+//! `ConformU` compliance tests for the planetarium-bridge virtual Telescope.
 //!
-//! Runs the ConformU suites in their `*-settings` variants (the device under
+//! Runs the `ConformU` suites in their `*-settings` variants (the device under
 //! test is configured inside the settings file): the URL-argument commands
-//! force-enable every test via ConformU's `SetFullTest()`, and this device's
+//! force-enable every test via `ConformU`'s `SetFullTest()`, and this device's
 //! capability set cannot satisfy the full set — with `CanPulseGuide = false`
-//! the protocol suite's PulseGuide test polls `IsPulseGuiding` as its
-//! completion check and records the spec-mandated NOT_IMPLEMENTED answer as
+//! the protocol suite's `PulseGuide` test polls `IsPulseGuiding` as its
+//! completion check and records the spec-mandated `NOT_IMPLEMENTED` answer as
 //! an error, so that one test is deselected via `TelescopeTests`.
 //!
 //! Two deliberate config choices (docs/services/planetarium-bridge.md
 //! §ConformU): the reported-position altitude floor is `null` — the floor is
 //! a client-UX policy, not device semantics, and would mask the sync
-//! round-trip when ConformU syncs below it — and rp points at a dead
+//! round-trip when `ConformU` syncs below it — and rp points at a dead
 //! loopback port so the sync-fired imports land in the scenario's spool
 //! instead of a live rp.
 #![cfg(feature = "conformu")]
@@ -185,10 +185,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     match &result {
-        Ok(_) => {}
+        Ok(()) => {}
         Err(e) => {
             println!("ConformU compliance tests FAILED");
-            println!("Error: {}", e);
+            println!("Error: {e}");
         }
     }
     println!("::endgroup::");

@@ -5,7 +5,7 @@
 use super::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UnOp {
+pub enum UnOp {
     Not,
     Neg,
 }
@@ -15,7 +15,7 @@ pub(crate) enum UnOp {
 /// evaluation diagnostics quote it — so it is a contract with the workflow
 /// documents in the field, not a formatting detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
-pub(crate) enum BinOp {
+pub enum BinOp {
     #[strum(serialize = "+")]
     Add,
     #[strum(serialize = "-")]
@@ -50,16 +50,16 @@ impl BinOp {
         self.into()
     }
 
-    pub(crate) fn is_comparison(self) -> bool {
+    pub(crate) const fn is_comparison(self) -> bool {
         matches!(
             self,
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge
         )
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Expr {
+pub enum Expr {
     Null(Span),
     Bool(bool, Span),
     Num(f64, Span),
@@ -68,54 +68,54 @@ pub(crate) enum Expr {
     /// static checking).
     Ident(String, Span),
     Member {
-        obj: Box<Expr>,
+        obj: Box<Self>,
         field: String,
         span: Span,
     },
     Index {
-        obj: Box<Expr>,
-        idx: Box<Expr>,
+        obj: Box<Self>,
+        idx: Box<Self>,
         span: Span,
     },
     Call {
         func: String,
         func_span: Span,
-        args: Vec<Expr>,
+        args: Vec<Self>,
         span: Span,
     },
     Unary {
         op: UnOp,
-        rhs: Box<Expr>,
+        rhs: Box<Self>,
         span: Span,
     },
     Binary {
         op: BinOp,
-        lhs: Box<Expr>,
-        rhs: Box<Expr>,
+        lhs: Box<Self>,
+        rhs: Box<Self>,
         span: Span,
     },
     Cond {
-        cond: Box<Expr>,
-        then: Box<Expr>,
-        els: Box<Expr>,
+        cond: Box<Self>,
+        then: Box<Self>,
+        els: Box<Self>,
         span: Span,
     },
 }
 
 impl Expr {
-    pub(crate) fn span(&self) -> Span {
+    pub(crate) const fn span(&self) -> Span {
         match self {
-            Expr::Null(s)
-            | Expr::Bool(_, s)
-            | Expr::Num(_, s)
-            | Expr::Str(_, s)
-            | Expr::Ident(_, s) => *s,
-            Expr::Member { span, .. }
-            | Expr::Index { span, .. }
-            | Expr::Call { span, .. }
-            | Expr::Unary { span, .. }
-            | Expr::Binary { span, .. }
-            | Expr::Cond { span, .. } => *span,
+            Self::Null(s)
+            | Self::Bool(_, s)
+            | Self::Num(_, s)
+            | Self::Str(_, s)
+            | Self::Ident(_, s) => *s,
+            Self::Member { span, .. }
+            | Self::Index { span, .. }
+            | Self::Call { span, .. }
+            | Self::Unary { span, .. }
+            | Self::Binary { span, .. }
+            | Self::Cond { span, .. } => *span,
         }
     }
 
@@ -129,26 +129,26 @@ impl Expr {
         roots: &mut std::collections::BTreeMap<&'a str, Span>,
     ) {
         match self {
-            Expr::Null(_) | Expr::Bool(_, _) | Expr::Num(_, _) | Expr::Str(_, _) => {}
-            Expr::Ident(name, span) => {
+            Self::Null(_) | Self::Bool(_, _) | Self::Num(_, _) | Self::Str(_, _) => {}
+            Self::Ident(name, span) => {
                 roots.entry(name).or_insert(*span);
             }
-            Expr::Member { obj, .. } => obj.collect_idents(roots),
-            Expr::Index { obj, idx, .. } => {
+            Self::Member { obj, .. } => obj.collect_idents(roots),
+            Self::Index { obj, idx, .. } => {
                 obj.collect_idents(roots);
                 idx.collect_idents(roots);
             }
-            Expr::Call { args, .. } => {
+            Self::Call { args, .. } => {
                 for a in args {
                     a.collect_idents(roots);
                 }
             }
-            Expr::Unary { rhs, .. } => rhs.collect_idents(roots),
-            Expr::Binary { lhs, rhs, .. } => {
+            Self::Unary { rhs, .. } => rhs.collect_idents(roots),
+            Self::Binary { lhs, rhs, .. } => {
                 lhs.collect_idents(roots);
                 rhs.collect_idents(roots);
             }
-            Expr::Cond {
+            Self::Cond {
                 cond, then, els, ..
             } => {
                 cond.collect_idents(roots);
@@ -162,11 +162,11 @@ impl Expr {
     /// literal so `-3` and `- -3` produce literal nodes, matching the
     /// grammar pin that `-` is an operator while number literals are
     /// unsigned.
-    pub(crate) fn unary(op: UnOp, rhs: Expr, span: Span) -> Expr {
-        if let (UnOp::Neg, Expr::Num(n, _)) = (op, &rhs) {
-            return Expr::Num(-n, span);
+    pub(crate) fn unary(op: UnOp, rhs: Self, span: Span) -> Self {
+        if let (UnOp::Neg, Self::Num(n, _)) = (op, &rhs) {
+            return Self::Num(-n, span);
         }
-        Expr::Unary {
+        Self::Unary {
             op,
             rhs: Box::new(rhs),
             span,
@@ -177,14 +177,14 @@ impl Expr {
     /// ignored.
     pub(crate) fn canon(&self) -> String {
         match self {
-            Expr::Null(_) => "null".into(),
-            Expr::Bool(b, _) => b.to_string(),
-            Expr::Num(n, _) => format!("{n:?}"),
-            Expr::Str(s, _) => format!("{s:?}"),
-            Expr::Ident(name, _) => name.clone(),
-            Expr::Member { obj, field, .. } => format!("(. {} {})", obj.canon(), field),
-            Expr::Index { obj, idx, .. } => format!("([] {} {})", obj.canon(), idx.canon()),
-            Expr::Call { func, args, .. } => {
+            Self::Null(_) => "null".into(),
+            Self::Bool(b, _) => b.to_string(),
+            Self::Num(n, _) => format!("{n:?}"),
+            Self::Str(s, _) => format!("{s:?}"),
+            Self::Ident(name, _) => name.clone(),
+            Self::Member { obj, field, .. } => format!("(. {} {})", obj.canon(), field),
+            Self::Index { obj, idx, .. } => format!("([] {} {})", obj.canon(), idx.canon()),
+            Self::Call { func, args, .. } => {
                 let mut out = format!("(call {func}");
                 for a in args {
                     out.push(' ');
@@ -193,17 +193,17 @@ impl Expr {
                 out.push(')');
                 out
             }
-            Expr::Unary { op, rhs, .. } => {
+            Self::Unary { op, rhs, .. } => {
                 let sym = match op {
                     UnOp::Not => "!",
                     UnOp::Neg => "neg",
                 };
                 format!("({sym} {})", rhs.canon())
             }
-            Expr::Binary { op, lhs, rhs, .. } => {
+            Self::Binary { op, lhs, rhs, .. } => {
                 format!("({} {} {})", op.sym(), lhs.canon(), rhs.canon())
             }
-            Expr::Cond {
+            Self::Cond {
                 cond, then, els, ..
             } => format!("(?: {} {} {})", cond.canon(), then.canon(), els.canon()),
         }

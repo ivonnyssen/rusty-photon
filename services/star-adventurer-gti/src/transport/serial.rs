@@ -41,6 +41,7 @@ impl SerialTransportFactory {
     /// the port path, baud rate, and timeout once at startup so
     /// [`TransportFactory::open`] can be retried without rethreading
     /// configuration.
+    #[must_use]
     pub fn new(config: UsbConfig) -> Self {
         Self {
             port: config.port,

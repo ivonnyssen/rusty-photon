@@ -23,7 +23,7 @@ use crate::error::{Phd2Error, Result};
 pub fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data)
-        .map_err(|e| Phd2Error::InvalidState(format!("Invalid base64 data: {}", e)))?;
+        .map_err(|e| Phd2Error::InvalidState(format!("Invalid base64 data: {e}")))?;
 
     if bytes.len() % 2 != 0 {
         return Err(Phd2Error::InvalidState(format!(
@@ -105,7 +105,7 @@ pub async fn write_grayscale_u16_fits<P: AsRef<Path>>(
         Ok(())
     })
     .await
-    .map_err(|e| Phd2Error::InvalidState(format!("Task join error: {}", e)))?
+    .map_err(|e| Phd2Error::InvalidState(format!("Task join error: {e}")))?
 }
 
 /// Map an [`rp_fits::FitsError`] to the right [`Phd2Error`] variant.
@@ -243,7 +243,7 @@ mod tests {
             Pixels::I16(v) => v,
             other => panic!("expected on-disk i16 storage, got {other:?}"),
         };
-        let recovered: Vec<u16> = raw.iter().map(|r| (*r as i32 + 32768) as u16).collect();
+        let recovered: Vec<u16> = raw.iter().map(|r| (i32::from(*r) + 32768) as u16).collect();
         assert_eq!(recovered, pixels);
     }
 

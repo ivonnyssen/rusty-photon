@@ -26,7 +26,7 @@ struct FilterWheelState {
     settled_position: Mutex<Option<u32>>,
 }
 
-/// One ASCOM FilterWheel device per discovered CFW.
+/// One ASCOM `FilterWheel` device per discovered CFW.
 #[derive(Clone, derive_more::Debug)]
 pub struct QhyFilterWheelDevice {
     #[debug(skip)]
@@ -40,7 +40,7 @@ pub struct QhyFilterWheelDevice {
 
 impl QhyFilterWheelDevice {
     /// Build a CFW device. The ASCOM `UniqueID` is `CFW-<sdk-id>` (prefixed so it
-    /// never collides with the camera's UniqueID, which shares the SDK id on
+    /// never collides with the camera's `UniqueID`, which shares the SDK id on
     /// single-handle models). `filter_names` / `name` come from the per-serial
     /// config override.
     pub fn new(

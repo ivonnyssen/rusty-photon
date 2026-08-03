@@ -60,11 +60,13 @@ pub struct ServiceScan {
 impl ServiceScan {
     /// Whether this service takes part in diagnosis: its unit is installed
     /// or its config file exists.
-    pub fn config_present(&self) -> bool {
+    #[must_use]
+    pub const fn config_present(&self) -> bool {
         self.raw.is_some()
     }
 
     /// The parsed config `Value`, when the file exists and is valid JSON.
+    #[must_use]
     pub fn value(&self) -> Option<&Value> {
         self.raw.as_ref().and_then(|r| r.as_ref().ok())
     }
@@ -73,7 +75,8 @@ impl ServiceScan {
     /// `server.port`, else the catalog default (also while the server block
     /// is unparseable — the collision picture should not go blind because
     /// one file has a typo).
-    pub fn effective_port(&self) -> u16 {
+    #[must_use]
+    pub const fn effective_port(&self) -> u16 {
         match &self.server {
             ServerBlock::Parsed { server, .. } => server.port,
             _ => self.entry.default_port,
@@ -81,7 +84,8 @@ impl ServiceScan {
     }
 
     /// The enabled discovery port, when the config sets one.
-    pub fn discovery_port(&self) -> Option<u16> {
+    #[must_use]
+    pub const fn discovery_port(&self) -> Option<u16> {
         match &self.server {
             ServerBlock::Parsed { discovery_port, .. } => *discovery_port,
             _ => None,
@@ -89,7 +93,8 @@ impl ServiceScan {
     }
 
     /// The parsed TLS/auth view of the server block, when parsed.
-    pub fn server(&self) -> Option<&ServerConfig> {
+    #[must_use]
+    pub const fn server(&self) -> Option<&ServerConfig> {
         match &self.server {
             ServerBlock::Parsed { server, .. } => Some(server),
             _ => None,
@@ -98,6 +103,7 @@ impl ServiceScan {
 }
 
 /// Scan one service's config file.
+#[must_use]
 pub fn scan_service(config_dir: &Path, entry: &'static CatalogEntry) -> ServiceScan {
     let config_path = config_dir.join(entry.config_file());
     let raw = match std::fs::read_to_string(&config_path) {
@@ -257,7 +263,7 @@ fn default_monitor_host() -> String {
     "localhost".to_string()
 }
 
-fn default_monitor_port() -> u16 {
+const fn default_monitor_port() -> u16 {
     11111
 }
 
@@ -390,6 +396,7 @@ impl RpView {
     /// rp's client credential for the mount at `equipment.mount.auth` —
     /// what the fake-mount probe presents to the mount's management API,
     /// exactly as rp itself would connect.
+    #[must_use]
     pub fn mount_auth(&self) -> Option<ClientAuthView> {
         let auth = self.equipment.as_ref()?.get("mount")?.get("auth")?;
         serde_json::from_value(auth.clone()).ok()
@@ -398,6 +405,7 @@ impl RpView {
     /// The guider service's credential at `equipment.mount.guiding.auth`
     /// (issue #620) — `None` when absent or when the block does not parse
     /// as a `ClientAuthView`.
+    #[must_use]
     pub fn mount_guiding_auth(&self) -> Option<ClientAuthView> {
         let auth = self
             .equipment
@@ -481,6 +489,7 @@ impl RpView {
     /// its author chose. The scope mirrors rp's own
     /// `config::ORCHESTRATOR_URL_FIELD` / `config::EVENT_URL_FIELD`
     /// mapping; the two must agree, or doctor advises a fix rp ignores.
+    #[must_use]
     pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
         self.plugins
             .iter()
@@ -546,6 +555,7 @@ pub struct RpClientTarget {
 /// Parse a lenient view out of a scanned config, distinguishing "view not
 /// applicable" (file absent / invalid JSON, `None`) from "the known block
 /// itself does not parse" (`Some(Err)`).
+#[must_use]
 pub fn view<T: for<'de> Deserialize<'de>>(scan: &ServiceScan) -> Option<Result<T, String>> {
     let value = scan.value()?;
     Some(T::deserialize(value.clone()).map_err(|e| e.to_string()))
@@ -760,7 +770,7 @@ mod tests {
         let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
         assert!(view.equipment_targets().is_empty());
 
-        let view: RpView = serde_json::from_str(r#"{}"#).unwrap();
+        let view: RpView = serde_json::from_str(r"{}").unwrap();
         assert!(view.equipment_targets().is_empty());
     }
 

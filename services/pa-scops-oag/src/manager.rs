@@ -59,12 +59,14 @@ impl FocuserManager {
     }
 
     /// Access the shared transport so the device can acquire sessions.
-    pub fn transport(&self) -> &Arc<SharedTransport<ScopsCodec>> {
+    #[must_use]
+    pub const fn transport(&self) -> &Arc<SharedTransport<ScopsCodec>> {
         &self.transport
     }
 
     /// Cheap, non-blocking snapshot — true between handshake completion and the
     /// start of teardown.
+    #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
     }
@@ -221,7 +223,7 @@ async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
-            _ = ctx.cancelled() => {
+            () = ctx.cancelled() => {
                 debug!("Scops OAG poll loop received cancellation");
                 return;
             }
@@ -467,7 +469,7 @@ mod tests {
 
     fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
         let mut config = Config::default();
-        config.serial.polling_interval = Duration::from_secs(300);
+        config.serial.polling_interval = Duration::from_mins(5);
         FocuserManager::new(config, factory)
     }
 

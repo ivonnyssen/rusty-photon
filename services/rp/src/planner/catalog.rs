@@ -49,6 +49,7 @@ impl From<&ResolvedTarget> for ResolvedTargetView {
 /// Look up `name` in the embedded catalog, returning the resolved
 /// target on hit and a structured "did you mean…?" suggestion list
 /// on miss (top 3 fuzzy matches by Levenshtein distance).
+#[must_use]
 pub fn resolve(name: &str) -> ResolveOutcome {
     let catalog = Catalog::embedded();
     if let Some(target) = catalog.resolve(name) {
@@ -61,6 +62,7 @@ pub fn resolve(name: &str) -> ResolveOutcome {
 /// Nearest catalog entry to `coord` under the class-tiered naming
 /// contract — `add_target`'s `source` form names imports through this
 /// (rp.md § Target Store → Import form).
+#[must_use]
 pub fn nearest(
     coord: &rp_vocabulary::IcrsCoord,
     tolerances: &rp_catalog::NearestTolerances,

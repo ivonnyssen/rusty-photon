@@ -1,6 +1,6 @@
-//! Step definitions for config_actions.feature.
+//! Step definitions for `config_actions.feature`.
 //!
-//! Reuses the `Given a running focuser service` step from connection_steps.
+//! Reuses the `Given a running focuser service` step from `connection_steps`.
 
 use std::sync::Arc;
 

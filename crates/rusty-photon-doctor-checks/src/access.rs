@@ -19,11 +19,13 @@ pub struct Identity {
 
 impl Identity {
     /// Read + write — what opening a serial device needs.
+    #[must_use]
     pub fn can_read_write(&self, facts: &PathFacts) -> bool {
         self.has(facts, 0o6)
     }
 
     /// Write + traverse — what creating files in a directory needs.
+    #[must_use]
     pub fn can_write_dir(&self, facts: &PathFacts) -> bool {
         self.has(facts, 0o3)
     }

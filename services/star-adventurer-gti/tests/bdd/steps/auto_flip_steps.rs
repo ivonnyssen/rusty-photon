@@ -1,4 +1,4 @@
-//! Steps for auto_flip.feature.
+//! Steps for `auto_flip.feature`.
 //!
 //! The encoder-seeding, tracking, and command-log steps are shared with
 //! `tracking_safety_steps.rs`, `tracking_steps.rs`, and

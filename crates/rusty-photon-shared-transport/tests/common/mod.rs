@@ -45,7 +45,7 @@ impl Codec for EchoCodec {
     /// starting with the `b"BAD"` prefix decode to `Err(EchoCodecError)`,
     /// exercising the `SessionError::Codec` arm. Tests that need to
     /// hit codec-error paths (e.g. `tests/reconnect.rs::codec_error_does_not_trigger_reconnect`)
-    /// send a `b"BAD..."` payload; the EchoTransport echoes it back
+    /// send a `b"BAD..."` payload; the `EchoTransport` echoes it back
     /// and decode fails on the response.
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
         if bytes.starts_with(b"BAD") {
@@ -81,7 +81,7 @@ pub struct EchoTransport {
 }
 
 impl EchoTransport {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             last_sent: None,
             dropped_flag: None,
@@ -186,7 +186,7 @@ pub struct ProgrammableFactory {
 }
 
 impl ProgrammableFactory {
-    pub fn new(config: FactoryConfig) -> Self {
+    pub const fn new(config: FactoryConfig) -> Self {
         Self {
             config,
             fail_after_succeeds: None,
@@ -194,7 +194,7 @@ impl ProgrammableFactory {
     }
 
     /// After `n` successful opens, every subsequent `open` fails.
-    pub fn fail_after(mut self, n: u32) -> Self {
+    pub const fn fail_after(mut self, n: u32) -> Self {
         self.fail_after_succeeds = Some(n);
         self
     }
@@ -236,7 +236,7 @@ pub fn build_noop_transport() -> (Arc<SharedTransport<EchoCodec>>, FactoryConfig
 /// the right hook fired the right number of times across N connect /
 /// disconnect / start / shutdown cycles.
 ///
-/// `teardown_calls` is the historical name retained for the on_last_disconnect
+/// `teardown_calls` is the historical name retained for the `on_last_disconnect`
 /// counter — old tests pre-date the hook split.
 pub struct CountingHooks {
     pub handshake_calls: Arc<AtomicU32>,
@@ -363,7 +363,7 @@ impl WhileOpenHooks {
                     let mut interval = tokio::time::interval(Duration::from_millis(20));
                     loop {
                         tokio::select! {
-                            _ = ctx.cancelled() => break,
+                            () = ctx.cancelled() => break,
                             _ = interval.tick() => {},
                         }
                     }
@@ -390,7 +390,7 @@ impl WhileOpenHooks {
                     started.store(true, Ordering::SeqCst);
                     // Sleep forever, ignoring cancellation.
                     loop {
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                        tokio::time::sleep(Duration::from_hours(1)).await;
                     }
                 })
             })),
@@ -426,7 +426,7 @@ impl WhileOpenHooks {
 /// `AtomicBool` for `started` — switching to `AtomicU32` everywhere
 /// would churn existing tests for no benefit. Used by the reconnect
 /// respawn test to assert the closure was invoked twice (once at
-/// start, once at attempt_reconnect).
+/// start, once at `attempt_reconnect`).
 pub struct CountingWhileOpenHooks {
     pub spawns: Arc<AtomicU32>,
     pub cancelled: Arc<AtomicU32>,
@@ -444,7 +444,7 @@ impl Default for CountingWhileOpenHooks {
 impl CountingWhileOpenHooks {
     /// Cooperative task that bumps `spawns` on entry and `cancelled` on
     /// exit-via-cancellation. Used to verify reconnect cancels the old
-    /// while_open task and spawns a fresh one.
+    /// `while_open` task and spawns a fresh one.
     pub fn hooks(&self) -> Hooks<EchoCodec> {
         let spawns = self.spawns.clone();
         let cancelled = self.cancelled.clone();
@@ -460,7 +460,7 @@ impl CountingWhileOpenHooks {
                     let mut interval = tokio::time::interval(Duration::from_millis(20));
                     loop {
                         tokio::select! {
-                            _ = ctx.cancelled() => {
+                            () = ctx.cancelled() => {
                                 cancelled.fetch_add(1, Ordering::SeqCst);
                                 break;
                             }

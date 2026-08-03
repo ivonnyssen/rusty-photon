@@ -15,6 +15,7 @@ use strum::VariantArray;
 pub const MOUNT_ID: &str = "mount";
 
 /// One equipment kind — the ten keys of rp's config `equipment` block.
+///
 /// `Switches`, `Rotators`, `ObservingConditions`, and `Domes` cover roster
 /// membership and connectivity status only (rp.md § Equipment Integration) —
 /// same generic add/edit/remove/config-page treatment as every other kind,
@@ -40,59 +41,64 @@ pub enum EquipKind {
 impl EquipKind {
     /// The key in rp's config `equipment` block (also the `{kind}` route
     /// segment and the middle of an `rp:{kind}:{id}` service key).
-    pub fn config_key(self) -> &'static str {
+    #[must_use]
+    pub const fn config_key(self) -> &'static str {
         match self {
-            EquipKind::Cameras => "cameras",
-            EquipKind::FilterWheels => "filter_wheels",
-            EquipKind::CoverCalibrators => "cover_calibrators",
-            EquipKind::Focusers => "focusers",
-            EquipKind::SafetyMonitors => "safety_monitors",
-            EquipKind::Switches => "switches",
-            EquipKind::Rotators => "rotators",
-            EquipKind::ObservingConditions => "observing_conditions",
-            EquipKind::Domes => "domes",
-            EquipKind::Mount => "mount",
+            Self::Cameras => "cameras",
+            Self::FilterWheels => "filter_wheels",
+            Self::CoverCalibrators => "cover_calibrators",
+            Self::Focusers => "focusers",
+            Self::SafetyMonitors => "safety_monitors",
+            Self::Switches => "switches",
+            Self::Rotators => "rotators",
+            Self::ObservingConditions => "observing_conditions",
+            Self::Domes => "domes",
+            Self::Mount => "mount",
         }
     }
 
     /// The ASCOM Alpaca device type for entries of this kind — how a
     /// roster-derived config page addresses the device's own Alpaca server.
-    pub fn ascom_type(self) -> &'static str {
+    #[must_use]
+    pub const fn ascom_type(self) -> &'static str {
         match self {
-            EquipKind::Cameras => "camera",
-            EquipKind::FilterWheels => "filterwheel",
-            EquipKind::CoverCalibrators => "covercalibrator",
-            EquipKind::Focusers => "focuser",
-            EquipKind::SafetyMonitors => "safetymonitor",
-            EquipKind::Switches => "switch",
-            EquipKind::Rotators => "rotator",
-            EquipKind::ObservingConditions => "observingconditions",
-            EquipKind::Domes => "dome",
-            EquipKind::Mount => "telescope",
+            Self::Cameras => "camera",
+            Self::FilterWheels => "filterwheel",
+            Self::CoverCalibrators => "covercalibrator",
+            Self::Focusers => "focuser",
+            Self::SafetyMonitors => "safetymonitor",
+            Self::Switches => "switch",
+            Self::Rotators => "rotator",
+            Self::ObservingConditions => "observingconditions",
+            Self::Domes => "dome",
+            Self::Mount => "telescope",
         }
     }
 
     /// Section heading on the equipment page.
-    pub fn display(self) -> &'static str {
+    #[must_use]
+    pub const fn display(self) -> &'static str {
         match self {
-            EquipKind::Cameras => "Cameras",
-            EquipKind::FilterWheels => "Filter wheels",
-            EquipKind::CoverCalibrators => "Cover calibrators",
-            EquipKind::Focusers => "Focusers",
-            EquipKind::SafetyMonitors => "Safety monitors",
-            EquipKind::Switches => "Switches",
-            EquipKind::Rotators => "Rotators",
-            EquipKind::ObservingConditions => "Observing conditions",
-            EquipKind::Domes => "Domes",
-            EquipKind::Mount => "Mount",
+            Self::Cameras => "Cameras",
+            Self::FilterWheels => "Filter wheels",
+            Self::CoverCalibrators => "Cover calibrators",
+            Self::Focusers => "Focusers",
+            Self::SafetyMonitors => "Safety monitors",
+            Self::Switches => "Switches",
+            Self::Rotators => "Rotators",
+            Self::ObservingConditions => "Observing conditions",
+            Self::Domes => "Domes",
+            Self::Mount => "Mount",
         }
     }
 
     /// The mount is one-per-observatory (`rp.md`); every other kind is a list.
-    pub fn is_singular(self) -> bool {
-        matches!(self, EquipKind::Mount)
+    #[must_use]
+    pub const fn is_singular(self) -> bool {
+        matches!(self, Self::Mount)
     }
 
+    #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
         Self::VARIANTS
             .iter()
@@ -121,10 +127,12 @@ pub struct RosterEntry {
 
 impl RosterEntry {
     /// The `/config/{service}` key for this entry's roster-derived config page.
+    #[must_use]
     pub fn service_key(&self) -> String {
         format!("rp:{}:{}", self.kind.config_key(), self.id)
     }
 
+    #[must_use]
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.id)
     }
@@ -185,6 +193,7 @@ pub fn parse_roster(config: &Value) -> Vec<RosterEntry> {
 }
 
 /// Find one entry by kind + id ([`MOUNT_ID`] addresses the mount).
+#[must_use]
 pub fn find_entry(config: &Value, kind: EquipKind, id: &str) -> Option<RosterEntry> {
     parse_roster(config)
         .into_iter()
@@ -271,7 +280,10 @@ pub fn replace_entry(
 ) -> Result<String, SurgeryError> {
     if kind.is_singular() {
         let equipment = equipment_mut(config)?;
-        if equipment.get("mount").is_none_or(|m| m.is_null()) {
+        if equipment
+            .get("mount")
+            .is_none_or(serde_json::Value::is_null)
+        {
             return Err(SurgeryError::NotFound(kind.config_key(), id.to_string()));
         }
         equipment.insert("mount".to_string(), entry);
@@ -298,7 +310,10 @@ pub fn replace_entry(
 pub fn remove_entry(config: &mut Value, kind: EquipKind, id: &str) -> Result<(), SurgeryError> {
     if kind.is_singular() {
         let equipment = equipment_mut(config)?;
-        if equipment.get("mount").is_none_or(|m| m.is_null()) {
+        if equipment
+            .get("mount")
+            .is_none_or(serde_json::Value::is_null)
+        {
             return Err(SurgeryError::NotFound(kind.config_key(), id.to_string()));
         }
         equipment.insert("mount".to_string(), Value::Null);
@@ -332,6 +347,7 @@ fn index_of(config: &Value, kind: EquipKind, id: &str) -> Option<usize> {
 
 /// Parse an `rp:{kind}:{id}` service key (the roster-derived config targets).
 /// The id may itself contain `:` — only the first two separators split.
+#[must_use]
 pub fn parse_service_key(service: &str) -> Option<(EquipKind, &str)> {
     let rest = service.strip_prefix("rp:")?;
     let (kind_key, id) = rest.split_once(':')?;
@@ -345,6 +361,7 @@ pub fn parse_service_key(service: &str) -> Option<(EquipKind, &str)> {
 /// Re-anchor rp's absolute validation-error paths (`equipment.cameras.2.gain`)
 /// onto the entry form's relative field names (`gain`). Errors outside the
 /// touched entry keep their absolute path (rendered in the form's banner).
+#[must_use]
 pub fn relativize_errors(
     errors: Vec<rusty_photon_config::actions::FieldError>,
     prefix: &str,

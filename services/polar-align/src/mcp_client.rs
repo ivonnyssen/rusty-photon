@@ -134,7 +134,7 @@ impl McpClient {
         debug!(url = %mcp_url, "connecting MCP client");
         let inner = RpMcpClient::connect(mcp_url, service_auth, ca_cert)
             .await
-            .map_err(|e| PolarAlignError::ToolCall(format!("MCP connect: {}", e)))?;
+            .map_err(|e| PolarAlignError::ToolCall(format!("MCP connect: {e}")))?;
         Ok(Self { inner })
     }
 
@@ -291,10 +291,10 @@ impl McpClient {
             .inner
             .call_tool(tool_name, args)
             .await
-            .map_err(|e| PolarAlignError::ToolCall(format!("{}: {}", tool_name, e)))?;
+            .map_err(|e| PolarAlignError::ToolCall(format!("{tool_name}: {e}")))?;
 
         serde_json::from_value(value).map_err(|e| {
-            PolarAlignError::ToolCall(format!("{}: failed to parse result: {}", tool_name, e))
+            PolarAlignError::ToolCall(format!("{tool_name}: failed to parse result: {e}"))
         })
     }
 }

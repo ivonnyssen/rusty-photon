@@ -148,6 +148,7 @@ fn remove(value: &mut Value, pointer: &str) -> bool {
 }
 
 /// Escape one JSON-pointer reference token (RFC 6901).
+#[must_use]
 pub fn escape_token(token: &str) -> String {
     token.replace('~', "~0").replace('/', "~1")
 }

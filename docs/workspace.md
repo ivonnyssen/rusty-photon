@@ -452,6 +452,12 @@ at boundaries that demand them (third-party SDKs, JSON-RPC payloads
 with a fixed wire schema, sentinel/dashboard JSON serialisation of
 already-elapsed magnitudes).
 
+**Construct with the coarsest constructor that fits.** `Duration::from_mins(2)`
+and `Duration::from_hours(1)`, not `from_secs(120)` and `from_secs(3600)` —
+clippy's `duration_suboptimal_units` enforces this once `nursery` is denied, and
+the coarse form is the one a reader can check at a glance. Both are stable since
+Rust 1.91, under the declared MSRV.
+
 **Precision floor: microseconds.** The system-wide precision contract
 is 1 µs. This is finer than what most observing workflows need but
 matches the actual minimum exposure of modern CMOS sensors (QHY174

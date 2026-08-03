@@ -1,6 +1,8 @@
-//! Step definitions for server_registration.feature
+//! Step definitions for `server_registration.feature`
 
-use crate::steps::infrastructure::*;
+use crate::steps::infrastructure::{
+    both_disabled_config, default_test_config, oc_only_config, switch_only_config,
+};
 use crate::world::PpbaWorld;
 use cucumber::{given, then, when};
 
@@ -56,7 +58,7 @@ async fn start_server(world: &mut PpbaWorld) {
 #[then("the switch endpoint should respond with 200")]
 async fn switch_endpoint_responds_200(world: &mut PpbaWorld) {
     let base = world.base_url.as_ref().expect("server not started");
-    let url = format!("{}/api/v1/switch/0/name", base);
+    let url = format!("{base}/api/v1/switch/0/name");
     let resp = reqwest::get(&url).await.expect("GET switch name failed");
     assert_eq!(
         resp.status().as_u16(),
@@ -68,7 +70,7 @@ async fn switch_endpoint_responds_200(world: &mut PpbaWorld) {
 #[then("the switch endpoint should not respond with 200")]
 async fn switch_endpoint_not_200(world: &mut PpbaWorld) {
     let base = world.base_url.as_ref().expect("server not started");
-    let url = format!("{}/api/v1/switch/0/name", base);
+    let url = format!("{base}/api/v1/switch/0/name");
     let resp = reqwest::get(&url).await.expect("GET switch name failed");
     assert_ne!(
         resp.status().as_u16(),
@@ -80,7 +82,7 @@ async fn switch_endpoint_not_200(world: &mut PpbaWorld) {
 #[then("the OC endpoint should respond with 200")]
 async fn oc_endpoint_responds_200(world: &mut PpbaWorld) {
     let base = world.base_url.as_ref().expect("server not started");
-    let url = format!("{}/api/v1/observingconditions/0/name", base);
+    let url = format!("{base}/api/v1/observingconditions/0/name");
     let resp = reqwest::get(&url).await.expect("GET OC name failed");
     assert_eq!(
         resp.status().as_u16(),
@@ -92,7 +94,7 @@ async fn oc_endpoint_responds_200(world: &mut PpbaWorld) {
 #[then("the OC endpoint should not respond with 200")]
 async fn oc_endpoint_not_200(world: &mut PpbaWorld) {
     let base = world.base_url.as_ref().expect("server not started");
-    let url = format!("{}/api/v1/observingconditions/0/name", base);
+    let url = format!("{base}/api/v1/observingconditions/0/name");
     let resp = reqwest::get(&url).await.expect("GET OC name failed");
     assert_ne!(resp.status().as_u16(), 200, "OC should not be registered");
 }
@@ -114,10 +116,9 @@ async fn server_reachable_on_bound_port(world: &mut PpbaWorld) {
     let handle = world.ppba.as_ref().expect("server not started");
     let port = handle.port;
     assert_ne!(port, 0, "OS should have assigned a real port");
-    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await;
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;
     assert!(
         stream.is_ok(),
-        "server should be reachable on bound port {}",
-        port
+        "server should be reachable on bound port {port}"
     );
 }

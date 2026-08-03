@@ -63,10 +63,10 @@ async fn user_disconnected(slot: &SessionSlot) -> bool {
 /// the goto complete. See the rationale in
 /// [`spawn_slew_completion_watcher`]: it guarantees that an Alpaca
 /// client polling `Slewing` shortly after issuing a slew will catch
-/// the `true` value at least once. Empirically ConformU's
+/// the `true` value at least once. Empirically `ConformU`'s
 /// AbortSlew-test wait between starting the slew and reading
 /// `Slewing` runs in the 1.0–1.5 s range, so the floor needs to be
-/// noticeably above that — 2 s is comfortable. A real GTi slew of
+/// noticeably above that — 2 s is comfortable. A real `GTi` slew of
 /// any meaningful distance takes well over 2 s, so this floor is
 /// invisible on hardware.
 const MIN_SLEW_DWELL: Duration = Duration::from_secs(2);
@@ -307,12 +307,11 @@ async fn run_completion_watcher<C, F>(
         // exhaustion it also issues a best-effort `:L` on both
         // axes so the motor isn't left commutating with no
         // observer.
-        let snap = match watcher_poll_with_retry(&manager, &session, context).await {
-            Ok(s) => s,
-            Err(_) => {
-                slew_in_progress.store(false, Ordering::SeqCst);
-                break;
-            }
+        let snap = if let Ok(s) = watcher_poll_with_retry(&manager, &session, context).await {
+            s
+        } else {
+            slew_in_progress.store(false, Ordering::SeqCst);
+            break;
         };
         // Sky-Watcher spec §5 reports `Blocked` in the `:f` status
         // when the motor is stepping but the encoder isn't
@@ -549,8 +548,8 @@ async fn slew_completion_step(
                 // undoing the flip back to the pre-flip side.
                 let pre_flip_side = pre_flip_side_for_latitude(config.site_latitude_deg);
                 let target_is_flipped = target_pier_side
-                    .filter(|s| *s != pre_flip_side && *s != PierSide::Unknown)
-                    .is_some();
+                    .as_ref()
+                    .is_some_and(|s| *s != pre_flip_side && *s != PierSide::Unknown);
                 let (new_ra_ticks, new_dec_ticks) = if target_is_flipped {
                     let lst_proj = Lst::new(lst.value() + projection.as_secs_f64() / 3600.0);
                     target_encoder_flipped(
@@ -786,7 +785,7 @@ pub(super) async fn spawn_park_completion_watcher(
     Ok(())
 }
 
-/// Spawn the PulseGuide watcher.
+/// Spawn the `PulseGuide` watcher.
 ///
 /// Sleeps for `duration`, then restores prior state on the targeted
 /// axis:

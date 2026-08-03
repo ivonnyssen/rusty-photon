@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! BDD test world for rp service
 //!
-//! Manages the lifecycle of external processes (OmniSim, rp) and
+//! Manages the lifecycle of external processes (`OmniSim`, rp) and
 //! in-process test doubles (webhook receiver, test orchestrator)
 //! needed for integration testing.
 //!
@@ -29,7 +29,7 @@ use tokio::sync::RwLock;
 #[debug("RpWorld {{ .. }}")]
 pub struct RpWorld {
     // --- Infrastructure handles ---
-    /// Running OmniSim process
+    /// Running `OmniSim` process
     pub omnisim: Option<OmniSimHandle>,
     /// Running rp process
     pub rp: Option<ServiceHandle>,
@@ -54,7 +54,7 @@ pub struct RpWorld {
     pub cameras: Vec<CameraConfig>,
     /// Filter wheel configs accumulated via Given steps
     pub filter_wheels: Vec<FilterWheelConfig>,
-    /// CoverCalibrator configs accumulated via Given steps
+    /// `CoverCalibrator` configs accumulated via Given steps
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     /// Focuser configs accumulated via Given steps
     pub focusers: Vec<FocuserConfig>,
@@ -87,21 +87,21 @@ pub struct RpWorld {
     pub site: Option<(f64, f64)>,
     /// Safety monitors accumulated via Given steps (safety.feature).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
-    /// Switches accumulated via Given steps (equipment_connectivity.feature).
+    /// Switches accumulated via Given steps (`equipment_connectivity.feature`).
     pub switches: Vec<SwitchConfig>,
-    /// Rotators accumulated via Given steps (equipment_connectivity.feature).
+    /// Rotators accumulated via Given steps (`equipment_connectivity.feature`).
     pub rotators: Vec<RotatorConfig>,
-    /// ObservingConditions devices accumulated via Given steps
-    /// (equipment_connectivity.feature).
+    /// `ObservingConditions` devices accumulated via Given steps
+    /// (`equipment_connectivity.feature`).
     pub observing_conditions: Vec<ObservingConditionsConfig>,
-    /// Domes accumulated via Given steps (equipment_connectivity.feature).
+    /// Domes accumulated via Given steps (`equipment_connectivity.feature`).
     pub domes: Vec<DomeConfig>,
     /// Override rp's `safety.poll_interval`; safety scenarios pin this
     /// short so transitions are detected in test time.
     pub safety_poll_interval: Option<Duration>,
     /// Override rp's `cooling` timing knobs; the camera-cooling
     /// scenarios pin these short so a cooldown pass completes in
-    /// test time (camera_cooling.feature).
+    /// test time (`camera_cooling.feature`).
     pub cooling_overrides: Option<bdd_infra::rp_harness::CoolingOverrides>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
@@ -109,7 +109,7 @@ pub struct RpWorld {
     // --- Webhook receiver state ---
     /// Events collected by the test webhook receiver
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    /// Webhook acknowledgment config (estimated_duration, max_duration)
+    /// Webhook acknowledgment config (`estimated_duration`, `max_duration`)
     pub webhook_ack_config: Option<(Duration, Duration)>,
 
     // --- Orchestrator state ---
@@ -122,33 +122,33 @@ pub struct RpWorld {
     pub orchestrator_registered_config: Option<Value>,
 
     // --- MCP client state ---
-    /// Last captured image path (for compute_image_stats chaining)
+    /// Last captured image path (for `compute_image_stats` chaining)
     pub last_image_path: Option<String>,
-    /// Last captured document id (for compute_image_stats chaining)
+    /// Last captured document id (for `compute_image_stats` chaining)
     pub last_document_id: Option<String>,
     /// Last image stats result
     pub last_image_stats: Option<Value>,
-    /// Last measure_basic result
+    /// Last `measure_basic` result
     pub last_measure_basic_result: Option<Value>,
-    /// Last estimate_background result
+    /// Last `estimate_background` result
     pub last_estimate_background_result: Option<Value>,
-    /// Last detect_stars result
+    /// Last `detect_stars` result
     pub last_detect_stars_result: Option<Value>,
-    /// Last measure_stars result
+    /// Last `measure_stars` result
     pub last_measure_stars_result: Option<Value>,
-    /// Last compute_snr result
+    /// Last `compute_snr` result
     pub last_compute_snr_result: Option<Value>,
-    /// Last auto_focus result
+    /// Last `auto_focus` result
     pub last_auto_focus_result: Option<Value>,
-    /// Last successful rotator-tool result (move_rotator,
-    /// get_rotator_position)
+    /// Last successful rotator-tool result (`move_rotator`,
+    /// `get_rotator_position`)
     pub last_rotator_result: Option<Value>,
-    /// Last plate_solve result
+    /// Last `plate_solve` result
     pub last_plate_solve_result: Option<Value>,
-    /// Last successful guider-tool result (start_guiding, dither,
-    /// get_guiding_stats, ...)
+    /// Last successful guider-tool result (`start_guiding`, dither,
+    /// `get_guiding_stats`, ...)
     pub last_guider_result: Option<Value>,
-    /// Last center_on_target result
+    /// Last `center_on_target` result
     pub last_center_on_target_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
     pub last_exposure_document: Option<Value>,
@@ -166,17 +166,17 @@ pub struct RpWorld {
     pub last_tool_result: Option<Result<Value, String>>,
     /// In-flight tool calls issued on their own MCP session by the
     /// "a second MCP client starts ... in the background" steps
-    /// (motion_gate.feature), as `(tool_name, handle)` pairs. Every
+    /// (`motion_gate.feature`), as `(tool_name, handle)` pairs. Every
     /// scenario that spawns one must join it via "the background
     /// {tool} call should succeed" so a stray capture cannot hold
     /// the shared simulator into the next scenario.
     pub background_calls: Vec<(String, tokio::task::JoinHandle<Result<Value, String>>)>,
     /// Last tool list result
     pub last_tool_list: Option<Vec<String>>,
-    /// Current filter from get_filter
+    /// Current filter from `get_filter`
     pub current_filter: Option<String>,
     /// Slug of the most recently added/fetched target (Target Store
-    /// scenarios — target_store_*.feature, *(planned, P1)*), so a
+    /// scenarios — `target_store`_*.feature, *(planned, P1)*), so a
     /// later step can act on "the target I just added" without the
     /// feature file repeating the slug.
     pub last_target_slug: Option<String>,
@@ -217,7 +217,7 @@ pub struct RpWorld {
     /// When `true`, forces `session.file_naming_pattern` to `null` in
     /// the emitted config, overriding `RpConfigBuilder::build`'s
     /// unconditional default — for the scenario exercising `capture`'s
-    /// "frame_type requires session.file_naming_pattern to be
+    /// "`frame_type` requires `session.file_naming_pattern` to be
     /// configured" error path (`capture_target_linkage.feature`).
     pub clear_file_naming_pattern: bool,
     /// Error from the most recent `ServiceHandle::try_start` call
@@ -273,8 +273,8 @@ pub struct RpWorld {
     pub last_document_response_status: Option<u16>,
     /// Last JSON body from `GET /api/documents/{id}`.
     pub last_document_response_body: Option<Value>,
-    /// Named document_ids the test wants to refer back to later (e.g.
-    /// "first" → the document_id from the first capture). Used by
+    /// Named `document_ids` the test wants to refer back to later (e.g.
+    /// "first" → the `document_id` from the first capture). Used by
     /// the eviction and cross-restart scenarios that need to reference
     /// a doc captured several steps ago.
     pub remembered_document_ids: std::collections::HashMap<String, String>,
@@ -286,7 +286,7 @@ pub struct RpWorld {
     pub last_mcp_host_status: Option<u16>,
 
     // --- Config REST test state (config_rest.feature) ---
-    /// TempDir holding the scenario's private rp config file (and its data
+    /// `TempDir` holding the scenario's private rp config file (and its data
     /// directory). Held so the file survives until scenario teardown.
     pub config_rest_dir: Option<tempfile::TempDir>,
     /// Path of the config file rp was started from; `PUT /api/config`
@@ -319,7 +319,7 @@ pub struct RpWorld {
     /// directory tree on drop, preventing accumulation of stale
     /// cache artefacts across scenarios / CI runs.
     pub sky_survey_camera_cache: Option<tempfile::TempDir>,
-    /// In-process SkyView stub serving cutouts to `sky-survey-camera`.
+    /// In-process `SkyView` stub serving cutouts to `sky-survey-camera`.
     /// Held on the world so the axum task isn't cancelled mid-scenario.
     pub sky_view_stub: Option<SkyViewStub>,
 }
@@ -370,8 +370,8 @@ impl RpWorld {
         )
     }
 
-    /// The base URL for the OmniSim Alpaca simulator.
-    /// Panics if OmniSim has not been started yet.
+    /// The base URL for the `OmniSim` Alpaca simulator.
+    /// Panics if `OmniSim` has not been started yet.
     pub fn omnisim_url(&self) -> String {
         self.omnisim
             .as_ref()
@@ -382,10 +382,10 @@ impl RpWorld {
 
     /// The base URL for the rp REST API
     pub fn rp_url(&self) -> String {
-        self.rp
-            .as_ref()
-            .map(|h| h.base_url.clone())
-            .unwrap_or_else(|| "http://localhost:11115".to_string())
+        self.rp.as_ref().map_or_else(
+            || "http://localhost:11115".to_string(),
+            |h| h.base_url.clone(),
+        )
     }
 
     /// The MCP endpoint URL for rp
@@ -400,7 +400,7 @@ impl RpWorld {
     }
 
     /// Get the persistent MCP client, panicking if not connected.
-    pub fn mcp(&self) -> &McpTestClient {
+    pub const fn mcp(&self) -> &McpTestClient {
         self.mcp_client
             .as_ref()
             .expect("MCP client not connected — add 'Given an MCP client connected to rp' step")

@@ -56,6 +56,7 @@ pub struct GaussianFit2D {
 /// initial above-background amplitude is `initial_amplitude − initial_background`.
 /// `initial_sigma` seeds σx and σy (use the smoothing kernel σ from
 /// detection — typically `1.0` — or a per-image seeing estimate).
+#[must_use]
 pub fn fit_2d_gaussian<T: Pixel>(
     view: ArrayView2<T>,
     centroid_x: f64,
@@ -242,8 +243,8 @@ mod tests {
         // sigmas can swap based on convergence; check both axes match the input set.
         let smax = fit.sigma_x.max(fit.sigma_y);
         let smin = fit.sigma_x.min(fit.sigma_y);
-        assert!((smax - 3.0).abs() < 0.15, "smax = {}", smax);
-        assert!((smin - 1.5).abs() < 0.15, "smin = {}", smin);
+        assert!((smax - 3.0).abs() < 0.15, "smax = {smax}");
+        assert!((smin - 1.5).abs() < 0.15, "smin = {smin}");
 
         // Eccentricity ≈ √(1 − (1.5/3.0)²) = √0.75 ≈ 0.866
         assert!(

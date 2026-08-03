@@ -13,7 +13,7 @@ use crate::world::RpWorld;
 /// table into the JSON shape `add_target`/`set_goals` accept for their
 /// `goals[]` parameter. `pub(crate)` so `target_store_planner_steps.rs`
 /// reuses it for the planner-feature always-visible-with-goals seeds.
-pub(crate) fn goals_from_table(step: &Step) -> Vec<Value> {
+pub fn goals_from_table(step: &Step) -> Vec<Value> {
     let table = step
         .table
         .as_ref()

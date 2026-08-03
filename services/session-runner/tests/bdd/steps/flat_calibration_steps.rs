@@ -1,6 +1,6 @@
 //! BDD step definitions for the calibrator-flats workflow-document port.
 //!
-//! The scenarios spawn three processes: OmniSim (Alpaca simulator), rp
+//! The scenarios spawn three processes: `OmniSim` (Alpaca simulator), rp
 //! (equipment gateway + session orchestrator), and session-runner (the
 //! generic document engine under test). The process topology lives in
 //! [`crate::steps::infrastructure`]; this file holds only the Gherkin
@@ -102,7 +102,7 @@ async fn workflow_runs_to_completion(world: &mut SessionRunnerWorld) {
     // open cover (~5s). Allow 120s total, matching the Rust
     // calibrator-flats suite this port must stay equivalent to.
     assert!(
-        world.wait_for_session_idle(Duration::from_secs(120)).await,
+        world.wait_for_session_idle(Duration::from_mins(2)).await,
         "the calibrator flats document did not complete within 120s \
          (expected the session to return to idle)"
     );
@@ -131,8 +131,7 @@ async fn session_status_is(world: &mut SessionRunnerWorld, expected: String) {
 
     assert_eq!(
         actual, expected,
-        "expected session status '{}' but got '{}'",
-        expected, actual
+        "expected session status '{expected}' but got '{actual}'"
     );
 }
 
@@ -144,9 +143,7 @@ async fn should_receive_at_least_n_events(
 ) {
     assert!(
         world.wait_for_events(&event_type, count).await,
-        "expected at least {} '{}' event(s) within timeout",
-        count,
-        event_type
+        "expected at least {count} '{event_type}' event(s) within timeout"
     );
 }
 
@@ -166,7 +163,7 @@ async fn cover_should_be(_world: &mut SessionRunnerWorld, expected: String) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Register the shipped calibrator_flats document as the orchestrator's
+/// Register the shipped `calibrator_flats` document as the orchestrator's
 /// workflow. Tolerance `1.0` and `max_iterations = 1` mirror the Rust
 /// calibrator-flats suite: these scenarios verify end-to-end plumbing,
 /// not convergence math (the engine's unit tests own that).

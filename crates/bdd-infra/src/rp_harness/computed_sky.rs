@@ -51,6 +51,7 @@ impl ComputedSky {
     /// the site longitude is `(RA☉ − GMST)·15 + 180`, normalised to
     /// Alpaca/ASCOM's ±180 convention. Latitude 0 puts the Sun's lower
     /// culmination at −90° + |δ☉| — never brighter than −66°.
+    #[must_use]
     pub fn night_at(now: DateTime<Utc>) -> Self {
         Self::at_solar_offset(now, 180.0)
     }
@@ -63,6 +64,7 @@ impl ComputedSky {
     /// solstices) and climbs toward its noon culmination — the
     /// planner's dawn-side trend check reads it as "the night is
     /// over" at any moment of any date.
+    #[must_use]
     pub fn morning_at(now: DateTime<Utc>) -> Self {
         Self::at_solar_offset(now, -45.0)
     }
@@ -87,23 +89,27 @@ impl ComputedSky {
         Self { site, now, eph }
     }
 
-    pub fn latitude_degrees(&self) -> f64 {
+    #[must_use]
+    pub const fn latitude_degrees(&self) -> f64 {
         self.site.latitude_degrees
     }
 
-    pub fn longitude_degrees(&self) -> f64 {
+    #[must_use]
+    pub const fn longitude_degrees(&self) -> f64 {
         self.site.longitude_degrees
     }
 
     /// The Sun's altitude at the site at `now` — far below −18° for a
     /// night sky, well risen for a morning sky; exposed so tests can
     /// assert the construction.
+    #[must_use]
     pub fn sun_altitude_degrees(&self) -> f64 {
         self.sun_altitude_degrees_in(0)
     }
 
     /// The Sun's altitude at the site `seconds` after `now` — the
     /// morning-sky tests assert the climb with it.
+    #[must_use]
     pub fn sun_altitude_degrees_in(&self, seconds: i64) -> f64 {
         let at = self.now + chrono::Duration::seconds(seconds);
         self.eph
@@ -117,6 +123,7 @@ impl ComputedSky {
     /// positive = west / descending — rp's `signed_hour_angle`
     /// convention). Its altitude is 90° − 15°·|HA| and it sinks (for
     /// positive HA) at a constant ≈ 0.25°/minute.
+    #[must_use]
     pub fn target_at_hour_angle(&self, ha_hours: f64) -> IcrsCoord {
         let lst = self.eph.sidereal_time(&self.site, self.now).lst_hours;
         IcrsCoord {
@@ -129,6 +136,7 @@ impl ComputedSky {
     /// same alt/az transform (refraction included) rp's planner uses.
     /// Setting this as a descending target's `min_altitude_degrees`
     /// makes the planner drop it at exactly that moment.
+    #[must_use]
     pub fn altitude_degrees_in(&self, target: IcrsCoord, seconds: i64) -> f64 {
         let at = self.now + chrono::Duration::seconds(seconds);
         self.eph

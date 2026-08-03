@@ -3,7 +3,7 @@
 //!
 //! The validation scenarios reuse the plain-REST config machinery from
 //! `config_rest_steps.rs` (GET / PUT `/api/config`, apply-status and
-//! error-path assertions); the capture scenarios reuse the OmniSim +
+//! error-path assertions); the capture scenarios reuse the `OmniSim` +
 //! MCP steps from `tool_steps.rs` and the document lookup steps from
 //! `document_http_api_steps.rs`.
 
@@ -259,7 +259,7 @@ fn document_optics_pixel_scale_consistent(world: &mut RpWorld) {
     }
 }
 
-fn document_body(world: &RpWorld) -> &Value {
+const fn document_body(world: &RpWorld) -> &Value {
     world
         .last_document_response_body
         .as_ref()

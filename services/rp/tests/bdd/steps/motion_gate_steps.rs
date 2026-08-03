@@ -10,7 +10,7 @@
 //! background {tool} call should succeed" so a stray capture cannot
 //! hold the shared simulator into the next scenario. Event waits and
 //! `event_seq`-based ordering assertions live in `event_steps.rs`;
-//! the stub guider's `settle_delay` (guider_stub.rs) is what holds a
+//! the stub guider's `settle_delay` (`guider_stub.rs`) is what holds a
 //! dither in flight long enough for a concurrent capture to contend.
 
 use std::time::Duration;
@@ -150,14 +150,12 @@ async fn background_call_succeeds(world: &mut RpWorld, tool: String) {
     // outlive the scenario and block rp's graceful shutdown. The
     // handle is already out of `world.background_calls`, so the
     // after-hook cannot abort it for us.
-    let result = match tokio::time::timeout(Duration::from_secs(60), &mut handle).await {
-        Ok(join_result) => {
+    let result =
+        if let Ok(join_result) = tokio::time::timeout(Duration::from_mins(1), &mut handle).await {
             join_result.unwrap_or_else(|e| panic!("background '{tool}' task panicked: {e}"))
-        }
-        Err(_) => {
+        } else {
             handle.abort();
             panic!("background '{tool}' call did not finish within 60s");
-        }
-    };
+        };
     result.unwrap_or_else(|e| panic!("background '{tool}' call failed: {e}"));
 }

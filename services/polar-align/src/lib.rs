@@ -23,10 +23,12 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { config: None }
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: PolarAlignConfig) -> Self {
         self.config = Some(config);
         self
@@ -65,7 +67,7 @@ impl ServerBuilder {
         // and the only stdout consumer (bdd-infra's port parser) never runs
         // services with --service.
         if !rusty_photon_service_lifecycle::is_scm_service() {
-            println!("Bound polar-align server bound_addr={}", local_addr);
+            println!("Bound polar-align server bound_addr={local_addr}");
         }
         info!("polar-align service bound on {}", local_addr);
 
@@ -93,7 +95,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -104,7 +106,7 @@ impl BoundServer {
             Some(ref tls) => {
                 rusty_photon_tls::server::serve_tls(self.listener, self.router, tls, shutdown)
                     .await
-                    .map_err(|e| crate::error::PolarAlignError::Server(e.to_string()))?
+                    .map_err(|e| crate::error::PolarAlignError::Server(e.to_string()))?;
             }
             None => axum::serve(self.listener, self.router)
                 .with_graceful_shutdown(shutdown)

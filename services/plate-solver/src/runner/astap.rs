@@ -25,7 +25,8 @@ pub struct AstapCliRunner {
 }
 
 impl AstapCliRunner {
-    pub fn new(binary_path: PathBuf, db_directory: PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(binary_path: PathBuf, db_directory: PathBuf) -> Self {
         Self {
             binary_path,
             db_directory,
@@ -45,6 +46,7 @@ impl AstapCliRunner {
 
     /// Build the `Command` argv from a `SolveRequest` without spawning.
     /// Pure function; exercised by argv-mapping unit tests.
+    #[must_use]
     pub fn build_command(&self, req: &SolveRequest) -> Command {
         let mut cmd = Command::new(&self.binary_path);
         cmd.arg("-f").arg(&req.fits_path);

@@ -4,14 +4,14 @@ use crate::world::SkySurveyCameraWorld;
 use cucumber::{given, then, when};
 
 #[given("a sky-survey-camera with default optics")]
-fn default_optics(_world: &mut SkySurveyCameraWorld) {
+const fn default_optics(_world: &mut SkySurveyCameraWorld) {
     // Defaults are baked into `World::build_config_json`. This step
     // exists to anchor the scenario's first Given clause; concrete
     // tweaks happen in subsequent Givens.
 }
 
 #[given("a writable cache directory")]
-fn writable_cache_dir(_world: &mut SkySurveyCameraWorld) {
+const fn writable_cache_dir(_world: &mut SkySurveyCameraWorld) {
     // No-op: the default cache_dir under `temp_dir/cache` is writable.
     // This step is for documentation in the feature file.
 }

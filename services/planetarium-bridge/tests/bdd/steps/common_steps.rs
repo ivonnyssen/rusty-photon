@@ -21,12 +21,12 @@ fn rp_unreachable(world: &mut BridgeWorld) {
 }
 
 #[given(expr = "the reported-position altitude floor is {float} degrees")]
-fn floor_degrees(world: &mut BridgeWorld, floor: f64) {
+const fn floor_degrees(world: &mut BridgeWorld, floor: f64) {
     world.floor = FloorSetting::Degrees(floor);
 }
 
 #[given("the reported-position altitude floor is disabled")]
-fn floor_disabled(world: &mut BridgeWorld) {
+const fn floor_disabled(world: &mut BridgeWorld) {
     world.floor = FloorSetting::Null;
 }
 
@@ -41,7 +41,7 @@ fn slew_duration(world: &mut BridgeWorld, duration: String) {
 }
 
 #[given(expr = "the spool is bounded to {int} entries")]
-fn spool_bounded(world: &mut BridgeWorld, max_entries: u64) {
+const fn spool_bounded(world: &mut BridgeWorld, max_entries: u64) {
     world.spool_max_entries = Some(max_entries);
 }
 
@@ -51,7 +51,7 @@ fn replay_backoff(world: &mut BridgeWorld, backoff: String) {
 }
 
 #[given(expr = "the configured site is latitude {float} longitude {float}")]
-fn configured_site(world: &mut BridgeWorld, latitude: f64, longitude: f64) {
+const fn configured_site(world: &mut BridgeWorld, latitude: f64, longitude: f64) {
     world.site_latitude_deg = Some(latitude);
     world.site_longitude_deg = Some(longitude);
 }

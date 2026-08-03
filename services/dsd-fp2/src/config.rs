@@ -48,7 +48,7 @@ pub struct SerialConfig {
     pub timeout: Duration,
 }
 
-/// CoverCalibrator device configuration.
+/// `CoverCalibrator` device configuration.
 ///
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
@@ -56,7 +56,7 @@ pub struct SerialConfig {
 #[serde(deny_unknown_fields)]
 pub struct CoverCalibratorConfig {
     pub name: String,
-    /// Stable ASCOM `UniqueID`. Defaults to empty: a spec-compliant UUIDv4 is
+    /// Stable ASCOM `UniqueID`. Defaults to empty: a spec-compliant `UUIDv4` is
     /// minted on first run by `rusty_photon_config::materialize_identity` (see
     /// `main.rs`) and persisted to the config file, never overwritten.
     #[serde(default)]
@@ -79,27 +79,27 @@ pub struct CoverCalibratorConfig {
     pub min_brightness: u32,
 }
 
-fn default_baud_rate() -> u32 {
+const fn default_baud_rate() -> u32 {
     115_200
 }
 
-fn default_polling_interval() -> Duration {
+const fn default_polling_interval() -> Duration {
     Duration::from_millis(500)
 }
 
-fn default_timeout() -> Duration {
+const fn default_timeout() -> Duration {
     Duration::from_secs(3)
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_max_brightness() -> u32 {
+const fn default_max_brightness() -> u32 {
     4096
 }
 
-fn default_min_brightness() -> u32 {
+const fn default_min_brightness() -> u32 {
     250
 }
 
@@ -159,6 +159,7 @@ pub struct CliOverrides {
 impl CliOverrides {
     /// Dotted JSON paths currently pinned by an active override. Reported by
     /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
         if self.serial_port.is_some() {
@@ -373,7 +374,7 @@ mod tests {
         let c = Config::default();
         let cloned = c.clone();
         assert_eq!(cloned.server.port, c.server.port);
-        let dbg = format!("{:?}", c);
+        let dbg = format!("{c:?}");
         assert!(dbg.contains("Config"));
         assert!(dbg.contains("CoverCalibratorConfig"));
     }

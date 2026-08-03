@@ -1,4 +1,4 @@
-//! Integration tests for ServiceHandle using the test_service binary.
+//! Integration tests for `ServiceHandle` using the `test_service` binary.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,12 +10,12 @@
 use bdd_infra::ServiceHandle;
 use std::sync::Once;
 
-/// Point `TEST_SERVICE_BINARY` at the test_service binary exactly once.
+/// Point `TEST_SERVICE_BINARY` at the `test_service` binary exactly once.
 ///
 /// Under Cargo, `option_env!("CARGO_BIN_EXE_test_service")` resolves at
-/// compile time to the path of the test_service binary that Cargo builds
+/// compile time to the path of the `test_service` binary that Cargo builds
 /// alongside these integration tests. Under Bazel it may not be defined at
-/// compile time (depending on rules_rust's data-dep propagation) — that's
+/// compile time (depending on `rules_rust`'s data-dep propagation) — that's
 /// why we use `option_env!` rather than `env!`. Bazel instead sets
 /// `TEST_SERVICE_BINARY` to the runfiles path of `:test_service` via the
 /// `rust_test.env` attribute, so the init is a no-op there.
@@ -36,7 +36,7 @@ fn empty_config() -> tempfile::NamedTempFile {
     tempfile::NamedTempFile::new().unwrap()
 }
 
-/// Write a config file containing "fail" to trigger test_service exit.
+/// Write a config file containing "fail" to trigger `test_service` exit.
 fn fail_config() -> tempfile::NamedTempFile {
     let file = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(file.path(), "fail").unwrap();
@@ -140,8 +140,7 @@ async fn test_try_start_returns_error_when_binary_exits_without_binding() {
     let err = result.unwrap_err();
     assert!(
         err.contains("exited without binding"),
-        "unexpected error: {}",
-        err
+        "unexpected error: {err}"
     );
 }
 
@@ -161,8 +160,8 @@ async fn test_drop_cleans_up_process() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // The port should no longer be in use (connection should be refused)
-    let result = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await;
-    assert!(result.is_err(), "port {} should be free after drop", port);
+    let result = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;
+    assert!(result.is_err(), "port {port} should be free after drop");
 }
 
 #[tokio::test]
@@ -200,7 +199,7 @@ fn probe_observed_broken_pipe(marker: &std::path::Path) -> bool {
 /// with "[tracing-subscriber] Unable to write an event ... Broken pipe".
 ///
 /// `stop()` must keep draining the child's stdout until the child has exited.
-/// The probe child (test_service `--epipe-probe`) installs a SIGTERM handler and
+/// The probe child (`test_service` `--epipe-probe`) installs a SIGTERM handler and
 /// keeps writing to stdout through its shutdown window; if `stop()` aborts the
 /// drain *before* the child exits (the old bug), those writes hit a broken pipe
 /// and the child records it. A correct `stop()` leaves the marker empty.
@@ -293,14 +292,14 @@ async fn test_stop_does_not_break_child_stderr_pipe() {
 /// `stop()` must leave the service's own shutdown path *run*, not merely leave
 /// the process dead.
 ///
-/// The probe child (test_service `--graceful-probe`) shuts down through the
+/// The probe child (`test_service` `--graceful-probe`) shuts down through the
 /// real `ServiceRunner` and writes `GRACEFUL` to the marker from inside its
 /// run closure, after the shutdown token fires. If the platform's stop event
 /// is not handled, the OS kills the process instead and the marker stays
 /// empty.
 ///
 /// This is the guard `test_stop_completes_via_graceful_signal` below cannot
-/// be: an unhandled Windows CTRL_BREAK also terminates the child *promptly*,
+/// be: an unhandled Windows `CTRL_BREAK` also terminates the child *promptly*,
 /// so a timing budget passes either way. Only observing an effect the
 /// shutdown path itself produces can tell the two apart — hence a marker
 /// written by the child, and hence no platform gate on this test.
@@ -355,8 +354,7 @@ async fn test_stop_completes_via_graceful_signal() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < std::time::Duration::from_millis(2000),
-        "stop() took {:?}, expected < 2s — graceful shutdown signal may not be working",
-        elapsed
+        elapsed < std::time::Duration::from_secs(2),
+        "stop() took {elapsed:?}, expected < 2s — graceful shutdown signal may not be working"
     );
 }

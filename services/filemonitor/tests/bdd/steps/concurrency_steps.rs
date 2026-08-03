@@ -83,7 +83,7 @@ async fn concurrent_mixed_operations(world: &mut FilemonitorWorld, task_count: u
 }
 
 #[then("no panics should occur")]
-fn no_panics(_world: &mut FilemonitorWorld) {
+const fn no_panics(_world: &mut FilemonitorWorld) {
     // If we got here, no panics occurred during concurrent operations
 }
 

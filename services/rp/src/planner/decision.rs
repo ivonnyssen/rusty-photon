@@ -337,6 +337,7 @@ pub fn next_target(
 /// Hour angle of `target_ra_hours` at `lst_hours`, normalised to
 /// the half-open interval `(-12, 12]` (negative = east of meridian,
 /// positive = west).
+#[must_use]
 pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
     let mut ha = (lst_hours - target_ra_hours).rem_euclid(24.0);
     if ha > 12.0 {
@@ -408,7 +409,7 @@ mod tests {
     /// hitting real ERFA. The closures fix the answers per-target.
     #[derive(Default)]
     struct MockEphemeris {
-        /// (ra_hours, dec_degrees) → altitude_degrees
+        /// (`ra_hours`, `dec_degrees`) → `altitude_degrees`
         alt_overrides: Vec<((f64, f64), f64)>,
         /// Sun altitude at the tests' `now()` epoch.
         sun_alt: f64,
@@ -1190,7 +1191,7 @@ mod tests {
         let goal = rp_targets::AcquisitionGoal {
             filter: "L".to_string(),
             binning: rp_targets::Binning { x: 1, y: 1 },
-            exposure_duration: std::time::Duration::from_secs(300),
+            exposure_duration: std::time::Duration::from_mins(5),
             desired_count: 20,
         };
         let t = store_target("ngc7000", None, vec![goal]);

@@ -108,7 +108,7 @@ async fn stub_endpoint_unique_id(world: &mut DoctorWorld, unique_id: String) {
 
 /// rp's mount wired at the stub — the fake-mount probe's subject. The
 /// stub's ephemeral port matches no catalog service, so the static
-/// loopback join resolves to nothing and the UniqueID probe leg runs.
+/// loopback join resolves to nothing and the `UniqueID` probe leg runs.
 #[given(
     expr = "a config file {string} whose equipment.mount.alpaca_url points at the stub endpoint"
 )]

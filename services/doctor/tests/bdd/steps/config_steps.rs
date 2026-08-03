@@ -10,7 +10,7 @@ fn docstring(step: &Step) -> &str {
 }
 
 #[given("an empty config directory")]
-fn empty_config_dir(_world: &mut DoctorWorld) {}
+const fn empty_config_dir(_world: &mut DoctorWorld) {}
 
 #[given(expr = "a config directory with a valid {string} on port {int}")]
 fn valid_config(world: &mut DoctorWorld, name: String, port: u16) {

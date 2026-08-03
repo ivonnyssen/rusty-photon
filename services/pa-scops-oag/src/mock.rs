@@ -95,7 +95,7 @@ impl MockState {
 
     /// Advance the simulated move one poll's worth, snapping to target when
     /// within [`STEP_PER_POLL`]. Called on each `A` read.
-    fn advance_movement(&mut self) {
+    const fn advance_movement(&mut self) {
         if !self.is_moving {
             return;
         }

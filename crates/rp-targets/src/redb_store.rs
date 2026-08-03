@@ -356,7 +356,7 @@ mod tests {
         let goals = vec![AcquisitionGoal {
             filter: "Ha".to_string(),
             binning: crate::Binning { x: 1, y: 1 },
-            exposure_duration: std::time::Duration::from_secs(300),
+            exposure_duration: std::time::Duration::from_mins(5),
             desired_count: 20,
         }];
         store

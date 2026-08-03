@@ -56,7 +56,7 @@ where
 /// UT of upper transit on the given UTC date. Closed-form via LST,
 /// refined by one Newton step against the actual computed LST at the
 /// candidate time.
-pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTime<Utc>> {
+pub fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTime<Utc>> {
     let start = date.and_time(NaiveTime::MIN).and_utc();
     let lst0 = lst_hours(site, &time_jds(start));
     // NaN propagates through `rem_euclid` but `as i64` saturates NaN
@@ -86,7 +86,7 @@ pub(crate) fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option
 }
 
 /// Rise/set times above `min_alt_deg`.
-pub(crate) fn rise_set(
+pub fn rise_set(
     _eph: &impl crate::Ephemeris, // unused for v1; reserved for future
     site: &Site,
     target: IcrsCoord,
@@ -128,11 +128,7 @@ pub(crate) fn rise_set(
 /// Time until the target next reaches the meridian (HA = 0). Side of
 /// pier is ignored in v1 — the convenience tool's caller treats the
 /// returned duration as "time until a flip might be required".
-pub(crate) fn meridian_flip(
-    site: &Site,
-    target: IcrsCoord,
-    time: DateTime<Utc>,
-) -> Option<Duration> {
+pub fn meridian_flip(site: &Site, target: IcrsCoord, time: DateTime<Utc>) -> Option<Duration> {
     let lst = lst_hours(site, &time_jds(time));
     if !lst.is_finite() {
         return None;
@@ -152,7 +148,7 @@ pub(crate) fn meridian_flip(
 /// the Sun crosses the threshold both going down (evening) and going
 /// up (morning); `None` for either bound at high latitudes where the
 /// Sun never crosses the threshold.
-pub(crate) fn twilight(
+pub fn twilight(
     eph: &impl crate::Ephemeris,
     site: &Site,
     date: NaiveDate,
@@ -304,7 +300,7 @@ mod tests {
         match (w.begin_utc, w.end_utc) {
             (None, None) => {}
             (Some(b), Some(e)) => assert!(e > b),
-            (b, e) => panic!("inconsistent twilight: begin={:?} end={:?}", b, e),
+            (b, e) => panic!("inconsistent twilight: begin={b:?} end={e:?}"),
         }
     }
 

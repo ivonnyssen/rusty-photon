@@ -1,11 +1,11 @@
-//! ConformU compliance test for the zwo-camera Camera driver.
+//! `ConformU` compliance test for the zwo-camera Camera driver.
 //!
 //! Launches the production binary (built with `--features conformu`, which pulls
 //! in the `simulation` backend so the SDK yields one `ASI2600MM-Pro-Simulated`
-//! camera) and runs the official ASCOM ConformU validator against it.
+//! camera) and runs the official ASCOM `ConformU` validator against it.
 //!
 //! Gated behind the `conformu` feature. When `CONFORMU_PATH` is unset the run is
-//! `Skipped` (so the test passes without ConformU installed); CI sets it.
+//! `Skipped` (so the test passes without `ConformU` installed); CI sets it.
 #![cfg(feature = "conformu")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // The serialization mutex is intentionally held across the ConformU awaits.
@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use bdd_infra::{ConformuRun, ServiceHandle};
 use tempfile::TempDir;
 
-/// Serialize ConformU runs (each binds its own port, but ConformU itself and the
+/// Serialize `ConformU` runs (each binds its own port, but `ConformU` itself and the
 /// shared cache directory are global).
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 

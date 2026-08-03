@@ -94,7 +94,7 @@ struct MockCamera {
     /// timing out). Drives the `do_capture` failed-exposure path.
     report_error_state: bool,
     /// When set, `camera_state` reports `Idle` — simulating an aborted
-    /// exposure (the safety enforcer's AbortExposure returns the
+    /// exposure (the safety enforcer's `AbortExposure` returns the
     /// camera to Idle with no image). Without either state knob the
     /// mock reports `Exposing`, a camera mid-exposure.
     report_idle_state: bool,
@@ -197,7 +197,7 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_exposure_range {
             return Err(ASCOMError::invalid_operation("range unavailable"));
         }
-        Ok(Duration::from_secs(3600))
+        Ok(Duration::from_hours(1))
     }
 
     async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
@@ -300,7 +300,7 @@ impl ascom_alpaca::api::Camera for MockCameraNoMetadata {
     }
 
     async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_secs(3600))
+        Ok(Duration::from_hours(1))
     }
 
     async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
@@ -463,7 +463,7 @@ struct MockFocuser {
     fail_move: bool,
     fail_is_moving: bool,
     fail_position: bool,
-    /// `true` ⇒ `temperature()` returns a generic INVALID_OPERATION
+    /// `true` ⇒ `temperature()` returns a generic `INVALID_OPERATION`
     /// error (sensor wired but reading failed). Distinct from
     /// `temperature_not_implemented` below.
     fail_temperature: bool,
@@ -596,7 +596,7 @@ struct MockTelescope {
     /// When non-zero, `at_park()` returns `false` for the first N
     /// calls and `true` thereafter — models a park of bounded
     /// duration for progress-notification tests. `0` (default)
-    /// means "report at_park immediately".
+    /// means "report `at_park` immediately".
     at_park_false_count: u32,
     at_park_calls: std::sync::atomic::AtomicU32,
     tracking_value: bool,
@@ -836,13 +836,10 @@ fn assert_tool_error(result: Result<CallToolResult, rmcp::ErrorData>, expected_s
         .content
         .first()
         .and_then(|c| c.as_text())
-        .map(|tc| tc.text.as_str())
-        .unwrap_or("");
+        .map_or("", |tc| tc.text.as_str());
     assert!(
         text.contains(expected_substr),
-        "expected error containing '{}', got: '{}'",
-        expected_substr,
-        text
+        "expected error containing '{expected_substr}', got: '{text}'"
     );
 }
 
@@ -2191,8 +2188,7 @@ async fn test_get_camera_info_exposure_range_fallback() {
         .content
         .first()
         .and_then(|c| c.as_text())
-        .map(|tc| tc.text.as_str())
-        .unwrap_or("");
+        .map_or("", |tc| tc.text.as_str());
     let json: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(json["exposure_min"], "1ms");
     assert_eq!(json["exposure_max"], "1h");
@@ -2436,7 +2432,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
     let uuid8 = "doc-imgs"; // 8-char-stable suffix for the on-disk basename.
     let file_path = temp
         .path()
-        .join(format!("{}.fits", uuid8))
+        .join(format!("{uuid8}.fits"))
         .to_string_lossy()
         .into_owned();
 
@@ -2560,8 +2556,7 @@ async fn test_get_filter_success() {
         .content
         .first()
         .and_then(|c| c.as_text())
-        .map(|tc| tc.text.as_str())
-        .unwrap_or("");
+        .map_or("", |tc| tc.text.as_str());
     let json: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(json["filter_name"], "Lum");
     assert_eq!(json["position"], 0);
@@ -2642,8 +2637,7 @@ fn ok_text(call_result: CallToolResult) -> serde_json::Value {
         .content
         .first()
         .and_then(|c| c.as_text())
-        .map(|tc| tc.text.as_str())
-        .unwrap_or("");
+        .map_or("", |tc| tc.text.as_str());
     serde_json::from_str(text).expect("valid JSON")
 }
 
@@ -2799,7 +2793,7 @@ async fn test_move_focuser_timeout() {
     let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for focuser to settle");
     assert!(
-        elapsed < Duration::from_secs(60),
+        elapsed < Duration::from_mins(1),
         "a short move should hit its computed ~5 s deadline, not the old \
          120 s ceiling; elapsed {elapsed:?}"
     );
@@ -3134,7 +3128,7 @@ async fn test_slew_timeout_returns_error_after_abort() {
     let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for mount to settle");
     assert!(
-        elapsed < Duration::from_secs(60),
+        elapsed < Duration::from_mins(1),
         "a zero-distance slew should hit the ~30 s MIN_SLEW_DEADLINE floor, \
          not the old 300 s ceiling; elapsed {elapsed:?}"
     );
@@ -3149,7 +3143,7 @@ async fn test_slew_per_call_settle_overrides_config() {
     let mount = MockTelescope::default();
     let handler = test_handler(mount_registry(
         Arc::new(mount),
-        Some(Duration::from_secs(60)),
+        Some(Duration::from_mins(1)),
     ));
     let result = handler
         .slew_inner(
@@ -3505,7 +3499,7 @@ async fn test_get_park_state_fails_when_can_unpark_read_errors() {
 /// `park()` succeeds, but the very first `at_park()` poll errors
 /// — covers the `Err` arm of the polling loop. The previous
 /// implementation polled `Slewing` and then verified `AtPark`
-/// separately; now both arms collapse into the single at_park
+/// separately; now both arms collapse into the single `at_park`
 /// poll error path.
 #[tokio::test]
 async fn test_park_at_park_poll_fails() {
@@ -3555,7 +3549,7 @@ async fn poll_slewing_tolerates_transient_read_errors_then_idles() {
         stuck_slewing: false,
         ..Default::default()
     };
-    super::internals::poll_slewing_until_idle(&mount, Duration::from_secs(300), None)
+    super::internals::poll_slewing_until_idle(&mount, Duration::from_mins(5), None)
         .await
         .expect("transient slewing() errors below the tolerance must not abort the slew");
 }
@@ -4322,13 +4316,12 @@ fn handler_with_site_and_mount() -> McpHandler {
     )
 }
 
-/// Yank the JSON payload from a successful CallToolResult.
+/// Yank the JSON payload from a successful `CallToolResult`.
 fn ok_json(r: Result<CallToolResult, rmcp::ErrorData>) -> serde_json::Value {
     let call_result = r.expect("tool returned protocol error");
     assert!(
         !call_result.is_error.unwrap_or(false),
-        "expected success, got error: {:?}",
-        call_result
+        "expected success, got error: {call_result:?}"
     );
     let text = call_result
         .content
@@ -5119,7 +5112,7 @@ impl ascom_alpaca::api::Camera for FixtureCamera {
     }
 
     async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_secs(3600))
+        Ok(Duration::from_hours(1))
     }
 
     async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
@@ -5333,10 +5326,8 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     // keeps the fitted vertex within ±2 step_size of true minimum.
     let best_position = body["best_position"].as_i64().expect("best_position i64");
     assert!(
-        (best_position - STARTING_POSITION as i64).abs() <= 2 * 20,
-        "best_position {} not within ±2·step_size of starting {}",
-        best_position,
-        STARTING_POSITION
+        (best_position - i64::from(STARTING_POSITION)).abs() <= 2 * 20,
+        "best_position {best_position} not within ±2·step_size of starting {STARTING_POSITION}"
     );
 
     // best_hfr should be near the synthesised minimum (2.0 px). The
@@ -5345,8 +5336,7 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     let best_hfr = body["best_hfr"].as_f64().expect("best_hfr f64");
     assert!(
         (best_hfr - 2.0).abs() < 0.5,
-        "best_hfr {} not near 2.0",
-        best_hfr
+        "best_hfr {best_hfr} not near 2.0"
     );
 
     // Final focuser position must equal best_position — auto_focus
@@ -5376,8 +5366,7 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     let temperature_c = body["temperature_c"].as_f64().expect("temperature_c f64");
     assert!(
         (temperature_c - 4.5).abs() < 1e-9,
-        "temperature_c {} not 4.5",
-        temperature_c
+        "temperature_c {temperature_c} not 4.5"
     );
 
     // The handler emits `focus_complete` at the end of
@@ -5403,7 +5392,7 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
 // -----------------------------------------------------------------------
 
 /// The reference-rig train shape: main = [main-focuser → main-cam]
-/// (imaging, with an auto_focus block unless `with_block` is false),
+/// (imaging, with an `auto_focus` block unless `with_block` is false),
 /// guide = [main-focuser → guide-focuser → guide-cam] (guiding).
 fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
     let mut main = serde_json::json!({
@@ -5509,7 +5498,7 @@ async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
 }
 
 /// Minimal mock rotator for the rotate-while-guiding ladder tests:
-/// moves land instantly (is_moving false), `position` reports
+/// moves land instantly (`is_moving` false), `position` reports
 /// `position_value` before a move and the last commanded angle after.
 #[derive(Default)]
 struct MockRotator {
@@ -6181,7 +6170,7 @@ async fn refocus_train_requires_the_run_trains_auto_focus_block() {
 // independent (flat HFR, non-deterministic fit outcome).
 
 /// Trains over the fixture registry: main = [foc → cam] with an
-/// auto_focus block matching the fixture sweep (step 20, ±100), plus
+/// `auto_focus` block matching the fixture sweep (step 20, ±100), plus
 /// optionally a guiding train sharing "foc".
 fn fixture_trains(with_guiding: bool) -> crate::equipment::trains::TrainModel {
     let mut trains = vec![serde_json::json!({
@@ -6669,7 +6658,7 @@ async fn do_capture_emits_exposing_phase_before_readout() {
     };
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
-        .do_capture("cam", Duration::from_secs(60), None, None, Some(&emitter))
+        .do_capture("cam", Duration::from_mins(1), None, None, Some(&emitter))
         .await
         .expect("capture completes when image_ready flips true");
     assert!(
@@ -7362,7 +7351,7 @@ async fn capture_failure_emits_exposure_failed() {
 fn exposure_deadlines_add_readout_and_headroom() {
     // §2.4: predicted = duration + readout_estimate; max = predicted + 30 s.
     let (predicted_ms, max_ms) =
-        super::internals::exposure_deadlines(Duration::from_secs(300), Duration::from_secs(8));
+        super::internals::exposure_deadlines(Duration::from_mins(5), Duration::from_secs(8));
     assert_eq!(predicted_ms, 308_000, "300 s exposure + 8 s readout");
     assert_eq!(max_ms, 338_000, "predicted + 30 s readout headroom");
 }
@@ -7817,7 +7806,7 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
     // guider service itself does not validate that ordering.
     let defaults = GuiderDefaults {
         settle_pixels: None,
-        settle_time: Some(Duration::from_secs(120)),
+        settle_time: Some(Duration::from_mins(2)),
         settle_timeout: Some(Duration::from_secs(40)),
         dither_pixels: None,
         ..GuiderDefaults::default()

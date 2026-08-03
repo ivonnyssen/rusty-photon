@@ -153,8 +153,8 @@ async fn poll_loop(
 
         // Wait for the next poll or cancellation
         tokio::select! {
-            _ = tokio::time::sleep(interval) => {}
-            _ = cancel.cancelled() => {
+            () = tokio::time::sleep(interval) => {}
+            () = cancel.cancelled() => {
                 tracing::debug!("Polling loop for '{}' cancelled", monitor_name);
                 break;
             }
@@ -208,7 +208,7 @@ pub async fn dispatch_notifications(
                     notifier_type: notifier_type.clone(),
                     message: message.clone(),
                     success: result.is_ok(),
-                    error: result.as_ref().err().map(|e| e.to_string()),
+                    error: result.as_ref().err().map(std::string::ToString::to_string),
                     timestamp_epoch_ms: now_ms,
                 };
 
@@ -228,6 +228,7 @@ pub async fn dispatch_notifications(
 }
 
 /// Check if a state transition matches a direction rule
+#[must_use]
 pub fn matches_direction(
     direction: &TransitionDirection,
     previous: MonitorState,

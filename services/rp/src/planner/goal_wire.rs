@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// The wire shape of one `goals[]` entry, as accepted by `add_target`,
 /// `set_goals`, and `targets.default_goals` in config.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct GoalWire {
     pub filter: String,
     /// `"AxB"`, e.g. `"1x1"`, `"2x2"`.
@@ -92,7 +92,7 @@ mod tests {
         // the store agree. The `Duration` itself round-trips exactly.
         let goal = AcquisitionGoal::try_from(&wire("Ha", "1x1", "300s", 20)).unwrap();
         assert_eq!(goal.binning, Binning { x: 1, y: 1 });
-        assert_eq!(goal.exposure_duration, Duration::from_secs(300));
+        assert_eq!(goal.exposure_duration, Duration::from_mins(5));
         assert_eq!(
             serde_json::to_value(GoalWire::from(&goal)).unwrap(),
             json!({

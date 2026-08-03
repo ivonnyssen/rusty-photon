@@ -74,6 +74,7 @@ pub struct CliOverrides {
 impl CliOverrides {
     /// Dotted JSON paths currently pinned by an active override. Reported by
     /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
         if self.server_port.is_some() {
@@ -83,7 +84,7 @@ impl CliOverrides {
     }
 
     /// Apply the overrides onto `config` in place.
-    pub fn apply(&self, config: &mut Config) {
+    pub const fn apply(&self, config: &mut Config) {
         if let Some(port) = self.server_port {
             config.server.port = port;
         }

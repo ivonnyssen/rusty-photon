@@ -14,10 +14,10 @@
 //! rejects — is enforced by the schema-agreement test suite.
 //!
 //! Recursion depth is explicitly bounded: [`build`] rejects values
-//! nested deeper than [`MAX_NESTING`] (serde_json's own default parser
+//! nested deeper than [`MAX_NESTING`] (`serde_json`'s own default parser
 //! limit) with a single issue *before* walking, measured iteratively so
 //! the check itself cannot recurse. Values arriving through
-//! `Document::parse` are already bounded by serde_json, but
+//! `Document::parse` are already bounded by `serde_json`, but
 //! `Document::from_value` is public and can be handed an arbitrarily
 //! deep, programmatically built `Value` — without the gate that could
 //! overflow the walk's stack.
@@ -52,7 +52,7 @@ const TREE: Scope = Scope {
     error_ok: false,
 };
 
-/// The maximum JSON nesting depth the walk accepts — serde_json's own
+/// The maximum JSON nesting depth the walk accepts — `serde_json`'s own
 /// default parser recursion limit, so no document that `serde_json`
 /// could parse is ever affected.
 const MAX_NESTING: usize = 128;
@@ -75,7 +75,7 @@ pub(super) fn build(value: &Value) -> Result<Document, Vec<ValidationIssue>> {
 
 /// Whether `value` nests **containers** (objects / arrays) deeper than
 /// `limit` levels — primitives do not add a level, so this counts
-/// exactly what serde_json's parser recursion limit counts. serde_json
+/// exactly what `serde_json`'s parser recursion limit counts. `serde_json`
 /// itself errors on *entering* container number `limit`, i.e. accepts
 /// at most `limit - 1` nested containers, so every parseable document
 /// clears this gate with a level to spare. Iterative (an explicit work
@@ -159,24 +159,23 @@ impl Builder {
         // Version gate, before anything else: a document for a version
         // this engine does not implement cannot be judged against the v1
         // rules, so it gets exactly one error and no further noise.
-        let version = match obj.get("version") {
-            Some(v) => match v.as_u64() {
+        let version = if let Some(v) = obj.get("version") {
+            match v.as_u64() {
                 Some(n) if n == SUPPORTED_VERSION => n,
                 _ => {
                     self.issue(
                         "/version",
                         format!(
                             "unsupported document version {v}: this engine implements version \
-                             {SUPPORTED_VERSION}"
+                         {SUPPORTED_VERSION}"
                         ),
                     );
                     return None;
                 }
-            },
-            None => {
-                self.issue("", "missing required key `version`");
-                SUPPORTED_VERSION // best effort: validate the rest as v1
             }
+        } else {
+            self.issue("", "missing required key `version`");
+            SUPPORTED_VERSION // best effort: validate the rest as v1
         };
 
         const TOP_KEYS: [&str; 8] = [
@@ -198,12 +197,11 @@ impl Builder {
             }
         }
 
-        let name = match obj.get("name") {
-            Some(v) => self.string_field(v, "/name", "`name`"),
-            None => {
-                self.issue("", "missing required key `name`");
-                None
-            }
+        let name = if let Some(v) = obj.get("name") {
+            self.string_field(v, "/name", "`name`")
+        } else {
+            self.issue("", "missing required key `name`");
+            None
         };
 
         let description = match obj.get("description") {
@@ -227,12 +225,11 @@ impl Builder {
         // The procedure tree before the triggers, so document-wide
         // bookkeeping (e.g. duplicate `once` keys) reports the tree
         // occurrence as the original and the trigger one as the duplicate.
-        let root = match obj.get("root") {
-            Some(v) => self.instruction(v, "/root", TREE),
-            None => {
-                self.issue("", "missing required key `root`");
-                None
-            }
+        let root = if let Some(v) = obj.get("root") {
+            self.instruction(v, "/root", TREE)
+        } else {
+            self.issue("", "missing required key `root`");
+            None
         };
 
         let triggers = self.triggers(obj.get("triggers"));
@@ -787,29 +784,27 @@ impl Builder {
                 );
             }
         }
-        let max_attempts = match obj.get("max_attempts") {
-            Some(v) => match v.as_u64() {
+        let max_attempts = if let Some(v) = obj.get("max_attempts") {
+            match v.as_u64() {
                 Some(n) if n >= 1 => Some(n),
                 _ => {
                     self.issue(
                         &child(ptr, "max_attempts"),
                         "`max_attempts` must be a positive integer (total attempts, \
-                         including the first)",
+                     including the first)",
                     );
                     None
                 }
-            },
-            None => {
-                self.issue(ptr, "`retry` requires `max_attempts`");
-                None
             }
+        } else {
+            self.issue(ptr, "`retry` requires `max_attempts`");
+            None
         };
-        let backoff = match obj.get("backoff") {
-            Some(v) => self.duration_field(v, &child(ptr, "backoff"), "`backoff`"),
-            None => {
-                self.issue(ptr, "`retry` requires a `backoff`");
-                None
-            }
+        let backoff = if let Some(v) = obj.get("backoff") {
+            self.duration_field(v, &child(ptr, "backoff"), "`backoff`")
+        } else {
+            self.issue(ptr, "`retry` requires a `backoff`");
+            None
         };
         Some(Retry {
             max_attempts: max_attempts?,
@@ -923,18 +918,17 @@ impl Builder {
                 let condition = opts
                     .get(cond_key)
                     .and_then(|v| self.expression(v, &child(&rptr, cond_key), scope));
-                let max_iterations = match max_iterations? {
-                    Some(b) => Some(b),
-                    None => {
-                        self.issue(
-                            &rptr,
-                            format!(
-                                "`max_iterations` is required with `{cond_key}` — unbounded \
-                                 loops are a validation error"
-                            ),
-                        );
-                        None
-                    }
+                let max_iterations = if let Some(b) = max_iterations? {
+                    Some(b)
+                } else {
+                    self.issue(
+                        &rptr,
+                        format!(
+                            "`max_iterations` is required with `{cond_key}` — unbounded \
+                             loops are a validation error"
+                        ),
+                    );
+                    None
                 };
                 if cond_key == "until" {
                     Some(RepeatMode::Until {
@@ -950,12 +944,11 @@ impl Builder {
             }
         };
 
-        let body = match obj.get("body") {
-            Some(v) => self.block(v, &child(ptr, "body"), scope, "`body`", 1),
-            None => {
-                self.missing(ptr, "repeat", "body");
-                None
-            }
+        let body = if let Some(v) = obj.get("body") {
+            self.block(v, &child(ptr, "body"), scope, "`body`", 1)
+        } else {
+            self.missing(ptr, "repeat", "body");
+            None
         };
 
         Some(InstructionKind::Repeat(Repeat {
@@ -973,12 +966,11 @@ impl Builder {
         let condition = obj
             .get("if")
             .and_then(|v| self.expression(v, &child(ptr, "if"), scope));
-        let then = match obj.get("then") {
-            Some(v) => self.block(v, &child(ptr, "then"), scope, "`then`", 1),
-            None => {
-                self.missing(ptr, "if", "then");
-                None
-            }
+        let then = if let Some(v) = obj.get("then") {
+            self.block(v, &child(ptr, "then"), scope, "`then`", 1)
+        } else {
+            self.missing(ptr, "if", "then");
+            None
         };
         let otherwise = match obj.get("else") {
             None => Some(None),
@@ -1013,12 +1005,11 @@ impl Builder {
         let mut ok = true;
         for (key, v) in entries {
             let eptr = child(&sptr, key);
-            let path = match self.set_key(key, &eptr) {
-                Some(p) => p,
-                None => {
-                    ok = false;
-                    continue;
-                }
+            let path = if let Some(p) = self.set_key(key, &eptr) {
+                p
+            } else {
+                ok = false;
+                continue;
             };
             match self.expression(v, &eptr, scope) {
                 Some(value) => out.push(SetEntry { path, value }),
@@ -1153,16 +1144,15 @@ impl Builder {
                 );
             }
         }
-        let message = match f.get("message") {
-            Some(v) => self.expression(v, &child(&fptr, "message"), scope),
-            None => {
-                self.issue(
-                    &fptr,
-                    "`fail` requires a `message` expression — quote it (e.g. \
-                     \"'exposure never converged'\") for a fixed string",
-                );
-                None
-            }
+        let message = if let Some(v) = f.get("message") {
+            self.expression(v, &child(&fptr, "message"), scope)
+        } else {
+            self.issue(
+                &fptr,
+                "`fail` requires a `message` expression — quote it (e.g. \
+                 \"'exposure never converged'\") for a fixed string",
+            );
+            None
         };
         Some(InstructionKind::Fail { message: message? })
     }
@@ -1227,14 +1217,15 @@ impl Builder {
             }
         };
 
-        let timeout = |b: &mut Self| match w.get("timeout") {
-            Some(v) => b.duration_field(v, &child(&wptr, "timeout"), "`timeout`"),
-            None => {
+        let timeout = |b: &mut Self| {
+            if let Some(v) = w.get("timeout") {
+                b.duration_field(v, &child(&wptr, "timeout"), "`timeout`")
+            } else {
                 b.issue(
                     &wptr,
                     format!(
                         "a `wait` on `{variant}` requires a `timeout` — expiry raises a \
-                         workflow error"
+                     workflow error"
                     ),
                 );
                 None
@@ -1339,12 +1330,11 @@ impl Builder {
                 None
             }
         };
-        let message = match l.get("message") {
-            Some(v) => self.string_field(v, &child(&lptr, "message"), "`message`"),
-            None => {
-                self.issue(&lptr, "`log` requires a `message` string");
-                None
-            }
+        let message = if let Some(v) = l.get("message") {
+            self.string_field(v, &child(&lptr, "message"), "`message`")
+        } else {
+            self.issue(&lptr, "`log` requires a `message` string");
+            None
         };
         let values = match l.get("values") {
             None => Some(BTreeMap::new()),
@@ -1419,9 +1409,8 @@ impl Builder {
             error_ok: false,
         };
 
-        let id = match obj.get("id") {
-            Some(v) => self
-                .string_field(v, &child(ptr, "id"), "a trigger `id`")
+        let id = if let Some(v) = obj.get("id") {
+            self.string_field(v, &child(ptr, "id"), "a trigger `id`")
                 .and_then(|id| {
                     if let Some(first) = self.trigger_ids.get(&id) {
                         let first = first.clone();
@@ -1429,26 +1418,24 @@ impl Builder {
                             &child(ptr, "id"),
                             format!(
                                 "duplicate trigger id `{id}` — trigger ids must be unique \
-                                 within a document (also used at {first})"
+                         within a document (also used at {first})"
                             ),
                         );
                         return None;
                     }
                     self.trigger_ids.insert(id.clone(), child(ptr, "id"));
                     Some(id)
-                }),
-            None => {
-                self.issue(ptr, "a trigger requires an `id`");
-                None
-            }
+                })
+        } else {
+            self.issue(ptr, "a trigger requires an `id`");
+            None
         };
 
-        let on = match obj.get("on") {
-            Some(v) => self.trigger_source(v, &child(ptr, "on")),
-            None => {
-                self.issue(ptr, "a trigger requires an `on` source");
-                None
-            }
+        let on = if let Some(v) = obj.get("on") {
+            self.trigger_source(v, &child(ptr, "on"))
+        } else {
+            self.issue(ptr, "a trigger requires an `on` source");
+            None
         };
 
         let when = match obj.get("when") {
@@ -1477,12 +1464,11 @@ impl Builder {
                 None
             }
         };
-        let actions = match obj.get("do") {
-            Some(v) => self.block(v, &child(ptr, "do"), scope, "`do`", 1),
-            None => {
-                self.issue(ptr, "a trigger requires a `do` block");
-                None
-            }
+        let actions = if let Some(v) = obj.get("do") {
+            self.block(v, &child(ptr, "do"), scope, "`do`", 1)
+        } else {
+            self.issue(ptr, "a trigger requires a `do` block");
+            None
         };
 
         Some(Trigger {
@@ -1528,35 +1514,31 @@ impl Builder {
                         );
                     }
                 }
-                let tool = match p.get("tool") {
-                    Some(v) => self.string_field(v, &child(&pptr, "tool"), "`tool`"),
-                    None => {
-                        self.issue(&pptr, "`poll` requires a `tool`");
-                        None
-                    }
+                let tool = if let Some(v) = p.get("tool") {
+                    self.string_field(v, &child(&pptr, "tool"), "`tool`")
+                } else {
+                    self.issue(&pptr, "`poll` requires a `tool`");
+                    None
                 };
                 // Poll args are evaluated outside any instruction or
                 // event context: only params/session/result are in scope.
                 let args = self.args(p.get("args"), &child(&pptr, "args"), TREE);
-                let interval = match p.get("interval") {
-                    Some(v) => {
-                        match self.duration_field(v, &child(&pptr, "interval"), "`interval`") {
-                            // A zero interval would make the poll due at every
-                            // safe point — a busy loop against `rp`.
-                            Some(d) if d.is_zero() => {
-                                self.issue(
-                                    &child(&pptr, "interval"),
-                                    "a poll `interval` must be positive",
-                                );
-                                None
-                            }
-                            other => other,
+                let interval = if let Some(v) = p.get("interval") {
+                    match self.duration_field(v, &child(&pptr, "interval"), "`interval`") {
+                        // A zero interval would make the poll due at every
+                        // safe point — a busy loop against `rp`.
+                        Some(d) if d.is_zero() => {
+                            self.issue(
+                                &child(&pptr, "interval"),
+                                "a poll `interval` must be positive",
+                            );
+                            None
                         }
+                        other => other,
                     }
-                    None => {
-                        self.issue(&pptr, "`poll` requires an `interval`");
-                        None
-                    }
+                } else {
+                    self.issue(&pptr, "`poll` requires an `interval`");
+                    None
                 };
                 Some(TriggerSource::Poll {
                     tool: tool?,

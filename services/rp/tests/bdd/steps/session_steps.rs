@@ -379,8 +379,7 @@ async fn session_status_is(world: &mut RpWorld, expected: String) {
 
     assert_eq!(
         status, expected,
-        "expected session status '{}', got '{}'",
-        expected, status
+        "expected session status '{expected}', got '{status}'"
     );
 }
 
@@ -410,8 +409,7 @@ fn second_session_should_fail(world: &mut RpWorld) {
 
     assert!(
         status >= 400,
-        "expected error status code (>= 400), got {}",
-        status
+        "expected error status code (>= 400), got {status}"
     );
 }
 

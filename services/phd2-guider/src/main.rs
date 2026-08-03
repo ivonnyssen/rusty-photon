@@ -197,28 +197,25 @@ fn main() -> ServiceResult {
                     .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
                     .flatten()
                     .filter(|p| p.exists());
-                match default_path {
-                    Some(path) => {
-                        debug!("Loading configuration from default path {:?}", path);
-                        load_config(&path)?
+                if let Some(path) = default_path {
+                    debug!("Loading configuration from default path {:?}", path);
+                    load_config(&path)?
+                } else {
+                    let mut phd2 = Phd2Config::default();
+                    if let Some(host) = args.host.clone() {
+                        phd2.host = host;
                     }
-                    None => {
-                        let mut phd2 = Phd2Config::default();
-                        if let Some(host) = args.host.clone() {
-                            phd2.host = host;
-                        }
-                        if let Some(port) = args.port {
-                            phd2.port = port;
-                        }
-                        Config {
-                            phd2,
-                            ..Default::default()
-                        }
+                    if let Some(port) = args.port {
+                        phd2.port = port;
+                    }
+                    Config {
+                        phd2,
+                        ..Default::default()
                     }
                 }
             };
 
-            if let Commands::Serve = command {
+            if matches!(command, Commands::Serve) {
                 return run_serve(config, shutdown).await;
             }
 
@@ -357,7 +354,7 @@ async fn run_monitor(
                     }
                 }
             }
-            _ = token.cancelled() => {
+            () = token.cancelled() => {
                 info!("Shutting down...");
                 break;
             }
@@ -521,7 +518,7 @@ async fn run_guide(
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
         time: settle_time.unwrap_or(Duration::from_secs(10)),
-        timeout: settle_timeout.unwrap_or(Duration::from_secs(60)),
+        timeout: settle_timeout.unwrap_or(Duration::from_mins(1)),
     };
 
     let roi_rect = match roi {
@@ -635,7 +632,7 @@ async fn run_dither(
     let settle = SettleParams {
         pixels: settle_pixels.unwrap_or(0.5),
         time: settle_time.unwrap_or(Duration::from_secs(10)),
-        timeout: settle_timeout.unwrap_or(Duration::from_secs(60)),
+        timeout: settle_timeout.unwrap_or(Duration::from_mins(1)),
     };
 
     info!(

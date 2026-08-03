@@ -79,7 +79,7 @@ impl FalconManager {
     }
 
     /// Access the shared transport so devices can acquire and release sessions.
-    pub fn transport(&self) -> &Arc<SharedTransport<FalconCodec>> {
+    pub const fn transport(&self) -> &Arc<SharedTransport<FalconCodec>> {
         &self.transport
     }
 

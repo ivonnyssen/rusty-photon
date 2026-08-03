@@ -92,10 +92,10 @@ pub struct Connection<C: Codec> {
     /// connections built via `Connection::new()` directly — in
     /// practice that's just in-crate unit tests; the wiring at
     /// every `SharedTransport` callsite always attaches the signal,
-    /// so the LazyAcquire branch's lack of an active listener (the
+    /// so the `LazyAcquire` branch's lack of an active listener (the
     /// supervisor doesn't run until `start()` is called) means
-    /// transport-error notifications in LazyAcquire mode no-op
-    /// rather than waking anything — harmless, since LazyAcquire's
+    /// transport-error notifications in `LazyAcquire` mode no-op
+    /// rather than waking anything — harmless, since `LazyAcquire`'s
     /// recovery model is "next acquire reopens".
     reconnect_signal: Option<Arc<Notify>>,
 }
@@ -267,6 +267,6 @@ mod tests {
         // Sanity-check a couple of representative escapes survived.
         assert!(s.contains("\\x00"));
         assert!(s.contains("\\xff"));
-        assert!(s.contains("A"));
+        assert!(s.contains('A'));
     }
 }

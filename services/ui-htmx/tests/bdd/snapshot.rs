@@ -77,7 +77,7 @@ pub fn assert_html(name: &str, html: &str) {
     // The same port inside the escaped __config blob: `&quot;port&quot;:<digits>`.
     // Only server.port is numeric here (serial.port is a quoted string,
     // discovery_port is null), so this can't clobber another value.
-    settings.add_filter(r#"(&quot;port&quot;:)\d+"#, r#"${1}<port>"#);
+    settings.add_filter(r"(&quot;port&quot;:)\d+", r"${1}<port>");
     settings.bind(|| {
         insta::assert_snapshot!(name, html);
     });

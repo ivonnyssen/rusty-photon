@@ -41,8 +41,7 @@ pub(super) async fn connect_dome(
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
             Err(_) => {
                 return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {:?}",
-                    GET_DEVICES_TIMEOUT
+                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
                 ));
             }
         };

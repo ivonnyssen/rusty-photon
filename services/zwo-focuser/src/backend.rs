@@ -92,7 +92,7 @@ impl ZwoFocuserHandle {
     /// Build a handle for the focuser at enumeration `index`, with its cached
     /// [`FocuserInfo`], working travel limit (`EAFGetMaxStep`), and the
     /// serial-derived `unique_id` — all read at enumeration.
-    pub fn new(
+    pub const fn new(
         sdk: zwo_rs::Sdk,
         index: usize,
         info: FocuserInfo,
@@ -262,7 +262,7 @@ pub(crate) mod mock {
     }
 
     #[derive(Debug)]
-    pub(crate) struct MockFocuserHandle {
+    pub struct MockFocuserHandle {
         info: FocuserInfo,
         max_step: u32,
         open: AtomicBool,

@@ -85,7 +85,7 @@ mod tests {
     fn factory_clone_preserves_config() {
         let factory =
             Fp2SerialTransportFactory::new("/dev/ttyACM0", 115_200, Duration::from_secs(3));
-        let cloned = factory.clone();
+        let cloned = factory;
         assert_eq!(cloned.port, "/dev/ttyACM0");
         assert_eq!(cloned.baud_rate, 115_200);
         assert_eq!(cloned.timeout, Duration::from_secs(3));

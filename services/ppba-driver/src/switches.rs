@@ -1,7 +1,7 @@
 //! Switch definitions for the PPBA device
 //!
 //! This module defines all switches exposed by the PPBA device via the ASCOM Switch interface.
-//! Switches are numbered from 0 to MAX_SWITCH - 1.
+//! Switches are numbered from 0 to `MAX_SWITCH` - 1.
 
 /// Total number of switches exposed by the PPBA device
 pub const MAX_SWITCH: usize = <SwitchId as strum::EnumCount>::COUNT;
@@ -53,20 +53,22 @@ pub enum SwitchId {
 }
 
 impl SwitchId {
-    /// Try to convert a usize to a SwitchId, returning `None` when the id is
+    /// Try to convert a usize to a `SwitchId`, returning `None` when the id is
     /// outside `0..MAX_SWITCH`
     #[must_use]
-    pub fn from_id(id: usize) -> Option<Self> {
+    pub const fn from_id(id: usize) -> Option<Self> {
         Self::from_repr(id)
     }
 
     /// Get the numeric ID for this switch
-    pub fn id(&self) -> usize {
+    #[must_use]
+    pub const fn id(&self) -> usize {
         *self as usize
     }
 
     /// Get the switch information for this switch
-    pub fn info(&self) -> SwitchInfo {
+    #[must_use]
+    pub const fn info(&self) -> SwitchInfo {
         let id = self.id();
         match self {
             // Controllable switches
@@ -248,17 +250,17 @@ mod tests {
     fn all_switch_ids_are_valid() {
         for id in 0..MAX_SWITCH {
             let switch_id = SwitchId::from_id(id);
-            assert!(switch_id.is_some(), "Switch ID {} should be valid", id);
+            assert!(switch_id.is_some(), "Switch ID {id} should be valid");
         }
     }
 
     #[test]
     fn switch_id_beyond_max_is_invalid() {
         for id in MAX_SWITCH..=20 {
-            assert_eq!(SwitchId::from_id(id), None, "id {} must not map", id);
+            assert_eq!(SwitchId::from_id(id), None, "id {id} must not map");
         }
         for id in [100, 65535, usize::MAX] {
-            assert_eq!(SwitchId::from_id(id), None, "id {} must not map", id);
+            assert_eq!(SwitchId::from_id(id), None, "id {id} must not map");
         }
     }
 
@@ -294,7 +296,7 @@ mod tests {
     fn all_switches_have_info() {
         for id in 0..MAX_SWITCH {
             let info = SwitchId::from_id(id).map(|s| s.info());
-            assert!(info.is_some(), "Switch {} should have info", id);
+            assert!(info.is_some(), "Switch {id} should have info");
         }
     }
 
@@ -309,7 +311,7 @@ mod tests {
                 info.min_value,
                 info.max_value
             );
-            assert!(info.step > 0.0, "Switch {} step must be positive", id);
+            assert!(info.step > 0.0, "Switch {id} step must be positive");
         }
     }
 
@@ -343,9 +345,9 @@ mod tests {
         let boolean_ids = [0, 1, 4, 5, 15];
         for id in boolean_ids {
             let info = SwitchId::from_id(id).unwrap().info();
-            assert_eq!(info.min_value, 0.0, "Boolean switch {} min should be 0", id);
-            assert_eq!(info.max_value, 1.0, "Boolean switch {} max should be 1", id);
-            assert_eq!(info.step, 1.0, "Boolean switch {} step should be 1", id);
+            assert_eq!(info.min_value, 0.0, "Boolean switch {id} min should be 0");
+            assert_eq!(info.max_value, 1.0, "Boolean switch {id} max should be 1");
+            assert_eq!(info.step, 1.0, "Boolean switch {id} step should be 1");
         }
     }
 
@@ -354,9 +356,9 @@ mod tests {
         let pwm_ids = [2, 3];
         for id in pwm_ids {
             let info = SwitchId::from_id(id).unwrap().info();
-            assert_eq!(info.min_value, 0.0, "PWM switch {} min should be 0", id);
-            assert_eq!(info.max_value, 255.0, "PWM switch {} max should be 255", id);
-            assert_eq!(info.step, 1.0, "PWM switch {} step should be 1", id);
+            assert_eq!(info.min_value, 0.0, "PWM switch {id} min should be 0");
+            assert_eq!(info.max_value, 255.0, "PWM switch {id} max should be 255");
+            assert_eq!(info.step, 1.0, "PWM switch {id} step should be 1");
         }
     }
 
@@ -366,8 +368,7 @@ mod tests {
             let info = SwitchId::from_id(id).unwrap().info();
             assert!(
                 !info.name.is_empty(),
-                "Switch {} name should not be empty",
-                id
+                "Switch {id} name should not be empty"
             );
         }
     }
@@ -378,8 +379,7 @@ mod tests {
             let info = SwitchId::from_id(id).unwrap().info();
             assert!(
                 !info.description.is_empty(),
-                "Switch {} description should not be empty",
-                id
+                "Switch {id} description should not be empty"
             );
         }
     }

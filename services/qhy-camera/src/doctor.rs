@@ -45,6 +45,7 @@ pub enum SdkVersionFinding {
 impl SdkVersionFinding {
     /// `true` when a loaded version differs from the build-time pin
     /// (year/month/day; a non-zero subday alone is not skew).
+    #[must_use]
     pub fn skewed(&self, pinned: &PinnedSdkVersion) -> bool {
         match self {
             Self::Loaded {

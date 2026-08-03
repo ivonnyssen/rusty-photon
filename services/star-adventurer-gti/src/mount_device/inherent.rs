@@ -57,18 +57,18 @@ use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
 /// `SlewToTarget` will wait for the watcher to clear `slew_in_progress`.
 /// 5 minutes — far longer than any realistic slew (a worst-case full
 /// half-revolution at high-speed slew rate is well under a minute on
-/// the GTi) but finite enough that a stuck driver cannot wedge an
+/// the `GTi`) but finite enough that a stuck driver cannot wedge an
 /// Alpaca request indefinitely.
-const SYNC_SLEW_TIMEOUT: Duration = Duration::from_secs(300);
+const SYNC_SLEW_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Maximum absolute encoder reading at connect that
 /// [`MountDevice::seed_after_connect`] still treats as
 /// "fresh power-up" and applies the `unpark_from_ap_position` seed to.
 /// The
 /// Sky-Watcher firmware does not always read exactly `0` after a
-/// power-cycle — empirically the validation GTi reports `dec = −1`
+/// power-cycle — empirically the validation `GTi` reports `dec = −1`
 /// on connect, a single-tick initialisation artifact (≈ 0.4″ at the
-/// GTi's CPR). Any genuine post-slew encoder reading is tens of
+/// `GTi`'s CPR). Any genuine post-slew encoder reading is tens of
 /// thousands of ticks away from zero, so this tolerance comfortably
 /// distinguishes "just powered up" from "the operator already moved
 /// the mount this session".
@@ -163,13 +163,13 @@ impl MountDevice {
     /// would land inside the CW exclusion zone or below the configured
     /// minimum-altitude floor.
     ///
-    /// **Why:** the Star Adventurer GTi has a mechanical safety
+    /// **Why:** the Star Adventurer `GTi` has a mechanical safety
     /// constraint — the counterweights must not rise more than 0.95 h
     /// above horizontal at any point. The arc where the CW exceeds
     /// that threshold is the configured CW exclusion zone (defaults
-    /// `(0.95, 11.05)` h of mech_HA). Slewing the OTA past it stalls
+    /// `(0.95, 11.05)` h of `mech_HA`). Slewing the OTA past it stalls
     /// the motor against a hard stop while the encoder counter
-    /// continues to advance — on a real-hardware ConformU run that
+    /// continues to advance — on a real-hardware `ConformU` run that
     /// drove the mount into the counterweight-up region we heard the
     /// motor whine and saw the axis stop physically for several
     /// seconds at a time. The 2026-05-17 San Diego session
@@ -200,7 +200,7 @@ impl MountDevice {
     /// rule lives in `select_pier_side_for_target` for pier-side
     /// preference only. Park 1 / Park 5 (anti-meridian poses with
     /// `mech_HA = ±12` on the chosen pier) are reachable via slew
-    /// because their mech_HA is outside the CW exclusion zone.
+    /// because their `mech_HA` is outside the CW exclusion zone.
     ///
     /// The second gate is the **altitude floor**
     /// ([`crate::config::MountConfig::min_altitude_degrees`]): the
@@ -270,7 +270,7 @@ impl MountDevice {
         Ok(())
     }
 
-    /// Refuse the operation when AtPark is set. Returns
+    /// Refuse the operation when `AtPark` is set. Returns
     /// `INVALID_WHILE_PARKED` per ASCOM.
     pub(super) async fn ensure_unparked(&self) -> ASCOMResult<()> {
         if self.state.read().await.at_park {
@@ -286,10 +286,10 @@ impl MountDevice {
     /// Refuse the operation when the transport is not connected. Returns
     /// `NOT_CONNECTED` per ASCOM.
     pub(super) async fn ensure_connected(&self) -> ASCOMResult<()> {
-        if !self.connected().await? {
-            Err(ASCOMError::NOT_CONNECTED)
-        } else {
+        if self.connected().await? {
             Ok(())
+        } else {
+            Err(ASCOMError::NOT_CONNECTED)
         }
     }
 
@@ -600,7 +600,7 @@ impl MountDevice {
     ///   mount has already been slewed or synced this power cycle —
     ///   re-seeding would clobber it. The tolerance absorbs the
     ///   Sky-Watcher firmware's 1-tick fresh-power-up artifact
-    ///   (observed `dec = −1` on the validation GTi, ~0.4″).
+    ///   (observed `dec = −1` on the validation `GTi`, ~0.4″).
     ///
     /// Documented operator assumption: when `unpark_from_ap_position`
     /// is one of `ap_park_1..ap_park_5`, the operator powers up the

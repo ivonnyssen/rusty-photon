@@ -29,9 +29,10 @@ pub fn to_icrs(
 ) -> (f64, f64) {
     match epoch {
         AssumeEpoch::J2000 => (ra_hours, dec_degrees),
-        AssumeEpoch::Jnow => match jnow_to_icrs(ra_hours, dec_degrees, now) {
-            Some(icrs) => icrs,
-            None => {
+        AssumeEpoch::Jnow => {
+            if let Some(icrs) = jnow_to_icrs(ra_hours, dec_degrees, now) {
+                icrs
+            } else {
                 warn!(
                     ra_hours,
                     dec_degrees,
@@ -39,7 +40,7 @@ pub fn to_icrs(
                 );
                 (ra_hours, dec_degrees)
             }
-        },
+        }
     }
 }
 
@@ -106,7 +107,7 @@ mod tests {
         assert_eq!(to_icrs(AssumeEpoch::J2000, 14.0, -40.0, now), (14.0, -40.0));
     }
 
-    /// The P3a precession fingerprint: 14h00m / −40° read as JNow is
+    /// The P3a precession fingerprint: 14h00m / −40° read as `JNow` is
     /// J2000 13h58m23s / −39°52′11″ ≈ (13.97306 h, −39.86972°). The band
     /// (within 5′ of the J2000 value, at least 15′ from the input) stays
     /// valid for years of accumulating precession.
@@ -127,7 +128,7 @@ mod tests {
     }
 
     /// Round-trip through the spike-proven forward direction: converting a
-    /// JNow value back to ICRS then forward again must land on the input.
+    /// `JNow` value back to ICRS then forward again must land on the input.
     #[test]
     fn jnow_conversion_is_consistent_under_ra_wrap() {
         let now = Utc.with_ymd_and_hms(2026, 7, 30, 6, 0, 0).unwrap();

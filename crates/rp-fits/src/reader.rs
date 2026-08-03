@@ -118,20 +118,20 @@ pub fn read_primary_as_i32<R: Read + Seek + Debug>(
         let scaled = v * img.bscale + img.bzero;
         if scaled.is_nan() {
             0
-        } else if scaled >= i32::MAX as f64 {
+        } else if scaled >= f64::from(i32::MAX) {
             i32::MAX
-        } else if scaled <= i32::MIN as f64 {
+        } else if scaled <= f64::from(i32::MIN) {
             i32::MIN
         } else {
             scaled as i32
         }
     };
     let pixels: Vec<i32> = match img.data {
-        Pixels::U8(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
-        Pixels::I16(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
-        Pixels::I32(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
+        Pixels::U8(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
+        Pixels::I16(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
+        Pixels::I32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
         Pixels::I64(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
-        Pixels::F32(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
+        Pixels::F32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
         Pixels::F64(v) => v.into_iter().map(scale).collect(),
     };
     Ok((pixels, img.width, img.height))
@@ -237,7 +237,7 @@ mod tests {
             Pixels::I16(v) => v,
             other => panic!("expected I16, got {other:?}"),
         };
-        let recovered: Vec<u16> = raw.iter().map(|r| (*r as i32 + 32768) as u16).collect();
+        let recovered: Vec<u16> = raw.iter().map(|r| (i32::from(*r) + 32768) as u16).collect();
         assert_eq!(recovered, pixels);
     }
 

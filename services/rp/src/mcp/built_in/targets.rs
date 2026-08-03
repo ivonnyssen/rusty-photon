@@ -314,7 +314,7 @@ impl McpHandler {
                     Some(resolved.object_type.clone()),
                     resolved.magnitude,
                     resolved.size_arcmin,
-                    resolved.name.clone(),
+                    resolved.name,
                 )
             }
             (None, Some(name)) => {
@@ -725,34 +725,31 @@ impl McpHandler {
             star_arcmin: import.star_naming_tolerance_arcmin,
         };
         let (display_name, catalog_ref, object_type, magnitude, size_arcmin, base_slug_input) =
-            match crate::planner::catalog::nearest(&coord, &tolerances) {
-                Some(hit) => {
-                    let name = hit.target.name.clone();
-                    // The plain name is reserved for a dead-center import
-                    // of an object no stored target already claims; any
-                    // other hit reads as *how this framing differs*.
-                    let sole_claim = !all
-                        .iter()
-                        .any(|t| t.catalog_ref.as_deref() == Some(name.as_str()));
-                    let centered = hit.separation_arcmin * 60.0 <= import.dedup_arcsec;
-                    let display = if sole_claim && centered {
-                        name.clone()
-                    } else {
-                        offset_display_name(&name, hit.east_offset_arcmin, hit.north_offset_arcmin)
-                    };
-                    (
-                        display,
-                        Some(name.clone()),
-                        Some(hit.target.object_type.clone()),
-                        hit.target.magnitude,
-                        hit.target.size_arcmin,
-                        name,
-                    )
-                }
-                None => {
-                    let (display, slug) = coordinate_forms(ra_hours, dec_degrees);
-                    (display, None, None, None, None, slug)
-                }
+            if let Some(hit) = crate::planner::catalog::nearest(&coord, &tolerances) {
+                let name = hit.target.name.clone();
+                // The plain name is reserved for a dead-center import
+                // of an object no stored target already claims; any
+                // other hit reads as *how this framing differs*.
+                let sole_claim = !all
+                    .iter()
+                    .any(|t| t.catalog_ref.as_deref() == Some(name.as_str()));
+                let centered = hit.separation_arcmin * 60.0 <= import.dedup_arcsec;
+                let display = if sole_claim && centered {
+                    name.clone()
+                } else {
+                    offset_display_name(&name, hit.east_offset_arcmin, hit.north_offset_arcmin)
+                };
+                (
+                    display,
+                    Some(name.clone()),
+                    Some(hit.target.object_type.clone()),
+                    hit.target.magnitude,
+                    hit.target.size_arcmin,
+                    name,
+                )
+            } else {
+                let (display, slug) = coordinate_forms(ra_hours, dec_degrees);
+                (display, None, None, None, None, slug)
             };
 
         let base_slug = match TargetSlug::from_display_name(&base_slug_input) {

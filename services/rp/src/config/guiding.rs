@@ -105,15 +105,15 @@ impl Default for FocusWatchConfig {
     }
 }
 
-fn default_watch_cooldown() -> Duration {
-    Duration::from_secs(600)
+const fn default_watch_cooldown() -> Duration {
+    Duration::from_mins(10)
 }
 
-fn default_watch_escalation() -> Duration {
-    Duration::from_secs(600)
+const fn default_watch_escalation() -> Duration {
+    Duration::from_mins(10)
 }
 
-fn default_watch_poll() -> Duration {
+const fn default_watch_poll() -> Duration {
     Duration::from_secs(5)
 }
 
@@ -125,7 +125,8 @@ fn default_watch_poll() -> Duration {
 pub struct WatchWindow(u32);
 
 impl WatchWindow {
-    pub fn value(self) -> usize {
+    #[must_use]
+    pub const fn value(self) -> usize {
         self.0 as usize
     }
 }
@@ -157,7 +158,8 @@ impl TryFrom<i64> for WatchWindow {
 pub struct DegradeRatio(f64);
 
 impl DegradeRatio {
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -204,7 +206,8 @@ impl RecalibrateAboveDeg {
     }
 
     /// The threshold in degrees.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -253,7 +256,8 @@ impl Default for GuiderDefaults {
 
 impl GuidingConfig {
     /// The per-call defaults to carry onto the MCP handler.
-    pub fn defaults(&self) -> GuiderDefaults {
+    #[must_use]
+    pub const fn defaults(&self) -> GuiderDefaults {
         GuiderDefaults {
             settle_pixels: self.settle_pixels,
             settle_time: self.settle_time,
@@ -267,7 +271,7 @@ impl GuidingConfig {
 /// Default quick-call HTTP deadline. Sized past the guider service's
 /// default settle backstop (settle timeout 60 s + 10 s grace) so an
 /// url-only config never cuts a legitimate settle wait.
-fn default_guiding_timeout() -> Duration {
+const fn default_guiding_timeout() -> Duration {
     Duration::from_secs(90)
 }
 
@@ -362,7 +366,7 @@ mod tests {
         let config = load_config(&path).unwrap();
         let mount = config.equipment.mount.as_ref().unwrap();
         let g = mount.guiding.as_ref().expect("guiding should parse");
-        assert_eq!(g.timeout, Duration::from_secs(120));
+        assert_eq!(g.timeout, Duration::from_mins(2));
         assert_eq!(g.settle_pixels, Some(0.8));
         assert_eq!(g.settle_time, Some(Duration::from_secs(8)));
         assert_eq!(g.settle_timeout, Some(Duration::from_secs(40)));
@@ -443,8 +447,8 @@ mod tests {
         let watch = FocusWatchConfig::default();
         assert_eq!(watch.window.value(), 10);
         assert_eq!(watch.degrade_ratio.value(), 1.25);
-        assert_eq!(watch.cooldown, Duration::from_secs(600));
-        assert_eq!(watch.escalation_deadline, Duration::from_secs(600));
+        assert_eq!(watch.cooldown, Duration::from_mins(10));
+        assert_eq!(watch.escalation_deadline, Duration::from_mins(10));
         assert_eq!(watch.poll_interval, Duration::from_secs(5));
 
         let parsed: FocusWatchConfig = serde_json::from_value(serde_json::json!({

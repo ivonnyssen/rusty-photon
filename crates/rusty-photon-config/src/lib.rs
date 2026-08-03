@@ -4,7 +4,7 @@
 //! change**, but the protocol enforces neither — uniqueness has to come from how the id is
 //! generated. This crate gives each driver a spec-compliant identity: it resolves a platform
 //! config path (per-user on Unix, machine-wide `%PROGRAMDATA%` on Windows), and
-//! [`materialize_identity`] mints a UUIDv4 for each device on first run, persists it atomically,
+//! [`materialize_identity`] mints a `UUIDv4` for each device on first run, persists it atomically,
 //! and never overwrites an id that already exists.
 //!
 //! The helpers operate on `serde_json::Value` + JSON pointers so they apply uniformly across the
@@ -237,7 +237,7 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 /// 1. Resolve the config path: the explicit `--config` value if given, else
 ///    the platform default.
 /// 2. Mint device identity: every `identity_pointers` entry that is absent or
-///    empty receives a fresh UUIDv4 ([`materialize_identity`]), persisted to
+///    empty receives a fresh `UUIDv4` ([`materialize_identity`]), persisted to
 ///    the resolved path — explicit **or** default, because a minted ASCOM
 ///    `UniqueID` is only an identity if the service re-reads the same value on
 ///    every future start. Minting is the one step that will create a missing
@@ -297,8 +297,8 @@ pub struct MaterializeOutcome {
     pub value: Value,
 }
 
-/// Ensure every pointer in `identity_pointers` holds a non-empty string UniqueID in the **file
-/// layer**, minting a fresh UUIDv4 for any that are absent, non-string, or empty. Idempotent (only
+/// Ensure every pointer in `identity_pointers` holds a non-empty string `UniqueID` in the **file
+/// layer**, minting a fresh `UUIDv4` for any that are absent, non-string, or empty. Idempotent (only
 /// fills empties; never overwrites an existing id) and persists only when it actually filled
 /// something. Operates solely on the on-disk file (never a CLI-override-applied effective config),
 /// so a transient `--port` is never baked in.
@@ -670,7 +670,9 @@ mod tests {
     fn resolve_and_init_creates_default_at_xdg_path() {
         // XDG_CONFIG_HOME is honored on Linux only; other platforms would hit
         // the real per-user dir, so this test is Linux-scoped.
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
         let default = json!({ "server": { "port": 11111 } });
@@ -685,7 +687,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn resolve_and_init_materializes_and_mints_at_xdg_path() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
         let default = json!({ "server": { "port": 1 }, "device": { "unique_id": "" } });

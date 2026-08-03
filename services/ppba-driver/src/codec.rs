@@ -73,8 +73,8 @@ impl PpbaCodecError {
     }
 }
 
-impl From<SessionError<PpbaCodecError>> for PpbaCodecError {
-    fn from(err: SessionError<PpbaCodecError>) -> Self {
+impl From<SessionError<Self>> for PpbaCodecError {
+    fn from(err: SessionError<Self>) -> Self {
         match err {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
@@ -149,17 +149,15 @@ impl From<SessionError<PpbaCodecError>> for PpbaError {
             // one that surfaces on a steady-state request (transport arm).
             SessionError::Transport(t) => t.into(),
             SessionError::Codec(PpbaCodecError::Transport(t)) => t.into(),
-            SessionError::Codec(PpbaCodecError::InvalidResponse(s)) => {
-                PpbaError::InvalidResponse(s)
-            }
-            SessionError::Codec(PpbaCodecError::Parse(s)) => PpbaError::ParseError(s),
+            SessionError::Codec(PpbaCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
+            SessionError::Codec(PpbaCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(c @ PpbaCodecError::Utf8(_)) => {
-                PpbaError::InvalidResponse(c.to_string())
+                Self::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(PpbaCodecError::SkipExhausted(n)) => PpbaError::Communication(
-                format!("device returned non-matching response ({n} frame(s) read)"),
-            ),
-            SessionError::SkipExhausted(n) => PpbaError::Communication(format!(
+            SessionError::Codec(PpbaCodecError::SkipExhausted(n)) => Self::Communication(format!(
+                "device returned non-matching response ({n} frame(s) read)"
+            )),
+            SessionError::SkipExhausted(n) => Self::Communication(format!(
                 "device returned non-matching response ({n} frame{s} read)",
                 s = if n == 1 { "" } else { "s" }
             )),
@@ -453,7 +451,7 @@ mod tests {
             SessionError::Codec(PpbaCodecError::SkipExhausted(7));
         match PpbaError::from(err) {
             PpbaError::Communication(s) => {
-                assert!(s.contains("non-matching") && s.contains("7"));
+                assert!(s.contains("non-matching") && s.contains('7'));
             }
             other => panic!("expected Communication, got {other:?}"),
         }

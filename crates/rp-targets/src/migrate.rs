@@ -27,7 +27,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 ///
 /// Returns [`TargetStoreError::UnsupportedSchemaVersion`] if `found` is
 /// newer than this build supports.
-pub fn check_schema_version(found: u32) -> Result<(), TargetStoreError> {
+pub const fn check_schema_version(found: u32) -> Result<(), TargetStoreError> {
     if found > CURRENT_SCHEMA_VERSION {
         return Err(TargetStoreError::UnsupportedSchemaVersion {
             found,

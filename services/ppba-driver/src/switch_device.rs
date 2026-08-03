@@ -24,7 +24,7 @@ use crate::protocol::PpbaCommand;
 use crate::switches::{SwitchId, MAX_SWITCH};
 use rusty_photon_driver::ConfigActionCtx;
 
-/// Guard macro that returns NOT_CONNECTED if the device is not connected.
+/// Guard macro that returns `NOT_CONNECTED` if the device is not connected.
 macro_rules! ensure_connected {
     ($self:ident) => {
         if !$self.connected().await.is_ok_and(|c| c) {
@@ -51,6 +51,7 @@ pub struct PpbaSwitchDevice {
 }
 
 impl PpbaSwitchDevice {
+    #[must_use]
     pub fn new(config: SwitchConfig, manager: Arc<PpbaManager>) -> Self {
         Self {
             config,
@@ -62,6 +63,7 @@ impl PpbaSwitchDevice {
 
     /// Attach the shared config-action context, enabling `config.get` /
     /// `config.apply` / `config.schema` on this device.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<PpbaDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
@@ -82,11 +84,11 @@ impl PpbaSwitchDevice {
             }
             SwitchId::DewHeaterA => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
-                Ok(status.dew_a as f64)
+                Ok(f64::from(status.dew_a))
             }
             SwitchId::DewHeaterB => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
-                Ok(status.dew_b as f64)
+                Ok(f64::from(status.dew_b))
             }
             SwitchId::UsbHub => Ok(if cached.usb_hub_enabled { 1.0 } else { 0.0 }),
             SwitchId::AutoDew => {
@@ -387,7 +389,7 @@ impl Switch for PpbaSwitchDevice {
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id),
+                format!("Invalid switch ID: {id}"),
             ));
         }
         Ok(false)
@@ -398,7 +400,7 @@ impl Switch for PpbaSwitchDevice {
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id),
+                format!("Invalid switch ID: {id}"),
             ));
         }
         Ok(true)
@@ -409,7 +411,7 @@ impl Switch for PpbaSwitchDevice {
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id),
+                format!("Invalid switch ID: {id}"),
             ));
         }
         Ok(())
@@ -420,7 +422,7 @@ impl Switch for PpbaSwitchDevice {
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id),
+                format!("Invalid switch ID: {id}"),
             ));
         }
         self.set_switch(id, state).await
@@ -431,7 +433,7 @@ impl Switch for PpbaSwitchDevice {
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Invalid switch ID: {}", id),
+                format!("Invalid switch ID: {id}"),
             ));
         }
         self.set_switch_value(id, value).await

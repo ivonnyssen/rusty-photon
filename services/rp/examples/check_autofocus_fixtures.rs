@@ -1,8 +1,8 @@
-//! By-hand verification helper for the auto_focus V-curve fixtures.
+//! By-hand verification helper for the `auto_focus` V-curve fixtures.
 //!
 //! Loads each FITS file under
 //! `services/rp/tests/fixtures/auto_focus/`, runs `measure_basic`
-//! against it with the same threshold/min_area/max_area defaults the
+//! against it with the same `threshold/min_area/max_area` defaults the
 //! BDD scenario will use, and prints the detected HFR + star count
 //! next to the expected HFR. Used to validate fixture quality before
 //! locking them in as the canonical V-curve test inputs.
@@ -20,7 +20,7 @@ use rp::persistence::read_fits_pixels;
 const OFFSETS: [i32; 11] = [-100, -80, -60, -40, -20, 0, 20, 40, 60, 80, 100];
 
 fn expected_hfr(d: i32) -> f64 {
-    2.0 + 0.0005 * (d as f64).powi(2)
+    2.0 + 0.0005 * f64::from(d).powi(2)
 }
 
 fn fixture_path(d: i32) -> PathBuf {
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "offset", "expected", "measured", "stars", "Δ"
     );
     let mut max_abs_delta: f64 = 0.0;
-    for &d in OFFSETS.iter() {
+    for &d in &OFFSETS {
         let path = fixture_path(d);
         let (pixels, w, h) = read_fits_pixels(&path)?;
         let arr: Array2<i32> = Array2::from_shape_vec((w as usize, h as usize), pixels)?;
@@ -66,6 +66,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!();
-    println!("max |Δ| = {:.4} px", max_abs_delta);
+    println!("max |Δ| = {max_abs_delta:.4} px");
     Ok(())
 }

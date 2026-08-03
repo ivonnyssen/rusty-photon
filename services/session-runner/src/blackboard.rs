@@ -74,6 +74,7 @@ impl Blackboard {
     /// An empty blackboard bound to `path`, with no I/O. Prefer
     /// [`Blackboard::replace`] for a new session — it also clears any
     /// leftover file.
+    #[must_use]
     pub fn new_empty(path: PathBuf) -> Self {
         Self {
             session: Value::Object(Map::new()),
@@ -136,11 +137,13 @@ impl Blackboard {
     }
 
     /// The full `session` object, for the expression evaluation context.
-    pub fn value(&self) -> &Value {
+    #[must_use]
+    pub const fn value(&self) -> &Value {
         &self.session
     }
 
     /// The persistence path this blackboard is bound to.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -236,6 +239,7 @@ impl Blackboard {
     /// is unreadable — engine-owned bookkeeping heals rather than errors,
     /// and treating a corrupt timestamp as "never fired" only shortens a
     /// cooldown once.
+    #[must_use]
     pub fn trigger_last_fired(&self, id: &str) -> Option<DateTime<Utc>> {
         let recorded = self.trigger_entry(id)?.get("last_fired")?.as_str()?;
         DateTime::parse_from_rfc3339(recorded)

@@ -17,18 +17,19 @@ use rusty_photon_driver::ConfigActionCtx;
 
 /// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
 /// Behavioral Contracts in `docs/services/sky-survey-camera.md` use
-/// "UNSPECIFIED_ERROR" for everything that isn't covered by a more
+/// "`UNSPECIFIED_ERROR`" for everything that isn't covered by a more
 /// precise standard code.
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
 const MAX_BIN: u8 = 4;
 const EXPOSURE_MIN: Duration = Duration::from_micros(1);
-const EXPOSURE_MAX: Duration = Duration::from_secs(3600);
+const EXPOSURE_MAX: Duration = Duration::from_hours(1);
 
 /// Builds the v0 cutout `SurveyRequest` for a snapshot of camera
 /// state: the cutout is always sized to the binned full sensor (the
 /// design doc crops sub-frames out client-side after the FITS comes
 /// back).
+#[must_use]
 pub fn build_full_sensor_request(
     config: &Config,
     pointing: PointingState,
@@ -39,12 +40,12 @@ pub fn build_full_sensor_request(
         206.265 * config.optics.pixel_size_x_um / config.optics.focal_length_mm;
     let plate_scale_y_arcsec =
         206.265 * config.optics.pixel_size_y_um / config.optics.focal_length_mm;
-    let bx = bin_x.max(1) as u32;
-    let by = bin_y.max(1) as u32;
+    let bx = u32::from(bin_x.max(1));
+    let by = u32::from(bin_y.max(1));
     let pixels_x = config.optics.sensor_width_px / bx;
     let pixels_y = config.optics.sensor_height_px / by;
-    let size_x_deg = plate_scale_x_arcsec * config.optics.sensor_width_px as f64 / 3600.0;
-    let size_y_deg = plate_scale_y_arcsec * config.optics.sensor_height_px as f64 / 3600.0;
+    let size_x_deg = plate_scale_x_arcsec * f64::from(config.optics.sensor_width_px) / 3600.0;
+    let size_y_deg = plate_scale_y_arcsec * f64::from(config.optics.sensor_height_px) / 3600.0;
     SurveyRequest {
         survey: config.survey.name.clone(),
         ra_deg: pointing.ra_deg,
@@ -58,7 +59,7 @@ pub fn build_full_sensor_request(
 }
 
 /// Outcome of the spawned exposure task — stashed on the device state
-/// so subsequent ASCOM calls can map it to ImageArray vs ASCOM error.
+/// so subsequent ASCOM calls can map it to `ImageArray` vs ASCOM error.
 #[derive(Debug)]
 pub struct ExposureOutcome {
     pub width: u32,
@@ -193,15 +194,18 @@ impl SkySurveyCamera {
 
     /// Attach the config-action context, enabling `config.get` / `config.apply`
     /// / `config.schema` on this device.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<SkySurveyCameraDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
     }
 
+    #[must_use]
     pub fn shared_state(&self) -> Arc<DeviceState> {
         Arc::clone(&self.state)
     }
 
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         self.state.connected.load(Ordering::Acquire)
     }
@@ -210,7 +214,7 @@ impl SkySurveyCamera {
 /// The body of the spawned exposure task. Performs the cache hit /
 /// fetch / parse / sub-frame crop; on any failure stores the message
 /// in `state.last_error` and clears `in_flight` so subsequent
-/// `image_array` calls can surface UNSPECIFIED_ERROR.
+/// `image_array` calls can surface `UNSPECIFIED_ERROR`.
 ///
 /// `gen` is the value of `exposure_generation` at the moment
 /// `start_exposure` spawned this task. Abort, Stop, and disconnect
@@ -390,7 +394,8 @@ impl Device for SkySurveyCamera {
                 ));
             }
             let probe = cache_dir.join(".sky-survey-camera.write-probe");
-            if let Err(e) = std::fs::write(&probe, b"").and_then(|_| std::fs::remove_file(&probe)) {
+            if let Err(e) = std::fs::write(&probe, b"").and_then(|()| std::fs::remove_file(&probe))
+            {
                 debug!(?cache_dir, error = %e, "cache_dir write probe failed");
                 return Err(ASCOMError::new(
                     UNSPECIFIED_ERROR,
@@ -583,8 +588,8 @@ impl Camera for SkySurveyCamera {
                 "Duration {duration:?} outside [{EXPOSURE_MIN:?}, {EXPOSURE_MAX:?}]"
             )));
         }
-        let bx = self.state.bin_x.load(Ordering::Acquire) as u32;
-        let by = self.state.bin_y.load(Ordering::Acquire) as u32;
+        let bx = u32::from(self.state.bin_x.load(Ordering::Acquire));
+        let by = u32::from(self.state.bin_y.load(Ordering::Acquire));
         let nx = self.state.num_x.load(Ordering::Acquire);
         let ny = self.state.num_y.load(Ordering::Acquire);
         let sx = self.state.start_x.load(Ordering::Acquire);
@@ -952,7 +957,7 @@ mod tests {
         assert!((cam.pixel_size_x().await.unwrap() - 3.76).abs() < 1e-9);
         assert!((cam.pixel_size_y().await.unwrap() - 3.76).abs() < 1e-9);
         assert_eq!(cam.exposure_min().await.unwrap(), Duration::from_micros(1));
-        assert_eq!(cam.exposure_max().await.unwrap(), Duration::from_secs(3600));
+        assert_eq!(cam.exposure_max().await.unwrap(), Duration::from_hours(1));
         assert_eq!(
             cam.exposure_resolution().await.unwrap(),
             Duration::from_micros(1)

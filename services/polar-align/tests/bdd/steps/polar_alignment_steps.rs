@@ -1,6 +1,6 @@
 //! BDD step definitions for the end-to-end polar-alignment workflow.
 //!
-//! The scenarios spawn OmniSim (telescope + camera), rp, and
+//! The scenarios spawn `OmniSim` (telescope + camera), rp, and
 //! polar-align, plus an in-process plate-solver stub whose canned
 //! solves are choreographed from a known injected axis error. The
 //! completion contract is asserted through the plugin's `/status`
@@ -340,10 +340,7 @@ async fn workflow_reaches_phase(world: &mut PolarAlignWorld, expected: String) {
             }
         }
     }
-    panic!(
-        "polar-align did not reach phase '{}' within 180s (last phase: '{}')",
-        expected, last_phase
-    );
+    panic!("polar-align did not reach phase '{expected}' within 180s (last phase: '{last_phase}')");
 }
 
 #[when("an invocation without a workflow id is posted via the REST API")]
@@ -369,7 +366,11 @@ async fn workflow_awaits_point(world: &mut PolarAlignWorld, point: u64) {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if let Ok(resp) = client.get(&url).send().await {
             if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if body.get("awaiting_point").and_then(|v| v.as_u64()) == Some(point) {
+                if body
+                    .get("awaiting_point")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(point)
+                {
                     return;
                 }
                 last = body.to_string();
@@ -494,11 +495,11 @@ async fn first_solve_hint_near_synced_pointing(world: &mut PolarAlignWorld, tole
     let first = requests.first().expect("no solve requests recorded");
     let ra_hint = first
         .get("ra_hint")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("first solve request carries no ra_hint: {first}"));
     let dec_hint = first
         .get("dec_hint")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("first solve request carries no dec_hint: {first}"));
     // The first point of a current-position measurement is captured
     // in place, so its hint must be the mount's own position — which
@@ -667,7 +668,7 @@ async fn measurement_field(world: &mut PolarAlignWorld, field: &str) -> f64 {
         .expect("failed to parse /status");
     body.get("measurement")
         .and_then(|m| m.get(field))
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("measurement.{field} missing from /status: {body}"))
 }
 
@@ -740,7 +741,11 @@ fn register_polar_align_plugin(world: &mut PolarAlignWorld) {
 }
 
 async fn start_rp_service(world: &mut PolarAlignWorld) {
-    if world.rp.as_ref().is_some_and(|h| h.is_running()) {
+    if world
+        .rp
+        .as_ref()
+        .is_some_and(bdd_infra::ServiceHandle::is_running)
+    {
         return;
     }
 

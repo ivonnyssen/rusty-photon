@@ -1,5 +1,5 @@
 //! Safety enforcement (rp.md § Safety): poll every configured ASCOM
-//! SafetyMonitor, and on the overall safe → unsafe transition gate the
+//! `SafetyMonitor`, and on the overall safe → unsafe transition gate the
 //! `/mcp` endpoint, terminate all open MCP sessions (cancelling in-flight
 //! tool calls), interrupt the active session, abort in-progress
 //! exposures, stop guiding (emitting `guide_stopped` with
@@ -35,7 +35,7 @@ pub trait SafetyProbe: Send + Sync {
     fn is_safe(&self) -> impl Future<Output = Result<bool, String>> + Send;
 }
 
-/// Production probe over a connected (or not) ASCOM Alpaca SafetyMonitor.
+/// Production probe over a connected (or not) ASCOM Alpaca `SafetyMonitor`.
 pub struct AlpacaSafetyProbe {
     id: String,
     device: Option<Arc<dyn ascom_alpaca::api::SafetyMonitor>>,
@@ -673,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn run_polls_immediately_at_startup() {
         let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
-        enforcer.poll_interval = Duration::from_secs(3600);
+        enforcer.poll_interval = Duration::from_hours(1);
         let safety_ok = enforcer.safety_ok.clone();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(enforcer.run(cancel.clone()));

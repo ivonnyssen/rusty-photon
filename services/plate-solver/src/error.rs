@@ -54,34 +54,32 @@ pub struct ErrorResponse {
 
 impl AppError {
     /// Map this error to its wire-format code.
-    pub fn code(&self) -> ErrorCode {
+    #[must_use]
+    pub const fn code(&self) -> ErrorCode {
         match self {
-            AppError::InvalidRequest(_) => ErrorCode::InvalidRequest,
-            AppError::FitsNotFound(_) => ErrorCode::FitsNotFound,
-            AppError::SolveFailed { .. } => ErrorCode::SolveFailed,
-            AppError::SolveTimeoutTerminated | AppError::SolveTimeoutKilled => {
-                ErrorCode::SolveTimeout
-            }
-            AppError::Internal(_) => ErrorCode::Internal,
+            Self::InvalidRequest(_) => ErrorCode::InvalidRequest,
+            Self::FitsNotFound(_) => ErrorCode::FitsNotFound,
+            Self::SolveFailed { .. } => ErrorCode::SolveFailed,
+            Self::SolveTimeoutTerminated | Self::SolveTimeoutKilled => ErrorCode::SolveTimeout,
+            Self::Internal(_) => ErrorCode::Internal,
         }
     }
 
     /// HTTP status the wrapper returns for this error.
-    pub fn status(&self) -> StatusCode {
+    #[must_use]
+    pub const fn status(&self) -> StatusCode {
         match self {
-            AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::FitsNotFound(_) => StatusCode::NOT_FOUND,
-            AppError::SolveFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-            AppError::SolveTimeoutTerminated | AppError::SolveTimeoutKilled => {
-                StatusCode::GATEWAY_TIMEOUT
-            }
-            AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::FitsNotFound(_) => StatusCode::NOT_FOUND,
+            Self::SolveFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::SolveTimeoutTerminated | Self::SolveTimeoutKilled => StatusCode::GATEWAY_TIMEOUT,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     fn details(&self) -> serde_json::Value {
         match self {
-            AppError::SolveFailed {
+            Self::SolveFailed {
                 exit_code,
                 stderr_tail,
                 ..

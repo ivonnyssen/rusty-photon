@@ -51,7 +51,8 @@ impl Site {
 
     /// IANA timezone name (e.g. `"America/Los_Angeles"`) derived from
     /// the site's lat/lon.
-    pub fn iana_timezone(&self) -> &'static str {
+    #[must_use]
+    pub const fn iana_timezone(&self) -> &'static str {
         self.iana_tz
     }
 
@@ -69,6 +70,7 @@ impl Site {
     /// of them, not a real per-site failure mode. The frame still
     /// files correctly; only which calendar night it lands under could
     /// be off by less than a timezone's UTC offset.
+    #[must_use]
     pub fn night_date(&self, at: DateTime<Utc>) -> NaiveDate {
         let tz: chrono_tz::Tz = self.iana_tz.parse().unwrap_or_else(|_| {
             tracing::debug!(

@@ -26,7 +26,7 @@ const USERNAME: &str = "observatory";
 /// Argon2id hash.
 ///
 /// The password is random per fixture, so no suite carries a hard-coded
-/// credential (which would trip CodeQL's hard-coded-cryptographic-value
+/// credential (which would trip `CodeQL`'s hard-coded-cryptographic-value
 /// query and need a used-in-tests dismissal per suite).
 #[derive(Debug)]
 pub struct PkiFixture {
@@ -40,6 +40,7 @@ impl PkiFixture {
     /// Generate a CA and a certificate for `service_name` (the TLS server
     /// name — probes connect to `https://localhost`, which
     /// `generate_service_cert` always includes as a SAN).
+    #[must_use]
     pub fn generate(service_name: &str) -> Self {
         let dir = TempDir::new().unwrap();
         rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
@@ -65,10 +66,12 @@ impl PkiFixture {
         }
     }
 
+    #[must_use]
     pub fn ca_path(&self) -> PathBuf {
         self.dir.path().join("ca.pem")
     }
 
+    #[must_use]
     pub fn cert_path(&self) -> PathBuf {
         self.dir
             .path()
@@ -76,6 +79,7 @@ impl PkiFixture {
             .join(format!("{}.pem", self.service_name))
     }
 
+    #[must_use]
     pub fn key_path(&self) -> PathBuf {
         self.dir
             .path()
@@ -83,24 +87,29 @@ impl PkiFixture {
             .join(format!("{}-key.pem", self.service_name))
     }
 
-    pub fn username(&self) -> &str {
+    #[must_use]
+    pub const fn username(&self) -> &str {
         USERNAME
     }
 
+    #[must_use]
     pub fn password(&self) -> &str {
         &self.password
     }
 
+    #[must_use]
     pub fn password_hash(&self) -> &str {
         &self.password_hash
     }
 
     /// An HTTPS client trusting this fixture's CA.
+    #[must_use]
     pub fn https_client(&self) -> reqwest::Client {
         rusty_photon_tls::client::build_reqwest_client(Some(&self.ca_path())).unwrap()
     }
 
     /// The `server.tls` JSON fragment pointing at the generated cert pair.
+    #[must_use]
     pub fn tls_block(&self) -> serde_json::Value {
         serde_json::json!({
             "cert": self.cert_path().to_string_lossy(),
@@ -109,6 +118,7 @@ impl PkiFixture {
     }
 
     /// The `server.auth` JSON fragment with the Argon2id hash filled in.
+    #[must_use]
     pub fn auth_block(&self) -> serde_json::Value {
         serde_json::json!({
             "username": USERNAME,
@@ -118,6 +128,7 @@ impl PkiFixture {
 
     /// A complete `server` block: `port` plus this fixture's `tls` and
     /// `auth` fragments. Port 0 gives an OS-assigned port.
+    #[must_use]
     pub fn server_block(&self, port: u16) -> serde_json::Value {
         serde_json::json!({
             "port": port,
@@ -187,11 +198,13 @@ pub struct TlsAuthState {
 }
 
 impl TlsAuthState {
+    #[must_use]
     pub fn pki(&self) -> &PkiFixture {
         self.pki.as_deref().expect("TLS certs not generated")
     }
 
-    pub fn port(&self) -> u16 {
+    #[must_use]
+    pub const fn port(&self) -> u16 {
         self.port.expect("service not started with TLS and auth")
     }
 }

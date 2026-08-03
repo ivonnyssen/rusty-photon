@@ -1,5 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! Star Adventurer GTi driver CLI.
+//! Star Adventurer `GTi` driver CLI.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

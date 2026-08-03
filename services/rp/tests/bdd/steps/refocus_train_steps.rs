@@ -6,9 +6,9 @@
 //! webhook receiver in `event_steps.rs`, guider stub lifecycle in
 //! `guider_steps.rs`, FITS/sidecar assertions in
 //! `auto_focus_steps.rs`, offline-roster helpers in
-//! `rotator_steps.rs`. The "standard auto_focus block" pins the same
-//! sweep the auto_focus scenarios use per call: duration 100ms,
-//! step_size 100, half_width 200, min_area 5, max_area 65536.
+//! `rotator_steps.rs`. The "standard `auto_focus` block" pins the same
+//! sweep the `auto_focus` scenarios use per call: duration 100ms,
+//! `step_size` 100, `half_width` 200, `min_area` 5, `max_area` 65536.
 
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
@@ -22,7 +22,7 @@ use crate::steps::rotator_steps::{add_offline_camera, push_train};
 use crate::steps::tool_steps::{add_camera, ensure_mcp_client, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
-/// The sweep parameters every "standard auto_focus block" Given pins.
+/// The sweep parameters every "standard `auto_focus` block" Given pins.
 fn standard_auto_focus_block() -> TrainAutoFocusConfig {
     TrainAutoFocusConfig {
         duration: Some("100ms".to_string()),
@@ -139,7 +139,7 @@ async fn rp_with_offline_shared_trains(world: &mut RpWorld) {
     start_rp(world).await;
 }
 
-/// One offline focuser train with no auto_focus block — the
+/// One offline focuser train with no `auto_focus` block — the
 /// missing-block and train-addressing error scenarios.
 #[given("rp is running with an offline focuser train without an auto_focus block")]
 async fn rp_with_blockless_offline_train(world: &mut RpWorld) {

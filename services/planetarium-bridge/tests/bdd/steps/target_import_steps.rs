@@ -1,4 +1,4 @@
-//! Steps for target_import.feature: what the bridge submits to rp, and what
+//! Steps for `target_import.feature`: what the bridge submits to rp, and what
 //! it never submits. rp-side semantics (naming, dedup, slugs) are covered in
 //! rp's own suite.
 
@@ -104,7 +104,7 @@ fn separation_arcmin(args: &serde_json::Value, ra_hours: f64, dec_degrees: f64) 
     let actual_dec = args["dec_degrees"].as_f64().expect("dec_degrees missing");
     let east = (actual_ra - ra_hours) * 15.0 * dec_degrees.to_radians().cos() * 60.0;
     let north = (actual_dec - dec_degrees) * 60.0;
-    (east * east + north * north).sqrt()
+    east.hypot(north)
 }
 
 #[then(

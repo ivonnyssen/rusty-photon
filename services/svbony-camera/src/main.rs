@@ -51,7 +51,7 @@ struct Args {
 /// Subcommands; running with none starts the ASCOM Alpaca driver.
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Diagnose this service's configuration and what the SVBony SDK can
+    /// Diagnose this service's configuration and what the `SVBony` SDK can
     /// see, without starting it (docs/services/doctor.md). Read-only; exits
     /// 1 on failing checks.
     Doctor {

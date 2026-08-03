@@ -31,7 +31,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The inactive-unit probe: a per-service doctor may run an SDK bus scan,
 /// which takes seconds — but never a minute.
-const SHELL_OUT_TIMEOUT: Duration = Duration::from_secs(60);
+const SHELL_OUT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// What one unit's probe contributes to the report.
 enum Probe<'a> {
@@ -45,6 +45,7 @@ enum Probe<'a> {
 /// state. Pure fan-out over [`Probe`]; returns no checks (and builds no
 /// runtime) on a host with nothing to probe — a dev checkout diagnosis
 /// stays exactly what it was.
+#[must_use]
 pub fn checks(ctx: &Context) -> Vec<Check> {
     let probes: Vec<Probe> = ctx
         .scans
@@ -143,7 +144,7 @@ struct FakeMountProbe {
     auth: Option<crate::scan::ClientAuthView>,
 }
 
-/// The UniqueID leg of `joins.fake-mount` (planetarium-bridge.md §
+/// The `UniqueID` leg of `joins.fake-mount` (planetarium-bridge.md §
 /// Doctor integration): the static port join (`crate::checks`) only
 /// resolves loopback URLs, but a rig config addresses services by host
 /// name (`<svc>.rig.rustyphoton.io`), where the port join is silently

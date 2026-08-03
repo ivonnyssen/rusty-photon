@@ -442,7 +442,7 @@ struct FormErrors {
 }
 
 impl FormErrors {
-    fn any(&self) -> bool {
+    const fn any(&self) -> bool {
         self.display_name.is_some() || self.priority.is_some() || self.position_angle.is_some()
     }
 }
@@ -757,12 +757,11 @@ pub(crate) async fn save(
     if display_name.is_empty() {
         errors.display_name = Some("a display name is required".to_string());
     }
-    let priority: i64 = match priority_raw.parse() {
-        Ok(priority) => priority,
-        Err(_) => {
-            errors.priority = Some("not a whole number".to_string());
-            0
-        }
+    let priority: i64 = if let Ok(priority) = priority_raw.parse() {
+        priority
+    } else {
+        errors.priority = Some("not a whole number".to_string());
+        0
     };
     let angle = match parse_position_angle(&angle_raw) {
         Ok(angle) => Some(angle),

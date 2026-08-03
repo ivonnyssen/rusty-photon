@@ -91,10 +91,7 @@ async fn dashboard_status_shows(world: &mut SentinelWorld, expected_state: Strin
     assert_eq!(
         state.as_deref(),
         Some(expected_state.as_str()),
-        "Expected '{}' to reach state '{}', but last observed {:?}",
-        name,
-        expected_state,
-        state
+        "Expected '{name}' to reach state '{expected_state}', but last observed {state:?}"
     );
 }
 
@@ -108,30 +105,20 @@ async fn dashboard_history_contains(world: &mut SentinelWorld, monitor_name: Str
         .any(|h| h["monitor_name"].as_str() == Some(monitor_name.as_str()));
     assert!(
         found,
-        "Expected notification history to contain record for '{}', but it didn't. History: {:?}",
-        monitor_name, history
+        "Expected notification history to contain record for '{monitor_name}', but it didn't. History: {history:?}"
     );
 }
 
 #[then(expr = "the history record message should contain {string}")]
 async fn history_record_message_contains(world: &mut SentinelWorld, expected: String) {
     let history = world
-        .wait_for_history(|h| {
-            h["message"]
-                .as_str()
-                .map(|m| m.contains(&expected))
-                .unwrap_or(false)
-        })
+        .wait_for_history(|h| h["message"].as_str().is_some_and(|m| m.contains(&expected)))
         .await;
-    let found = history.iter().any(|h| {
-        h["message"]
-            .as_str()
-            .map(|m| m.contains(&expected))
-            .unwrap_or(false)
-    });
+    let found = history
+        .iter()
+        .any(|h| h["message"].as_str().is_some_and(|m| m.contains(&expected)));
     assert!(
         found,
-        "Expected a history record with message containing '{}', but none found. History: {:?}",
-        expected, history
+        "Expected a history record with message containing '{expected}', but none found. History: {history:?}"
     );
 }

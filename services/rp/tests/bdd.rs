@@ -29,7 +29,7 @@ static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 /// passes** — which is the failure mode we actually hit: the suite runs slow
 /// (~36 min) but *completes*, so the time has to be read from a passing run.
 /// `BDD-TRACE` makes the trail greppable; the `ENTER → reset-ok → EXIT` deltas
-/// localise where the minutes go (per-scenario OmniSim reset vs the steps).
+/// localise where the minutes go (per-scenario `OmniSim` reset vs the steps).
 fn trace(msg: &str) {
     use std::io::Write as _;
     eprintln!(

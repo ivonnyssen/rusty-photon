@@ -106,7 +106,7 @@ pub struct McpHandler {
     pub naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,
     /// Merged tool catalog. Built by summing per-category routers
     /// in [`McpHandler::new`]; consumed by the
-    /// `#[tool_handler(router = self.tool_router)]` ServerHandler
+    /// `#[tool_handler(router = self.tool_router)]` `ServerHandler`
     /// impl in [`super`].
     pub tool_router: ToolRouter<Self>,
 }
@@ -172,7 +172,11 @@ impl McpHandler {
     /// altitude floor `get_next_target` applies to a store-backed
     /// target that carries no per-target or `default_scheduling`
     /// override. Tests can leave the default as-is.
-    pub fn with_planner_default_min_altitude(mut self, default_min_altitude_degrees: f64) -> Self {
+    #[must_use]
+    pub const fn with_planner_default_min_altitude(
+        mut self,
+        default_min_altitude_degrees: f64,
+    ) -> Self {
         self.default_min_altitude_degrees = default_min_altitude_degrees;
         self
     }
@@ -205,6 +209,7 @@ impl McpHandler {
     /// "not configured"; `None` for the radius means the wrapper
     /// falls through to ASTAP's own default when the per-call
     /// parameter is also omitted.
+    #[must_use]
     pub fn with_plate_solver(
         mut self,
         client: Option<Arc<dyn rp_plate_solver::PlateSolveClient>>,
@@ -220,6 +225,7 @@ impl McpHandler {
     /// reporting "not configured"; unset fields in `defaults` mean
     /// the per-call parameters (or the guider service's own
     /// `settling` config) decide.
+    #[must_use]
     pub fn with_guider(
         mut self,
         client: Option<Arc<dyn rp_guider::GuiderClient>>,
@@ -233,6 +239,7 @@ impl McpHandler {
     /// Wire the derived optical-train model. The lib.rs build path
     /// calls this with the model built from `equipment.optical_trains`;
     /// tests without trains keep the empty default (no optics block).
+    #[must_use]
     pub fn with_trains(mut self, trains: crate::equipment::trains::TrainModel) -> Self {
         self.trains = trains;
         self
@@ -241,7 +248,11 @@ impl McpHandler {
     /// Wire the per-rig centering estimates (§2.5) from the `centering`
     /// config block. The lib.rs build path calls this with
     /// `config.centering`; tests leave the default.
-    pub fn with_centering_config(mut self, centering: crate::config::CenteringConfig) -> Self {
+    #[must_use]
+    pub const fn with_centering_config(
+        mut self,
+        centering: crate::config::CenteringConfig,
+    ) -> Self {
         self.centering = centering;
         self
     }
@@ -258,6 +269,7 @@ impl McpHandler {
     /// defaults. The lib.rs build path always calls this with `Some`
     /// (it opens the store unconditionally); tests that don't need
     /// target tools leave the `None` default.
+    #[must_use]
     pub fn with_target_store(
         mut self,
         store: Option<Arc<dyn rp_targets::TargetStore>>,
@@ -270,6 +282,7 @@ impl McpHandler {
 
     /// Wire the compiled `session.file_naming_pattern`/`directory_pattern`
     /// (Decision 11). `None` when `file_naming_pattern` is unset.
+    #[must_use]
     pub fn with_naming_templates(
         mut self,
         naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,

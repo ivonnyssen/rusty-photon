@@ -11,9 +11,9 @@ use std::time::Duration;
 use crate::error::{PpbaError, Result};
 
 /// Commands that can be sent to the PPBA device
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpbaCommand {
-    /// Ping/status check - returns PPBA_OK
+    /// Ping/status check - returns `PPBA_OK`
     Ping,
     /// Get firmware version - returns n.n.n
     FirmwareVersion,
@@ -37,18 +37,19 @@ pub enum PpbaCommand {
 
 impl PpbaCommand {
     /// Serialize the command to a string to send to the device
+    #[must_use]
     pub fn to_command_string(&self) -> String {
         match self {
-            PpbaCommand::Ping => "P#".to_string(),
-            PpbaCommand::FirmwareVersion => "PV".to_string(),
-            PpbaCommand::Status => "PA".to_string(),
-            PpbaCommand::PowerStats => "PS".to_string(),
-            PpbaCommand::SetQuad12V(on) => format!("P1:{}", if *on { 1 } else { 0 }),
-            PpbaCommand::SetAdjustable(on) => format!("P2:{}", if *on { 1 } else { 0 }),
-            PpbaCommand::SetDewA(pwm) => format!("P3:{}", pwm),
-            PpbaCommand::SetDewB(pwm) => format!("P4:{}", pwm),
-            PpbaCommand::SetUsbHub(on) => format!("PU:{}", if *on { 1 } else { 0 }),
-            PpbaCommand::SetAutoDew(on) => format!("PD:{}", if *on { 1 } else { 0 }),
+            Self::Ping => "P#".to_string(),
+            Self::FirmwareVersion => "PV".to_string(),
+            Self::Status => "PA".to_string(),
+            Self::PowerStats => "PS".to_string(),
+            Self::SetQuad12V(on) => format!("P1:{}", i32::from(*on)),
+            Self::SetAdjustable(on) => format!("P2:{}", i32::from(*on)),
+            Self::SetDewA(pwm) => format!("P3:{pwm}"),
+            Self::SetDewB(pwm) => format!("P4:{pwm}"),
+            Self::SetUsbHub(on) => format!("PU:{}", i32::from(*on)),
+            Self::SetAutoDew(on) => format!("PD:{}", i32::from(*on)),
         }
     }
 }
@@ -103,6 +104,7 @@ pub struct PpbaPowerStats {
 
 impl PpbaPowerStats {
     /// Get uptime in hours
+    #[must_use]
     pub fn uptime_hours(&self) -> f64 {
         self.uptime.as_secs_f64() / 3600.0
     }
@@ -117,8 +119,7 @@ pub fn parse_status_response(response: &str) -> Result<PpbaStatus> {
     // Check prefix
     if !response.starts_with("PPBA:") {
         return Err(PpbaError::InvalidResponse(format!(
-            "Expected PPBA: prefix, got: {}",
-            response
+            "Expected PPBA: prefix, got: {response}"
         )));
     }
 
@@ -172,8 +173,7 @@ pub fn parse_power_stats_response(response: &str) -> Result<PpbaPowerStats> {
     // Check prefix
     if !response.starts_with("PS:") {
         return Err(PpbaError::InvalidResponse(format!(
-            "Expected PS: prefix, got: {}",
-            response
+            "Expected PS: prefix, got: {response}"
         )));
     }
 
@@ -209,8 +209,7 @@ pub fn validate_ping_response(response: &str) -> Result<()> {
         Ok(())
     } else {
         Err(PpbaError::InvalidResponse(format!(
-            "Expected PPBA_OK, got: {}",
-            response
+            "Expected PPBA_OK, got: {response}"
         )))
     }
 }
@@ -226,8 +225,7 @@ pub fn validate_set_response(command: &PpbaCommand, response: &str) -> Result<()
         Ok(())
     } else {
         Err(PpbaError::InvalidResponse(format!(
-            "Expected {}, got: {}",
-            expected, response
+            "Expected {expected}, got: {response}"
         )))
     }
 }
@@ -235,17 +233,17 @@ pub fn validate_set_response(command: &PpbaCommand, response: &str) -> Result<()
 // Helper parsing functions
 fn parse_f64(s: &str, field: &str) -> Result<f64> {
     s.parse::<f64>()
-        .map_err(|_| PpbaError::ParseError(format!("Invalid {} value: {}", field, s)))
+        .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {s}")))
 }
 
 fn parse_u8(s: &str, field: &str) -> Result<u8> {
     s.parse::<u8>()
-        .map_err(|_| PpbaError::ParseError(format!("Invalid {} value: {}", field, s)))
+        .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {s}")))
 }
 
 fn parse_u64(s: &str, field: &str) -> Result<u64> {
     s.parse::<u64>()
-        .map_err(|_| PpbaError::ParseError(format!("Invalid {} value: {}", field, s)))
+        .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {s}")))
 }
 
 fn parse_bool(s: &str, field: &str) -> Result<bool> {
@@ -253,8 +251,7 @@ fn parse_bool(s: &str, field: &str) -> Result<bool> {
         "0" => Ok(false),
         "1" => Ok(true),
         _ => Err(PpbaError::ParseError(format!(
-            "Invalid {} boolean value: {}",
-            field, s
+            "Invalid {field} boolean value: {s}"
         ))),
     }
 }
@@ -348,7 +345,7 @@ mod tests {
             assert_eq!(stats.average_amps, 2.5);
             assert_eq!(stats.amp_hours, 10.5);
             assert_eq!(stats.watt_hours, 126.0);
-            assert_eq!(stats.uptime, Duration::from_secs(3600));
+            assert_eq!(stats.uptime, Duration::from_hours(1));
         }
 
         #[test]

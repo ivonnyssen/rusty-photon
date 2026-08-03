@@ -127,7 +127,7 @@ mod tests {
         let r = measure_basic(arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
         assert_eq!(r.star_count, 1);
         let hfr = r.hfr.expect("hfr should be Some");
-        assert!(hfr.is_finite() && hfr > 0.0, "hfr = {}", hfr);
+        assert!(hfr.is_finite() && hfr > 0.0, "hfr = {hfr}");
         assert_eq!(r.pixel_count, 64 * 64);
     }
 
@@ -201,7 +201,7 @@ mod tests {
         let r = measure_basic(arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
         assert_eq!(r.star_count, 1);
         let hfr = r.hfr.expect("hfr should be Some");
-        assert!(hfr.is_finite() && hfr > 0.0, "hfr = {}", hfr);
+        assert!(hfr.is_finite() && hfr > 0.0, "hfr = {hfr}");
         assert_eq!(r.pixel_count, 64 * 64);
     }
 

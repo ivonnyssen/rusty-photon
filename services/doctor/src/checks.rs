@@ -29,6 +29,7 @@ pub struct Context {
 
 impl Context {
     /// Scan the config dir and derive the mode from the unit inventory.
+    #[must_use]
     pub fn gather(config_dir: PathBuf, mut facts: PlatformFacts) -> Self {
         let mode = if facts.units.is_empty() {
             Mode::ConfigOnly
@@ -65,6 +66,7 @@ impl Context {
 
     /// The participating service names — the "installed set" the
     /// provisioning pass and `doctor tls issue` issue certificates for.
+    #[must_use]
     pub fn installed_services(&self) -> Vec<String> {
         self.scans
             .iter()
@@ -79,6 +81,7 @@ impl Context {
 }
 
 /// Run every check.
+#[must_use]
 pub fn run_all(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     checks.extend(inventory(ctx));
@@ -192,7 +195,10 @@ fn inventory(ctx: &Context) -> Vec<Check> {
             (false, false) => {}
         }
     }
-    let known: Vec<String> = catalog::catalog().iter().map(|e| e.config_file()).collect();
+    let known: Vec<String> = catalog::catalog()
+        .iter()
+        .map(super::catalog::CatalogEntry::config_file)
+        .collect();
     for name in unknown_config_files(&ctx.config_dir, &known) {
         checks.push(Check::warn(
             "inventory.unknown-config",
@@ -1303,7 +1309,7 @@ fn target_uses_acme_cert(target: &ServiceScan) -> bool {
 /// source of truth every scheme-mismatch check and fix compares
 /// against, so a garbage/unsupported scheme (e.g. `ftp`) is judged the
 /// same way everywhere rather than silently matching by accident.
-fn expected_scheme(target_tls_on: bool) -> &'static str {
+const fn expected_scheme(target_tls_on: bool) -> &'static str {
     if target_tls_on {
         "https"
     } else {
@@ -1820,7 +1826,7 @@ fn sentinel_monitor_target(
 /// defeat every motion safeguard rp believes it has (slews that "just
 /// succeed", a mount that is never parked, never at limits), so this is
 /// a hard failure, not a warning. The non-loopback case is the
-/// aggregation probe's UniqueID leg (`crate::aggregate`).
+/// aggregation probe's `UniqueID` leg (`crate::aggregate`).
 fn fake_mount_join(ctx: &Context) -> Vec<Check> {
     let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
         return Vec::new();

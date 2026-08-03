@@ -81,12 +81,11 @@ fn resolves_messier_with_alternate_spellings() {
     let canon = cat().resolve("M 41").unwrap();
     for variant in ["m41", "M41", "m 41", "M  41", "Messier 41", "messier 41"] {
         let v = cat().resolve(variant).unwrap_or_else(|| {
-            panic!("variant {:?} did not resolve", variant);
+            panic!("variant {variant:?} did not resolve");
         });
         assert_eq!(
             v, canon,
-            "variant {:?} resolved to a different target",
-            variant
+            "variant {variant:?} resolved to a different target"
         );
     }
 }
@@ -322,14 +321,12 @@ fn fuzzy_suggestions_finds_close_neighbours() {
     let suggestions = cat().fuzzy_suggestions("M 41", 5);
     assert!(
         suggestions.iter().any(|s| s == "M 41"),
-        "exact match should appear in fuzzy list as canonical name: {:?}",
-        suggestions
+        "exact match should appear in fuzzy list as canonical name: {suggestions:?}"
     );
     let typo = cat().fuzzy_suggestions("M 411", 5);
     assert!(
         typo.iter().any(|s| s == "M 41"),
-        "typo M 411 should suggest M 41 by canonical name: {:?}",
-        typo
+        "typo M 411 should suggest M 41 by canonical name: {typo:?}"
     );
 }
 

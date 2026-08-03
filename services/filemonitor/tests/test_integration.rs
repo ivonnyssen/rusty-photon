@@ -203,16 +203,14 @@ fn assert_config_not_found(output: &std::process::Output) {
     assert!(!output.status.success(), "expected non-zero exit");
     assert!(
         !stderr.contains("error: invalid value") && !stderr.contains("error: unexpected argument"),
-        "clap rejected the arguments; stderr:\n{}",
-        stderr
+        "clap rejected the arguments; stderr:\n{stderr}"
     );
     // The report prints the io::Error's Display form; the "file not found"
     // OS code is 2 on both Unix (ENOENT) and Windows (ERROR_FILE_NOT_FOUND),
     // while the message text differs per OS.
     assert!(
         stderr.contains("(os error 2)"),
-        "expected config-not-found error; stderr:\n{}",
-        stderr
+        "expected config-not-found error; stderr:\n{stderr}"
     );
 }
 

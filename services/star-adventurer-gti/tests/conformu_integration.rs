@@ -1,6 +1,6 @@
-//! ConformU compliance tests for the Star Adventurer GTi driver.
+//! `ConformU` compliance tests for the Star Adventurer `GTi` driver.
 //!
-//! Run the ConformU ASCOM Telescope test suite against the driver running
+//! Run the `ConformU` ASCOM Telescope test suite against the driver running
 //! in mock mode. Same shape as the qhy-focuser integration test.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]

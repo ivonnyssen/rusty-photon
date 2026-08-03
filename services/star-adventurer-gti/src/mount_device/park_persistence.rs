@@ -53,6 +53,7 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 ///
 /// Extracted from `main.rs` so the warn-on-failure branch is unit
 /// testable; the binary calls this from `main()`.
+#[must_use]
 pub fn canonicalise_config_path(config_path: Option<&PathBuf>) -> Option<PathBuf> {
     config_path.map(|p| {
         std::fs::canonicalize(p).unwrap_or_else(|e| {

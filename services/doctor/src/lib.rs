@@ -87,6 +87,7 @@ fn packaged_config_dir(packaged: &Path) -> Result<Option<PathBuf>, String> {
 
 /// Run the whole diagnosis: scan, check, probe the per-service doctors,
 /// report.
+#[must_use]
 pub fn diagnose(config_dir: PathBuf, facts: PlatformFacts) -> Report {
     let (ctx, mut checks) = diagnose_static(config_dir, facts);
     checks.extend(aggregate::checks(&ctx));

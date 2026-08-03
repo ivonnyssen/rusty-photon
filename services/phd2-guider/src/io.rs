@@ -46,7 +46,7 @@ pub trait LineReader: Send {
     async fn read_line(&mut self) -> Result<Option<String>>;
 }
 
-/// TCP implementation of LineReader using a buffered reader
+/// TCP implementation of `LineReader` using a buffered reader
 pub struct TcpLineReader {
     reader: BufReader<ReadHalf<TcpStream>>,
     buffer: String,
@@ -54,6 +54,7 @@ pub struct TcpLineReader {
 
 impl TcpLineReader {
     /// Create a new TCP line reader from a read half of a TCP stream
+    #[must_use]
     pub fn new(reader: ReadHalf<TcpStream>) -> Self {
         Self {
             reader: BufReader::new(reader),
@@ -94,14 +95,15 @@ pub trait MessageWriter: Send {
     async fn shutdown(&mut self) -> Result<()>;
 }
 
-/// TCP implementation of MessageWriter
+/// TCP implementation of `MessageWriter`
 pub struct TcpMessageWriter {
     writer: WriteHalf<TcpStream>,
 }
 
 impl TcpMessageWriter {
     /// Create a new TCP message writer from a write half of a TCP stream
-    pub fn new(writer: WriteHalf<TcpStream>) -> Self {
+    #[must_use]
+    pub const fn new(writer: WriteHalf<TcpStream>) -> Self {
         Self { writer }
     }
 }
@@ -110,7 +112,7 @@ impl TcpMessageWriter {
 impl MessageWriter for TcpMessageWriter {
     async fn write_message(&mut self, message: &str) -> Result<()> {
         self.writer
-            .write_all(format!("{}\r\n", message).as_bytes())
+            .write_all(format!("{message}\r\n").as_bytes())
             .await
             .map_err(|e| Phd2Error::SendError(e.to_string()))?;
         self.writer
@@ -147,13 +149,14 @@ pub trait ConnectionFactory: Send + Sync {
     async fn can_connect(&self, addr: &str) -> bool;
 }
 
-/// TCP implementation of ConnectionFactory
+/// TCP implementation of `ConnectionFactory`
 #[derive(Default, Clone)]
 pub struct TcpConnectionFactory;
 
 impl TcpConnectionFactory {
     /// Create a new TCP connection factory
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -165,9 +168,9 @@ impl ConnectionFactory for TcpConnectionFactory {
 
         let stream = tokio::time::timeout(timeout, TcpStream::connect(addr))
             .await
-            .map_err(|_| Phd2Error::Timeout(format!("Connection to {} timed out", addr)))?
+            .map_err(|_| Phd2Error::Timeout(format!("Connection to {addr} timed out")))?
             .map_err(|e| {
-                Phd2Error::ConnectionFailed(format!("Failed to connect to {}: {}", addr, e))
+                Phd2Error::ConnectionFailed(format!("Failed to connect to {addr}: {e}"))
             })?;
 
         debug!("TCP connection established to {}", addr);
@@ -219,7 +222,8 @@ pub struct TokioProcessHandle {
 
 impl TokioProcessHandle {
     /// Create a new process handle from a tokio Child
-    pub fn new(child: Child) -> Self {
+    #[must_use]
+    pub const fn new(child: Child) -> Self {
         Self { child }
     }
 }
@@ -267,13 +271,14 @@ pub trait ProcessSpawner: Send + Sync {
     ) -> Result<Box<dyn ProcessHandle>>;
 }
 
-/// Tokio implementation of ProcessSpawner
+/// Tokio implementation of `ProcessSpawner`
 #[derive(Default, Clone)]
 pub struct TokioProcessSpawner;
 
 impl TokioProcessSpawner {
     /// Create a new tokio process spawner
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }

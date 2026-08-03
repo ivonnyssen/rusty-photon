@@ -1,4 +1,4 @@
-//! One-off generator for the auto_focus V-curve fixture FITS files.
+//! One-off generator for the `auto_focus` V-curve fixture FITS files.
 //!
 //! Renders 11 monochrome 200×200 frames containing a 3×3 grid of
 //! synthetic Gaussian-PSF stars whose half-flux radius (HFR) traces a
@@ -39,20 +39,20 @@ const NOISE_STDDEV: f64 = 5.0;
 const PEAK: f64 = 5000.0;
 const HFR_TO_SIGMA: f64 = 1.1774_f64; // HFR ≈ sigma · sqrt(2·ln 2)
 
-/// Tiny xorshift64 PRNG. Deterministic, no_std, no external deps.
+/// Tiny xorshift64 PRNG. Deterministic, `no_std`, no external deps.
 struct XorShift64 {
     state: u64,
 }
 
 impl XorShift64 {
-    fn new(seed: u64) -> Self {
+    const fn new(seed: u64) -> Self {
         // xorshift64 fails on a zero seed; the splat avoids that for
         // any plausible input.
         Self {
             state: seed.wrapping_add(0x9E3779B97F4A7C15),
         }
     }
-    fn next_u64(&mut self) -> u64 {
+    const fn next_u64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x << 13;
         x ^= x >> 7;
@@ -90,9 +90,9 @@ impl XorShift64 {
 /// stars — comfortably non-overlapping. The corresponding
 /// connected-component area runs to ~1200 px², so the
 /// fixture-check / BDD step uses `max_area=2000` (which matches
-/// the rp.md auto_focus contract guidance: "donut-shaped PSFs from
+/// the rp.md `auto_focus` contract guidance: "donut-shaped PSFs from
 /// the secondary obstruction can span many hundreds of pixels —
-/// auto-focus callers should set max_area accordingly").
+/// auto-focus callers should set `max_area` accordingly").
 const STAR_X: [u32; 3] = [40, 100, 160];
 const STAR_Y: [u32; 3] = [40, 100, 160];
 
@@ -102,7 +102,7 @@ const STAR_Y: [u32; 3] = [40, 100, 160];
 const OFFSETS: [i32; 11] = [-100, -80, -60, -40, -20, 0, 20, 40, 60, 80, 100];
 
 fn hfr_for_offset(d: i32) -> f64 {
-    2.0 + 0.0005 * (d as f64).powi(2)
+    2.0 + 0.0005 * f64::from(d).powi(2)
 }
 
 /// Render one synthetic frame at the given HFR with deterministic
@@ -121,17 +121,17 @@ fn render(hfr: f64, seed: u64) -> Vec<u16> {
     let mut rng = XorShift64::new(seed);
 
     // Background floor + noise — every pixel.
-    for v in buf.iter_mut() {
+    for v in &mut buf {
         let val = (BACKGROUND + NOISE_STDDEV * rng.standard_normal()).round();
-        *v = val.clamp(0.0, u16::MAX as f64) as u16;
+        *v = val.clamp(0.0, f64::from(u16::MAX)) as u16;
     }
 
     // Iterate over the local neighbourhood of each star instead of
     // the full image. radius = 6σ covers >0.999 of the integrated
     // flux; outside that the contribution rounds to zero anyway.
     let radius = (6.0 * sigma).ceil() as i32;
-    for &cx in STAR_X.iter() {
-        for &cy in STAR_Y.iter() {
+    for &cx in &STAR_X {
+        for &cy in &STAR_Y {
             for dy in -radius..=radius {
                 let y = cy as i32 + dy;
                 if y < 0 || y >= HEIGHT as i32 {
@@ -142,11 +142,13 @@ fn render(hfr: f64, seed: u64) -> Vec<u16> {
                     if x < 0 || x >= WIDTH as i32 {
                         continue;
                     }
-                    let r2 = (dx * dx + dy * dy) as f64;
+                    let r2 = f64::from(dx * dx + dy * dy);
                     let amp = PEAK * (-r2 / two_sigma_sq).exp();
                     let idx = (y as usize) * (WIDTH as usize) + x as usize;
-                    let bg_with_noise = buf[idx] as f64;
-                    let v = (bg_with_noise + amp).round().clamp(0.0, u16::MAX as f64) as u16;
+                    let bg_with_noise = f64::from(buf[idx]);
+                    let v = (bg_with_noise + amp)
+                        .round()
+                        .clamp(0.0, f64::from(u16::MAX)) as u16;
                     if v > buf[idx] {
                         buf[idx] = v;
                     }
@@ -176,13 +178,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_dir.display()
     );
 
-    for &d in OFFSETS.iter() {
+    for &d in &OFFSETS {
         let hfr = hfr_for_offset(d);
         // Seed depends on d so each fixture has its own deterministic
         // noise pattern; offset-by-200 keeps |d|=0 from collapsing to
         // an all-zeros seed.
         let seed = 0xCAFE_BABE_DEAD_BEEF_u64
-            .wrapping_add(d as i64 as u64)
+            .wrapping_add(i64::from(d) as u64)
             .wrapping_add(200);
         let pixels = render(hfr, seed);
 
@@ -199,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The DOC_ID is fixture-specific but stable so re-rendering
         // produces byte-identical files.
-        let doc_id = format!("autofocus-fixture-{:+04}", d);
+        let doc_id = format!("autofocus-fixture-{d:+04}");
 
         write_fits_u16(&path, &pixels, WIDTH, HEIGHT, &doc_id).await?;
         println!("  {}  HFR={:.3} px  → {}", name, hfr, path.display());

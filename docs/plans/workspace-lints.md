@@ -157,7 +157,7 @@ in the workspace. Phase 7.
 | L3 | Deny `panic` — test-crate-root allows | Complete | #831 |
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
-| L2 | Mechanical `cargo clippy --fix` sweep | Not started | |
+| L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Not started | |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
@@ -202,10 +202,47 @@ match the 48 kept attributes exactly, with no new diagnostics.
 
 ## L2 — mechanical sweep
 
-`cargo clippy --fix` per crate, ~3,521 sites, zero judgment. Validated on four
-crates: 141 → 67 warnings with all tests still green. Merge per crate so review
-stays tractable. This phase does not flip any lint to `deny`; it only removes
-debt so later phases are smaller.
+`cargo clippy --fix` per crate, one PR per crate so review stays tractable.
+This phase flips no lint to `deny`; it only removes debt so later phases are
+smaller. Re-measured before running: **3,649 machine-applicable sites across
+41 crates**, of 10,589 total. The sweep cleared 3,644 of them and took the
+workspace from 10,589 sites to 6,381.
+
+The six dual-homed FFI crates are out of scope — they carry no
+`[lints] workspace = true` and belong to L7.
+
+### `suboptimal_flops` is excluded
+
+Its 87 fixes fold expressions into `mul_add`, which changes the result in the
+last ulp and, in the image-analysis code, hides the shape of the maths:
+`(1.0 - (smin/smax).powi(2)).sqrt()` becomes
+`(smin/smax).mul_add(-(smin/smax), 1.0).sqrt()`, and the Gaussian model in
+`fwhm.rs` goes the same way. That is per-site judgment in the code that feeds
+autofocus, so it is deferred to L6b — recorded as a decision, like `exit` in L4.
+
+`imprecise_flops` stays in: it yields `E.powf(x)` → `x.exp()` and
+`(dx*dx + dy*dy).sqrt()` → `dx.hypot(dy)`, both strict improvements.
+
+### Three things `cargo fix` does that a sweep has to plan for
+
+1. **A single non-compiling suggestion reverts the whole crate, silently.**
+   `cargo fix` applies, re-checks, and rolls back everything on error, exiting
+   0. `pa-falcon-rotator` lost all 84 fixes because `missing_const_for_fn`
+   made `mock::bit` `const` while `cast_lossless` rewrote its body to
+   `u8::from(b)` — `From` is not const-stable, so the pair does not compile.
+   `rp-catalog` lost all 21 because `string_lit_as_bytes` yields
+   `&[u8; 8290]`, which does not implement `Read`. **Re-measure after every
+   sweep**; a residual count is the only signal that this happened.
+2. **A fix can create a fresh on-by-default warning.** `single_match_else`
+   rewrote two wait-then-force `match`es into `if let Ok(_) = .. {} else`, an
+   empty then-branch that `redundant_pattern_matching` rejects and refuses to
+   auto-fix (it changes drop order). `-D warnings` then fails the tree.
+   `.is_err()` is the fix, by hand.
+3. **One pass is not enough.** Some suggestions only appear once an earlier
+   one lands. Two passes with the target set, then one with the default set to
+   absorb (2), reached a fixed point everywhere.
+
+The sweep runs on Linux only, so `#[cfg(windows)]` blocks keep their debt.
 
 ## L3 — deny `panic`
 
@@ -256,13 +293,21 @@ Denying it buys a pile of `#[allow]`s or a refactor of a deliberate signature.
 
 Real per-site judgment: `checked_*` / `TryFrom` / `get()`.
 
-| Lint | Prod | Where it concentrates |
-|---|---:|---|
-| `as_conversions` | 368 | camera FFI boundaries (`qhy`/`svbony`/`zwo`/`sky-survey` `camera.rs`), `rp/src/mcp/internals.rs` |
-| `arithmetic_side_effects` | 387 | `rp-catalog`, `rp/src/imaging/analysis/stars.rs`, `rp-fits/src/writer.rs`, `rp-ephemeris` |
-| `indexing_slicing` | 214 | `ppba-driver/src/protocol.rs`, `skywatcher-motor-protocol`, `bdd-infra/src/rp_harness/config.rs` |
+Re-measured after L2, over the 41 crates that inherit the workspace lints:
 
-Crate by crate, `rp` last — it carries 2,077 of the hand-fix residue on its own.
+| Lint | Prod | Total | Where it concentrates |
+|---|---:|---:|---|
+| `as_conversions` | 508 | 604 | camera FFI boundaries (`qhy`/`svbony`/`zwo`/`sky-survey` `camera.rs`), `rp/src/mcp/internals.rs` |
+| `arithmetic_side_effects` | 472 | 546 | `rp-catalog`, `rp/src/imaging/analysis/stars.rs`, `rp-fits/src/writer.rs`, `rp-ephemeris` |
+| `indexing_slicing` | 250 | 525 | `ppba-driver/src/protocol.rs`, `skywatcher-motor-protocol`, `bdd-infra/src/rp_harness/config.rs` |
+
+**L2 did not shrink these three, and `as_conversions` grew.** That is expected,
+not a regression: `cast_lossless` converts exactly the casts that *are*
+lossless, so what it leaves behind is the genuinely lossy set — and every
+`f64::from(x)` it wrote in place of `x as f64` removes a site that was never
+L5's problem. What remains is the work L5 was always going to be.
+
+Crate by crate, `rp` last — it carries the largest share on its own.
 
 ## L6a — split the CI channels
 
@@ -299,16 +344,30 @@ the likely cause — lints have their own issues.
 
 ## L6b — `pedantic` / `nursery` at deny
 
-Still 7,643 sites, wholly untouched by the knobs. L6a removes the reason the
-earlier recommendation was `pedantic = "warn"` with `nursery` off: both groups
-gain lints on the beta channel, and under the old single-job setup that meant a
-recurrently red nightly. Beta no longer fails on lints, so `deny` on stable is
-viable for both.
+**4,257 sites after L2**, wholly untouched by the `clippy.toml` knobs. L6a
+removes the reason the earlier recommendation was `pedantic = "warn"` with
+`nursery` off: both groups gain lints on the beta channel, and under the old
+single-job setup that meant a recurrently red nightly. Beta no longer fails on
+lints, so `deny` on stable is viable for both.
+
+The shape of what is left:
+
+| Lint | Sites | Prod | Note |
+|---|---:|---:|---|
+| `needless_pass_by_ref_mut` | 1,190 | 1 | nursery; effectively all cucumber step fns |
+| `missing_errors_doc` | 488 | 488 | pedantic; a docs project, not a code one |
+| `needless_pass_by_value` | 399 | 73 | |
+| `unused_async` | 266 | 2 | |
+| `too_long_first_doc_paragraph` | 264 | 264 | pedantic; only 6 auto-fixable |
+| `significant_drop_tightening` | 215 | 191 | nursery; lock-scope changes, needs care |
+| `cast_possible_truncation` / `_sign_loss` / `_wrap` | 442 | 349 | overlaps L5's `as_conversions` |
+| `suboptimal_flops` | 87 | 87 | deferred here by L2 — decide it explicitly |
 
 `nursery` still wants its own look before flipping — it is explicitly unstable,
-and `needless_pass_by_ref_mut` alone is 1,172 mostly-test sites. Run L2 and L5
-first; they remove most of the residue this rung would otherwise have to
-absorb.
+and its two biggest entries are a test-shaped false positive
+(`needless_pass_by_ref_mut`) and a lint that rewrites lock scopes
+(`significant_drop_tightening`). Run L5 first: its three lints overlap the 442
+`cast_*` sites, so the two rungs are cheaper together than apart.
 
 ## L7 — dual-homed FFI crates
 

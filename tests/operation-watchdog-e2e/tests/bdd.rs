@@ -1,6 +1,6 @@
 //! BDD entry point for the operation-watchdog end-to-end suite.
 //!
-//! Spawns a real rp and a real sentinel (plus OmniSim and an in-process
+//! Spawns a real rp and a real sentinel (plus `OmniSim` and an in-process
 //! plate-solver stub) and drives the watchdog through wedge → escalation →
 //! corrective ladder. See `world.rs` for the process lifecycle.
 

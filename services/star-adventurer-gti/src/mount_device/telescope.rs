@@ -187,7 +187,7 @@ impl Telescope for MountDevice {
 
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
         local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map(|lst| lst.value())
+            .map(super::super::units::Lst::value)
             .map_err(ASCOMError::from)
     }
 

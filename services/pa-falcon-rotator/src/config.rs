@@ -76,15 +76,15 @@ pub struct SwitchConfig {
     pub enabled: bool,
 }
 
-fn default_baud_rate() -> u32 {
+const fn default_baud_rate() -> u32 {
     9600
 }
 
-fn default_timeout() -> Duration {
+const fn default_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -150,6 +150,7 @@ pub struct CliOverrides {
 
 impl CliOverrides {
     /// Dotted JSON paths currently pinned by an active override.
+    #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
         if self.serial_port.is_some() {
@@ -372,7 +373,7 @@ mod tests {
     #[test]
     fn config_debug_contains_struct_names() {
         let config = Config::default();
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
         assert!(debug_str.contains("Config"));
         assert!(debug_str.contains("SerialConfig"));
         assert!(debug_str.contains("AlpacaServerConfig"));

@@ -1,5 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! Deep Sky Dad FP2 driver — ASCOM Alpaca CoverCalibrator.
+//! Deep Sky Dad FP2 driver — ASCOM Alpaca `CoverCalibrator`.
 //!
 //! Wraps the FP2's bracketed ASCII serial protocol behind the workspace's
 //! `rusty-photon-shared-transport` lifecycle scaffolding.
@@ -81,10 +81,12 @@ impl Default for ServerBuilder {
 }
 
 impl ServerBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.factory = default_factory(&config);
         self.config = config;
@@ -100,6 +102,7 @@ impl ServerBuilder {
     /// Set the config source (persist path + CLI overrides) for the
     /// `config.get` / `config.apply` actions. Together with
     /// [`Self::with_reload_signal`], this enables config editing.
+    #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_path = Some(path);
         self.overrides = overrides;
@@ -109,6 +112,7 @@ impl ServerBuilder {
     /// Provide the reload trigger `config.apply` fires after its response
     /// flushes. Together with [`Self::with_config_source`], this enables config
     /// editing.
+    #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
         self
@@ -202,7 +206,7 @@ impl ServerBuilder {
             // and the only stdout consumer (bdd-infra's port parser) never runs
             // services with --service.
             if !rusty_photon_service_lifecycle::is_scm_service() {
-                println!("Bound Alpaca server bound_addr={}", local_addr);
+                println!("Bound Alpaca server bound_addr={local_addr}");
             }
             info!("Bound Alpaca server bound_addr={}", local_addr);
 
@@ -249,7 +253,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -269,16 +273,12 @@ impl BoundServer {
         // HTTP server errors out — otherwise the supervisor and port would leak
         // past a serve failure.
         let serve = async {
-            match tls {
-                Some(ref tls_config) => {
-                    info!("dsd-fp2 started on {} (TLS)", local_addr);
-                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                        .await
-                }
-                None => {
-                    info!("dsd-fp2 started on {}", local_addr);
-                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
-                }
+            if let Some(ref tls_config) = tls {
+                info!("dsd-fp2 started on {} (TLS)", local_addr);
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+            } else {
+                info!("dsd-fp2 started on {}", local_addr);
+                rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
             }
         };
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;

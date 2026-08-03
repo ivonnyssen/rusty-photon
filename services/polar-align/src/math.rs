@@ -31,14 +31,17 @@ pub struct Vec3 {
 }
 
 impl Vec3 {
-    pub fn new(x: f64, y: f64, z: f64) -> Self {
+    #[must_use]
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
 
+    #[must_use]
     pub fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
+    #[must_use]
     pub fn cross(self, other: Self) -> Self {
         Self {
             x: self.y * other.z - self.z * other.y,
@@ -47,10 +50,12 @@ impl Vec3 {
         }
     }
 
+    #[must_use]
     pub fn norm(self) -> f64 {
         self.dot(self).sqrt()
     }
 
+    #[must_use]
     pub fn scale(self, s: f64) -> Self {
         Self::new(self.x * s, self.y * s, self.z * s)
     }
@@ -68,6 +73,7 @@ impl Vec3 {
     }
 
     /// Angle to `other` in radians, numerically stable near 0 and π.
+    #[must_use]
     pub fn angle_to(self, other: Self) -> f64 {
         self.cross(other).norm().atan2(self.dot(other))
     }
@@ -99,19 +105,22 @@ pub struct Mat3 {
 }
 
 impl Mat3 {
-    pub fn from_columns(c0: Vec3, c1: Vec3, c2: Vec3) -> Self {
+    #[must_use]
+    pub const fn from_columns(c0: Vec3, c1: Vec3, c2: Vec3) -> Self {
         Self {
             rows: [[c0.x, c1.x, c2.x], [c0.y, c1.y, c2.y], [c0.z, c1.z, c2.z]],
         }
     }
 
-    pub fn identity() -> Self {
+    #[must_use]
+    pub const fn identity() -> Self {
         Self {
             rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         }
     }
 
-    pub fn transpose(self) -> Self {
+    #[must_use]
+    pub const fn transpose(self) -> Self {
         let r = self.rows;
         Self {
             rows: [
@@ -122,6 +131,7 @@ impl Mat3 {
         }
     }
 
+    #[must_use]
     pub fn mul_vec(self, v: Vec3) -> Vec3 {
         let r = self.rows;
         Vec3::new(
@@ -131,6 +141,7 @@ impl Mat3 {
         )
     }
 
+    #[must_use]
     pub fn mul_mat(self, other: Self) -> Self {
         let mut rows = [[0.0; 3]; 3];
         for (i, row) in rows.iter_mut().enumerate() {
@@ -142,12 +153,14 @@ impl Mat3 {
     }
 
     /// The `j`-th column as a vector.
-    pub fn column(self, j: usize) -> Vec3 {
+    #[must_use]
+    pub const fn column(self, j: usize) -> Vec3 {
         Vec3::new(self.rows[0][j], self.rows[1][j], self.rows[2][j])
     }
 
     /// The determinant: +1 for a proper rotation, −1 for an improper
     /// (mirrored) orthogonal matrix.
+    #[must_use]
     pub fn determinant(self) -> f64 {
         let r = self.rows;
         r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
@@ -156,6 +169,7 @@ impl Mat3 {
     }
 
     /// Rodrigues rotation about a unit axis by `angle_rad`.
+    #[must_use]
     pub fn from_axis_angle(axis: Vec3, angle_rad: f64) -> Self {
         let (s, c) = angle_rad.sin_cos();
         let t = 1.0 - c;
@@ -193,6 +207,7 @@ pub struct SolvedFrame {
 }
 
 /// Celestial unit vector from RA/dec in degrees.
+#[must_use]
 pub fn unit_from_radec(ra_deg: f64, dec_deg: f64) -> Vec3 {
     let ra = ra_deg.to_radians();
     let dec = dec_deg.to_radians();
@@ -200,6 +215,7 @@ pub fn unit_from_radec(ra_deg: f64, dec_deg: f64) -> Vec3 {
 }
 
 /// RA/dec in degrees (RA folded to [0, 360)) from a unit vector.
+#[must_use]
 pub fn radec_from_unit(v: Vec3) -> (f64, f64) {
     let ra = v.y.atan2(v.x).to_degrees().rem_euclid(360.0);
     let dec = v.z.clamp(-1.0, 1.0).asin().to_degrees();
@@ -274,6 +290,7 @@ pub fn attitude_from_wcs(frame: &SolvedFrame) -> Result<Mat3> {
 /// underwent between two attitudes: `now · prevᵀ`. Proper (det +1)
 /// whenever both attitudes share the same parity, which they do for a
 /// fixed optical train.
+#[must_use]
 pub fn relative_rotation(prev: Mat3, now: Mat3) -> Mat3 {
     now.mul_mat(prev.transpose())
 }
@@ -449,6 +466,7 @@ pub fn wcs_from_attitude(
 
 /// Unit vector in the horizontal cartesian frame
 /// (x → north, y → east, z → zenith) for an az/alt in degrees.
+#[must_use]
 pub fn horizontal_unit(azimuth_deg: f64, altitude_deg: f64) -> Vec3 {
     let az = azimuth_deg.to_radians();
     let alt = altitude_deg.to_radians();
@@ -470,6 +488,7 @@ pub struct AlignmentErrors {
 }
 
 impl AlignmentErrors {
+    #[must_use]
     pub fn azimuth_direction(&self) -> &'static str {
         if self.azimuth_error_deg >= 0.0 {
             "move azimuth west"
@@ -478,6 +497,7 @@ impl AlignmentErrors {
         }
     }
 
+    #[must_use]
     pub fn altitude_direction(&self) -> &'static str {
         if self.altitude_error_deg >= 0.0 {
             "lower altitude"
@@ -488,9 +508,11 @@ impl AlignmentErrors {
 }
 
 /// Decompose the axis-to-pole offset into the two adjuster motions.
+///
 /// Azimuth is measured as the true angular component along the local
 /// east direction (a great-circle angle, not a coordinate azimuth
 /// difference — the two differ by cos(altitude)).
+#[must_use]
 pub fn alignment_errors(
     axis_azimuth_deg: f64,
     axis_altitude_deg: f64,

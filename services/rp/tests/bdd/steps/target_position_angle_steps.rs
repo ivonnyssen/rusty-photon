@@ -1,7 +1,7 @@
 //! BDD step definitions for the effective position angle
 //! (`target_position_angle.feature`, plan Decision 5 / P2).
 //!
-//! These scenarios boot rp the ordinary OmniSim way (`tool_steps`)
+//! These scenarios boot rp the ordinary `OmniSim` way (`tool_steps`)
 //! with a camera in an imaging train, since the second fallback layer
 //! lives in `equipment.optical_trains[].default_position_angle_degrees`;
 //! the target seeds reuse `target_store_crud_steps::add_target_fixture`
@@ -85,7 +85,7 @@ fn result_position_angle(world: &mut RpWorld, expected: f64) {
     let value = success_payload(world);
     let angle = value
         .get("position_angle_degrees")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("missing `position_angle_degrees` in: {value}"));
     assert!(
         (angle - expected).abs() < f64::EPSILON,
@@ -99,7 +99,7 @@ fn result_position_angle_null(world: &mut RpWorld) {
     assert!(
         value
             .get("position_angle_degrees")
-            .is_some_and(|v| v.is_null()),
+            .is_some_and(serde_json::Value::is_null),
         "expected position_angle_degrees=null, got: {value}"
     );
 }

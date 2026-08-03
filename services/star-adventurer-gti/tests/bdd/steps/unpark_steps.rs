@@ -1,4 +1,4 @@
-//! Steps for unpark_from_ap_position.feature.
+//! Steps for `unpark_from_ap_position.feature`.
 
 use crate::world::{CommandLogTimeout, StarAdventurerWorld, DEBUG_RETRY_WINDOW};
 use cucumber::{given, then, when};

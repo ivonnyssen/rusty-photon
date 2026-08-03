@@ -1,9 +1,9 @@
-//! BDD step definitions for compute_image_stats MCP tool
+//! BDD step definitions for `compute_image_stats` MCP tool
 //!
-//! The capture step is defined in tool_steps.rs (shared across features).
-//! It stores last_image_path and last_document_id on the world for chaining.
+//! The capture step is defined in `tool_steps.rs` (shared across features).
+//! It stores `last_image_path` and `last_document_id` on the world for chaining.
 //!
-//! Shared steps reused from measure_basic_steps.rs:
+//! Shared steps reused from `measure_basic_steps.rs`:
 //! (`I fetch the exposure document for the captured document_id`,
 //! `the exposure document should contain a section named ...`, and
 //! `the {string} section should contain {string}`).
@@ -71,13 +71,11 @@ fn stats_contains_non_negative_integer(world: &mut RpWorld, field: String) {
 
     let value = stats
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in image stats, got: {:?}", field, stats));
+        .unwrap_or_else(|| panic!("expected '{field}' in image stats, got: {stats:?}"));
 
     assert!(
         value.as_u64().is_some() || value.as_i64().is_some_and(|v| v >= 0),
-        "expected '{}' to be a non-negative integer, got: {:?}",
-        field,
-        value
+        "expected '{field}' to be a non-negative integer, got: {value:?}"
     );
 }
 
@@ -90,17 +88,15 @@ fn stats_contains_non_negative_number(world: &mut RpWorld, field: String) {
 
     let value = stats
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in image stats, got: {:?}", field, stats));
+        .unwrap_or_else(|| panic!("expected '{field}' in image stats, got: {stats:?}"));
 
     let num = value
         .as_f64()
-        .unwrap_or_else(|| panic!("expected '{}' to be a number, got: {:?}", field, value));
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
 
     assert!(
         num >= 0.0,
-        "expected '{}' to be non-negative, got: {}",
-        field,
-        num
+        "expected '{field}' to be non-negative, got: {num}"
     );
 }
 
@@ -113,16 +109,13 @@ fn stats_contains_positive_integer(world: &mut RpWorld, field: String) {
 
     let value = stats
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in image stats, got: {:?}", field, stats));
+        .unwrap_or_else(|| panic!("expected '{field}' in image stats, got: {stats:?}"));
 
     let num = value.as_u64().unwrap_or_else(|| {
-        panic!(
-            "expected '{}' to be a non-negative integer, got: {:?}",
-            field, value
-        )
+        panic!("expected '{field}' to be a non-negative integer, got: {value:?}")
     });
 
-    assert!(num > 0, "expected '{}' to be positive, got: {}", field, num);
+    assert!(num > 0, "expected '{field}' to be positive, got: {num}");
 }
 
 #[then(expr = "the image stats result should contain {string}")]
@@ -134,9 +127,7 @@ fn stats_contains_field(world: &mut RpWorld, field: String) {
 
     assert!(
         stats.get(&field).is_some(),
-        "expected '{}' in image stats, got: {:?}",
-        field,
-        stats
+        "expected '{field}' in image stats, got: {stats:?}"
     );
 }
 

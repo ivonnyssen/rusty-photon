@@ -12,7 +12,7 @@ async fn generate_tls_certs(world: &mut FilemonitorWorld) {
 }
 
 #[given("filemonitor is configured with TLS enabled")]
-fn filemonitor_configured_with_tls(_world: &mut FilemonitorWorld) {
+const fn filemonitor_configured_with_tls(_world: &mut FilemonitorWorld) {
     // Marker — config is built in the When step
 }
 
@@ -41,7 +41,7 @@ async fn alpaca_management_responds_https(world: &mut FilemonitorWorld) {
         .as_ref()
         .expect("filemonitor not started")
         .port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     // No auth is configured in this scenario, so the credentials the probe
     // sends are ignored; a 200 proves the endpoint answers over HTTPS.

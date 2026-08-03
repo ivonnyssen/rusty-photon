@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// auto-advance can jump straight to *this* timer instead of first letting
 /// the connection-handling task run out its own (possibly multi-step)
 /// shutdown, turning a working implementation into a false "Elapsed".
-const HANG_GUARD: Duration = Duration::from_secs(300);
+const HANG_GUARD: Duration = Duration::from_mins(5);
 
 #[tokio::test]
 async fn https_roundtrip_with_generated_certs() {
@@ -180,7 +180,7 @@ async fn swapped_pair_is_served_without_rebinding() {
     // Backdate the first pair so the rewrite below is a visible mtime change.
     for path in [&cert_path, &key_path] {
         let file = std::fs::File::options().write(true).open(path).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_hours(1))
             .unwrap();
     }
 
@@ -428,7 +428,7 @@ async fn oversized_plaintext_head_without_a_terminator_is_dropped() {
     // rather than waiting out the full I/O timeout.
     socket.write_all(b"GET /health HTTP/1.1\r\n").await.unwrap();
     let filler = b"X-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n";
-    for _ in 0..(9 * 1024 / filler.len() + 1) {
+    for _ in 0..=(9 * 1024 / filler.len()) {
         // The server may already have dropped the connection (and thus the
         // socket) by the time we've written past its size cap, which surfaces
         // here as a write error rather than at the read below — either is

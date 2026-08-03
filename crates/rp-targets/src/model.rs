@@ -143,7 +143,7 @@ pub enum TargetSlugError {
 /// `(filter, binning, exposure_duration)` triple is the quota key from the
 /// filename scheme — frame type is always `Light` for goals, and gain is
 /// a fixed per-setup camera setting rather than a sub-spec dimension.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcquisitionGoal {
     /// Filter name, e.g. `"Ha"`, `"L"`, `"R"`.
     pub filter: String,

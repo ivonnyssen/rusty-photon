@@ -69,7 +69,7 @@ pub struct UnitFacts {
     pub failed: Option<bool>,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -104,6 +104,7 @@ pub struct PlatformFacts {
 
 impl PlatformFacts {
     /// Look up an installed unit by stem.
+    #[must_use]
     pub fn unit(&self, name: &str) -> Option<&UnitFacts> {
         self.units.iter().find(|u| u.name == name)
     }
@@ -121,6 +122,7 @@ impl PlatformFacts {
     /// (no service manager on PATH, unexpected output) degrade to an empty
     /// inventory with a `debug!` trail, because "no packaged services" is a
     /// legitimate host state, not an error.
+    #[must_use]
     pub fn gather() -> Self {
         #[cfg(target_os = "linux")]
         {
@@ -241,6 +243,7 @@ fn list_systemd_units() -> Vec<UnitFacts> {
 /// reads as "this unit is fine", which is the silence this check exists to
 /// break. Timers are ignored: the inventory this joins against is
 /// services only.
+#[must_use]
 pub fn parse_failed_unit_listing(listing: &str) -> Vec<String> {
     listing
         .lines()
@@ -273,6 +276,7 @@ fn systemd_unit_is_active(name: &str) -> Option<bool> {
 /// unit file dump (`systemctl cat`). systemd semantics: the last assignment
 /// wins and an empty one resets. Prefix modifiers (`@`, `-`, `:`, `+`, `!`)
 /// are stripped; the first whitespace-separated token is the executable.
+#[must_use]
 pub fn parse_exec_start(unit_file: &str) -> Option<PathBuf> {
     let mut exec = None;
     for line in unit_file.lines() {
@@ -297,6 +301,7 @@ pub fn parse_exec_start(unit_file: &str) -> Option<PathBuf> {
 
 /// Parse `systemctl list-unit-files --no-legend --plain` lines
 /// (`<unit> <state> [preset]`) into `(stem, enabled)` pairs.
+#[must_use]
 pub fn parse_unit_file_listing(listing: &str) -> Vec<(String, bool)> {
     listing
         .lines()
@@ -320,6 +325,7 @@ pub fn parse_unit_file_listing(listing: &str) -> Vec<(String, bool)> {
 /// (`systemctl cat`). Multiple assignments accumulate; an empty
 /// assignment resets the list — systemd's own semantics, which matter
 /// when a drop-in overrides the packaged unit.
+#[must_use]
 pub fn parse_supplementary_groups(unit_file: &str) -> Vec<String> {
     let mut groups: Vec<String> = Vec::new();
     for line in unit_file.lines() {
@@ -342,6 +348,7 @@ pub fn parse_supplementary_groups(unit_file: &str) -> Vec<String> {
 /// Extract the `ConditionPathExists=` path from a unit file dump
 /// (`systemctl cat`). Negated (`!`-prefixed) conditions are not gates on a
 /// file the operator must provide, so they are ignored.
+#[must_use]
 pub fn parse_condition_path(unit_file: &str) -> Option<PathBuf> {
     unit_file.lines().find_map(|line| {
         let value = line.trim().strip_prefix("ConditionPathExists=")?.trim();
@@ -357,6 +364,7 @@ pub fn parse_condition_path(unit_file: &str) -> Option<PathBuf> {
 /// `"rusty-photon"` user literal (the shape of the rule the sentinel
 /// packages ship). A heuristic — polkit rules are JavaScript and doctor
 /// does not execute them — and the check's detail text says so.
+#[must_use]
 pub fn polkit_grants_sentinel_restart(rules_dirs: &[&Path]) -> bool {
     rules_dirs.iter().any(|dir| {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -405,9 +413,10 @@ fn gather_windows() -> PlatformFacts {
 }
 
 /// Parse `Name<TAB>StartMode<TAB>State<TAB>PathName` lines from the
-/// Win32_Service query. `StartMode` is `Auto`/`Manual`/`Disabled` (CIM
+/// `Win32_Service` query. `StartMode` is `Auto`/`Manual`/`Disabled` (CIM
 /// vocabulary — Get-Service would say `Automatic`); `State` is `Running`
 /// while the service is up.
+#[must_use]
 pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
     listing
         .lines()
@@ -436,7 +445,7 @@ pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
         .collect()
 }
 
-/// The executable from a Win32_Service `PathName`: quoted
+/// The executable from a `Win32_Service` `PathName`: quoted
 /// (`"C:\Program Files\x\svc.exe" --service`) or bare. A bare path is cut
 /// at the first space — the MSI quotes every path it installs, so a bare
 /// value with spaces is not a shape this stack produces.
@@ -481,6 +490,7 @@ fn gather_macos() -> PlatformFacts {
 /// nightly channel's formulas are `rusty-photon-<svc>-nightly` but install
 /// the same binaries and services, so the channel suffix is stripped to
 /// recover the unit stem.
+#[must_use]
 pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
     listing
         .lines()

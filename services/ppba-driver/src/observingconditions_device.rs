@@ -1,4 +1,4 @@
-//! PPBA ObservingConditions device implementation.
+//! PPBA `ObservingConditions` device implementation.
 //!
 //! Like the Switch device, this holds an `Option<Session<PpbaCodec>>` —
 //! the session existing is the canonical "Connected" state.
@@ -43,6 +43,7 @@ pub struct PpbaObservingConditionsDevice {
 }
 
 impl PpbaObservingConditionsDevice {
+    #[must_use]
     pub fn new(config: ObservingConditionsConfig, manager: Arc<PpbaManager>) -> Self {
         Self {
             config,
@@ -54,6 +55,7 @@ impl PpbaObservingConditionsDevice {
 
     /// Attach the shared config-action context, enabling `config.get` /
     /// `config.apply` / `config.schema` on this device.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<PpbaDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
@@ -143,13 +145,13 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
         if period < 0.0 {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Average period cannot be negative, got {}", period),
+                format!("Average period cannot be negative, got {period}"),
             ));
         }
         if period > 24.0 {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Average period cannot exceed 24 hours, got {}", period),
+                format!("Average period cannot exceed 24 hours, got {period}"),
             ));
         }
         let duration = if period == 0.0 {
@@ -233,11 +235,11 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             _ => {
                 return Err(ASCOMError::new(
                     ASCOMErrorCode::INVALID_VALUE,
-                    format!("Unknown sensor name: {}", sensor_name),
+                    format!("Unknown sensor name: {sensor_name}"),
                 ))
             }
         };
-        Ok(duration.map(|d| d.as_secs_f64()).unwrap_or(f64::MAX))
+        Ok(duration.map_or(f64::MAX, |d| d.as_secs_f64()))
     }
 
     async fn sensor_description(&self, sensor_name: String) -> ASCOMResult<String> {
@@ -256,7 +258,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             }
             _ => Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Unknown sensor name: {}", sensor_name),
+                format!("Unknown sensor name: {sensor_name}"),
             )),
         }
     }

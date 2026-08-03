@@ -252,7 +252,7 @@ async fn invoke_handler(
     let mut estimated = measurement.saturating_add(state.config.adjustment.max_duration / 2);
     let mut max = measurement
         .saturating_add(state.config.adjustment.max_duration)
-        .saturating_add(std::time::Duration::from_secs(60));
+        .saturating_add(std::time::Duration::from_mins(1));
     if state.config.measurement.mode == MeasurementMode::ManualRotation {
         estimated = estimated.saturating_add(state.config.measurement.manual_timeout);
         max = max.saturating_add(state.config.measurement.manual_timeout.saturating_mul(2));
@@ -317,7 +317,7 @@ async fn post_to_rp(
     config: &PolarAlignConfig,
 ) {
     let base_url = rp_base_url(mcp_server_url);
-    let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
+    let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
 
     let client = match rusty_photon_tls::client::build_reqwest_client(config.rp_ca()) {
         Ok(client) => client,

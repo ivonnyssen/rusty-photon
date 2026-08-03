@@ -2,7 +2,7 @@
 //!
 //! Each scenario spawns the qhy-camera binary (built with the `simulation`
 //! backend so `Sdk::new()` yields a QHY178M-Simulated camera + 7-position CFW)
-//! and drives it through the typed `ascom-alpaca` Camera / FilterWheel clients
+//! and drives it through the typed `ascom-alpaca` Camera / `FilterWheel` clients
 //! over real HTTP — mirroring the qhy-focuser / dsd-fp2 pattern.
 
 use std::net::SocketAddr;
@@ -155,9 +155,10 @@ impl CameraWorld {
         // an actionable error instead of proceeding against an unhealthy or
         // never-started service. (An empty backend's *healthy* state is zero
         // cameras AFTER a successful get_devices() — which returns inside the loop.)
-        if self.empty_backend {
-            panic!("qhy-camera management API did not respond within 20s (empty backend)");
-        }
+        assert!(
+            !self.empty_backend,
+            "qhy-camera management API did not respond within 20s (empty backend)"
+        );
         panic!("qhy-camera did not register a Camera device within 20s");
     }
 

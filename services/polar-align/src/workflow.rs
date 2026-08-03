@@ -510,15 +510,15 @@ async fn run_inner(
     let finish = shared.finish_signal().await;
     loop {
         tokio::select! {
-            _ = finish.notified() => {
+            () = finish.notified() => {
                 info!("adjustment finished by operator");
                 break;
             }
-            _ = tokio::time::sleep_until(deadline) => {
+            () = tokio::time::sleep_until(deadline) => {
                 info!("adjustment reached its configured maximum duration");
                 break;
             }
-            _ = tokio::time::sleep(config.adjustment.interval) => {}
+            () = tokio::time::sleep(config.adjustment.interval) => {}
         }
 
         iterations += 1;
@@ -555,9 +555,8 @@ async fn run_inner(
                 );
                 if consecutive_failures >= config.adjustment.max_solve_failures {
                     return Err(PolarAlignError::Workflow(format!(
-                        "{} consecutive adjustment solves failed (last: {}); aborting — \
-                         check sky conditions",
-                        consecutive_failures, e
+                        "{consecutive_failures} consecutive adjustment solves failed (last: {e}); aborting — \
+                         check sky conditions"
                     )));
                 }
                 let mut status = shared.status.write().await;
@@ -639,7 +638,7 @@ async fn wait_for_manual_rotation(
 
 /// Whether a mode's axis is extracted from full camera attitudes —
 /// which makes every measurement solve's `wcs_matrix` mandatory.
-fn requires_attitudes(mode: MeasurementMode) -> bool {
+const fn requires_attitudes(mode: MeasurementMode) -> bool {
     matches!(
         mode,
         MeasurementMode::CurrentPosition | MeasurementMode::ManualRotation
@@ -692,7 +691,7 @@ fn measurement_attitude(
 /// anchored on the mount's own reported position and stepping away
 /// from the meridian on the side the mount already stands (positive
 /// hour angle = west of the meridian), so an RA-only sweep can never
-/// cross it and invite a GoTo flip. Keeping the mount's *reported*
+/// cross it and invite a `GoTo` flip. Keeping the mount's *reported*
 /// declination is what guarantees the dec axis never moves.
 fn current_position_targets(
     ra0_deg: f64,
@@ -1071,7 +1070,7 @@ mod tests {
         assert_eq!(stars[0].y, 383.0);
         // The rotation center in 0-based indices is CRPIX − 1.
         let (dx, dy) = (stars[0].target_x - 511.0, stars[0].target_y - 383.0);
-        let radius = (dx * dx + dy * dy).sqrt();
+        let radius = dx.hypot(dy);
         assert!(
             (radius - 50.0).abs() < 1e-6,
             "target must stay 50 px from the rotation center, got {radius}"

@@ -34,7 +34,7 @@
 //! 2. (Issue #319.) A *single* per-iteration mount read stalled and
 //!    hung forever, because rp's Alpaca HTTP client had **no
 //!    per-request timeout** — a device that accepts the connection but
-//!    never answers (an overloaded OmniSim in CI) blocks the `await`
+//!    never answers (an overloaded `OmniSim` in CI) blocks the `await`
 //!    indefinitely, and the blocking-op poll deadlines guard *loops*,
 //!    not a single in-flight request. Fixed in `equipment::alpaca` with
 //!    a per-request connect + read timeout, plus a transient-failure
@@ -145,10 +145,10 @@ pub enum CenterOnTargetError {
 
 #[async_trait]
 pub trait PlateSolveOps {
-    /// Plate-solve the named document_id. The MCP-side adapter sets
+    /// Plate-solve the named `document_id`. The MCP-side adapter sets
     /// `use_mount_hints: true` so the wrapper hint plumbing stays in
     /// the existing `plate_solve` Contract. Synthetic adapters
-    /// ignore the document_id and return canned outcomes.
+    /// ignore the `document_id` and return canned outcomes.
     async fn solve(&self, document_id: &str) -> Result<SolveOutcome, String>;
 }
 
@@ -201,6 +201,7 @@ pub fn validate_params(params: &CenterOnTargetParams) -> Result<(), CenterOnTarg
 /// Uses the haversine formula — numerically stable for the small
 /// angles centering deals with (typically arcseconds-to-arcminutes),
 /// and closed-form so no external dependency is needed.
+#[must_use]
 pub fn haversine_arcsec(ra1_deg: f64, dec1_deg: f64, ra2_deg: f64, dec2_deg: f64) -> f64 {
     let to_rad = std::f64::consts::PI / 180.0;
     let phi1 = dec1_deg * to_rad;
@@ -382,7 +383,7 @@ mod tests {
                 assert_eq!(requested, MAX_ATTEMPTS + 1);
                 assert_eq!(max, MAX_ATTEMPTS);
             }
-            other => panic!("expected MaxAttemptsExceedsCap, got {:?}", other),
+            other => panic!("expected MaxAttemptsExceedsCap, got {other:?}"),
         }
     }
 
@@ -413,8 +414,7 @@ mod tests {
         let arcsec = haversine_arcsec(160.27, 41.269, 160.27, 41.269);
         assert!(
             arcsec < 1e-6,
-            "expected 0 arcsec for identical inputs, got {}",
-            arcsec
+            "expected 0 arcsec for identical inputs, got {arcsec}"
         );
     }
 
@@ -426,8 +426,7 @@ mod tests {
         let arcsec = haversine_arcsec(0.0, 0.0, 1.0 / 3600.0, 0.0);
         assert!(
             (arcsec - 1.0).abs() < 1e-6,
-            "expected 1 arcsec, got {}",
-            arcsec
+            "expected 1 arcsec, got {arcsec}"
         );
     }
 
@@ -437,8 +436,7 @@ mod tests {
         let arcsec = haversine_arcsec(160.27, 41.0, 160.27, 41.0 + 1.0 / 60.0);
         assert!(
             (arcsec - 60.0).abs() < 1e-6,
-            "expected 60 arcsec, got {}",
-            arcsec
+            "expected 60 arcsec, got {arcsec}"
         );
     }
 
@@ -454,14 +452,11 @@ mod tests {
         let no_wrap = haversine_arcsec(0.0, 0.0, 0.02, 0.0);
         assert!(
             (across_zero - no_wrap).abs() < 1e-6,
-            "wrap mismatch: across-zero {} vs no-wrap {}",
-            across_zero,
-            no_wrap
+            "wrap mismatch: across-zero {across_zero} vs no-wrap {no_wrap}"
         );
         assert!(
             (across_zero - 72.0).abs() < 0.05,
-            "expected ~72″ separation, got {}",
-            across_zero
+            "expected ~72″ separation, got {across_zero}"
         );
     }
 
@@ -512,7 +507,7 @@ mod tests {
         }
     }
 
-    /// Mount that records every sync_to / slew_to call. Tests inspect
+    /// Mount that records every `sync_to` / `slew_to` call. Tests inspect
     /// the log to verify the sync-on-iter-1-only invariant.
     #[derive(Default)]
     struct StubMounter {
@@ -606,7 +601,7 @@ mod tests {
             Err(CenterOnTargetError::ToleranceNotReached { attempts, .. }) => {
                 assert_eq!(attempts, 3);
             }
-            other => panic!("expected ToleranceNotReached, got {:?}", other),
+            other => panic!("expected ToleranceNotReached, got {other:?}"),
         }
         // The loop ran 3 iterations, each ending with a slew (since
         // residual stayed > tolerance every time).
@@ -638,10 +633,9 @@ mod tests {
         match err {
             Err(CenterOnTargetError::Equipment(msg)) => assert!(
                 msg.contains("camera offline"),
-                "expected propagated message, got: {}",
-                msg
+                "expected propagated message, got: {msg}"
             ),
-            other => panic!("expected Equipment, got {:?}", other),
+            other => panic!("expected Equipment, got {other:?}"),
         }
     }
 
@@ -663,10 +657,9 @@ mod tests {
         match err {
             Err(CenterOnTargetError::Equipment(msg)) => assert!(
                 msg.contains("solve_failed"),
-                "expected propagated message, got: {}",
-                msg
+                "expected propagated message, got: {msg}"
             ),
-            other => panic!("expected Equipment, got {:?}", other),
+            other => panic!("expected Equipment, got {other:?}"),
         }
     }
 
@@ -701,10 +694,9 @@ mod tests {
         match err {
             Err(CenterOnTargetError::Equipment(msg)) => assert!(
                 msg.contains("tracking is off"),
-                "expected propagated message, got: {}",
-                msg
+                "expected propagated message, got: {msg}"
             ),
-            other => panic!("expected Equipment, got {:?}", other),
+            other => panic!("expected Equipment, got {other:?}"),
         }
     }
 

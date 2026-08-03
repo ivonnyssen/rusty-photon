@@ -112,6 +112,7 @@ impl StubBehavior {
     /// (≈ M31), Dec 41.269°, 1.05"/px scale, 12.3° rotation, plus a
     /// populated matrix consistent with that scale (2.9167e-4 deg/px,
     /// unrotated axes, negative determinant = normal parity).
+    #[must_use]
     pub fn default_canned_wcs() -> Self {
         Self::Canned(CannedWcs {
             ra_center: 10.6848,
@@ -187,7 +188,7 @@ impl PlateSolverStub {
             .await
             .expect("failed to bind plate solver stub");
         let port = listener.local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{}", port);
+        let url = format!("http://127.0.0.1:{port}");
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

@@ -1,4 +1,4 @@
-//! Step definitions for calibrator_control.feature.
+//! Step definitions for `calibrator_control.feature`.
 
 use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{then, when};

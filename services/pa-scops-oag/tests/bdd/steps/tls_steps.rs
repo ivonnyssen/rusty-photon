@@ -17,7 +17,7 @@ fn configured_with_tls(world: &mut ScopsWorld) {
     world.config = Some(pa_scops_oag::Config {
         serial: pa_scops_oag::SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval: std::time::Duration::from_secs(60),
+            polling_interval: std::time::Duration::from_mins(1),
             ..Default::default()
         },
         server: pa_scops_oag::AlpacaServerConfig::new(0),

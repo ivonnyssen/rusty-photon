@@ -38,7 +38,7 @@ pub struct CenterOnTargetToolParams {
     /// solved center and (ra, dec), in arcseconds.
     #[serde(default)]
     pub tolerance_arcsec: Option<f64>,
-    /// Hard cap on the number of iterations. Capped at MAX_ATTEMPTS
+    /// Hard cap on the number of iterations. Capped at `MAX_ATTEMPTS`
     /// (50) before any motion.
     #[serde(default)]
     pub max_attempts: Option<usize>,

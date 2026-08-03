@@ -139,6 +139,7 @@ pub struct HttpWatchdogEventSource {
 }
 
 impl HttpWatchdogEventSource {
+    #[must_use]
     pub fn new(rp_url: &str) -> Self {
         let url = format!("{}/api/events/subscribe", rp_url.trim_end_matches('/'));
         Self {
@@ -180,7 +181,7 @@ impl WatchdogEventSource for HttpWatchdogEventSource {
                     // stop immediately and drop `resp` so the HTTP connection
                     // closes — otherwise this task could block on `chunk()`
                     // forever on a quiet stream, leaking the task + connection.
-                    _ = tx.closed() => return,
+                    () = tx.closed() => return,
                     chunk = resp.chunk() => match chunk {
                         Ok(Some(chunk)) => {
                             buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -273,22 +274,19 @@ impl OperationDeadlineMonitor {
         if self.on_expiry_for(family) != OnExpiry::AbortThenRestart {
             return String::new();
         }
-        match self.resolve_target(family).await {
-            Some(target) => {
-                debug!(
-                    "watchdog '{}' running corrective ladder for {} via service '{}'",
-                    self.name, family, target.service_name
-                );
-                self.corrective.run(&target).await.action_suffix()
-            }
-            None => {
-                warn!(
-                    "watchdog '{}' family '{}' is abort_then_restart but has no resolvable \
-                     service; notifying only",
-                    self.name, family
-                );
-                String::new()
-            }
+        if let Some(target) = self.resolve_target(family).await {
+            debug!(
+                "watchdog '{}' running corrective ladder for {} via service '{}'",
+                self.name, family, target.service_name
+            );
+            self.corrective.run(&target).await.action_suffix()
+        } else {
+            warn!(
+                "watchdog '{}' family '{}' is abort_then_restart but has no resolvable \
+                 service; notifying only",
+                self.name, family
+            );
+            String::new()
         }
     }
 
@@ -332,12 +330,12 @@ impl OperationDeadlineMonitor {
 
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return ConsumeOutcome::Cancelled,
+                () = cancel.cancelled() => return ConsumeOutcome::Cancelled,
                 maybe = rx.recv() => match maybe {
                     Some(frame) => self.handle_frame(frame, tracked, last_seq).await,
                     None => return ConsumeOutcome::Disconnected,
                 },
-                _ = timer => self.fire_expired(tracked).await,
+                () = timer => self.fire_expired(tracked).await,
             }
         }
     }
@@ -489,7 +487,7 @@ impl OperationDeadlineMonitor {
                 notifier_type: notifier.type_name().to_string(),
                 message: message.clone(),
                 success: result.is_ok(),
-                error: result.as_ref().err().map(|e| e.to_string()),
+                error: result.as_ref().err().map(std::string::ToString::to_string),
                 timestamp_epoch_ms: now_ms,
             };
             self.state.write().await.add_notification(record);
@@ -557,8 +555,8 @@ impl EventMonitor for OperationDeadlineMonitor {
             }
 
             tokio::select! {
-                _ = cancel.cancelled() => return,
-                _ = tokio::time::sleep(self.config.reconnect_backoff) => {}
+                () = cancel.cancelled() => return,
+                () = tokio::time::sleep(self.config.reconnect_backoff) => {}
             }
         }
     }
@@ -829,7 +827,7 @@ mod tests {
 
     #[async_trait]
     impl Notifier for RecordingNotifier {
-        fn type_name(&self) -> &str {
+        fn type_name(&self) -> &'static str {
             "recording"
         }
         async fn notify(&self, notification: &Notification) -> crate::Result<()> {
@@ -916,7 +914,7 @@ mod tests {
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
 
         settle().await;
-        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::time::advance(Duration::from_mins(2)).await;
         settle().await;
 
         assert!(
@@ -996,7 +994,7 @@ mod tests {
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
 
         settle().await;
-        tokio::time::advance(Duration::from_secs(3600)).await;
+        tokio::time::advance(Duration::from_hours(1)).await;
         settle().await;
 
         assert!(
@@ -1054,7 +1052,7 @@ mod tests {
         settle().await;
         tokio::time::advance(Duration::from_secs(2)).await; // past reconnect backoff
         settle().await;
-        tokio::time::advance(Duration::from_secs(120)).await; // past the original deadline
+        tokio::time::advance(Duration::from_mins(2)).await; // past the original deadline
         settle().await;
 
         assert!(

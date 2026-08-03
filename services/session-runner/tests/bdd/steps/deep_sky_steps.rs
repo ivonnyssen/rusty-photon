@@ -16,7 +16,7 @@
 //! the night over. The simulated mount is taught the
 //! same site (rp hard-errors on mount connect when the mount's
 //! reported site disagrees with config) and synced onto the first
-//! target so every document slew stays sub-degree (OmniSim slews at
+//! target so every document slew stays sub-degree (`OmniSim` slews at
 //! real-mount speed).
 
 use std::time::Duration;
@@ -526,7 +526,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
     });
 }
 
-/// Register the shipped deep_sky document as the orchestrator's
+/// Register the shipped `deep_sky` document as the orchestrator's
 /// workflow, with the scenario table's parameters on top of the fixed
 /// imaging-train id. Table rows are `| name | value |` (no header);
 /// values are coerced in order: boolean, integer, number, else string

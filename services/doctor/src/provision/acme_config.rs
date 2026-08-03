@@ -48,6 +48,7 @@ pub struct AcmeConfig {
 impl AcmeConfig {
     /// The directory URL the order flow talks to: an explicit
     /// `directory_url` wins over the Let's Encrypt staging/production pair.
+    #[must_use]
     pub fn resolved_directory_url(&self) -> String {
         match &self.directory_url {
             Some(url) => url.clone(),
@@ -56,27 +57,30 @@ impl AcmeConfig {
     }
 }
 
-fn default_renewal_days() -> u32 {
+const fn default_renewal_days() -> u32 {
     30
 }
 
-fn default_dns_propagation_seconds() -> u64 {
+const fn default_dns_propagation_seconds() -> u64 {
     15
 }
 
 /// Path to the ACME account credentials file within the PKI directory.
+#[must_use]
 pub fn acme_account_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("acme-account.json")
 }
 
 /// Path to the ACME wildcard certificate file within the (flat) PKI
 /// directory.
+#[must_use]
 pub fn acme_cert_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("acme-cert.pem")
 }
 
 /// Path to the ACME wildcard private key file within the (flat) PKI
 /// directory.
+#[must_use]
 pub fn acme_key_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("acme-key.pem")
 }
@@ -188,7 +192,8 @@ pub fn parse_renew_env(config_dir: &Path) -> Result<HashMap<String, String>> {
 }
 
 /// Return the ACME directory URL for Let's Encrypt staging or production.
-pub fn directory_url(staging: bool) -> &'static str {
+#[must_use]
+pub const fn directory_url(staging: bool) -> &'static str {
     if staging {
         "https://acme-staging-v02.api.letsencrypt.org/directory"
     } else {

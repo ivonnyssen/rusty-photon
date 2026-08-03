@@ -1,8 +1,8 @@
-//! Step definitions for config_actions.feature.
+//! Step definitions for `config_actions.feature`.
 //!
 //! Reuses the `Given a running star-adventurer service` step from
-//! connection_steps; the spawned binary serves the actions through its
-//! run_with_reload loop.
+//! `connection_steps`; the spawned binary serves the actions through its
+//! `run_with_reload` loop.
 
 use std::sync::Arc;
 

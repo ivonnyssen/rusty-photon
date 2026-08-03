@@ -49,6 +49,7 @@ pub struct SnrResult {
 /// Per-star SNR triple: `(signal, noise, snr)`. Returns `None` when the
 /// noise term is zero (no signal and a perfectly flat background — only
 /// happens on synthetic test inputs).
+#[must_use]
 pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f64)> {
     let signal = star.total_flux;
     let n = star.pixels.len() as f64;
@@ -164,10 +165,9 @@ mod tests {
         assert_eq!(signal, 10_000.0);
         assert!(
             (noise - 111.803_398_874_989_5).abs() < 1e-6,
-            "noise = {}",
-            noise
+            "noise = {noise}"
         );
-        assert!((snr - 89.4427).abs() < 0.01, "snr = {}", snr);
+        assert!((snr - 89.4427).abs() < 0.01, "snr = {snr}");
     }
 
     #[test]
@@ -178,9 +178,9 @@ mod tests {
         let snr = r.snr.expect("snr should be Some");
         let signal = r.signal.expect("signal should be Some");
         let noise = r.noise.expect("noise should be Some");
-        assert!(snr > 0.0 && snr.is_finite(), "snr = {}", snr);
-        assert!(signal > 0.0, "signal = {}", signal);
-        assert!(noise > 0.0, "noise = {}", noise);
+        assert!(snr > 0.0 && snr.is_finite(), "snr = {snr}");
+        assert!(signal > 0.0, "signal = {signal}");
+        assert!(noise > 0.0, "noise = {noise}");
         // Sanity: signal / noise should reproduce snr (medians line up since
         // there's only one star).
         assert!((snr - signal / noise).abs() < 1e-6);
@@ -242,12 +242,11 @@ mod tests {
         let snr = r.snr.expect("snr should be Some");
         let signal = r.signal.expect("signal should be Some");
         let noise = r.noise.expect("noise should be Some");
-        assert!(snr > 0.0 && snr.is_finite(), "snr = {}", snr);
+        assert!(snr > 0.0 && snr.is_finite(), "snr = {snr}");
         // HDR signal must exceed u16::MAX — a stray `as u16` cast would clamp.
         assert!(
             signal > 65_535.0,
-            "signal = {} (expected HDR > u16::MAX)",
-            signal
+            "signal = {signal} (expected HDR > u16::MAX)"
         );
         assert!(noise > 0.0);
     }

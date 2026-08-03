@@ -115,8 +115,8 @@ pub enum SkywatcherCodecError {
 /// re-expands the [`Transport`] arm via the canonical
 /// `From<TransportError> for StarAdvError` impl used for top-level
 /// [`SessionError::Transport`].
-impl From<SessionError<SkywatcherCodecError>> for SkywatcherCodecError {
-    fn from(err: SessionError<SkywatcherCodecError>) -> Self {
+impl From<SessionError<Self>> for SkywatcherCodecError {
+    fn from(err: SessionError<Self>) -> Self {
         match err {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
@@ -277,8 +277,8 @@ impl From<SkywatcherCodecError> for StarAdvError {
             // request (top-level Transport arm). See PR #280 for the
             // bug class.
             SkywatcherCodecError::Transport(t) => t.into(),
-            SkywatcherCodecError::Protocol(pe) => StarAdvError::Protocol(pe),
-            SkywatcherCodecError::SkipExhausted(n) => StarAdvError::Transport(format!(
+            SkywatcherCodecError::Protocol(pe) => Self::Protocol(pe),
+            SkywatcherCodecError::SkipExhausted(n) => Self::Transport(format!(
                 "device returned non-matching response ({n} frame{s} read)",
                 s = if n == 1 { "" } else { "s" }
             )),
@@ -288,7 +288,7 @@ impl From<SkywatcherCodecError> for StarAdvError {
             // operator-facing message lands intact in ASCOM's
             // `INVALID_OPERATION` reply.
             SkywatcherCodecError::WrongDevice { port, reason } => {
-                StarAdvError::WrongDevice { port, reason }
+                Self::WrongDevice { port, reason }
             }
         }
     }
@@ -299,7 +299,7 @@ impl From<SessionError<SkywatcherCodecError>> for StarAdvError {
         match err {
             SessionError::Transport(t) => t.into(),
             SessionError::Codec(c) => c.into(),
-            SessionError::SkipExhausted(n) => StarAdvError::Transport(format!(
+            SessionError::SkipExhausted(n) => Self::Transport(format!(
                 "device returned non-matching response ({n} frame{s} read)",
                 s = if n == 1 { "" } else { "s" }
             )),
@@ -461,7 +461,7 @@ mod tests {
         let err: SessionError<SkywatcherCodecError> = SessionError::SkipExhausted(3);
         match StarAdvError::from(err) {
             StarAdvError::Transport(s) => {
-                assert!(s.contains("3") && s.contains("non-matching"));
+                assert!(s.contains('3') && s.contains("non-matching"));
             }
             other => panic!("expected Transport, got {other:?}"),
         }

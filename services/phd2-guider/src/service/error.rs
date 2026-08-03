@@ -1,7 +1,7 @@
 //! Error types and HTTP error mapping for the guider HTTP service.
 //!
 //! Mirrors `services/plate-solver/src/error.rs`: a typed error enum,
-//! frozen snake_case wire codes, and the shared structured envelope
+//! frozen `snake_case` wire codes, and the shared structured envelope
 //! `{ "error": <code>, "message": <text>, "details": <value|omitted> }`.
 
 use axum::{
@@ -62,29 +62,29 @@ pub struct ErrorResponse {
 
 impl ServiceError {
     /// Map this error to its wire-format code.
-    pub fn code(&self) -> ErrorCode {
+    #[must_use]
+    pub const fn code(&self) -> ErrorCode {
         match self {
-            ServiceError::InvalidRequest(_) => ErrorCode::InvalidRequest,
-            ServiceError::NotGuiding(_) => ErrorCode::NotGuiding,
-            ServiceError::GuideFailed(_) => ErrorCode::GuideFailed,
-            ServiceError::SettleTimeout(_) => ErrorCode::SettleTimeout,
-            ServiceError::StopTimeout(_) => ErrorCode::StopTimeout,
-            ServiceError::Phd2Unreachable(_) => ErrorCode::Phd2Unreachable,
-            ServiceError::Internal(_) => ErrorCode::Internal,
+            Self::InvalidRequest(_) => ErrorCode::InvalidRequest,
+            Self::NotGuiding(_) => ErrorCode::NotGuiding,
+            Self::GuideFailed(_) => ErrorCode::GuideFailed,
+            Self::SettleTimeout(_) => ErrorCode::SettleTimeout,
+            Self::StopTimeout(_) => ErrorCode::StopTimeout,
+            Self::Phd2Unreachable(_) => ErrorCode::Phd2Unreachable,
+            Self::Internal(_) => ErrorCode::Internal,
         }
     }
 
     /// HTTP status the service returns for this error.
-    pub fn status(&self) -> StatusCode {
+    #[must_use]
+    pub const fn status(&self) -> StatusCode {
         match self {
-            ServiceError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            ServiceError::NotGuiding(_) => StatusCode::CONFLICT,
-            ServiceError::GuideFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            ServiceError::SettleTimeout(_) | ServiceError::StopTimeout(_) => {
-                StatusCode::GATEWAY_TIMEOUT
-            }
-            ServiceError::Phd2Unreachable(_) => StatusCode::BAD_GATEWAY,
-            ServiceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::NotGuiding(_) => StatusCode::CONFLICT,
+            Self::GuideFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::SettleTimeout(_) | Self::StopTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
+            Self::Phd2Unreachable(_) => StatusCode::BAD_GATEWAY,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -104,12 +104,12 @@ impl From<Phd2Error> for ServiceError {
             | Phd2Error::SendError(_)
             | Phd2Error::ReceiveError
             | Phd2Error::Timeout(_)
-            | Phd2Error::ReconnectFailed(_) => ServiceError::Phd2Unreachable(e.to_string()),
+            | Phd2Error::ReconnectFailed(_) => Self::Phd2Unreachable(e.to_string()),
             Phd2Error::RpcError { .. }
             | Phd2Error::EquipmentNotConnected
             | Phd2Error::NotCalibrated
-            | Phd2Error::InvalidState(_) => ServiceError::GuideFailed(e.to_string()),
-            other => ServiceError::Internal(other.to_string()),
+            | Phd2Error::InvalidState(_) => Self::GuideFailed(e.to_string()),
+            other => Self::Internal(other.to_string()),
         }
     }
 }

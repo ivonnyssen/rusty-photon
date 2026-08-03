@@ -107,12 +107,12 @@ fn move_focuser_actual_position(world: &mut RpWorld, expected: i32) {
         .expect("tool call failed");
     let actual = result
         .get("actual_position")
-        .and_then(|v| v.as_i64())
-        .unwrap_or_else(|| panic!("expected actual_position field, got: {:?}", result));
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| panic!("expected actual_position field, got: {result:?}"));
     assert_eq!(
-        actual, expected as i64,
-        "expected actual_position {}, got {}",
-        expected, actual
+        actual,
+        i64::from(expected),
+        "expected actual_position {expected}, got {actual}"
     );
 }
 
@@ -126,12 +126,12 @@ fn get_focuser_position_value(world: &mut RpWorld, expected: i32) {
         .expect("tool call failed");
     let actual = result
         .get("position")
-        .and_then(|v| v.as_i64())
-        .unwrap_or_else(|| panic!("expected position field, got: {:?}", result));
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| panic!("expected position field, got: {result:?}"));
     assert_eq!(
-        actual, expected as i64,
-        "expected position {}, got {}",
-        expected, actual
+        actual,
+        i64::from(expected),
+        "expected position {expected}, got {actual}"
     );
 }
 
@@ -145,9 +145,7 @@ fn get_focuser_temperature_field(world: &mut RpWorld, field: String) {
         .expect("tool call failed");
     assert!(
         result.get(&field).is_some(),
-        "expected '{}' field in result, got: {:?}",
-        field,
-        result
+        "expected '{field}' field in result, got: {result:?}"
     );
 }
 

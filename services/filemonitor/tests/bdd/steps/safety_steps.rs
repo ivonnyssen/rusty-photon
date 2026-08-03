@@ -3,12 +3,12 @@ use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{given, then};
 
 #[given("case-insensitive matching")]
-fn case_insensitive(world: &mut FilemonitorWorld) {
+const fn case_insensitive(world: &mut FilemonitorWorld) {
     world.case_sensitive = false;
 }
 
 #[given("case-sensitive matching")]
-fn case_sensitive(world: &mut FilemonitorWorld) {
+const fn case_sensitive(world: &mut FilemonitorWorld) {
     world.case_sensitive = true;
 }
 

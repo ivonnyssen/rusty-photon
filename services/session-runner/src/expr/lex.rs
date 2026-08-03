@@ -5,7 +5,7 @@
 use super::{ExprError, Span};
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Tok {
+pub enum Tok {
     Num(f64),
     Str(String),
     Ident(String),
@@ -40,42 +40,42 @@ pub(crate) enum Tok {
 impl Tok {
     pub(crate) fn describe(&self) -> String {
         let sym = match self {
-            Tok::Num(n) => return format!("number `{n}`"),
-            Tok::Str(_) => return "string literal".into(),
-            Tok::Ident(s) => return format!("identifier `{s}`"),
-            Tok::Null => return "`null`".into(),
-            Tok::True => return "`true`".into(),
-            Tok::False => return "`false`".into(),
-            Tok::Eof => return "end of expression".into(),
-            Tok::Plus => "+",
-            Tok::Minus => "-",
-            Tok::Star => "*",
-            Tok::Slash => "/",
-            Tok::Percent => "%",
-            Tok::EqEq => "==",
-            Tok::BangEq => "!=",
-            Tok::Lt => "<",
-            Tok::Le => "<=",
-            Tok::Gt => ">",
-            Tok::Ge => ">=",
-            Tok::AndAnd => "&&",
-            Tok::OrOr => "||",
-            Tok::Bang => "!",
-            Tok::Question => "?",
-            Tok::Colon => ":",
-            Tok::LParen => "(",
-            Tok::RParen => ")",
-            Tok::LBracket => "[",
-            Tok::RBracket => "]",
-            Tok::Dot => ".",
-            Tok::Comma => ",",
+            Self::Num(n) => return format!("number `{n}`"),
+            Self::Str(_) => return "string literal".into(),
+            Self::Ident(s) => return format!("identifier `{s}`"),
+            Self::Null => return "`null`".into(),
+            Self::True => return "`true`".into(),
+            Self::False => return "`false`".into(),
+            Self::Eof => return "end of expression".into(),
+            Self::Plus => "+",
+            Self::Minus => "-",
+            Self::Star => "*",
+            Self::Slash => "/",
+            Self::Percent => "%",
+            Self::EqEq => "==",
+            Self::BangEq => "!=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+            Self::AndAnd => "&&",
+            Self::OrOr => "||",
+            Self::Bang => "!",
+            Self::Question => "?",
+            Self::Colon => ":",
+            Self::LParen => "(",
+            Self::RParen => ")",
+            Self::LBracket => "[",
+            Self::RBracket => "]",
+            Self::Dot => ".",
+            Self::Comma => ",",
         };
         format!("`{sym}`")
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Token {
+pub struct Token {
     pub(crate) tok: Tok,
     pub(crate) span: Span,
 }
@@ -97,10 +97,7 @@ impl Lexer<'_> {
 
     /// Byte offset of the next character (or end of input).
     fn pos(&self) -> usize {
-        self.chars
-            .get(self.i)
-            .map(|&(b, _)| b)
-            .unwrap_or(self.src.len())
+        self.chars.get(self.i).map_or(self.src.len(), |&(b, _)| b)
     }
 
     fn bump(&mut self) -> Option<char> {
@@ -114,7 +111,7 @@ impl Lexer<'_> {
 
 /// Tokenize `src`. The returned vector always ends with a [`Tok::Eof`]
 /// token whose span sits at the end of the input.
-pub(crate) fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
+pub fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
     let mut lx = Lexer {
         src,
         chars: src.char_indices().collect(),
@@ -179,7 +176,7 @@ pub(crate) fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
             '/' => {
                 lx.bump();
                 match lx.peek() {
-                    Some('/') | Some('*') => {
+                    Some('/' | '*') => {
                         return Err(err_at(
                             &lx,
                             start,

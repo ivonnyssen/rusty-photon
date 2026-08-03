@@ -2,7 +2,7 @@
 //! (design § `sky_flat.json`): zenith pointing computed from the live
 //! LST, per-filter twilight flats with per-frame exposure rescaling.
 //!
-//! OmniSim's image content does not track exposure duration, so these
+//! `OmniSim`'s image content does not track exposure duration, so these
 //! scenarios pin the end-to-end plumbing only — the registration's 0.5
 //! target fraction and 1.0 tolerance make every simulated frame land
 //! in-band deterministically (a median can never stray more than 100%
@@ -53,7 +53,7 @@ async fn rp_with_camera_mount_filter_wheel_and_workflow(
 }
 
 /// The sky-flat equipment set: one camera, the singular mount, and one
-/// filter wheel, all on OmniSim device 0.
+/// filter wheel, all on `OmniSim` device 0.
 async fn configure_sky_flat_equipment(world: &mut SessionRunnerWorld) {
     ensure_omnisim(world).await;
     ensure_camera(world);
@@ -61,7 +61,7 @@ async fn configure_sky_flat_equipment(world: &mut SessionRunnerWorld) {
     ensure_filter_wheel(world);
 }
 
-/// Register the shipped sky_flat document as the orchestrator's
+/// Register the shipped `sky_flat` document as the orchestrator's
 /// workflow: the fixed device ids, the `filters` array from the
 /// scenario's declared flat plan, and the scenario table's parameters
 /// on top (`| name | value |` rows, coerced like the deep-sky suite's).

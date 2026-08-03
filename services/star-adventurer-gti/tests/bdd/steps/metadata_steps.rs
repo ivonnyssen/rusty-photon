@@ -1,4 +1,4 @@
-//! Steps for device_metadata.feature.
+//! Steps for `device_metadata.feature`.
 
 use crate::world::StarAdventurerWorld;
 use cucumber::gherkin::Step;
@@ -115,12 +115,12 @@ async fn capabilities_should_match(world: &mut StarAdventurerWorld, step: &Step)
                 assert_eq!(
                     mount.can_slew_alt_az_async().await.unwrap(),
                     parse_bool(want)
-                )
+                );
             }
             "CanSync" => assert_eq!(mount.can_sync().await.unwrap(), parse_bool(want)),
             "CanSyncAltAz" => assert_eq!(mount.can_sync_alt_az().await.unwrap(), parse_bool(want)),
             "CanSetTracking" => {
-                assert_eq!(mount.can_set_tracking().await.unwrap(), parse_bool(want))
+                assert_eq!(mount.can_set_tracking().await.unwrap(), parse_bool(want));
             }
             "CanSetRightAscensionRate" => assert_eq!(
                 mount.can_set_right_ascension_rate().await.unwrap(),
@@ -131,20 +131,20 @@ async fn capabilities_should_match(world: &mut StarAdventurerWorld, step: &Step)
                 parse_bool(want)
             ),
             "CanSetGuideRates" => {
-                assert_eq!(mount.can_set_guide_rates().await.unwrap(), parse_bool(want))
+                assert_eq!(mount.can_set_guide_rates().await.unwrap(), parse_bool(want));
             }
             "CanPulseGuide" => {
-                assert_eq!(mount.can_pulse_guide().await.unwrap(), parse_bool(want))
+                assert_eq!(mount.can_pulse_guide().await.unwrap(), parse_bool(want));
             }
             "CanFindHome" => assert_eq!(mount.can_find_home().await.unwrap(), parse_bool(want)),
             "CanPark" => assert_eq!(mount.can_park().await.unwrap(), parse_bool(want)),
             "CanUnpark" => assert_eq!(mount.can_unpark().await.unwrap(), parse_bool(want)),
             "CanSetPark" => assert_eq!(mount.can_set_park().await.unwrap(), parse_bool(want)),
             "CanSetPierSide" => {
-                assert_eq!(mount.can_set_pier_side().await.unwrap(), parse_bool(want))
+                assert_eq!(mount.can_set_pier_side().await.unwrap(), parse_bool(want));
             }
             "DoesRefraction" => {
-                assert_eq!(mount.does_refraction().await.unwrap(), parse_bool(want))
+                assert_eq!(mount.does_refraction().await.unwrap(), parse_bool(want));
             }
             other => panic!("capabilities table has unknown column {other:?}"),
         }

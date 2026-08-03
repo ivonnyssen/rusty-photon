@@ -1,8 +1,8 @@
-//! Step definitions for config_actions.feature.
+//! Step definitions for `config_actions.feature`.
 //!
-//! Reuses the config + `I start the PPBA server` steps from server_steps. The
+//! Reuses the config + `I start the PPBA server` steps from `server_steps`. The
 //! spawned binary builds both devices with the config-action context wired
-//! (via `main`'s run_with_reload loop), so both dispatch the actions against one
+//! (via `main`'s `run_with_reload` loop), so both dispatch the actions against one
 //! config file + reload signal.
 
 use std::sync::Arc;

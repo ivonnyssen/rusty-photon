@@ -73,7 +73,7 @@ impl PushoverNotifier {
 
 #[async_trait]
 impl Notifier for PushoverNotifier {
-    fn type_name(&self) -> &str {
+    fn type_name(&self) -> &'static str {
         "pushover"
     }
 
@@ -238,7 +238,7 @@ mod tests {
 
         let notifier = PushoverNotifier::new(&test_config(), Arc::new(mock));
         let notification = Notification {
-            title: "".to_string(),
+            title: String::new(),
             message: "msg".to_string(),
             priority: 0,
             sound: None,

@@ -78,10 +78,7 @@ fn alt_az_matches_astropy_within_tight_tolerance() {
         // hide refvals erosion. An audit gate that fails if entries==0
         // for *too long* belongs in the project plan tracking, not in
         // a unit test.
-        eprintln!(
-            "no refvals/*.json present at {:?} — run refvals/gen.py to populate",
-            dir
-        );
+        eprintln!("no refvals/*.json present at {dir:?} — run refvals/gen.py to populate");
         return;
     }
 

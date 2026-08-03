@@ -21,7 +21,7 @@ use crate::error::ScopsOagError;
 use crate::protocol::{parse_status, Command, ScopsStatus, STATUS_TOKEN};
 
 /// Decoded response frame from the device.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopsResponse {
     /// `OK_SCOPS` — the `#` handshake ack.
     Handshake,
@@ -69,8 +69,8 @@ impl ScopsCodecError {
     }
 }
 
-impl From<SessionError<ScopsCodecError>> for ScopsCodecError {
-    fn from(err: SessionError<ScopsCodecError>) -> Self {
+impl From<SessionError<Self>> for ScopsCodecError {
+    fn from(err: SessionError<Self>) -> Self {
         match err {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
@@ -153,20 +153,18 @@ impl From<SessionError<ScopsCodecError>> for ScopsOagError {
             // arm) gets the same classification as a steady-state timeout.
             SessionError::Transport(t) => t.into(),
             SessionError::Codec(ScopsCodecError::Transport(t)) => t.into(),
-            SessionError::Codec(ScopsCodecError::InvalidResponse(s)) => {
-                ScopsOagError::InvalidResponse(s)
-            }
-            SessionError::Codec(ScopsCodecError::Parse(s)) => ScopsOagError::ParseError(s),
+            SessionError::Codec(ScopsCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
+            SessionError::Codec(ScopsCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(ScopsCodecError::DeviceError(s)) => {
-                ScopsOagError::Communication(format!("device returned an error: {s}"))
+                Self::Communication(format!("device returned an error: {s}"))
             }
             SessionError::Codec(c @ ScopsCodecError::Utf8(_)) => {
-                ScopsOagError::InvalidResponse(c.to_string())
+                Self::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(ScopsCodecError::SkipExhausted(n)) => ScopsOagError::Communication(
-                format!("device returned non-matching response ({n} frame(s) read)"),
-            ),
-            SessionError::SkipExhausted(n) => ScopsOagError::Communication(format!(
+            SessionError::Codec(ScopsCodecError::SkipExhausted(n)) => Self::Communication(format!(
+                "device returned non-matching response ({n} frame(s) read)"
+            )),
+            SessionError::SkipExhausted(n) => Self::Communication(format!(
                 "device returned non-matching response ({n} frame(s) read)"
             )),
         }

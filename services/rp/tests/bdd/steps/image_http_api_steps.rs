@@ -1,6 +1,6 @@
 //! BDD step definitions for the image HTTP API:
 //! `GET /api/images/{document_id}` (metadata) and
-//! `GET /api/images/{document_id}/pixels` (ASCOM Alpaca ImageBytes).
+//! `GET /api/images/{document_id}/pixels` (ASCOM Alpaca `ImageBytes`).
 //!
 //! Shared steps live in `tool_steps.rs` (capture sets `last_document_id`)
 //! and in equipment / session step modules (Given the simulator and rp).
@@ -85,9 +85,7 @@ fn metadata_contains_field(world: &mut RpWorld, field: String) {
     let body = metadata_or_panic(world);
     assert!(
         body.get(&field).is_some(),
-        "expected '{}' in image metadata, got: {:?}",
-        field,
-        body
+        "expected '{field}' in image metadata, got: {body:?}"
     );
 }
 
@@ -96,14 +94,11 @@ fn metadata_contains_positive_integer(world: &mut RpWorld, field: String) {
     let body = metadata_or_panic(world);
     let value = body
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in image metadata, got: {:?}", field, body));
+        .unwrap_or_else(|| panic!("expected '{field}' in image metadata, got: {body:?}"));
     let num = value.as_u64().unwrap_or_else(|| {
-        panic!(
-            "expected '{}' to be a non-negative integer, got: {:?}",
-            field, value
-        )
+        panic!("expected '{field}' to be a non-negative integer, got: {value:?}")
     });
-    assert!(num > 0, "expected '{}' to be positive, got: {}", field, num);
+    assert!(num > 0, "expected '{field}' to be positive, got: {num}");
 }
 
 #[then(expr = "the image metadata should contain {string} with value {int}")]
@@ -111,12 +106,12 @@ fn metadata_field_equals_int(world: &mut RpWorld, field: String, expected: i64) 
     let body = metadata_or_panic(world);
     let value = body
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in image metadata, got: {:?}", field, body));
+        .unwrap_or_else(|| panic!("expected '{field}' in image metadata, got: {body:?}"));
     let actual = value
         .as_i64()
         .or_else(|| value.as_u64().map(|v| v as i64))
-        .unwrap_or_else(|| panic!("expected '{}' to be an integer, got: {:?}", field, value));
-    assert_eq!(actual, expected, "field '{}'", field);
+        .unwrap_or_else(|| panic!("expected '{field}' to be an integer, got: {value:?}"));
+    assert_eq!(actual, expected, "field '{field}'");
 }
 
 #[then(expr = "the image metadata should contain {string} with value true")]
@@ -124,13 +119,11 @@ fn metadata_field_is_true(world: &mut RpWorld, field: String) {
     let body = metadata_or_panic(world);
     let value = body
         .get(&field)
-        .unwrap_or_else(|| panic!("expected '{}' in image metadata, got: {:?}", field, body));
+        .unwrap_or_else(|| panic!("expected '{field}' in image metadata, got: {body:?}"));
     assert_eq!(
         value.as_bool(),
         Some(true),
-        "expected '{}' = true, got: {:?}",
-        field,
-        value
+        "expected '{field}' = true, got: {value:?}"
     );
 }
 
@@ -165,7 +158,7 @@ fn pixels_header_matches_table(world: &mut RpWorld, step: &Step) {
         .expect("step requires a data table of header constants");
     // First row is the header row (field, offset, value); skip it.
     for row in table.rows.iter().skip(1) {
-        assert_eq!(row.len(), 3, "table row must have 3 columns: {:?}", row);
+        assert_eq!(row.len(), 3, "table row must have 3 columns: {row:?}");
         let field = &row[0];
         let offset: usize = row[1]
             .parse()
@@ -187,15 +180,14 @@ fn pixels_header_matches_table(world: &mut RpWorld, step: &Step) {
         let actual = i32::from_le_bytes(bytes);
         assert_eq!(
             actual, expected,
-            "header field '{}' at offset {}",
-            field, offset
+            "header field '{field}' at offset {offset}"
         );
     }
 }
 
 // --- Helpers ---
 
-fn metadata_or_panic(world: &RpWorld) -> &Value {
+const fn metadata_or_panic(world: &RpWorld) -> &Value {
     world
         .last_image_metadata
         .as_ref()

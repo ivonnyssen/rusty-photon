@@ -193,9 +193,8 @@ fn captured_path_is_flat_uuid8(world: &mut RpWorld) {
             .is_some_and(|uuid8| uuid8.chars().all(|c| c.is_ascii_hexdigit()));
     assert!(
         is_flat_uuid8,
-        "expected image_path {:?} to be today's flat <uuid8>.fits (no target/frame_type \
-         subdirectories), got file name {:?}",
-        path, file_name
+        "expected image_path {path:?} to be today's flat <uuid8>.fits (no target/frame_type \
+         subdirectories), got file name {file_name:?}"
     );
 }
 
@@ -209,9 +208,7 @@ fn captured_path_contains(world: &mut RpWorld, needle: String) {
     let path = captured_image_path(world).replace('\\', "/");
     assert!(
         path.contains(&needle),
-        "expected image_path {:?} to contain {:?}",
-        path,
-        needle
+        "expected image_path {path:?} to contain {needle:?}"
     );
 }
 
@@ -220,12 +217,11 @@ fn captured_path_exists(world: &mut RpWorld) {
     let path = captured_image_path(world);
     assert!(
         std::path::Path::new(path).exists(),
-        "expected a file at {:?}",
-        path
+        "expected a file at {path:?}"
     );
 }
 
-fn last_document(world: &RpWorld) -> &serde_json::Value {
+const fn last_document(world: &RpWorld) -> &serde_json::Value {
     world
         .last_document_response_body
         .as_ref()

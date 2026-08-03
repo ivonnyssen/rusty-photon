@@ -39,8 +39,8 @@ use crate::mcp_client::McpClient;
 /// Engine defaults for the acknowledgment durations when the document
 /// omits them (design § Invocation): `max_duration` must comfortably
 /// exceed a full night because `rp` treats its expiry as plugin timeout.
-const DEFAULT_ESTIMATED_DURATION: Duration = Duration::from_secs(60 * 60);
-const DEFAULT_MAX_DURATION: Duration = Duration::from_secs(14 * 60 * 60);
+const DEFAULT_ESTIMATED_DURATION: Duration = Duration::from_hours(1);
+const DEFAULT_MAX_DURATION: Duration = Duration::from_hours(14);
 
 pub fn build_router(config: Arc<Config>) -> Router {
     Router::new()
@@ -155,7 +155,7 @@ async fn validate(
 }
 
 async fn load_workflow_source(config: &Config, name: &str) -> Result<String, String> {
-    let path = resolve_workflow_path(&config.workflows_dir, name).map_err(|e| e.to_string())?;
+    let path = resolve_workflow_path(&config.workflows_dir, name)?;
     tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("cannot read workflow `{name}` at {}: {e}", path.display()))

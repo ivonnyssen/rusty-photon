@@ -250,7 +250,7 @@ async fn guider_result_number_field(world: &mut RpWorld, field: String, expected
     let result = last_guider_result(world);
     let actual = result
         .get(&field)
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("expected numeric field '{field}' in {result}"));
     assert!(
         (actual - expected).abs() < 1e-9,
@@ -278,7 +278,7 @@ async fn stub_start_with_settle(world: &mut RpWorld, pixels: f64, time: String, 
         .get("settle")
         .unwrap_or_else(|| panic!("expected a settle override, got: {request}"));
     assert_eq!(
-        settle.get("pixels").and_then(|v| v.as_f64()),
+        settle.get("pixels").and_then(serde_json::Value::as_f64),
         Some(pixels),
         "settle.pixels mismatch in {request}"
     );
@@ -298,7 +298,9 @@ async fn stub_start_with_settle(world: &mut RpWorld, pixels: f64, time: String, 
 async fn stub_start_with_recalibrate(world: &mut RpWorld) {
     let request = last_stub_request_to(world, "/guiding/start").await;
     assert_eq!(
-        request.get("recalibrate").and_then(|v| v.as_bool()),
+        request
+            .get("recalibrate")
+            .and_then(serde_json::Value::as_bool),
         Some(true),
         "recalibrate mismatch in {request}"
     );
@@ -347,12 +349,12 @@ async fn stub_dither_amount_from_arcsec(world: &mut RpWorld, arcsec: f64, focal_
 async fn stub_dither_request(world: &mut RpWorld, amount_px: f64, ra_only: String) {
     let request = last_stub_request_to(world, "/dither").await;
     assert_eq!(
-        request.get("amount_px").and_then(|v| v.as_f64()),
+        request.get("amount_px").and_then(serde_json::Value::as_f64),
         Some(amount_px),
         "amount_px mismatch in {request}"
     );
     assert_eq!(
-        request.get("ra_only").and_then(|v| v.as_bool()),
+        request.get("ra_only").and_then(serde_json::Value::as_bool),
         Some(parse_bool(&ra_only)),
         "ra_only mismatch in {request}"
     );
@@ -368,7 +370,7 @@ async fn stub_stop_request(world: &mut RpWorld) {
 async fn stub_pause_request_full(world: &mut RpWorld) {
     let request = last_stub_request_to(world, "/guiding/pause").await;
     assert_eq!(
-        request.get("full").and_then(|v| v.as_bool()),
+        request.get("full").and_then(serde_json::Value::as_bool),
         Some(true),
         "full mismatch in {request}"
     );
@@ -418,7 +420,7 @@ async fn mount_parked_on_simulator(world: &mut RpWorld, seconds: u64) {
             .ok();
         if let Some(resp) = at_park {
             if let Ok(body) = resp.json::<Value>().await {
-                if body.get("Value").and_then(|v| v.as_bool()) == Some(true) {
+                if body.get("Value").and_then(serde_json::Value::as_bool) == Some(true) {
                     return;
                 }
             }
@@ -445,14 +447,14 @@ async fn call_guider_tool(world: &mut RpWorld, tool: &str, params: Map<String, V
     world.last_tool_result = Some(result);
 }
 
-fn last_guider_result(world: &RpWorld) -> &Value {
+const fn last_guider_result(world: &RpWorld) -> &Value {
     world
         .last_guider_result
         .as_ref()
         .expect("no successful guider tool result recorded — When step missing or tool errored?")
 }
 
-fn guider_stub(world: &RpWorld) -> &GuiderStub {
+const fn guider_stub(world: &RpWorld) -> &GuiderStub {
     world
         .guider_stub
         .as_ref()

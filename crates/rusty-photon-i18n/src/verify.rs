@@ -45,7 +45,8 @@ pub struct VerifyReport {
 
 impl VerifyReport {
     /// `true` if no issues were detected.
-    pub fn is_clean(&self) -> bool {
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
         self.issues.is_empty()
     }
 }
@@ -170,6 +171,7 @@ pub fn verify_translations<A: I18nAssets>(assets: &A, fallback: &str) -> VerifyR
 /// a [`VerifyIssue::IoError`] alongside the normal verification issues so
 /// the root cause is actionable rather than buried under cascading
 /// `MissingKey` / `EmptyLocale` noise.
+#[must_use]
 pub fn verify_translations_in_dir(dir: &Path, fallback: &str) -> VerifyReport {
     let (assets, io_issues) = FsAssets::new(dir);
     let mut report = verify_translations(&assets, fallback);
@@ -239,7 +241,11 @@ impl FsAssets {
             // Non-UTF-8 locale directory names can't be matched against a
             // BCP-47 language id anyway. Skip silently rather than emit a
             // misleading `IoError` — this isn't an I/O failure.
-            let Some(locale) = locale_entry.file_name().to_str().map(|s| s.to_string()) else {
+            let Some(locale) = locale_entry
+                .file_name()
+                .to_str()
+                .map(std::string::ToString::to_string)
+            else {
                 continue;
             };
             let locale_path = locale_entry.path();
@@ -349,17 +355,16 @@ fn collect_keys<A: I18nAssets>(
     for path in files {
         let bytes_list = assets.get_files(&path);
         for cow in bytes_list {
-            let text = match std::str::from_utf8(&cow) {
-                Ok(s) => s.to_string(),
-                Err(_) => {
-                    issues.push(VerifyIssue::ParseError {
-                        locale: locale.to_string(),
-                        file: path.clone(),
-                        message: "non-UTF-8 content".into(),
-                    });
-                    any_parse_error = true;
-                    continue;
-                }
+            let text = if let Ok(s) = std::str::from_utf8(&cow) {
+                s.to_string()
+            } else {
+                issues.push(VerifyIssue::ParseError {
+                    locale: locale.to_string(),
+                    file: path.clone(),
+                    message: "non-UTF-8 content".into(),
+                });
+                any_parse_error = true;
+                continue;
             };
             let resource = match parser::parse(text.as_str()) {
                 Ok(r) => r,
@@ -477,7 +482,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// In-memory I18nAssets impl for unit tests: hand the constructor a map
+    /// In-memory `I18nAssets` impl for unit tests: hand the constructor a map
     /// of `{lang}/{file}.ftl` → string contents.
     struct InlineAssets(HashMap<String, String>);
 

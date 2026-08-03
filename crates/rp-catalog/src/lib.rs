@@ -5,12 +5,12 @@
 //!
 //! One logical catalog spans two entry classes:
 //!
-//! - **Deep-sky objects** (~19k): Messier + NGC + IC (OpenNGC) plus the
+//! - **Deep-sky objects** (~19k): Messier + NGC + IC (`OpenNGC`) plus the
 //!   astrophoto catalogs — Sharpless, Abell planetaries, vdB, RCW, Gum,
 //!   Cederblad, Barnard, LDN, LBN, Arp, Hickson, Collinder, Melotte,
 //!   Stock, Trumpler (SIMBAD/VizieR; see `src/data/LICENSE-DATA`).
 //! - **Stars** (~354k): every HD/HDE/HDEC designation in the Tycho-2/HD
-//!   cross-index (VizieR IV/25), with J2000 Tycho-2-derived positions.
+//!   cross-index (`VizieR` IV/25), with J2000 Tycho-2-derived positions.
 //!   The ~400 stars carrying IAU proper names are canonical under that
 //!   name (`"Vega"`); their HD designation resolves to the same entry.
 //!
@@ -58,7 +58,7 @@ pub struct ResolvedTarget {
     /// Canonical name as packed (e.g. `"M 31"`, `"Sh2-101"`,
     /// `"HD 227018"`, `"Vega"`).
     pub name: String,
-    /// OpenNGC type code (`G` = galaxy, `OCl` = open cluster, `HII`,
+    /// `OpenNGC` type code (`G` = galaxy, `OCl` = open cluster, `HII`,
     /// `DrkN`, etc.; documented at
     /// <https://github.com/mattiaverga/OpenNGC>). Stars are `"*"`.
     pub object_type: String,
@@ -67,7 +67,7 @@ pub struct ResolvedTarget {
     /// nested `"coord": { "ra_hours", "dec_degrees" }` object (no
     /// `#[serde(flatten)]`).
     pub coord: IcrsCoord,
-    /// V magnitude (or B fallback for OpenNGC rows; VT-derived V for
+    /// V magnitude (or B fallback for `OpenNGC` rows; VT-derived V for
     /// stars). `None` if the source lacks one.
     pub magnitude: Option<f64>,
     /// Major axis in arcmin. `None` for stars and point sources.
@@ -222,7 +222,7 @@ impl Catalog {
     /// tests, so the error branch is defensive: it logs the failure and
     /// yields an empty catalog (every lookup misses) rather than
     /// panicking at first use of the service.
-    pub fn embedded() -> &'static Catalog {
+    pub fn embedded() -> &'static Self {
         static SINGLETON: OnceLock<Catalog> = OnceLock::new();
         SINGLETON.get_or_init(|| {
             Self::load_embedded().unwrap_or_else(|e| {
@@ -239,7 +239,7 @@ impl Catalog {
         Self::load(CATALOG_BIN)
     }
 
-    fn empty() -> Self {
+    const fn empty() -> Self {
         // An all-zero header describes a valid catalog with no rows;
         // every section is empty and every lookup misses.
         Self::layout(&[], 0, 0, 0, 0, 0, 0)
@@ -267,7 +267,7 @@ impl Catalog {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn layout(
+    const fn layout(
         bytes: &'static [u8],
         dso_count: usize,
         star_count: usize,
@@ -358,7 +358,7 @@ impl Catalog {
         let mut lo = 0usize;
         let mut hi = self.named_count;
         while lo < hi {
-            let mid = (lo + hi) / 2;
+            let mid = usize::midpoint(lo, hi);
             let entry_hd = read_u32(self.bytes, self.named + 8 * mid);
             match entry_hd.cmp(&hd) {
                 Ordering::Less => lo = mid + 1,
@@ -452,7 +452,7 @@ impl Catalog {
         let mut lo = 0usize;
         let mut hi = self.key_count;
         while lo < hi {
-            let mid = (lo + hi) / 2;
+            let mid = usize::midpoint(lo, hi);
             match self.key_at(mid).cmp(key) {
                 Ordering::Less => lo = mid + 1,
                 Ordering::Greater => hi = mid,
@@ -473,6 +473,7 @@ impl Catalog {
     /// dash-insensitive; `"M 41"`, `"Messier 41"`, `"Sh2-101"`,
     /// `"sharpless 101"`, `"HD 227018"`, `"HDE 227018"`, `"Vega"`, and
     /// common-name aliases (`"Andromeda Galaxy"`) all resolve.
+    #[must_use]
     pub fn resolve(&self, name: &str) -> Option<ResolvedTarget> {
         let key = normalize(name);
         if let Some(hd) = key.strip_prefix("hd").and_then(|d| d.parse::<u32>().ok()) {
@@ -485,11 +486,13 @@ impl Catalog {
 
     /// Total number of catalog entries (deep-sky rows + star rows).
     /// Aliases are lookup keys, not entries, and are not counted.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.dso_count + self.star_count
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -499,7 +502,7 @@ impl Catalog {
         let mut lo = 0usize;
         let mut hi = count;
         while lo < hi {
-            let mid = (lo + hi) / 2;
+            let mid = usize::midpoint(lo, hi);
             if i64::from(read_i32(self.bytes, section + 4 * mid)) < min_mas {
                 lo = mid + 1;
             } else {
@@ -517,6 +520,7 @@ impl Catalog {
     /// class; exact ties fall back to catalog rank (M > NGC > IC >
     /// Sh2 > …) and then name, so entries at identical coordinates
     /// (M 42 / NGC 1976) resolve deterministically.
+    #[must_use]
     pub fn nearest(
         &self,
         coord: &IcrsCoord,
@@ -626,6 +630,7 @@ impl Catalog {
     /// for a typo of `HD 227018` helps nobody, and resolving them goes
     /// through the numeric path instead. Aliases mapping to the same
     /// entry are deduped by canonical name.
+    #[must_use]
     pub fn fuzzy_suggestions(&self, query: &str, limit: usize) -> Vec<String> {
         let q = normalize(query);
         let mut scored: Vec<(usize, u32)> = (0..self.key_count)

@@ -9,7 +9,7 @@ use super::{ExprError, Span};
 
 /// Parse a token stream (as produced by [`super::lex::lex`], ending in
 /// [`Tok::Eof`]) into an AST.
-pub(crate) fn parse(toks: Vec<Token>) -> Result<Expr, ExprError> {
+pub fn parse(toks: Vec<Token>) -> Result<Expr, ExprError> {
     let mut p = Parser { toks, pos: 0 };
     let expr = p.expr_bp(0, 0)?;
     let t = p.peek();
@@ -42,7 +42,7 @@ const BP_MUL: (u8, u8) = (11, 12);
 const BP_UNARY: u8 = 13;
 const BP_POSTFIX: u8 = 15;
 
-fn infix_op(tok: &Tok) -> Option<(BinOp, (u8, u8))> {
+const fn infix_op(tok: &Tok) -> Option<(BinOp, (u8, u8))> {
     Some(match tok {
         Tok::OrOr => (BinOp::Or, BP_OR),
         Tok::AndAnd => (BinOp::And, BP_AND),

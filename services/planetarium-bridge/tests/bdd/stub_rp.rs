@@ -43,11 +43,10 @@ impl ServerHandler for StubHandler {
         let arguments = request
             .arguments
             .clone()
-            .map(serde_json::Value::Object)
-            .unwrap_or(serde_json::Value::Null);
+            .map_or(serde_json::Value::Null, serde_json::Value::Object);
         self.calls
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(RecordedCall {
                 tool: request.name.to_string(),
                 arguments,
@@ -141,7 +140,7 @@ impl StubRp {
 
     /// When this stub instance came up — replay-provenance assertions compare
     /// spooled `received_at` stamps against it.
-    pub fn started_at(&self) -> chrono::DateTime<chrono::Utc> {
+    pub const fn started_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.started_at
     }
 
@@ -154,7 +153,7 @@ impl StubRp {
     pub fn add_target_calls(&self) -> Vec<RecordedCall> {
         self.calls
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|c| c.tool == "add_target")
             .cloned()

@@ -9,108 +9,110 @@ use tracing::debug;
 use crate::error::{QhyFocuserError, Result};
 
 /// Commands that can be sent to the QHY Q-Focuser
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Get firmware and board version (cmd_id: 1)
+    /// Get firmware and board version (`cmd_id`: 1)
     GetVersion,
-    /// Relative move (cmd_id: 2)
+    /// Relative move (`cmd_id`: 2)
     RelativeMove {
         /// Direction: 1 = inward, -1 = outward
         direction: i8,
         steps: u32,
     },
-    /// Abort current movement (cmd_id: 3)
+    /// Abort current movement (`cmd_id`: 3)
     Abort,
-    /// Read temperature and voltage (cmd_id: 4)
+    /// Read temperature and voltage (`cmd_id`: 4)
     ReadTemperature,
-    /// Get current position (cmd_id: 5)
+    /// Get current position (`cmd_id`: 5)
     GetPosition,
-    /// Move to absolute position (cmd_id: 6)
+    /// Move to absolute position (`cmd_id`: 6)
     AbsoluteMove { position: i64 },
-    /// Set reverse direction (cmd_id: 7)
+    /// Set reverse direction (`cmd_id`: 7)
     SetReverse { enabled: bool },
-    /// Sync position counter (cmd_id: 11)
+    /// Sync position counter (`cmd_id`: 11)
     SyncPosition { position: i64 },
-    /// Set movement speed (cmd_id: 13)
+    /// Set movement speed (`cmd_id`: 13)
     SetSpeed { speed: u8 },
-    /// Set hold current (cmd_id: 16)
+    /// Set hold current (`cmd_id`: 16)
     SetHoldCurrent { ihold: u8, irun: u8 },
-    /// Set power-down mode (cmd_id: 19)
+    /// Set power-down mode (`cmd_id`: 19)
     SetPdnMode { pdn: u8 },
 }
 
 impl Command {
     /// Get the command ID for this command
-    pub fn cmd_id(&self) -> u8 {
+    #[must_use]
+    pub const fn cmd_id(&self) -> u8 {
         match self {
-            Command::GetVersion => 1,
-            Command::RelativeMove { .. } => 2,
-            Command::Abort => 3,
-            Command::ReadTemperature => 4,
-            Command::GetPosition => 5,
-            Command::AbsoluteMove { .. } => 6,
-            Command::SetReverse { .. } => 7,
-            Command::SyncPosition { .. } => 11,
-            Command::SetSpeed { .. } => 13,
-            Command::SetHoldCurrent { .. } => 16,
-            Command::SetPdnMode { .. } => 19,
+            Self::GetVersion => 1,
+            Self::RelativeMove { .. } => 2,
+            Self::Abort => 3,
+            Self::ReadTemperature => 4,
+            Self::GetPosition => 5,
+            Self::AbsoluteMove { .. } => 6,
+            Self::SetReverse { .. } => 7,
+            Self::SyncPosition { .. } => 11,
+            Self::SetSpeed { .. } => 13,
+            Self::SetHoldCurrent { .. } => 16,
+            Self::SetPdnMode { .. } => 19,
         }
     }
 
     /// Serialize the command to a JSON string for serial transmission
+    #[must_use]
     pub fn to_json_string(&self) -> String {
         let json = match self {
-            Command::GetVersion => {
+            Self::GetVersion => {
                 serde_json::json!({"cmd_id": 1})
             }
-            Command::RelativeMove { direction, steps } => {
+            Self::RelativeMove { direction, steps } => {
                 serde_json::json!({
                     "cmd_id": 2,
                     "dir": direction,
                     "step": steps
                 })
             }
-            Command::Abort => {
+            Self::Abort => {
                 serde_json::json!({"cmd_id": 3})
             }
-            Command::ReadTemperature => {
+            Self::ReadTemperature => {
                 serde_json::json!({"cmd_id": 4})
             }
-            Command::GetPosition => {
+            Self::GetPosition => {
                 serde_json::json!({"cmd_id": 5})
             }
-            Command::AbsoluteMove { position } => {
+            Self::AbsoluteMove { position } => {
                 serde_json::json!({
                     "cmd_id": 6,
                     "tar": position
                 })
             }
-            Command::SetReverse { enabled } => {
+            Self::SetReverse { enabled } => {
                 serde_json::json!({
                     "cmd_id": 7,
-                    "rev": if *enabled { 1 } else { 0 }
+                    "rev": i32::from(*enabled)
                 })
             }
-            Command::SyncPosition { position } => {
+            Self::SyncPosition { position } => {
                 serde_json::json!({
                     "cmd_id": 11,
                     "init_val": position
                 })
             }
-            Command::SetSpeed { speed } => {
+            Self::SetSpeed { speed } => {
                 serde_json::json!({
                     "cmd_id": 13,
                     "speed": speed
                 })
             }
-            Command::SetHoldCurrent { ihold, irun } => {
+            Self::SetHoldCurrent { ihold, irun } => {
                 serde_json::json!({
                     "cmd_id": 16,
                     "ihold": ihold,
                     "irun": irun
                 })
             }
-            Command::SetPdnMode { pdn } => {
+            Self::SetPdnMode { pdn } => {
                 serde_json::json!({
                     "cmd_id": 19,
                     "pdn_d": pdn
@@ -121,14 +123,14 @@ impl Command {
     }
 }
 
-/// Parsed version response from cmd_id 1
-#[derive(Debug, Clone, PartialEq)]
+/// Parsed version response from `cmd_id` 1
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionResponse {
     pub firmware_version: String,
     pub board_version: String,
 }
 
-/// Parsed temperature/voltage response from cmd_id 4
+/// Parsed temperature/voltage response from `cmd_id` 4
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemperatureResponse {
     /// Outer temperature in degrees Celsius
@@ -139,8 +141,8 @@ pub struct TemperatureResponse {
     pub voltage: f64,
 }
 
-/// Parsed position response from cmd_id 5
-#[derive(Debug, Clone, PartialEq)]
+/// Parsed position response from `cmd_id` 5
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionResponse {
     pub position: i64,
 }
@@ -150,17 +152,16 @@ pub fn parse_response(response: &str, expected_cmd_id: u8) -> Result<Value> {
     debug!("Parsing response: {}", response);
 
     let value: Value = serde_json::from_str(response)
-        .map_err(|e| QhyFocuserError::InvalidResponse(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| QhyFocuserError::InvalidResponse(format!("Invalid JSON: {e}")))?;
 
     let idx = value
         .get("idx")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| QhyFocuserError::InvalidResponse("Missing 'idx' field".to_string()))?;
 
-    if idx != expected_cmd_id as u64 {
+    if idx != u64::from(expected_cmd_id) {
         return Err(QhyFocuserError::InvalidResponse(format!(
-            "Expected idx {}, got {}",
-            expected_cmd_id, idx
+            "Expected idx {expected_cmd_id}, got {idx}"
         )));
     }
 
@@ -171,9 +172,9 @@ pub fn parse_response(response: &str, expected_cmd_id: u8) -> Result<Value> {
 pub fn extract_idx(value: &Value) -> Result<u8> {
     let idx = value
         .get("idx")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| QhyFocuserError::InvalidResponse("Missing 'idx' field".to_string()))?;
-    if idx > u8::MAX as u64 {
+    if idx > u64::from(u8::MAX) {
         return Err(QhyFocuserError::InvalidResponse(format!(
             "idx {idx} out of range"
         )));
@@ -182,6 +183,7 @@ pub fn extract_idx(value: &Value) -> Result<u8> {
 }
 
 /// Build a [`VersionResponse`] from an already-parsed JSON value.
+#[must_use]
 pub fn parse_version_value(value: &Value) -> VersionResponse {
     let firmware_version = value
         .get("firmware_version")
@@ -226,18 +228,18 @@ pub fn parse_temperature_value(value: &Value) -> Result<TemperatureResponse> {
 pub fn parse_position_value(value: &Value) -> Result<PositionResponse> {
     let position = value
         .get("pos")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'pos' field".to_string()))?;
     Ok(PositionResponse { position })
 }
 
-/// Parse a version response (cmd_id 1)
+/// Parse a version response (`cmd_id` 1)
 pub fn parse_version_response(response: &str) -> Result<VersionResponse> {
     let value = parse_response(response, 1)?;
     Ok(parse_version_value(&value))
 }
 
-/// Parse a temperature response (cmd_id 4)
+/// Parse a temperature response (`cmd_id` 4)
 ///
 /// Raw values from the device: temp values divided by 1000, voltage by 10
 pub fn parse_temperature_response(response: &str) -> Result<TemperatureResponse> {
@@ -245,7 +247,7 @@ pub fn parse_temperature_response(response: &str) -> Result<TemperatureResponse>
     parse_temperature_value(&value)
 }
 
-/// Parse a position response (cmd_id 5)
+/// Parse a position response (`cmd_id` 5)
 pub fn parse_position_response(response: &str) -> Result<PositionResponse> {
     let value = parse_response(response, 5)?;
     parse_position_value(&value)
@@ -499,7 +501,7 @@ mod tests {
     #[test]
     fn test_command_debug() {
         let cmd = Command::GetVersion;
-        let debug = format!("{:?}", cmd);
+        let debug = format!("{cmd:?}");
         assert!(debug.contains("GetVersion"));
     }
 
@@ -520,14 +522,14 @@ mod tests {
             chip_temp: 30.0,
             voltage: 12.5,
         };
-        let debug = format!("{:?}", resp);
+        let debug = format!("{resp:?}");
         assert!(debug.contains("25.0"));
     }
 
     #[test]
     fn test_position_response_debug() {
         let resp = PositionResponse { position: 1000 };
-        let debug = format!("{:?}", resp);
+        let debug = format!("{resp:?}");
         assert!(debug.contains("1000"));
     }
 }

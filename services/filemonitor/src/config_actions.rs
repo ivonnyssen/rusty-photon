@@ -4,7 +4,7 @@
 //! The generic machinery lives in [`rusty_photon_config::actions`]; this module
 //! supplies only what varies for filemonitor: its `Config` type, normalization,
 //! validation, secret location, and editability tiers. Single ASCOM device (the
-//! SafetyMonitor); the binary has no CLI overrides beyond `--config`, so
+//! `SafetyMonitor`); the binary has no CLI overrides beyond `--config`, so
 //! `Overrides = ()`. See [`docs/services/filemonitor.md`] "Config actions".
 //!
 //! [`docs/services/filemonitor.md`]: ../../../docs/services/filemonitor.md
@@ -107,7 +107,7 @@ mod tests {
             },
             file: FileConfig {
                 path: PathBuf::from("/tmp/RoofStatusFile.txt"),
-                polling_interval: Duration::from_secs(60),
+                polling_interval: Duration::from_mins(1),
             },
             parsing: ParsingConfig {
                 rules: vec![ParsingRule {

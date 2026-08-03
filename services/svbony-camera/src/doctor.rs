@@ -1,5 +1,5 @@
 //! The `doctor` subcommand (docs/services/doctor.md §Per-service doctors):
-//! read-only diagnosis of this service's own config plus what the SVBony SDK
+//! read-only diagnosis of this service's own config plus what the `SVBony` SDK
 //! can see. No server starts, nothing is written, and the exit code follows
 //! doctor's shared contract (0 = no failures, 1 = at least one, 2 = the run
 //! itself broke).
@@ -36,7 +36,7 @@ pub fn run(config: Option<PathBuf>, json: bool) -> ! {
 }
 
 /// Enumeration only: `Sdk::cameras()` reads properties without opening a
-/// camera — SVBony's `CameraSN` arrives at enumeration time (unlike ZWO), so
+/// camera — `SVBony`'s `CameraSN` arrives at enumeration time (unlike ZWO), so
 /// there is no need to open (and thus contend with the running service for)
 /// any device just to list what is attached.
 fn enumerate() -> SdkOutcome {

@@ -1,4 +1,4 @@
-//! Step definitions for cover_control.feature.
+//! Step definitions for `cover_control.feature`.
 
 use ascom_alpaca::api::cover_calibrator::CoverStatus;
 use ascom_alpaca::ASCOMErrorCode;

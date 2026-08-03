@@ -1,8 +1,8 @@
-//! Step definitions for config_actions.feature.
+//! Step definitions for `config_actions.feature`.
 //!
 //! Reuses the optics/SkyView Givens and `I start the service` When from
-//! connection_steps; the spawned binary serves the actions through its
-//! run_reloadable loop.
+//! `connection_steps`; the spawned binary serves the actions through its
+//! `run_reloadable` loop.
 
 use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{then, when};

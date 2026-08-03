@@ -22,7 +22,7 @@ pub struct CoverCalibratorConfig {
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 
-fn default_cover_calibrator_poll_interval() -> Duration {
+const fn default_cover_calibrator_poll_interval() -> Duration {
     Duration::from_secs(3)
 }
 

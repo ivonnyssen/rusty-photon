@@ -108,7 +108,7 @@ impl ServerBuilder {
     /// test-only empty-backend path exercising the zero-focuser startup
     /// (contract C0).
     #[must_use]
-    pub fn with_empty(mut self, empty: bool) -> Self {
+    pub const fn with_empty(mut self, empty: bool) -> Self {
         self.force_empty = empty;
         self
     }
@@ -133,7 +133,7 @@ impl ServerBuilder {
         }
 
         let mut server = Server::new(CargoServerInfo!());
-        for eaf in focusers.iter() {
+        for eaf in &focusers {
             let handle: Arc<dyn FocuserHandle> = Arc::new(ZwoFocuserHandle::new(
                 zwo_rs::Sdk::new()?,
                 eaf.index,
@@ -232,7 +232,7 @@ pub struct BoundServer {
 impl BoundServer {
     /// The address the listener is bound to (useful when the port was `0`).
     #[must_use]
-    pub fn local_addr(&self) -> SocketAddr {
+    pub const fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -387,7 +387,7 @@ mod simulation_tests {
     }
 
     /// `devices` overrides are keyed by the bare SDK serial, not the prefixed
-    /// `ZWO:{name}:{serial}` UniqueID.
+    /// `ZWO:{name}:{serial}` `UniqueID`.
     #[tokio::test]
     async fn device_overrides_are_keyed_by_serial_not_unique_id() {
         let eaf = &enumerate_focusers().await.unwrap()[0];

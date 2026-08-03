@@ -7,7 +7,7 @@
 //! flux-weighted mean of the first-axis index; `centroid_y` of the second.
 //!
 //! Saturated components are *not* rejected — they're flagged via
-//! [`Star::saturated_pixel_count`] so downstream consumers (auto_focus,
+//! [`Star::saturated_pixel_count`] so downstream consumers (`auto_focus`,
 //! quality-screen tools) apply their own policy. See `docs/services/rp.md`
 //! (MVP `measure_basic` Contract, algorithm step 6) for the rationale.
 //!
@@ -68,6 +68,7 @@ pub struct DetectionParams {
 
 /// Run the detection pipeline over `view` against `background`. Returns the
 /// list of admitted stars in row-major scan order.
+#[must_use]
 pub fn detect_stars<T: Pixel>(
     view: ArrayView2<T>,
     background: &BackgroundStats,
@@ -79,7 +80,7 @@ pub fn detect_stars<T: Pixel>(
     }
 
     // Smooth a f64 copy of the input.
-    let f64_data: Array2<f64> = view.mapv(|p| p.to_f64());
+    let f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
     let smoothed = if params.smoothing_sigma > 0.0 && rows > 4 && cols > 4 {
         gaussian_filter(&f64_data, params.smoothing_sigma, 0, BorderMode::Reflect, 4)
     } else {
@@ -426,8 +427,7 @@ mod tests {
         let p = stars[0].peak;
         assert!(
             (p - 21_000.0).abs() < 1.0,
-            "peak should be raw pixel max (~21000), got {}",
-            p
+            "peak should be raw pixel max (~21000), got {p}"
         );
     }
 

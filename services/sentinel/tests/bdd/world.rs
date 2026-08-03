@@ -119,11 +119,10 @@ impl SentinelWorld {
 
     /// Build filemonitor JSON config from accumulated state.
     pub fn build_filemonitor_config(&self) -> serde_json::Value {
-        let file_path = self
-            .temp_file_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "nonexistent.txt".to_string());
+        let file_path = self.temp_file_path.as_ref().map_or_else(
+            || "nonexistent.txt".to_string(),
+            |p| p.to_string_lossy().to_string(),
+        );
 
         let polling = if self.fm_polling_interval > 0 {
             self.fm_polling_interval
@@ -472,7 +471,7 @@ impl SentinelWorld {
         format!("{}{}", sentinel.base_url, path)
     }
 
-    /// Wait until sentinel has polled at least once (last_poll_epoch_ms > 0).
+    /// Wait until sentinel has polled at least once (`last_poll_epoch_ms` > 0).
     pub async fn wait_for_poll(&self) {
         let client = reqwest::Client::new();
         let url = self.dashboard_url("/api/status");
@@ -483,7 +482,7 @@ impl SentinelWorld {
                 if let Ok(json) = resp.json::<Vec<serde_json::Value>>().await {
                     if json.iter().any(|m| {
                         m.get("last_poll_epoch_ms")
-                            .and_then(|v| v.as_u64())
+                            .and_then(serde_json::Value::as_u64)
                             .unwrap_or(0)
                             > 0
                     }) {
@@ -712,7 +711,7 @@ impl FlippableHealthStub {
         }
     }
 
-    pub fn port(&self) -> u16 {
+    pub const fn port(&self) -> u16 {
         self.port
     }
 
@@ -792,7 +791,7 @@ impl MountServiceStub {
         }
     }
 
-    pub fn port(&self) -> u16 {
+    pub const fn port(&self) -> u16 {
         self.port
     }
 
@@ -834,7 +833,7 @@ impl RpEventStub {
         tokio::spawn(async move {
             loop {
                 let accepted = tokio::select! {
-                    _ = server_cancel.cancelled() => break,
+                    () = server_cancel.cancelled() => break,
                     res = listener.accept() => res,
                 };
                 let Ok((mut sock, _)) = accepted else { break };

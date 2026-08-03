@@ -73,33 +73,33 @@ struct TokenSpec {
 impl Token {
     /// This token's canonical `{name}` and regex data — the single place
     /// each token's spelling and shape are written.
-    fn spec(self) -> TokenSpec {
+    const fn spec(self) -> TokenSpec {
         match self {
-            Token::Target => TokenSpec {
+            Self::Target => TokenSpec {
                 canonical: "target",
                 leading: "[a-z0-9-]",
                 trailing: "[a-z0-9-]",
                 shape: "[a-z0-9-]+",
             },
-            Token::Filter => TokenSpec {
+            Self::Filter => TokenSpec {
                 canonical: "filter",
                 leading: "[A-Za-z0-9]",
                 trailing: "[A-Za-z0-9]",
                 shape: "[A-Za-z0-9]+",
             },
-            Token::Binning => TokenSpec {
+            Self::Binning => TokenSpec {
                 canonical: "binning",
                 leading: "[0-9]",
                 trailing: "[0-9]",
                 shape: r"\d+x\d+",
             },
-            Token::FrameNumber => TokenSpec {
+            Self::FrameNumber => TokenSpec {
                 canonical: "frame_number",
                 leading: "[0-9]",
                 trailing: "[0-9]",
                 shape: r"\d+",
             },
-            Token::ExposureDuration => TokenSpec {
+            Self::ExposureDuration => TokenSpec {
                 // Space-free humantime: one or more `<int><unit>` groups,
                 // largest-unit-first with rollup (`120s` → `2m`, `3600s` →
                 // `1h`), down to sub-second (`500ms`, `32us`) — the same
@@ -121,31 +121,31 @@ impl Token {
                 trailing: "[0-9]",
                 shape: r"(?:\d+(?:ns|us|ms|s|m|h|d))+",
             },
-            Token::FilterPosition => TokenSpec {
+            Self::FilterPosition => TokenSpec {
                 canonical: "filter_position",
                 leading: "[0-9]",
                 trailing: "[0-9]",
                 shape: r"\d+",
             },
-            Token::SensorTemp => TokenSpec {
+            Self::SensorTemp => TokenSpec {
                 canonical: "sensor_temp",
                 leading: "[-0-9]",
                 trailing: "C",
                 shape: r"-?\d+C",
             },
-            Token::NightDate => TokenSpec {
+            Self::NightDate => TokenSpec {
                 canonical: "night_date",
                 leading: "[0-9]",
                 trailing: "[0-9]",
                 shape: r"\d{4}-\d{2}-\d{2}",
             },
-            Token::FrameType => TokenSpec {
+            Self::FrameType => TokenSpec {
                 canonical: "frame_type",
                 leading: "[LDFB]",
                 trailing: "[tks]",
                 shape: "Light|Dark|Flat|Bias",
             },
-            Token::Uuid8 => TokenSpec {
+            Self::Uuid8 => TokenSpec {
                 canonical: "uuid8",
                 leading: "[0-9a-f]",
                 trailing: "[0-9a-f]",
@@ -155,15 +155,15 @@ impl Token {
     }
 
     /// This token's canonical `{name}` spelling.
-    fn canonical(self) -> &'static str {
+    const fn canonical(self) -> &'static str {
         self.spec().canonical
     }
 
     /// The token a raw `{name}` from a pattern refers to, or `None` when
     /// no token owns that spelling (an unknown token, which
     /// [`parse_segments`] rejects).
-    fn from_canonical(name: &str) -> Option<Token> {
-        <Token as strum::VariantArray>::VARIANTS
+    fn from_canonical(name: &str) -> Option<Self> {
+        <Self as strum::VariantArray>::VARIANTS
             .iter()
             .copied()
             .find(|t| t.canonical() == name)
@@ -498,7 +498,7 @@ fn edge_class_regex(class: &str) -> Result<Regex, String> {
 /// optional: a caller supplies only what its configured pattern
 /// actually references, and `parse` only ever populates fields the
 /// pattern's tokens name.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TemplateFields {
     pub target: Option<TargetSlug>,
     pub filter: Option<String>,
@@ -1045,7 +1045,7 @@ mod tests {
             filter: Some("Ha".to_string()),
             binning: Some(Binning { x: 1, y: 1 }),
             frame_number: Some(2),
-            exposure_duration: Some(Duration::from_secs(120)),
+            exposure_duration: Some(Duration::from_mins(2)),
             filter_position: Some(680),
             sensor_temp_c: Some(-20),
             uuid8: Some("a1b2c3d4".to_string()),

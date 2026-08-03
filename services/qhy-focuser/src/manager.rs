@@ -5,8 +5,8 @@
 //! poll-task lifetime all live in
 //! [`rusty_photon_shared_transport::SharedTransport`]. What stays here:
 //!
-//! * The Q-Focuser handshake (GetVersion → SetSpeed → GetPosition →
-//!   ReadTemperature, seed the cache).
+//! * The Q-Focuser handshake (`GetVersion` → `SetSpeed` → `GetPosition` →
+//!   `ReadTemperature`, seed the cache).
 //! * The polling-interval loop body that refreshes position + temperature
 //!   and detects move completion.
 //! * The cached state the ASCOM `Focuser` properties read (`position`,
@@ -73,12 +73,14 @@ impl FocuserManager {
     }
 
     /// Access the shared transport so the device can acquire sessions.
-    pub fn transport(&self) -> &Arc<SharedTransport<QhyCodec>> {
+    #[must_use]
+    pub const fn transport(&self) -> &Arc<SharedTransport<QhyCodec>> {
         &self.transport
     }
 
     /// Cheap, non-blocking snapshot — true between handshake completion
     /// and the start of teardown.
+    #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
     }
@@ -253,7 +255,7 @@ async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
-            _ = ctx.cancelled() => {
+            () = ctx.cancelled() => {
                 debug!("Q-Focuser poll loop received cancellation");
                 return;
             }
@@ -513,11 +515,11 @@ mod tests {
     }
 
     /// Build a manager whose poll loop is effectively disabled (300s
-    /// interval) so the InjectableFactory's armed failure is consumed
+    /// interval) so the `InjectableFactory`'s armed failure is consumed
     /// by the test's foreground request rather than by the poll task.
     fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
         let mut config = Config::default();
-        config.serial.polling_interval = Duration::from_secs(300);
+        config.serial.polling_interval = Duration::from_mins(5);
         FocuserManager::new(config, factory)
     }
 

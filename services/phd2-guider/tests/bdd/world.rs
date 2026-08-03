@@ -289,7 +289,7 @@ impl GuiderWorld {
         self.last_response = Some(HttpResponse { status, body });
     }
 
-    pub fn last_response(&self) -> &HttpResponse {
+    pub const fn last_response(&self) -> &HttpResponse {
         self.last_response
             .as_ref()
             .expect("no HTTP request made yet — When step missing?")

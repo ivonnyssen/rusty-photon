@@ -12,7 +12,7 @@ fn health_url(world: &SentinelWorld) -> String {
 }
 
 #[given("sentinel is configured with dashboard TLS and auth enabled")]
-fn sentinel_configured_with_dashboard_auth(_world: &mut SentinelWorld) {
+const fn sentinel_configured_with_dashboard_auth(_world: &mut SentinelWorld) {
     // Marker — config is built in the When step
 }
 
@@ -116,7 +116,7 @@ async fn dashboard_401_includes_www_authenticate(world: &mut SentinelWorld) {
 async fn dashboard_responds_without_credentials(world: &mut SentinelWorld) {
     let client = reqwest::Client::new();
     let port = world.sentinel.as_ref().expect("sentinel not started").port;
-    let url = format!("http://127.0.0.1:{}/health", port);
+    let url = format!("http://127.0.0.1:{port}/health");
 
     let mut ok = false;
     for _ in 0..60 {
