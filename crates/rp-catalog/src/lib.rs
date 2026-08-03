@@ -176,7 +176,7 @@ fn read_u32(bytes: &[u8], off: usize) -> u32 {
 }
 
 fn read_i32(bytes: &[u8], off: usize) -> i32 {
-    read_u32(bytes, off) as i32
+    read_u32(bytes, off).cast_signed()
 }
 
 fn read_i16(bytes: &[u8], off: usize) -> i16 {
@@ -187,7 +187,7 @@ fn read_i16(bytes: &[u8], off: usize) -> i16 {
 }
 
 fn read_u16(bytes: &[u8], off: usize) -> u16 {
-    read_i16(bytes, off) as u16
+    read_i16(bytes, off).cast_unsigned()
 }
 
 /// Great-circle separation between two points given in degrees, via the

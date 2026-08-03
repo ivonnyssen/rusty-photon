@@ -83,7 +83,7 @@ impl CachedPixels {
     /// mismatch).
     pub fn from_i32_pixels(pixels: Vec<i32>, shape: (usize, usize), max_adu: u32) -> Option<Self> {
         if u16::try_from(max_adu).is_ok() {
-            let max_cached = max_adu as i32;
+            let max_cached = max_adu.cast_signed();
             let narrowed: Vec<u16> = pixels
                 .into_iter()
                 .map(|p| p.clamp(0, max_cached) as u16)

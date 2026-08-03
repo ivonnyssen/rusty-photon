@@ -407,7 +407,7 @@ impl MockMountState {
                 if let Some(ax) = self.axis_mut(axis) {
                     let sign: i32 = if ax.ccw { -1 } else { 1 };
                     ax.goto_target_ticks =
-                        ax.position_ticks + sign.saturating_mul(increment as i32);
+                        ax.position_ticks + sign.saturating_mul(increment.cast_signed());
                     ack_with(&[])
                 } else {
                     err_reply(0)

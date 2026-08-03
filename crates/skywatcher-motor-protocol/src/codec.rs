@@ -88,7 +88,7 @@ pub fn encode_position(ticks: i32) -> Result<[u8; 6]> {
             "encoder ticks {ticks} out of signed-24-bit range [{POSITION_MIN}, {POSITION_MAX}]"
         )));
     }
-    let biased = (ticks.wrapping_add(POSITION_BIAS as i32)) as u32 & 0x00FF_FFFF;
+    let biased = (ticks.wrapping_add(POSITION_BIAS.cast_signed())).cast_unsigned() & 0x00FF_FFFF;
     Ok(encode_u24(biased))
 }
 
@@ -99,7 +99,7 @@ pub fn encode_position(ticks: i32) -> Result<[u8; 6]> {
 /// [`i32`] in the range `-2^23 ..= 2^23 - 1`.
 pub fn decode_position(bytes: &[u8; 6]) -> Result<i32> {
     let biased = decode_u24(bytes)?;
-    Ok(biased as i32 - POSITION_BIAS as i32)
+    Ok(biased.cast_signed() - POSITION_BIAS.cast_signed())
 }
 
 /// Verify that `frame` matches the strict outbound (command) UDP framing

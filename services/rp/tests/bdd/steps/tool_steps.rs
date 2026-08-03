@@ -123,7 +123,7 @@ async fn rp_running_with_camera_at(world: &mut RpWorld, url: String, device_numb
     world.cameras.push(CameraConfig {
         id: "main-cam".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         cooler_targets_c: Vec::new(),
     });
     start_rp(world).await;
@@ -134,7 +134,7 @@ async fn rp_running_with_fw_at(world: &mut RpWorld, url: String, device_number: 
     world.filter_wheels.push(FilterWheelConfig {
         id: "main-fw".to_string(),
         alpaca_url: url,
-        device_number: device_number as u32,
+        device_number: device_number.cast_unsigned(),
         filters: vec![
             "Luminance".to_string(),
             "Red".to_string(),

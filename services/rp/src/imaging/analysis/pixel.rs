@@ -40,7 +40,7 @@ impl Pixel for i32 {
 
     #[inline]
     fn to_u32(self) -> u32 {
-        self.max(0) as u32
+        self.max(0).cast_unsigned()
     }
 }
 

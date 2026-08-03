@@ -73,12 +73,12 @@ pub fn fit_2d_gaussian<T: Pixel>(
 
     let cxi = centroid_x.round() as isize;
     let cyi = centroid_y.round() as isize;
-    let h = stamp_half_size as isize;
+    let h = stamp_half_size.cast_signed();
     let r_min = cxi - h;
     let c_min = cyi - h;
     let r_max = cxi + h;
     let c_max = cyi + h;
-    if r_min < 0 || c_min < 0 || r_max >= rows as isize || c_max >= cols as isize {
+    if r_min < 0 || c_min < 0 || r_max >= rows.cast_signed() || c_max >= cols.cast_signed() {
         return None;
     }
 
@@ -91,7 +91,7 @@ pub fn fit_2d_gaussian<T: Pixel>(
         for c in c_min..=c_max {
             pixel_x.push(r as f64);
             pixel_y.push(c as f64);
-            pixel_v.push(view[[r as usize, c as usize]].to_f64());
+            pixel_v.push(view[[r.cast_unsigned(), c.cast_unsigned()]].to_f64());
         }
     }
 

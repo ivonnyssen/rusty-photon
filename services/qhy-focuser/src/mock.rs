@@ -88,7 +88,7 @@ impl MockState {
                 // RelativeMove — mock simulates an instant move so the
                 // legacy single-step BDD scenarios remain valid.
                 let dir = parsed["dir"].as_i64().unwrap_or(1);
-                let steps = parsed["step"].as_u64().unwrap_or(0) as i64;
+                let steps = parsed["step"].as_u64().unwrap_or(0).cast_signed();
                 let delta = if dir > 0 { steps } else { -steps };
                 self.device_state.position += delta;
                 self.device_state.target_position = None;

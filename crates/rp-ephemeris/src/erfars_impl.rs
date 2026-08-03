@@ -194,10 +194,10 @@ pub fn time_jds(time: DateTime<Utc>) -> TimeJds {
     ensure_erfa_leap_seconds_initialized();
 
     let year = time.year();
-    let month = time.month() as i32;
-    let day = time.day() as i32;
-    let hh = time.hour() as i32;
-    let mm = time.minute() as i32;
+    let month = time.month().cast_signed();
+    let day = time.day().cast_signed();
+    let hh = time.hour().cast_signed();
+    let mm = time.minute().cast_signed();
     let seconds = f64::from(time.second()) + f64::from(time.nanosecond()) * 1e-9;
 
     let Some((utc1, utc2)) = dtf2d_jds(Dtf2d(true, year, month, day, hh, mm, seconds), time) else {

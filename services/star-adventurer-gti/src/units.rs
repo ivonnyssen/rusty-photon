@@ -86,7 +86,7 @@ const fn fold_ticks_canonical(value: i32, cpr: u32) -> i32 {
     if cpr == 0 {
         return value;
     }
-    let cpr_i = cpr as i32;
+    let cpr_i = cpr.cast_signed();
     let half = cpr_i / 2;
     let modular = value.rem_euclid(cpr_i);
     if modular >= half {
@@ -533,13 +533,13 @@ mod tests {
 
     #[test]
     fn ra_quarter_revolution_is_six_hours() {
-        let ha = RaTicks::new((GTI_CPR / 4) as i32).to_mech_ha(cpr());
+        let ha = RaTicks::new((GTI_CPR / 4).cast_signed()).to_mech_ha(cpr());
         assert!((ha.value() - 6.0).abs() < EPS, "got {}", ha.value());
     }
 
     #[test]
     fn dec_quarter_revolution_is_ninety_degrees() {
-        let d = DecTicks::new((GTI_CPR / 4) as i32).to_mech_dec(cpr());
+        let d = DecTicks::new((GTI_CPR / 4).cast_signed()).to_mech_dec(cpr());
         assert!((d.value() - 90.0).abs() < EPS, "got {}", d.value());
     }
 
@@ -567,7 +567,7 @@ mod tests {
         /// RA ticks within one revolution survive a tick -> mech_HA -> tick
         /// round trip exactly.
         #[test]
-        fn ra_ticks_round_trip(t in -((GTI_CPR / 2) as i32)..((GTI_CPR / 2) as i32)) {
+        fn ra_ticks_round_trip(t in -((GTI_CPR / 2).cast_signed())..((GTI_CPR / 2).cast_signed())) {
             let back = RaTicks::new(t).to_mech_ha(cpr()).to_ticks(cpr());
             prop_assert_eq!(back.value(), t);
         }
@@ -575,7 +575,7 @@ mod tests {
         /// Dec ticks within one revolution survive a tick -> mech_dec -> tick
         /// round trip exactly.
         #[test]
-        fn dec_ticks_round_trip(t in -((GTI_CPR / 2) as i32)..((GTI_CPR / 2) as i32)) {
+        fn dec_ticks_round_trip(t in -((GTI_CPR / 2).cast_signed())..((GTI_CPR / 2).cast_signed())) {
             let back = DecTicks::new(t).to_mech_dec(cpr()).to_ticks(cpr());
             prop_assert_eq!(back.value(), t);
         }

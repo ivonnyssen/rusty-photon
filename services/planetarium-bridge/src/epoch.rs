@@ -62,10 +62,10 @@ fn tt_jd(now: DateTime<Utc>) -> Option<(f64, f64)> {
     let (utc1, utc2) = match Dtf2d(
         true,
         now.year(),
-        now.month() as i32,
-        now.day() as i32,
-        now.hour() as i32,
-        now.minute() as i32,
+        now.month().cast_signed(),
+        now.day().cast_signed(),
+        now.hour().cast_signed(),
+        now.minute().cast_signed(),
         seconds,
     ) {
         Ok((pair, _status)) => pair,

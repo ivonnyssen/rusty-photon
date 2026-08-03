@@ -224,7 +224,7 @@ impl Focuser for QhyFocuserDevice {
     async fn move_(&self, position: i32) -> ASCOMResult<()> {
         ensure_connected!(self);
 
-        if position < 0 || position > self.config.max_step as i32 {
+        if position < 0 || position > self.config.max_step.cast_signed() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(

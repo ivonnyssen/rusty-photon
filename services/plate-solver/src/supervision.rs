@@ -99,7 +99,7 @@ fn send_graceful(pid: u32) {
     {
         // SAFETY: libc::kill with a valid pid and SIGTERM is safe. This is
         // the same pattern bdd-infra uses; see send_sigterm there.
-        let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        let ret = unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) };
         if ret != 0 {
             tracing::debug!(
                 "supervision: failed to send SIGTERM to pid {pid}: {}",

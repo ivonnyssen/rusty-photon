@@ -473,8 +473,8 @@ fn imagebytes(
         IMAGE_ELEMENT_I32,            // image_element_type (logical, always Int32)
         transmission_element_type,    // transmission_element_type
         2,                            // rank
-        width as i32,                 // dimension_1
-        height as i32,                // dimension_2
+        width.cast_signed(),          // dimension_1
+        height.cast_signed(),         // dimension_2
         0,                            // dimension_3
     ];
     for f in &header_fields {
