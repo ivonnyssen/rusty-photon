@@ -142,9 +142,16 @@ dangerous combination. The rule bifurcates by runner kind
   fresh clone of the template, apply the change, wipe `/etc/machine-id`, run
   `cloud-init clean`, power off, and convert to the new template — then roll
   the template VMID forward in `rp-runner-pool.sh`.
-* Host and template identifiers (VMIDs, addresses, credentials) are operator
-  infrastructure and deliberately absent from this repo; the runner's `.env`
-  carries what jobs need.
+* What lives where: **VMIDs are in the repo**, in `rp-runner-pool.sh`'s
+  `SLOTS` array — they are local to one hypervisor, meaningless anywhere else,
+  and the orchestrator needs them to do its job. What is deliberately absent
+  is anything that identifies or unlocks infrastructure: **addresses**
+  (this repo is public — see the LAN cache endpoint, which reaches jobs only
+  via the runner's `.env` and is masked before use) and **credentials** (the
+  PAT lives on the hypervisor at `/etc/rp-runner/github-token`, the cache
+  write credential only as a GitHub Actions secret). A reader should be able
+  to see exactly which VM does what, and nothing about where it is or how to
+  reach it.
 
 ## Bootstrapping a Runner Manually (no orchestrator)
 
