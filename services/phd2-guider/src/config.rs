@@ -41,7 +41,7 @@ fn default_server() -> ServerConfig {
     ServerConfig::new(11130)
 }
 
-fn default_stop_timeout() -> Duration {
+const fn default_stop_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
@@ -95,11 +95,11 @@ impl Default for ReconnectConfig {
     }
 }
 
-fn default_reconnect_enabled() -> bool {
+const fn default_reconnect_enabled() -> bool {
     true
 }
 
-fn default_reconnect_interval() -> Duration {
+const fn default_reconnect_interval() -> Duration {
     Duration::from_secs(5)
 }
 
@@ -123,15 +123,15 @@ fn default_host() -> String {
     "localhost".to_string()
 }
 
-fn default_port() -> u16 {
+const fn default_port() -> u16 {
     4400
 }
 
-fn default_connection_timeout() -> Duration {
+const fn default_connection_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
-fn default_command_timeout() -> Duration {
+const fn default_command_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
@@ -164,16 +164,16 @@ impl Default for SettleParams {
     }
 }
 
-fn default_settle_pixels() -> f64 {
+const fn default_settle_pixels() -> f64 {
     0.5
 }
 
-fn default_settle_time() -> Duration {
+const fn default_settle_time() -> Duration {
     Duration::from_secs(10)
 }
 
-fn default_settle_timeout() -> Duration {
-    Duration::from_secs(60)
+const fn default_settle_timeout() -> Duration {
+    Duration::from_mins(1)
 }
 
 /// Load configuration from a JSON file
@@ -210,7 +210,7 @@ mod tests {
         let params = SettleParams::default();
         assert_eq!(params.pixels, 0.5);
         assert_eq!(params.time, Duration::from_secs(10));
-        assert_eq!(params.timeout, Duration::from_secs(60));
+        assert_eq!(params.timeout, Duration::from_mins(1));
     }
 
     #[test]
@@ -253,7 +253,7 @@ mod tests {
         let params = SettleParams {
             pixels: 1.5,
             time: Duration::from_secs(15),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_mins(2),
         };
         let json = serde_json::to_value(&params).unwrap();
         assert_eq!(json["pixels"], 1.5);

@@ -2,9 +2,9 @@
 //!
 //! These tests require PHD2 to be installed on the system.
 //! Tests that require PHD2 are marked with #[ignore] by default.
-//! Run them with: cargo test --test test_integration -- --ignored
+//! Run them with: cargo test --test `test_integration` -- --ignored
 //!
-//! Some tests use the mock_phd2 binary and can run without PHD2 installed.
+//! Some tests use the `mock_phd2` binary and can run without PHD2 installed.
 
 #![allow(
     clippy::unwrap_used,
@@ -89,7 +89,7 @@ fn reserved_test_port() -> u16 {
             return candidate;
         }
     }
-    panic!("no free port in {} tries", RESERVED_PORT_TRIES);
+    panic!("no free port in {RESERVED_PORT_TRIES} tries");
 }
 
 /// Route a spawned child's coverage counters into the `bazel coverage` test
@@ -179,7 +179,7 @@ fn create_test_config() -> Phd2Config {
 }
 
 /// Helper to ensure PHD2 is running for a test
-/// Returns (manager, was_started) - was_started indicates if we started PHD2 (so we should stop it)
+/// Returns (manager, `was_started`) - `was_started` indicates if we started PHD2 (so we should stop it)
 async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
     if !is_phd2_available() {
         eprintln!("PHD2 not available, skipping test");
@@ -197,7 +197,7 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
         match manager.start_phd2().await {
             Ok(()) => Some((manager, true)),
             Err(e) => {
-                eprintln!("Failed to start PHD2: {}", e);
+                eprintln!("Failed to start PHD2: {e}");
                 None
             }
         }
@@ -209,7 +209,7 @@ async fn ensure_phd2_running() -> Option<(Phd2ProcessManager, bool)> {
 // ============================================================================
 
 /// Resolve this package's directory at runtime for both Cargo and Bazel.
-/// Cargo: `CARGO_MANIFEST_DIR` is the package source dir. Bazel: rules_rust
+/// Cargo: `CARGO_MANIFEST_DIR` is the package source dir. Bazel: `rules_rust`
 /// bakes a compile-time `CARGO_MANIFEST_DIR` that no longer exists at test
 /// runtime, so fall back to the runfiles tree via `TEST_SRCDIR`/`TEST_WORKSPACE`
 /// (same approach as services/ppba-driver/tests/translations.rs).
@@ -439,13 +439,10 @@ async fn test_event_subscription() {
     let event = event.unwrap();
     assert!(event.is_ok(), "Should receive event successfully");
 
-    match event.unwrap() {
-        Phd2Event::Version { phd_version, .. } => {
-            assert!(!phd_version.is_empty(), "Version should not be empty");
-        }
-        _ => {
-            // Other events might come first depending on PHD2 state
-        }
+    if let Phd2Event::Version { phd_version, .. } = event.unwrap() {
+        assert!(!phd_version.is_empty(), "Version should not be empty");
+    } else {
+        // Other events might come first depending on PHD2 state
     }
 
     client.disconnect().await.unwrap();
@@ -634,7 +631,7 @@ async fn test_full_workflow() {
 
     // Get state
     let state = client.get_app_state().await.unwrap();
-    println!("PHD2 state: {}", state);
+    println!("PHD2 state: {state}");
 
     // Get profiles
     let profiles = client.get_profiles().await.unwrap();
@@ -649,7 +646,7 @@ async fn test_full_workflow() {
 
     // Check equipment status
     let equipment_connected = client.is_equipment_connected().await.unwrap();
-    println!("Equipment connected: {}", equipment_connected);
+    println!("Equipment connected: {equipment_connected}");
 
     // Disconnect client
     client.disconnect().await.unwrap();
@@ -665,7 +662,7 @@ async fn test_full_workflow() {
 // Mock PHD2 Tests (don't require real PHD2)
 // ============================================================================
 
-/// Helper to find the mock_phd2 binary
+/// Helper to find the `mock_phd2` binary
 #[cfg(not(miri))]
 fn find_mock_phd2_binary() -> Option<PathBuf> {
     // Bazel stages the binary and points MOCK_PHD2_BINARY at it ($(rootpath ...));
@@ -721,7 +718,7 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
     Some(child)
 }
 
-/// Spawn mock_phd2 with `MOCK_PHD2_PORT=0` and parse the actual bound port
+/// Spawn `mock_phd2` with `MOCK_PHD2_PORT=0` and parse the actual bound port
 /// back from stdout. The kernel assigns a free port at bind time, eliminating
 /// the TOCTOU window of probe-then-spawn schemes.
 ///
@@ -730,7 +727,7 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
 ///
 /// Stderr policy is left to the caller: pass `Stdio::inherit()` to surface
 /// failure logs in test output, or `Stdio::null()` to discard them (necessary
-/// when many of these run in parallel — mock_phd2 is verbose enough that an
+/// when many of these run in parallel — `mock_phd2` is verbose enough that an
 /// undrained piped stderr can fill the pipe buffer and deadlock the mock).
 fn spawn_mock_phd2_dynamic_port(
     binary: impl AsRef<std::path::Path>,
@@ -753,14 +750,13 @@ fn spawn_mock_phd2_dynamic_port(
         })
     });
 
-    match port {
-        Some(p) => Some((p, child)),
-        None => {
-            // Mock exited before announcing its port; reap it and report failure.
-            let _ = child.kill();
-            let _ = child.wait();
-            None
-        }
+    if let Some(p) = port {
+        Some((p, child))
+    } else {
+        // Mock exited before announcing its port; reap it and report failure.
+        let _ = child.kill();
+        let _ = child.wait();
+        None
     }
 }
 
@@ -797,7 +793,7 @@ async fn test_mock_phd2_connection() {
 
     // Connect to mock server
     let result = client.connect().await;
-    assert!(result.is_ok(), "Should connect to mock PHD2: {:?}", result);
+    assert!(result.is_ok(), "Should connect to mock PHD2: {result:?}");
 
     wait_connected(&client).await;
 
@@ -839,7 +835,7 @@ async fn test_mock_phd2_get_app_state() {
     wait_connected(&client).await;
 
     let state = client.get_app_state().await;
-    assert!(state.is_ok(), "Should get app state: {:?}", state);
+    assert!(state.is_ok(), "Should get app state: {state:?}");
 
     client.disconnect().await.ok();
     child.kill().ok();
@@ -867,7 +863,7 @@ async fn test_mock_phd2_get_profiles() {
     wait_connected(&client).await;
 
     let profiles = client.get_profiles().await;
-    assert!(profiles.is_ok(), "Should get profiles: {:?}", profiles);
+    assert!(profiles.is_ok(), "Should get profiles: {profiles:?}");
 
     let profiles = profiles.unwrap();
     assert!(!profiles.is_empty(), "Should have at least one profile");
@@ -899,7 +895,7 @@ async fn test_mock_phd2_get_equipment() {
     wait_connected(&client).await;
 
     let equipment = client.get_current_equipment().await;
-    assert!(equipment.is_ok(), "Should get equipment: {:?}", equipment);
+    assert!(equipment.is_ok(), "Should get equipment: {equipment:?}");
 
     let equipment = equipment.unwrap();
     assert!(equipment.camera.is_some(), "Should have camera info");
@@ -932,17 +928,17 @@ async fn test_mock_phd2_exposure_methods() {
 
     // Get exposure
     let exposure = client.get_exposure().await;
-    assert!(exposure.is_ok(), "Should get exposure: {:?}", exposure);
+    assert!(exposure.is_ok(), "Should get exposure: {exposure:?}");
     assert_eq!(exposure.unwrap(), 1000);
 
     // Get exposure durations
     let durations = client.get_exposure_durations().await;
-    assert!(durations.is_ok(), "Should get durations: {:?}", durations);
+    assert!(durations.is_ok(), "Should get durations: {durations:?}");
     assert!(!durations.unwrap().is_empty());
 
     // Set exposure
     let set_result = client.set_exposure(2000).await;
-    assert!(set_result.is_ok(), "Should set exposure: {:?}", set_result);
+    assert!(set_result.is_ok(), "Should set exposure: {set_result:?}");
 
     client.disconnect().await.ok();
     child.kill().ok();
@@ -973,15 +969,14 @@ async fn test_mock_phd2_calibration_methods() {
     let calibrated = client.is_calibrated().await;
     assert!(
         calibrated.is_ok(),
-        "Should get calibration status: {:?}",
-        calibrated
+        "Should get calibration status: {calibrated:?}"
     );
 
     // Get calibration data
     let data = client
         .get_calibration_data(phd2_guider::CalibrationTarget::Mount)
         .await;
-    assert!(data.is_ok(), "Should get calibration data: {:?}", data);
+    assert!(data.is_ok(), "Should get calibration data: {data:?}");
 
     // Clear calibration
     let clear_result = client
@@ -989,8 +984,7 @@ async fn test_mock_phd2_calibration_methods() {
         .await;
     assert!(
         clear_result.is_ok(),
-        "Should clear calibration: {:?}",
-        clear_result
+        "Should clear calibration: {clear_result:?}"
     );
 
     client.disconnect().await.ok();
@@ -1020,36 +1014,26 @@ async fn test_mock_phd2_guiding_control() {
 
     // Start looping
     let loop_result = client.start_loop().await;
-    assert!(
-        loop_result.is_ok(),
-        "Should start looping: {:?}",
-        loop_result
-    );
+    assert!(loop_result.is_ok(), "Should start looping: {loop_result:?}");
 
     // Start guiding
     let settle = SettleParams::default();
     let guide_result = client.start_guiding(&settle, false, None).await;
     assert!(
         guide_result.is_ok(),
-        "Should start guiding: {:?}",
-        guide_result
+        "Should start guiding: {guide_result:?}"
     );
 
     // Pause guiding
     let pause_result = client.pause(true).await;
     assert!(
         pause_result.is_ok(),
-        "Should pause guiding: {:?}",
-        pause_result
+        "Should pause guiding: {pause_result:?}"
     );
 
     // Stop capture
     let stop_result = client.stop_capture().await;
-    assert!(
-        stop_result.is_ok(),
-        "Should stop capture: {:?}",
-        stop_result
-    );
+    assert!(stop_result.is_ok(), "Should stop capture: {stop_result:?}");
 
     client.disconnect().await.ok();
     child.kill().ok();
@@ -1080,16 +1064,14 @@ async fn test_mock_phd2_star_operations() {
     let find_result = client.find_star(None).await;
     assert!(
         find_result.is_ok(),
-        "Should auto-select star: {:?}",
-        find_result
+        "Should auto-select star: {find_result:?}"
     );
 
     // Set lock position
     let lock_result = client.set_lock_position(320.0, 240.0, true).await;
     assert!(
         lock_result.is_ok(),
-        "Should set lock position: {:?}",
-        lock_result
+        "Should set lock position: {lock_result:?}"
     );
 
     client.disconnect().await.ok();
@@ -1119,12 +1101,12 @@ async fn test_mock_phd2_cooling() {
 
     // Get CCD temperature
     let temp = client.get_ccd_temperature().await;
-    assert!(temp.is_ok(), "Should get temperature: {:?}", temp);
+    assert!(temp.is_ok(), "Should get temperature: {temp:?}");
     assert!((temp.unwrap() - 20.0).abs() < 1.0);
 
     // Get cooler status
     let status = client.get_cooler_status().await;
-    assert!(status.is_ok(), "Should get cooler status: {:?}", status);
+    assert!(status.is_ok(), "Should get cooler status: {status:?}");
 
     client.disconnect().await.ok();
     child.kill().ok();
@@ -1153,7 +1135,7 @@ async fn test_mock_phd2_star_image() {
 
     // Get star image
     let image = client.get_star_image(32).await;
-    assert!(image.is_ok(), "Should get star image: {:?}", image);
+    assert!(image.is_ok(), "Should get star image: {image:?}");
 
     let image = image.unwrap();
     assert_eq!(image.width, 32);
@@ -1197,7 +1179,7 @@ async fn test_mock_phd2_event_subscription() {
             assert!(phd_version.contains("mock"), "Should be mock version");
         }
         other => {
-            panic!("Expected Version event, got {:?}", other);
+            panic!("Expected Version event, got {other:?}");
         }
     }
 
@@ -1275,9 +1257,9 @@ async fn test_process_manager_start_stop_mock() {
     };
 
     // First make sure nothing is running on that port
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("127.0.0.1:{port}");
     if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-        eprintln!("Port {} is in use, skipping test", port);
+        eprintln!("Port {port} is in use, skipping test");
         return;
     }
 
@@ -1308,7 +1290,7 @@ async fn test_process_manager_start_stop_mock() {
 
     // Start the mock PHD2
     let result = manager.start_phd2().await;
-    assert!(result.is_ok(), "Should start mock PHD2: {:?}", result);
+    assert!(result.is_ok(), "Should start mock PHD2: {result:?}");
 
     // Verify it's running
     assert!(
@@ -1333,8 +1315,7 @@ async fn test_process_manager_start_stop_mock() {
     let stop_result = manager.stop_phd2(Some(&client)).await;
     assert!(
         stop_result.is_ok(),
-        "Should stop mock PHD2: {:?}",
-        stop_result
+        "Should stop mock PHD2: {stop_result:?}"
     );
 
     // Wait for shutdown
@@ -1386,8 +1367,7 @@ async fn test_process_manager_start_already_running() {
     let result = manager.start_phd2().await;
     assert!(
         result.is_ok(),
-        "Should succeed when already running: {:?}",
-        result
+        "Should succeed when already running: {result:?}"
     );
 
     // Manager should NOT have a managed process (since it was already running)
@@ -1412,9 +1392,9 @@ async fn test_process_manager_force_kill() {
     };
 
     // First make sure nothing is running on that port
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("127.0.0.1:{port}");
     if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-        eprintln!("Port {} is in use, skipping test", port);
+        eprintln!("Port {port} is in use, skipping test");
         return;
     }
 
@@ -1435,23 +1415,21 @@ async fn test_process_manager_force_kill() {
 
     // Start the mock PHD2
     let start_result = manager.start_phd2().await;
-    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+    assert!(start_result.is_ok(), "Should start: {start_result:?}");
     // start_phd2 reports success without spawning anything when something else
     // already answers on the port. This test owns a reserved port, so an
     // adopted stranger means the reservation broke: fail here rather than carry
     // on and shut down a server that belongs to another test.
     assert!(
         manager.has_managed_process().await,
-        "start_phd2 adopted a foreign server on port {} instead of spawning",
-        port
+        "start_phd2 adopted a foreign server on port {port} instead of spawning"
     );
 
     // Force stop without client (no graceful shutdown)
     let stop_result = manager.stop_phd2(None).await;
     assert!(
         stop_result.is_ok(),
-        "Should force stop mock PHD2: {:?}",
-        stop_result
+        "Should force stop mock PHD2: {stop_result:?}"
     );
 
     // Wait for process to die
@@ -1475,9 +1453,9 @@ async fn test_process_manager_shutdown_via_rpc() {
     };
 
     // First make sure nothing is running on that port
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("127.0.0.1:{port}");
     if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-        eprintln!("Port {} is in use, skipping test", port);
+        eprintln!("Port {port} is in use, skipping test");
         return;
     }
 
@@ -1498,15 +1476,14 @@ async fn test_process_manager_shutdown_via_rpc() {
 
     // Start the mock PHD2
     let start_result = manager.start_phd2().await;
-    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+    assert!(start_result.is_ok(), "Should start: {start_result:?}");
     // start_phd2 reports success without spawning anything when something else
     // already answers on the port. This test owns a reserved port, so an
     // adopted stranger means the reservation broke: fail here rather than carry
     // on and shut down a server that belongs to another test.
     assert!(
         manager.has_managed_process().await,
-        "start_phd2 adopted a foreign server on port {} instead of spawning",
-        port
+        "start_phd2 adopted a foreign server on port {port} instead of spawning"
     );
 
     // Connect a client
@@ -1518,8 +1495,7 @@ async fn test_process_manager_shutdown_via_rpc() {
     let shutdown_result = client.shutdown_phd2().await;
     assert!(
         shutdown_result.is_ok(),
-        "Should send shutdown command: {:?}",
-        shutdown_result
+        "Should send shutdown command: {shutdown_result:?}"
     );
 
     // Wait for process to die
@@ -1543,9 +1519,9 @@ async fn test_process_manager_stop_without_client() {
     };
 
     // First make sure nothing is running on that port
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("127.0.0.1:{port}");
     if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-        eprintln!("Port {} is in use, skipping test", port);
+        eprintln!("Port {port} is in use, skipping test");
         return;
     }
 
@@ -1566,15 +1542,14 @@ async fn test_process_manager_stop_without_client() {
 
     // Start the mock PHD2
     let start_result = manager.start_phd2().await;
-    assert!(start_result.is_ok(), "Should start: {:?}", start_result);
+    assert!(start_result.is_ok(), "Should start: {start_result:?}");
     // start_phd2 reports success without spawning anything when something else
     // already answers on the port. This test owns a reserved port, so an
     // adopted stranger means the reservation broke: fail here rather than carry
     // on and shut down a server that belongs to another test.
     assert!(
         manager.has_managed_process().await,
-        "start_phd2 adopted a foreign server on port {} instead of spawning",
-        port
+        "start_phd2 adopted a foreign server on port {port} instead of spawning"
     );
 
     // Verify it's running
@@ -1582,7 +1557,7 @@ async fn test_process_manager_stop_without_client() {
 
     // Stop without client (tests force kill path)
     let stop_result = manager.stop_phd2(None).await;
-    assert!(stop_result.is_ok(), "Should stop: {:?}", stop_result);
+    assert!(stop_result.is_ok(), "Should stop: {stop_result:?}");
 
     // Verify not running
     assert!(
@@ -1693,8 +1668,7 @@ async fn test_process_exit_immediately() {
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
         err_msg.contains("exited prematurely") || err_msg.contains("ProcessStartFailed"),
-        "Error should indicate premature exit: {}",
-        err_msg
+        "Error should indicate premature exit: {err_msg}"
     );
 }
 
@@ -1732,8 +1706,7 @@ async fn test_process_connection_timeout() {
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
         err_msg.contains("Timeout") || err_msg.contains("did not become ready"),
-        "Error should indicate timeout: {}",
-        err_msg
+        "Error should indicate timeout: {err_msg}"
     );
 
     // Clean up - force kill the no_listen process
@@ -1768,8 +1741,7 @@ async fn test_graceful_shutdown_fails_fallback_to_kill() {
     let shutdown_result = client.shutdown_phd2().await;
     assert!(
         shutdown_result.is_ok(),
-        "Shutdown command should succeed: {:?}",
-        shutdown_result
+        "Shutdown command should succeed: {shutdown_result:?}"
     );
 
     // Wait a moment and verify the process is STILL running
@@ -1784,7 +1756,7 @@ async fn test_graceful_shutdown_fails_fallback_to_kill() {
     let _ = child.wait();
 
     // Verify not running (can't connect)
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("127.0.0.1:{port}");
     assert!(
         tokio::net::TcpStream::connect(&addr).await.is_err(),
         "Mock should not be running after force kill"
@@ -1807,7 +1779,7 @@ struct ProcessGuard {
 }
 
 impl ProcessGuard {
-    fn new(child: Child, name: &'static str) -> Self {
+    const fn new(child: Child, name: &'static str) -> Self {
         Self { child, name }
     }
 }
@@ -1821,7 +1793,7 @@ impl Drop for ProcessGuard {
     }
 }
 
-/// Spawn the mock_phd2 server on a random port
+/// Spawn the `mock_phd2` server on a random port
 fn spawn_mock_server() -> (ProcessGuard, u16) {
     spawn_mock_server_with_mode("normal")
 }
@@ -1857,7 +1829,7 @@ fn phd2_guider_command() -> Command {
     cmd
 }
 
-/// Spawn the mock_phd2 server with a specific mode.
+/// Spawn the `mock_phd2` server with a specific mode.
 ///
 /// Delegates to [`spawn_mock_phd2_dynamic_port`] for the actual spawn-and-parse;
 /// this wrapper just handles binary lookup (via [`mock_phd2_bin`]), silences
@@ -1914,11 +1886,11 @@ fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
                     // Reap the kill'd child before panicking so we don't leave
                     // a zombie hanging around for the rest of the test binary.
                     let _ = child.wait();
-                    panic!("CLI command timed out after {:?}", timeout);
+                    panic!("CLI command timed out after {timeout:?}");
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => panic!("Error waiting for CLI: {}", e),
+            Err(e) => panic!("Error waiting for CLI: {e}"),
         }
     }
 
@@ -1947,7 +1919,7 @@ fn output_contains(output: &Output, needle: &str) -> bool {
 fn get_output_text(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    format!("STDOUT:\n{}\nSTDERR:\n{}", stdout, stderr)
+    format!("STDOUT:\n{stdout}\nSTDERR:\n{stderr}")
 }
 
 // ----------------------------------------------------------------------------
@@ -2589,7 +2561,9 @@ fn test_packaged_serve_path_materializes_the_default_config_on_first_start() {
         .expect("first start must materialize the default config at the platform path");
     let config: serde_json::Value = serde_json::from_str(&content).expect("valid JSON scaffold");
     assert_eq!(
-        config.pointer("/server/port").and_then(|v| v.as_u64()),
+        config
+            .pointer("/server/port")
+            .and_then(serde_json::Value::as_u64),
         Some(11130),
         "materialized scaffold must be the serialized default config"
     );
@@ -2684,10 +2658,9 @@ fn test_config_file_option() {
         r#"{{
             "phd2": {{
                 "host": "127.0.0.1",
-                "port": {}
+                "port": {port}
             }}
-        }}"#,
-        port
+        }}"#
     );
 
     let config_path = temp_config_path("phd2_config");
@@ -2819,7 +2792,7 @@ fn test_connection_timeout_message() {
 /// rusty-photon-service-lifecycle adoption. Before #294, the Monitor
 /// loop only watched `tokio::signal::ctrl_c()`, so `systemctl stop` or
 /// `kill -TERM` would leave the process running until force-killed.
-/// After the migration, ServiceRunner installs both SIGINT and SIGTERM,
+/// After the migration, `ServiceRunner` installs both SIGINT and SIGTERM,
 /// and the loop races against `shutdown.cancelled()` which observes
 /// either.
 #[cfg(unix)]
@@ -2869,25 +2842,21 @@ fn test_monitor_shuts_down_on_sigterm() {
     // accommodates CI load and disconnect-RPC roundtrip to the mock.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
-        match child.try_wait().expect("try_wait failed") {
-            Some(status) => {
-                // Process exited within the deadline. Any termination
-                // shape is acceptable as long as it happened
-                // promptly — signal-induced exit, clean shutdown,
-                // disconnect-failure-on-already-killed-mock; the
-                // contract under test is "shut down on SIGTERM", not
-                // a specific exit code.
-                let _ = status;
-                return;
-            }
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    child.kill().ok();
-                    let _ = child.wait();
-                    panic!("phd2-guider monitor did not exit within 2s of SIGTERM");
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if let Some(status) = child.try_wait().expect("try_wait failed") {
+            // Process exited within the deadline. Any termination
+            // shape is acceptable as long as it happened
+            // promptly — signal-induced exit, clean shutdown,
+            // disconnect-failure-on-already-killed-mock; the
+            // contract under test is "shut down on SIGTERM", not
+            // a specific exit code.
+            let _ = status;
+            return;
         }
+        if std::time::Instant::now() >= deadline {
+            child.kill().ok();
+            let _ = child.wait();
+            panic!("phd2-guider monitor did not exit within 2s of SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }

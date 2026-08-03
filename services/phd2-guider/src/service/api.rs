@@ -85,7 +85,7 @@ struct SettledResponse {
 }
 
 impl SettledResponse {
-    fn from_snapshot(snapshot: StatsSnapshot) -> Self {
+    const fn from_snapshot(snapshot: StatsSnapshot) -> Self {
         Self {
             state: "guiding",
             rms_ra_px: snapshot.rms_ra_px,
@@ -121,7 +121,7 @@ struct StateResponse {
 fn parse_optional_body<T: Default + serde::de::DeserializeOwned>(
     bytes: &axum::body::Bytes,
 ) -> Result<T, ServiceError> {
-    if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(T::default());
     }
     serde_json::from_slice(bytes)

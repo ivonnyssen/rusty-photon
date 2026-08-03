@@ -33,13 +33,13 @@ pub enum AppState {
 impl std::fmt::Display for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AppState::Stopped => write!(f, "Stopped"),
-            AppState::Selected => write!(f, "Selected"),
-            AppState::Calibrating => write!(f, "Calibrating"),
-            AppState::Guiding => write!(f, "Guiding"),
-            AppState::LostLock => write!(f, "LostLock"),
-            AppState::Paused => write!(f, "Paused"),
-            AppState::Looping => write!(f, "Looping"),
+            Self::Stopped => write!(f, "Stopped"),
+            Self::Selected => write!(f, "Selected"),
+            Self::Calibrating => write!(f, "Calibrating"),
+            Self::Guiding => write!(f, "Guiding"),
+            Self::LostLock => write!(f, "LostLock"),
+            Self::Paused => write!(f, "Paused"),
+            Self::Looping => write!(f, "Looping"),
         }
     }
 }
@@ -49,14 +49,14 @@ impl std::str::FromStr for AppState {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "Stopped" => Ok(AppState::Stopped),
-            "Selected" => Ok(AppState::Selected),
-            "Calibrating" => Ok(AppState::Calibrating),
-            "Guiding" => Ok(AppState::Guiding),
-            "LostLock" => Ok(AppState::LostLock),
-            "Paused" => Ok(AppState::Paused),
-            "Looping" => Ok(AppState::Looping),
-            _ => Err(Phd2Error::InvalidState(format!("Unknown state: {}", s))),
+            "Stopped" => Ok(Self::Stopped),
+            "Selected" => Ok(Self::Selected),
+            "Calibrating" => Ok(Self::Calibrating),
+            "Guiding" => Ok(Self::Guiding),
+            "LostLock" => Ok(Self::LostLock),
+            "Paused" => Ok(Self::Paused),
+            "Looping" => Ok(Self::Looping),
+            _ => Err(Phd2Error::InvalidState(format!("Unknown state: {s}"))),
         }
     }
 }

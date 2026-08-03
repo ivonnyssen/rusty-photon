@@ -43,6 +43,7 @@ impl Phd2Client {
     /// Create a new PHD2 client with the given configuration
     ///
     /// Uses the default TCP connection factory for production use.
+    #[must_use]
     pub fn new(config: Phd2Config) -> Self {
         Self::with_connection_factory(config, Arc::new(TcpConnectionFactory::new()))
     }
@@ -269,7 +270,7 @@ impl Phd2Client {
         // Wait for response with timeout
         tokio::time::timeout(self.config.command_timeout, receiver)
             .await
-            .map_err(|_| Phd2Error::Timeout(format!("Request '{}' timed out", method)))?
+            .map_err(|_| Phd2Error::Timeout(format!("Request '{method}' timed out")))?
             .map_err(|_| Phd2Error::ReceiveError)?
     }
 
@@ -725,7 +726,7 @@ impl Phd2Client {
     ) -> Result<()> {
         debug!(
             "Capturing single frame{}{}",
-            exposure_ms.map_or(String::new(), |e| format!(", exposure={}ms", e)),
+            exposure_ms.map_or(String::new(), |e| format!(", exposure={e}ms")),
             subframe.map_or(String::new(), |r| format!(
                 ", subframe=[{},{},{},{}]",
                 r.x, r.y, r.width, r.height
@@ -796,10 +797,7 @@ impl Phd2Client {
 
         let result = self.send_request("get_algo_param", Some(params)).await?;
         result.as_f64().ok_or_else(|| {
-            Phd2Error::InvalidState(format!(
-                "Expected number for algorithm parameter '{}'",
-                name
-            ))
+            Phd2Error::InvalidState(format!("Expected number for algorithm parameter '{name}'"))
         })
     }
 
@@ -1480,15 +1478,12 @@ mod mock_tests {
 
     /// Helper to create an RPC response
     fn rpc_response(id: u64, result: &str) -> String {
-        format!(r#"{{"jsonrpc":"2.0","result":{},"id":{}}}"#, result, id)
+        format!(r#"{{"jsonrpc":"2.0","result":{result},"id":{id}}}"#)
     }
 
     /// Helper to create an RPC error response
     fn rpc_error(id: u64, code: i32, message: &str) -> String {
-        format!(
-            r#"{{"jsonrpc":"2.0","error":{{"code":{},"message":"{}"}},"id":{}}}"#,
-            code, message, id
-        )
+        format!(r#"{{"jsonrpc":"2.0","error":{{"code":{code},"message":"{message}"}},"id":{id}}}"#)
     }
 
     // ============================================================================
@@ -1715,7 +1710,7 @@ mod mock_tests {
         let settle = SettleParams {
             pixels: 0.5,
             time: std::time::Duration::from_secs(10),
-            timeout: std::time::Duration::from_secs(60),
+            timeout: std::time::Duration::from_mins(1),
         };
         client.start_guiding(&settle, false, None).await.unwrap();
 
@@ -1887,7 +1882,7 @@ mod mock_tests {
         let settle = SettleParams {
             pixels: 0.5,
             time: std::time::Duration::from_secs(10),
-            timeout: std::time::Duration::from_secs(60),
+            timeout: std::time::Duration::from_mins(1),
         };
         client.dither(5.0, false, &settle).await.unwrap();
 

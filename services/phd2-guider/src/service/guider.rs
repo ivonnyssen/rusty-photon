@@ -71,7 +71,7 @@ impl StatsWindow {
         let rms_ra_px = rms(ra_sum_sq, ra_n);
         let rms_dec_px = rms(dec_sum_sq, dec_n);
         let total_rms_px = match (rms_ra_px, rms_dec_px) {
-            (Some(ra), Some(dec)) => Some((ra * ra + dec * dec).sqrt()),
+            (Some(ra), Some(dec)) => Some(ra.hypot(dec)),
             _ => None,
         };
         StatsSnapshot {
@@ -159,7 +159,10 @@ impl GuiderOps {
     }
 
     fn push_metrics(&self, entry: FrameMetrics) {
-        let mut ring = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ring = self
+            .metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if ring.len() == METRICS_WINDOW {
             ring.pop_front();
         }
@@ -191,7 +194,10 @@ impl GuiderOps {
                 match rx.recv().await {
                     Ok(Phd2Event::GuideStep(step)) => {
                         {
-                            let mut window = ops.stats.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut window = ops
+                                .stats
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             window.push(
                                 step.ra_distance_raw,
                                 step.dec_distance_raw,
@@ -272,11 +278,17 @@ impl GuiderOps {
         // cannot be missed.
         let rx = self.client.subscribe();
         {
-            let mut window = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+            let mut window = self
+                .stats
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *window = StatsWindow::default();
         }
         {
-            let mut ring = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let mut ring = self
+                .metrics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ring.clear();
         }
         debug!(
@@ -389,7 +401,10 @@ impl GuiderOps {
             .await
             .map_err(ServiceError::from)?;
         let frames = {
-            let ring = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let ring = self
+                .metrics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ring.iter().cloned().collect()
         };
         Ok(GuidingMetrics {
@@ -432,7 +447,7 @@ impl GuiderOps {
     fn stats_snapshot(&self) -> StatsSnapshot {
         self.stats
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot()
     }
 

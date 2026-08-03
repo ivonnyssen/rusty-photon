@@ -137,6 +137,7 @@ impl Phd2ProcessManager {
     ///
     /// Uses the default tokio process spawner and TCP connection factory
     /// for production use.
+    #[must_use]
     pub fn new(config: Phd2Config) -> Self {
         Self::with_spawner(
             config,
@@ -244,8 +245,7 @@ impl Phd2ProcessManager {
                     match child.try_wait().await {
                         Ok(Some(status)) => {
                             return Err(Phd2Error::ProcessStartFailed(format!(
-                                "PHD2 process exited prematurely with status: {}",
-                                status
+                                "PHD2 process exited prematurely with status: {status}"
                             )));
                         }
                         Ok(None) => {
@@ -253,8 +253,7 @@ impl Phd2ProcessManager {
                         }
                         Err(e) => {
                             return Err(Phd2Error::ProcessStartFailed(format!(
-                                "Failed to check process status: {}",
-                                e
+                                "Failed to check process status: {e}"
                             )));
                         }
                     }
@@ -562,7 +561,7 @@ mod tests {
     /// The mock spawner never actually runs this, but `get_executable_path`
     /// checks that the file exists. Use the running test binary (always present
     /// in both Cargo's target/ dir and Bazel's test sandbox) rather than
-    /// CARGO_MANIFEST_DIR/Cargo.toml, which Bazel does not stage at runtime.
+    /// `CARGO_MANIFEST_DIR/Cargo.toml`, which Bazel does not stage at runtime.
     fn dummy_executable_path() -> std::path::PathBuf {
         std::env::current_exe().expect("current_exe should be available in tests")
     }

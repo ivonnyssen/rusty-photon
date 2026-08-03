@@ -19,13 +19,13 @@ use crate::io::{ConnectionFactory, LineReader, MessageWriter};
 use crate::rpc::RpcResponse;
 
 /// Pending RPC request waiting for response
-pub(crate) struct PendingRequest {
+pub struct PendingRequest {
     pub sender: tokio::sync::oneshot::Sender<std::result::Result<serde_json::Value, Phd2Error>>,
 }
 
 /// Internal client connection state
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ConnectionState {
+pub struct ConnectionState {
     pub connected: bool,
     pub phd2_version: Option<String>,
     pub app_state: Option<AppState>,
@@ -37,7 +37,7 @@ pub(crate) struct ConnectionState {
 /// This struct holds all the Arc-wrapped state that needs to be shared
 /// between the client, reader task, and reconnection task.
 #[derive(Clone)]
-pub(crate) struct SharedConnectionState {
+pub struct SharedConnectionState {
     pub state: Arc<RwLock<ConnectionState>>,
     pub writer: Arc<Mutex<Option<Box<dyn MessageWriter>>>>,
     pub pending_requests: Arc<Mutex<HashMap<u64, PendingRequest>>>,
@@ -121,7 +121,7 @@ impl SharedConnectionState {
 
 /// Configuration for connection attempts
 #[derive(Clone)]
-pub(crate) struct ConnectionConfig {
+pub struct ConnectionConfig {
     pub host: String,
     pub port: u16,
     pub connection_timeout: std::time::Duration,
@@ -129,7 +129,7 @@ pub(crate) struct ConnectionConfig {
 }
 
 /// Spawn a reconnection task that attempts to reconnect to PHD2
-pub(crate) fn spawn_reconnect_task(
+pub fn spawn_reconnect_task(
     config: ConnectionConfig,
     shared: SharedConnectionState,
 ) -> tokio::task::JoinHandle<()> {
@@ -163,7 +163,7 @@ pub(crate) fn spawn_reconnect_task(
                 if attempt > max {
                     warn!("Reconnection failed: max retries ({}) exceeded", max);
                     let _ = shared.event_sender.send(Phd2Event::ReconnectFailed {
-                        reason: format!("Max retries ({}) exceeded", max),
+                        reason: format!("Max retries ({max}) exceeded"),
                     });
                     break;
                 }
@@ -183,8 +183,8 @@ pub(crate) fn spawn_reconnect_task(
             // Wait before attempting connection (unless first attempt)
             if attempt > 1 {
                 tokio::select! {
-                    _ = tokio::time::sleep(interval) => {}
-                    _ = shared.stop_reconnect.notified() => {
+                    () = tokio::time::sleep(interval) => {}
+                    () = shared.stop_reconnect.notified() => {
                         debug!("Reconnection stopped by user");
                         let _ = shared.event_sender.send(Phd2Event::ReconnectFailed {
                             reason: "Reconnection cancelled".to_string(),
@@ -247,7 +247,7 @@ pub(crate) fn spawn_reconnect_task(
 }
 
 /// Spawn a reader task that reads messages from PHD2
-pub(crate) fn spawn_reader_task(
+pub fn spawn_reader_task(
     mut reader: Box<dyn LineReader>,
     config: ConnectionConfig,
     shared: SharedConnectionState,
@@ -311,7 +311,7 @@ pub(crate) fn spawn_reader_task(
                 }
                 Err(e) => {
                     debug!("Error reading from PHD2: {}", e);
-                    disconnect_reason = format!("Read error: {}", e);
+                    disconnect_reason = format!("Read error: {e}");
                     break;
                 }
             }
