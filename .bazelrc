@@ -126,6 +126,14 @@ build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=ll
 build:macos --action_env=GITHUB_WORKSPACE
 build:windows --action_env=GITHUB_WORKSPACE
 
+# Windows also honours an explicit QHYCCD_SDK_DIR, which build.rs prefers over
+# the GITHUB_WORKSPACE fallback above. A GitHub-hosted job extracts the SDK
+# into its workspace and leaves this unset; the Proxmox runner template installs
+# it once, machine-wide, and exports this instead — without the forward, that
+# build fails with "could not find native static library `qhyccd`". Unset on
+# hosted runners, so their action keys are unchanged.
+build:windows --action_env=QHYCCD_SDK_DIR
+
 # Promote MSVC C4013 (implicit function declaration) to an error.
 # aws-lc-sys's cc-crate feature check for __builtin_bswap* wrongly passes
 # on MSVC: cl.exe in C89 mode treats the GCC built-ins as implicit
