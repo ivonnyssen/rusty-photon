@@ -79,8 +79,12 @@ pub struct RestartGate(Arc<Mutex<HashSet<String>>>);
 impl RestartGate {
     /// Claim `name`'s slot. `None` means a restart of that service is already
     /// in flight somewhere.
+    #[must_use]
     pub fn try_acquire(&self, name: &str) -> Option<RestartSlot> {
-        let mut in_flight = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut in_flight = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !in_flight.insert(name.to_string()) {
             return None;
         }
@@ -101,7 +105,10 @@ pub struct RestartSlot {
 
 impl Drop for RestartSlot {
     fn drop(&mut self) {
-        let mut in_flight = self.set.lock().unwrap_or_else(|p| p.into_inner());
+        let mut in_flight = self
+            .set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         in_flight.remove(&self.name);
     }
 }
@@ -136,6 +143,7 @@ impl RestartManager {
 
     /// A clone of the shared gate, for wiring into the other restart paths
     /// (the corrective ladder) so they exclude this manager's restarts.
+    #[must_use]
     pub fn gate(&self) -> RestartGate {
         self.gate.clone()
     }

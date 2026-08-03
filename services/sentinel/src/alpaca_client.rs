@@ -1,4 +1,4 @@
-//! ASCOM Alpaca SafetyMonitor client
+//! ASCOM Alpaca `SafetyMonitor` client
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +21,7 @@ struct AlpacaBoolResponse {
     error_message: String,
 }
 
-/// Client for an ASCOM Alpaca SafetyMonitor device
+/// Client for an ASCOM Alpaca `SafetyMonitor` device
 #[derive(derive_more::Debug)]
 pub struct AlpacaSafetyMonitor {
     name: String,

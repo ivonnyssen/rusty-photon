@@ -41,6 +41,7 @@ pub struct AlpacaBinding {
 
 /// Map an operation family to the Alpaca device it drives. Park aborts the same
 /// slew-to-park motion as a slew, so it shares `telescope`/`abortslew`.
+#[must_use]
 pub fn alpaca_binding(family: &str) -> Option<AlpacaBinding> {
     match family {
         "slew" | "park" => Some(AlpacaBinding {
@@ -77,6 +78,7 @@ pub struct CorrectiveTarget {
 impl CorrectiveTarget {
     /// Resolve a target from the family and the discovered service that owns
     /// it. The device number is always `0`: one service per device (ADR-014).
+    #[must_use]
     pub fn new(family: &str, service: &DiscoveredService) -> Self {
         Self {
             service_name: service.name.clone(),
@@ -323,6 +325,7 @@ impl LadderOutcome {
 
     /// Render as a message suffix (`" — corrective action: …"`), or `""` when
     /// no rung ran (notify-only).
+    #[must_use]
     pub fn action_suffix(&self) -> String {
         if self.rungs.is_empty() {
             String::new()

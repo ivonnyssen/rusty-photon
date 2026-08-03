@@ -188,12 +188,14 @@ impl SentinelBuilder {
     }
 
     /// Override the cancellation token (useful for testing)
+    #[must_use]
     pub fn with_cancellation_token(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
         self
     }
 
     /// Inject pre-built monitors instead of constructing them from config
+    #[must_use]
     pub fn with_monitors(mut self, monitors: Vec<Arc<dyn Monitor>>) -> Self {
         self.monitors = Some(monitors);
         self
@@ -201,12 +203,14 @@ impl SentinelBuilder {
 
     /// Inject pre-built event monitors (e.g. a watchdog over a mock event
     /// source) instead of constructing them from config
+    #[must_use]
     pub fn with_event_monitors(mut self, event_monitors: Vec<Arc<dyn EventMonitor>>) -> Self {
         self.event_monitors = Some(event_monitors);
         self
     }
 
     /// Inject pre-built notifiers instead of constructing them from config
+    #[must_use]
     pub fn with_notifiers(mut self, notifiers: Vec<Arc<dyn Notifier>>) -> Self {
         self.notifiers = Some(notifiers);
         self
@@ -224,6 +228,7 @@ impl SentinelBuilder {
     /// The directory sentinel's own config file lives in — where discovery
     /// reads the supervised services' `<svc>.json` siblings to derive their
     /// probe URLs. Without it, health reports `unknown` for every service.
+    #[must_use]
     pub fn with_config_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.config_dir = Some(dir);
         self
@@ -378,7 +383,7 @@ pub struct Sentinel {
 
 impl Sentinel {
     /// Returns whether the dashboard listener was successfully bound during build.
-    pub fn has_dashboard(&self) -> bool {
+    pub const fn has_dashboard(&self) -> bool {
         self.dashboard_listener.is_some()
     }
 
@@ -411,7 +416,7 @@ impl Sentinel {
             // and the only stdout consumer (bdd-infra's port parser) never runs
             // services with --service.
             if !rusty_photon_service_lifecycle::is_scm_service() {
-                println!("Sentinel dashboard bound_addr={}", addr);
+                println!("Sentinel dashboard bound_addr={addr}");
             }
 
             tokio::spawn(async move {
@@ -498,7 +503,7 @@ impl Sentinel {
 /// client loudly — self-signed TLS peers would then probe as down.
 /// The remediation to append when the authenticated probe client cannot
 /// be built — only a pinned install has a `ca_cert` to fix or remove.
-fn degraded_probe_advice(has_pin: bool) -> &'static str {
+const fn degraded_probe_advice(has_pin: bool) -> &'static str {
     if has_pin {
         " Fix or remove ca_cert to restore authenticated probes."
     } else {

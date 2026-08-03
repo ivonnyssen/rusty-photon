@@ -119,7 +119,7 @@ impl HttpClient for ReqwestHttpClient {
         let body = response
             .text()
             .await
-            .map_err(|e| crate::SentinelError::Http(format!("Reading response body: {}", e)))?;
+            .map_err(|e| crate::SentinelError::Http(format!("Reading response body: {e}")))?;
 
         tracing::debug!("GET {} -> {} ({} bytes)", url, status, body.len());
         Ok(HttpResponse { status, body })
@@ -139,7 +139,7 @@ impl HttpClient for ReqwestHttpClient {
         let body = response
             .text()
             .await
-            .map_err(|e| crate::SentinelError::Http(format!("Reading response body: {}", e)))?;
+            .map_err(|e| crate::SentinelError::Http(format!("Reading response body: {e}")))?;
 
         tracing::debug!("PUT {} -> {} ({} bytes)", url, status, body.len());
         Ok(HttpResponse { status, body })
@@ -159,7 +159,7 @@ impl HttpClient for ReqwestHttpClient {
         let body = response
             .text()
             .await
-            .map_err(|e| crate::SentinelError::Http(format!("Reading response body: {}", e)))?;
+            .map_err(|e| crate::SentinelError::Http(format!("Reading response body: {e}")))?;
 
         tracing::debug!("POST {} -> {} ({} bytes)", url, status, body.len());
         Ok(HttpResponse { status, body })

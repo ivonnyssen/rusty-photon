@@ -75,7 +75,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 "Never".to_string()
             } else {
                 format!(
-                    r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
+                    r"<script>document.write(new Date({}).toLocaleTimeString())</script>",
                     m.last_poll_epoch_ms
                 )
             };
@@ -83,7 +83,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 "Pending".to_string()
             } else {
                 format!(
-                    r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
+                    r"<script>document.write(new Date({}).toLocaleTimeString())</script>",
                     m.last_poll_epoch_ms + duration_to_ms_for_js(m.polling_interval)
                 )
             };
@@ -131,14 +131,14 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 "Never".to_string()
             } else {
                 format!(
-                    r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
+                    r"<script>document.write(new Date({}).toLocaleTimeString())</script>",
                     s.last_probe_epoch_ms
                 )
             };
             let next_restart = match s.next_restart_epoch_ms {
                 None => "&mdash;".to_string(),
                 Some(at) => format!(
-                    r#"<script>document.write(new Date({at}).toLocaleTimeString())</script>"#
+                    r"<script>document.write(new Date({at}).toLocaleTimeString())</script>"
                 ),
             };
             let run_state = serde_json::to_value(s.run_state)
@@ -327,9 +327,6 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
     </section>
 </body>
 </html>"#,
-        monitor_rows = monitor_rows,
-        service_rows = service_rows,
-        history_rows = history_rows,
     );
 
     Html(html)
@@ -520,8 +517,8 @@ mod tests {
 
     #[test]
     fn duration_to_ms_normal_millis_unchanged() {
-        assert_eq!(duration_to_ms_for_js(Duration::from_millis(30_000)), 30_000);
-        assert_eq!(duration_to_ms_for_js(Duration::from_secs(60)), 60_000);
+        assert_eq!(duration_to_ms_for_js(Duration::from_secs(30)), 30_000);
+        assert_eq!(duration_to_ms_for_js(Duration::from_mins(1)), 60_000);
     }
 
     #[test]

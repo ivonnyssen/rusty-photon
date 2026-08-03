@@ -40,14 +40,14 @@ async fn generate_tls_certs(world: &mut SentinelWorld) {
                 .unwrap();
             })
             .await
-            .expect("filemonitor cert generation panicked")
+            .expect("filemonitor cert generation panicked");
         })
         .await;
     world.pki = Some(pki);
 }
 
 #[given("sentinel is configured with dashboard TLS enabled")]
-fn sentinel_configured_dashboard_tls(_world: &mut SentinelWorld) {
+const fn sentinel_configured_dashboard_tls(_world: &mut SentinelWorld) {
     // Marker — config is built in When step
 }
 
@@ -74,7 +74,7 @@ async fn dashboard_health_https(world: &mut SentinelWorld) {
     let pki = world.pki();
     let client = pki.https_client();
     let port = world.sentinel.as_ref().expect("sentinel not started").port;
-    let url = format!("https://localhost:{}/health", port);
+    let url = format!("https://localhost:{port}/health");
 
     // No auth is configured in this scenario, so the credentials the probe
     // sends are ignored; a 200 proves the dashboard answers over HTTPS.
