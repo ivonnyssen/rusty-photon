@@ -31,21 +31,32 @@ Components:
   after its single job. See the script header for deployment.
 * **LAN build cache**: a `bazel-remote` instance in a container on the same
   host — anonymous reads, credential-gated writes (same public-read /
-  token-write model as the cloud R2 cache). Jobs receive the endpoint and
-  write credential from the runner's `.env` (`RP_LAN_CACHE_URL`,
-  `RP_CACHE_AUTH`), never from workflow files, and mask both before use so
-  neither can appear in public logs.
+  token-write model as the cloud R2 cache). Jobs receive the endpoint from
+  the runner's `.env` (`RP_LAN_CACHE_URL`), never from workflow files, and
+  mask it before use so it cannot appear in public logs. The **write**
+  credential deliberately does not exist on the runner VM: it is a GitHub
+  Actions secret (`BAZEL_LAN_CACHE_WRITE_AUTH`) that bazel.yml attaches
+  only on push-to-main events, mirroring the cloud cache's poisoning
+  defense (ADR-020 layer 4).
 
 ## Security Model — DO NOT WEAKEN
 
-The same reasoning as `docs/skills/raspberry-pi-runner.md` §"Why a
-Self-Hosted Runner": this repo is public, and on `pull_request` events
-Actions executes the PR's copy of the workflow YAML, so any workflow
-triggerable by a fork must never target self-hosted runners.
+This repo is public, and on `pull_request` events Actions executes the
+PR's copy of the workflow YAML — so self-hosted runners and fork PRs are a
+dangerous combination. The rule bifurcates by runner kind
+([ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)):
 
-* Workflows targeting `proxmox-ephemeral` get `workflow_dispatch:` (and at
-  most `schedule:`) triggers — **never `pull_request` or `push`**. Dispatch
-  requires write access to the repository.
+* **Persistent** self-hosted runners (the Raspberry Pi nightly runner)
+  keep the binary rule: `workflow_dispatch:`/`schedule:` triggers only,
+  never `pull_request` or `push`. Non-negotiable.
+* **This ephemeral pool** may serve `push` and **same-repo**
+  `pull_request` jobs under ADR-020's six-layer contract: a fork-excluding
+  `runs-on` expression (every falsy branch lands on GitHub-hosted), the
+  fork-PR approval checkpoint, JIT single-use VMs, no credentials on the
+  runner, VLAN fencing, and the `RP_POOL_LINUX` kill-switch variable.
+  bazel.yml's Linux leg is the implementation. **Approving a fork PR's
+  workflow runs is the human layer: review the workflow-file diff first —
+  a fork can only reach this pool by editing `runs-on`.**
 * Runners are **JIT-registered and single-use**: the config injected into a
   clone registers one runner for one job; a compromised job cannot mint
   further registrations, and the GitHub-side runner entry disappears after
@@ -62,11 +73,14 @@ triggerable by a fork must never target self-hosted runners.
 * Every job runs on a **fresh linked clone**; the clone powers off and is
   destroyed after its job. The only state shared between jobs is the build
   cache, whose writes are credential-gated.
-* If PR-triggered coverage is ever added on top of this pool, fork PRs must
-  be routed to GitHub-hosted runners (conditional `runs-on`), and the
-  repo-level "require approval for all outside collaborators" fork-PR policy
-  must stay enabled — approval remains the checkpoint for a fork PR that
-  edits workflow YAML.
+* The runner VMs live on a dedicated VLAN whose router firewall allows
+  exactly three things: the WAN, DNS, and the LAN cache's port. Everything
+  else on RFC1918 is dropped — verified by probing from inside a clone.
+  Pool control runs over the QEMU guest agent (no network path), so the
+  fencing cannot break pool mechanics.
+* The repo-level "require approval for all outside collaborators" fork-PR
+  policy must stay enabled — approval is the checkpoint for a fork PR that
+  edits workflow YAML (ADR-020 layer 2).
 
 ## Operational Notes
 
@@ -86,6 +100,17 @@ triggerable by a fork must never target self-hosted runners.
   ```
 
   This is part of the one-time setup contract.
+* **Kill switch:** routing of bazel.yml's Linux leg to the pool is gated on
+  the repo Actions variable `RP_POOL_LINUX` being `on`. If the pool host is
+  down, required checks sit queued with no error anywhere (GitHub cancels a
+  self-hosted job only after 24 hours in queue) — unset or flip the
+  variable (`gh variable set RP_POOL_LINUX --body off`) and re-run; jobs
+  route back to GitHub-hosted runners with no commit needed.
+* **Pins live in two places:** the hosted install steps in bazel.yml and
+  the pool template carry the same toolchain pins (bazelisk, OmniSim,
+  Pebble, camera SDKs). Bumping a pin in the workflow requires rebuilding
+  the template (procedure below) — the pool otherwise keeps running the old
+  pin silently.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup

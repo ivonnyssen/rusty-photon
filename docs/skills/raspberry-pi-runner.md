@@ -49,9 +49,13 @@ The "I'd like ARM coverage on PRs too" temptation must be resisted on a
 public repo until either (a) the runner is moved to a private mirror, or
 (b) a Just-In-Time (JIT) ephemeral runner pool with PR-approval gating is
 set up. Option (b) now exists for x86_64 Linux — see
-docs/skills/proxmox-runner-pool.md — but its workflows remain
-dispatch-only too, and THIS Pi runner is unchanged. For this file the rule
-stays binary: `schedule:` and `workflow_dispatch:` only.
+docs/skills/proxmox-runner-pool.md — and it DOES serve same-repo PR jobs,
+but only under the six-layer contract of
+[ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
+(fork-excluding routing, JIT single-use VMs, no credentials on the runner,
+VLAN fencing, kill switch). None of those layers exist for THIS Pi runner:
+it is persistent, credentialed, and on the operator's LAN. For this file
+the rule stays binary: `schedule:` and `workflow_dispatch:` only.
 
 If you ever need ARM-on-PR coverage, prefer GitHub's free `ubuntu-24.04-arm`
 runner (free for public repos) — see

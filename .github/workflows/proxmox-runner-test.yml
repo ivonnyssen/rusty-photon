@@ -9,11 +9,11 @@
 # The runner is an ephemeral clone of a pre-provisioned VM template (SDKs,
 # OmniSim, Pebble, bazelisk baked in), registered just-in-time for exactly
 # one job and destroyed afterwards — hence no install steps here. The LAN
-# cache endpoint and its write credential come from the runner's own .env
-# (RP_LAN_CACHE_URL / RP_CACHE_AUTH), never from this file; both are masked
-# first thing so neither can appear in public logs. Trusted dispatches
-# upload to the LAN cache; without the runner-provided endpoint the steps
-# fall back to read-only use of the default remote cache.
+# cache endpoint comes from the runner's own .env (RP_LAN_CACHE_URL), never
+# from this file, and is masked first thing so it cannot appear in public
+# logs. All use of the cache here is read-only: no write credential exists
+# anywhere on the runner VM (ADR-020 layer 4) — LAN cache writes happen
+# only in bazel.yml's push-to-main jobs, via a GitHub Actions secret.
 permissions:
   contents: read
 on:
@@ -29,51 +29,35 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Mask runner-provided cache values
+      - name: Mask runner-provided cache endpoint
         run: |
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then echo "::add-mask::$RP_LAN_CACHE_URL"; fi
-          if [[ -n "${RP_CACHE_AUTH:-}" ]]; then echo "::add-mask::$RP_CACHE_AUTH"; fi
 
       - uses: actions/checkout@v7
 
       - name: bazel build
         timeout-minutes: 30
         run: |
-          FLAGS=(--config=ci --config=remote-cache)
+          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "${RP_CACHE_AUTH:-}" ]]; then
-              FLAGS+=(--remote_header="Authorization=$RP_CACHE_AUTH")
-            fi
-          else
-            FLAGS+=(--remote_upload_local_results=false)
           fi
           bazel build "${FLAGS[@]}" //...
 
       - name: bazel test (fast)
         run: |
-          FLAGS=(--config=ci --config=remote-cache)
+          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "${RP_CACHE_AUTH:-}" ]]; then
-              FLAGS+=(--remote_header="Authorization=$RP_CACHE_AUTH")
-            fi
-          else
-            FLAGS+=(--remote_upload_local_results=false)
           fi
           bazel test "${FLAGS[@]}" \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
         run: |
-          FLAGS=(--config=ci --config=remote-cache)
+          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "${RP_CACHE_AUTH:-}" ]]; then
-              FLAGS+=(--remote_header="Authorization=$RP_CACHE_AUTH")
-            fi
-          else
-            FLAGS+=(--remote_upload_local_results=false)
           fi
           bazel test "${FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all //...
