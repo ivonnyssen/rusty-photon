@@ -52,6 +52,13 @@ this doc covers the crate's own design.
   *types* (`ServiceResult`, `RunError`, `RunResult`, `Report`) plus the
   chain-preserving [`report_from_boxed`] conversion are re-exported, never
   the `eyre!`/`bail!` macros.
+- Carry the workspace's **little-endian target guard**. This crate is not
+  about endianness, but it is the one crate every binary depends on, and
+  Cargo.toml cannot express a target restriction — so the
+  `#[cfg(not(target_endian = "little"))] compile_error!` in its crate root is
+  what makes a big-endian build fail everywhere rather than silently
+  byte-reverse a star catalog. See
+  [workspace.md § Supported targets](../workspace.md#supported-targets).
 
 Out of scope:
 

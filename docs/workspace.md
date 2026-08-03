@@ -272,6 +272,33 @@ root `Cargo.toml` (`rust-version = "1.94.1"`). Every member listed in
 `[workspace].members` — all services and shared crates — inherits it via
 `rust-version.workspace = true`.
 
+## Supported targets
+
+**Little-endian only.** The catalog format (`rp-catalog`), the mount wire
+protocols (`skywatcher-motor-protocol`, `pa-falcon-rotator`) and the camera SDK
+buffers all read and write native integers without byte-swapping, and none of it
+has ever been built or validated big-endian. A BE build would decode a star
+catalog or an encoder position with the bytes reversed and report no error at
+all, so the workspace refuses to compile there:
+
+```rust
+// crates/rusty-photon-service-lifecycle/src/lib.rs
+#[cfg(not(target_endian = "little"))]
+compile_error!("Rusty Photon supports little-endian targets only. ...");
+```
+
+Cargo.toml has no way to express a target guard, so it lives in the root of the
+crate every binary depends on — 44 of the 49 workspace members, and every
+service. Verify it with a cross-check against an installed BE target:
+
+```sh
+cargo check -p rusty-photon-service-lifecycle --target s390x-unknown-linux-gnu
+```
+
+The shipped targets are x86-64 and aarch64 on Linux, macOS and Windows, all
+little-endian. Lifting this restriction means auditing every decoder first, not
+deleting the guard.
+
 ## Workspace Dependencies
 
 Dependencies used by two or more services are declared in the workspace
