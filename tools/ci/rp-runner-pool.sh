@@ -31,7 +31,13 @@
 #   * every job runs on a fresh linked clone; nothing persists between jobs
 #     except the shared remote build cache, whose writes are separately
 #     credential-gated.
-set -u
+# pipefail so the injection check below really does gate on BOTH `qm guest
+# exec` and the in-guest exitcode it reports: the exit status of a pipeline is
+# otherwise its last command's, so a `qm` failure that still emitted
+# `exitcode: 0` JSON would read as a successful injection and wedge the slot.
+# The script's other pipelines feed emptiness checks or string comparisons, so
+# this changes nothing for them.
+set -u -o pipefail
 
 ORG=rusty-photon
 TOKEN_FILE=/etc/rp-runner/github-token
@@ -142,7 +148,14 @@ slot_loop() {
       log "$name" "runner clone $vmid up and registered"
     fi
 
-    # The clone powers itself off after its single job.
+    # The clone powers itself off after its single job. This wait is
+    # deliberately unbounded: a registered clone with no job yet assigned is
+    # not stalled, it is WARM — sitting here ready to be picked is the whole
+    # point of the pool, and a wall-clock cap would periodically destroy
+    # healthy idle runners and put cold-start latency back on every job. A
+    # genuinely wedged guest (hung shutdown, dead runner process) does hold a
+    # slot, but distinguishing that from idle needs a health check rather than
+    # a timer — tracked separately.
     while [ "$(qm status "$vmid" 2>/dev/null | awk '{print $2}')" = running ]; do
       sleep 10
     done
