@@ -130,7 +130,7 @@ impl Default for Config {
             },
             file: FileConfig {
                 path: default_watch_path(),
-                polling_interval: Duration::from_secs(60),
+                polling_interval: Duration::from_mins(1),
             },
             parsing: ParsingConfig {
                 rules: vec![
@@ -171,6 +171,7 @@ pub struct FileMonitorDevice {
 }
 
 impl FileMonitorDevice {
+    #[must_use]
     pub fn new(config: Config) -> Self {
         Self {
             config,
@@ -182,11 +183,13 @@ impl FileMonitorDevice {
     }
 
     /// Attach the config-action context, enabling `config.get` / `config.apply`.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FileMonitorDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
     }
 
+    #[must_use]
     pub fn evaluate_safety(&self, content: &str) -> bool {
         for rule in &self.config.parsing.rules {
             let matches = match rule.rule_type {
@@ -290,7 +293,7 @@ impl Device for FileMonitorDevice {
                 Err(e) => {
                     return Err(ASCOMError::new(
                         ASCOMErrorCode::NOT_CONNECTED,
-                        format!("Failed to read file: {}", e),
+                        format!("Failed to read file: {e}"),
                     ));
                 }
             }
@@ -366,7 +369,8 @@ pub struct ServerBuilder {
 }
 
 impl ServerBuilder {
-    pub fn new(config: Config) -> Self {
+    #[must_use]
+    pub const fn new(config: Config) -> Self {
         Self {
             config,
             config_path: None,
@@ -377,6 +381,7 @@ impl ServerBuilder {
     /// Set the config source (persist path) for the `config.get` /
     /// `config.apply` actions. Together with [`Self::with_reload_signal`],
     /// this enables config editing.
+    #[must_use]
     pub fn with_config_source(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
         self
@@ -385,6 +390,7 @@ impl ServerBuilder {
     /// Provide the reload trigger `config.apply` fires after its response
     /// flushes. Together with [`Self::with_config_source`], this enables
     /// config editing.
+    #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
         self
@@ -453,7 +459,7 @@ impl ServerBuilder {
         // and the only stdout consumer (bdd-infra's port parser) never runs
         // services with --service.
         if !rusty_photon_service_lifecycle::is_scm_service() {
-            println!("Bound Alpaca server bound_addr={}", local_addr);
+            println!("Bound Alpaca server bound_addr={local_addr}");
         }
 
         Ok(BoundServer {
@@ -478,7 +484,7 @@ pub struct BoundServer {
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -494,16 +500,12 @@ impl BoundServer {
             discovery,
         } = self;
         let serve = async {
-            match tls {
-                Some(ref tls_config) => {
-                    info!("filemonitor started on {} (TLS)", local_addr);
-                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                        .await
-                }
-                None => {
-                    info!("filemonitor started on {}", local_addr);
-                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
-                }
+            if let Some(ref tls_config) = tls {
+                info!("filemonitor started on {} (TLS)", local_addr);
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+            } else {
+                info!("filemonitor started on {}", local_addr);
+                rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
             }
         };
         rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
@@ -587,7 +589,7 @@ mod device_config_action_tests {
             },
             file: FileConfig {
                 path: PathBuf::from("/tmp/RoofStatusFile.txt"),
-                polling_interval: Duration::from_secs(60),
+                polling_interval: Duration::from_mins(1),
             },
             parsing: ParsingConfig {
                 rules: vec![ParsingRule {
@@ -684,7 +686,7 @@ mod device_config_action_tests {
     async fn config_apply_persists_and_fires_reload() {
         let (device, reload, _dir, path) = device_with_config_actions(test_config());
         let mut changed = test_config();
-        changed.file.polling_interval = Duration::from_secs(120);
+        changed.file.polling_interval = Duration::from_mins(2);
         let params = serde_json::to_string(&changed).unwrap();
 
         let body = device
@@ -871,7 +873,7 @@ mod property_tests {
 
         #[test]
         fn test_safe_content_always_safe(safe_suffix in ".*") {
-            let content = format!("SAFE {}", safe_suffix);
+            let content = format!("SAFE {safe_suffix}");
             let config = create_test_config();
             let device = FileMonitorDevice::new(config);
 
@@ -880,7 +882,7 @@ mod property_tests {
 
         #[test]
         fn test_danger_content_always_unsafe(danger_suffix in ".*") {
-            let content = format!("DANGER {}", danger_suffix);
+            let content = format!("DANGER {danger_suffix}");
             let config = create_test_config();
             let device = FileMonitorDevice::new(config);
 
@@ -905,7 +907,7 @@ mod property_tests {
                 parsing: ParsingConfig {
                     rules: vec![ParsingRule {
                         rule_type: RuleType::Regex,
-                        pattern: pattern.clone(),
+                        pattern,
                         safe: true,
                     }],
                     case_sensitive: true,
@@ -928,13 +930,13 @@ mod property_tests {
             let device = FileMonitorDevice::new(config);
 
             // "safe" in any case should match
-            let content = format!("{}safe{}", prefix, suffix);
+            let content = format!("{prefix}safe{suffix}");
             prop_assert!(device.evaluate_safety(&content));
 
-            let content_upper = format!("{}SAFE{}", prefix, suffix);
+            let content_upper = format!("{prefix}SAFE{suffix}");
             prop_assert!(device.evaluate_safety(&content_upper));
 
-            let content_mixed = format!("{}SaFe{}", prefix, suffix);
+            let content_mixed = format!("{prefix}SaFe{suffix}");
             prop_assert!(device.evaluate_safety(&content_mixed));
         }
 
@@ -956,7 +958,7 @@ mod property_tests {
                 parsing: ParsingConfig {
                     rules: vec![ParsingRule {
                         rule_type: RuleType::Regex,
-                        pattern: pattern.clone(),
+                        pattern,
                         safe: true,
                     }],
                     case_sensitive: false,

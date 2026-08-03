@@ -1,4 +1,4 @@
-//! Step definitions for config_actions.feature.
+//! Step definitions for `config_actions.feature`.
 
 use std::sync::Arc;
 
