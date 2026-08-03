@@ -141,8 +141,7 @@ fn write_argv(path: &str, args: &[String]) -> std::io::Result<()> {
 fn record_spawn(dir: &str) -> std::io::Result<()> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::fs::create_dir_all(dir)?;
     let path = std::path::Path::new(dir).join(format!("{nanos}-{}", std::process::id()));
     std::fs::write(path, nanos.to_string())
@@ -182,7 +181,7 @@ fn run_hang() -> std::process::ExitCode {
     // exits, default Windows behavior on CTRL_BREAK_EVENT terminates the
     // process — both are fine for this mode.
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_mins(1));
     }
 }
 
@@ -194,7 +193,7 @@ fn run_ignore_sigterm() -> std::process::ExitCode {
         libc::signal(libc::SIGTERM, libc::SIG_IGN);
     }
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_mins(1));
     }
 }
 
@@ -257,7 +256,7 @@ fn run_malformed_wcs(args: &[String]) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn run_no_wcs() -> std::process::ExitCode {
+const fn run_no_wcs() -> std::process::ExitCode {
     // Exit cleanly without writing a .wcs — wrapper must surface NoWcs.
     std::process::ExitCode::SUCCESS
 }

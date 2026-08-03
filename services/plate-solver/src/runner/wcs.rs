@@ -161,7 +161,7 @@ where
         read_optional_float(header, "CD1_1")?,
         read_optional_float(header, "CD2_1")?,
     ) {
-        return Ok((cd1_1 * cd1_1 + cd2_1 * cd2_1).sqrt() * 3600.0);
+        return Ok(cd1_1.hypot(cd2_1) * 3600.0);
     }
     Err(WcsParseError::MissingKeyword("CDELT1"))
 }

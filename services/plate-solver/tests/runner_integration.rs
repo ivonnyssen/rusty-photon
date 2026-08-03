@@ -1,10 +1,10 @@
 //! End-to-end integration tests for `AstapCliRunner::solve()`.
 //!
-//! Each test drives the full solve pipeline (build_command → spawn under
+//! Each test drives the full solve pipeline (`build_command` → spawn under
 //! supervision → parse `.wcs`) against `mock_astap` configured for a
 //! specific failure mode. These exercise the `solve()` orchestrator's
 //! branches that unit tests can't reach without spawning a subprocess
-//! (ExitStatus, NoWcs, MalformedWcs, success).
+//! (`ExitStatus`, `NoWcs`, `MalformedWcs`, success).
 //!
 //! `MOCK_ASTAP_MODE` is set per-test on the spawned child via the
 //! `AstapCliRunner::with_env` builder, not via `std::env::set_var`,
@@ -45,7 +45,7 @@ fn runner(mode: &str) -> (AstapCliRunner, TempDir) {
     (runner, dir)
 }
 
-fn req(fits_path: PathBuf) -> SolveRequest {
+const fn req(fits_path: PathBuf) -> SolveRequest {
     SolveRequest {
         fits_path,
         ra_hint: None,

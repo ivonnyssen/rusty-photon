@@ -363,6 +363,6 @@ fn read_argv(world: &PlateSolverWorld) -> Vec<String> {
     let s = std::fs::read_to_string(p).expect("read argv_out");
     s.lines()
         .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
