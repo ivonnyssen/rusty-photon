@@ -58,7 +58,7 @@ mkdir -p "$STATE_DIR"
 SLOTS=(
   "runner-eph|903|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-eph2|903|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-win|904|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-win|906|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id

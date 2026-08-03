@@ -37,11 +37,47 @@ Components:
   itself, which lives at `C:\actions-runner` (mirroring the Linux
   `/home/ci/actions-runner`) — that is where the orchestrator injects
   `.jitconfig`, so a template rebuild must keep the path. A `gha-runner`
-  scheduled task (AtStartup, SYSTEM) plays the systemd unit's role. Two Windows-only
-  requirements: `BAZEL_SH` must point at Git's `bash.exe` or Bazel reports
-  "No suitable shell toolchain found", and `QHYCCD_SDK_DIR` only reaches
-  build actions because `.bazelrc` forwards it (a machine-wide SDK is
-  invisible to the `GITHUB_WORKSPACE` fallback hosted runners rely on).
+  scheduled task plays the systemd unit's role, and **it must run in an
+  interactive desktop session, not as SYSTEM** — see below. Three
+  Windows-only requirements: `BAZEL_SH` must point at Git's `bash.exe` or
+  Bazel reports "No suitable shell toolchain found"; `QHYCCD_SDK_DIR` only
+  reaches build actions because `.bazelrc` forwards it (a machine-wide SDK is
+  invisible to the `GITHUB_WORKSPACE` fallback hosted runners rely on); and
+  **PowerShell 7 (`pwsh`) must be installed**, because a stock Windows Server
+  ships only Windows PowerShell 5.1 and every `shell: pwsh` step then has
+  nothing to run — the failure that broke this venue's first real job.
+
+  The general rule behind that last one: **the template must supply whatever
+  GitHub's hosted image supplies and the workflows assume.** Hosted images
+  carry a large pre-installed inventory that workflow YAML consumes without
+  ever naming it as a dependency, so a gap is invisible until a job trips
+  over it. `proxmox-runner-test.yml`'s Windows job asserts the ones known to
+  matter before it builds — extend it whenever a workflow starts depending on
+  something new from the image, and dispatch it after any template rebuild.
+* **The Windows runner needs an interactive desktop session.** The
+  `gha-runner` task runs as `Administrator` with `LogonType=Interactive` and
+  an **AtLogOn** trigger, and the template has autologon enabled
+  (`AutoAdminLogon`/`DefaultUserName`/`DefaultPassword` under
+  `HKLM\...\Winlogon`) so that session exists from boot. Running it as
+  SYSTEM instead puts the job in session 0, which has no desktop — and
+  OmniSim builds a **system tray icon** at startup, so it throws
+  `System.InvalidOperationException: TryCreate failed` and dies with exit
+  code `0xe0434352`. Every BDD suite then fails or times out while `bazel
+  build` stays perfectly green, which is exactly how this stayed hidden until
+  the venue's first real job. GitHub's own hosted Windows images use the same
+  autologon arrangement.
+
+  **The credential tradeoff is deliberate and bounded.** Autologon stores the
+  local administrator password in the registry in cleartext, which reads at
+  first glance like a breach of ADR-020 layer 4 ("no standing credentials on
+  the runner"). That layer is about credentials which unlock something
+  *outside* the VM — a GitHub token, a cache write key. This one unlocks only
+  the ephemeral clone itself, on which the job already runs elevated, so it
+  grants a malicious job nothing it does not already have. What keeps the
+  blast radius at one VM: the pool runs a single Windows clone at a time, the
+  clones are VLAN-fenced, and the Linux template does not share the password.
+  Do not extend this to a second concurrent Windows slot without revisiting
+  it.
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in the script's
