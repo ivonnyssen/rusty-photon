@@ -135,9 +135,10 @@ impl CameraWorld {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        if !self.empty_backend {
-            panic!("svbony-camera did not register a Camera device within 20s");
-        }
+        assert!(
+            self.empty_backend,
+            "svbony-camera did not register a Camera device within 20s"
+        );
     }
 
     pub fn camera(&self) -> Arc<dyn Camera> {

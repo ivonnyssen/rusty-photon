@@ -1,5 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! # svbony-camera — ASCOM Alpaca driver for SVBony cameras
+//! # svbony-camera — ASCOM Alpaca driver for `SVBony` cameras
 //!
 //! **Phase E scope (this crate today).** The service binary builds, binds
 //! the Alpaca listener on port 11125, and serves `/management/*` correctly
@@ -112,12 +112,12 @@ impl ServerBuilder {
     /// Register no cameras regardless of what the SDK reports — the test-only
     /// empty-backend path exercising the zero-camera startup (contract C0).
     #[must_use]
-    pub fn with_empty(mut self, empty: bool) -> Self {
+    pub const fn with_empty(mut self, empty: bool) -> Self {
         self.force_empty = empty;
         self
     }
 
-    /// Enumerate the connected SVBony cameras, register each as an ASCOM
+    /// Enumerate the connected `SVBony` cameras, register each as an ASCOM
     /// device, and bind the Alpaca listener.
     ///
     /// Zero discovered cameras is **not** a hard failure: the server starts
@@ -139,7 +139,7 @@ impl ServerBuilder {
         }
 
         let mut server = Server::new(CargoServerInfo!());
-        for cam in cameras.iter() {
+        for cam in &cameras {
             let handle: Arc<dyn CameraHandle> = Arc::new(SvbonyCameraHandle::new(
                 svbony_rs::Sdk::new()?,
                 cam.index,
@@ -239,7 +239,7 @@ pub struct BoundServer {
 impl BoundServer {
     /// The address the listener is bound to (useful when the port was `0`).
     #[must_use]
-    pub fn local_addr(&self) -> SocketAddr {
+    pub const fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -259,15 +259,12 @@ impl BoundServer {
             discovery,
         } = self;
         let serve = async {
-            let result = match tls {
-                Some(ref tls_config) => {
-                    debug!("serving over TLS");
-                    rusty_photon_tls::server::serve_tls(listener, app, tls_config, shutdown).await
-                }
-                None => {
-                    debug!("serving plain HTTP");
-                    rusty_photon_tls::server::serve_plain(listener, app, shutdown).await
-                }
+            let result = if let Some(ref tls_config) = tls {
+                debug!("serving over TLS");
+                rusty_photon_tls::server::serve_tls(listener, app, tls_config, shutdown).await
+            } else {
+                debug!("serving plain HTTP");
+                rusty_photon_tls::server::serve_plain(listener, app, shutdown).await
             };
             result.map_err(|e| SvbonyCameraError::Server(e.to_string()))
         };
@@ -276,10 +273,10 @@ impl BoundServer {
     }
 }
 
-/// Enumerate connected SVBony cameras, minting each device's serial-derived
+/// Enumerate connected `SVBony` cameras, minting each device's serial-derived
 /// `UniqueID`.
 ///
-/// Unlike ZWO (`ASIGetSerialNumber` requires an open camera), SVBony's
+/// Unlike ZWO (`ASIGetSerialNumber` requires an open camera), `SVBony`'s
 /// `CameraSN` arrives with `SVBGetCameraInfo` at enumeration time
 /// ([`svbony_rs::Sdk::cameras`]) — no open-then-close dance is needed to mint
 /// identity. Enumeration reads properties without opening any camera, so it
@@ -385,7 +382,7 @@ mod simulation_tests {
     }
 
     /// `devices` overrides are keyed by the bare SDK serial, not the prefixed
-    /// `SVBONY:{name}:{serial}` UniqueID.
+    /// `SVBONY:{name}:{serial}` `UniqueID`.
     #[tokio::test]
     async fn device_overrides_are_keyed_by_serial_not_unique_id() {
         let cameras = enumerate_cameras().await.unwrap();

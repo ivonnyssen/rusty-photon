@@ -23,7 +23,7 @@
 //! output format + exposure control + trigger + the `exposure*2+500ms`
 //! `SVBGetVideoData` deadline, state-machine step 2), and pulse-guide.
 //!
-//! **How `capture` aborts (hardware-verified, SV605CC).** SVBony has no
+//! **How `capture` aborts (hardware-verified, SV605CC).** `SVBony` has no
 //! data-preserving or interruptible stop at the SDK level: real-hardware
 //! probing confirmed that a concurrent `SVBStopVideoCapture` is *tolerated*
 //! (no crash, and the handle survives a restart + fresh capture) but does
@@ -241,7 +241,12 @@ pub struct SvbonyCameraHandle {
 impl SvbonyCameraHandle {
     /// Build a handle for the camera at enumeration `index`, with its cached
     /// [`CameraInfo`] and the serial-derived `unique_id` read at enumeration.
-    pub fn new(sdk: svbony_rs::Sdk, index: usize, info: CameraInfo, unique_id: String) -> Self {
+    pub const fn new(
+        sdk: svbony_rs::Sdk,
+        index: usize,
+        info: CameraInfo,
+        unique_id: String,
+    ) -> Self {
         Self {
             sdk,
             index,
@@ -673,7 +678,7 @@ pub(crate) mod mock {
     }
 
     #[derive(Debug)]
-    pub(crate) struct MockCameraHandle {
+    pub struct MockCameraHandle {
         unique_id: String,
         info: CameraInfo,
         property: Mutex<CameraProperty>,

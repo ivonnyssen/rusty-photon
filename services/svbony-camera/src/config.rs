@@ -2,7 +2,7 @@
 //!
 //! The shared `server` block (`AlpacaServerConfig`) binds the listener; the
 //! `devices` override map (keyed by SDK serial — applied to each
-//! `SvbonyCamera` at registration) mirrors `zwo-camera`'s shape. SVBony has
+//! `SvbonyCamera` at registration) mirrors `zwo-camera`'s shape. `SVBony` has
 //! exactly one device type (Camera), so there is no filter-wheel-style
 //! per-device-family config surface here (see ADR-014's precedent, though it
 //! doesn't apply to this single-device-type SDK).
@@ -71,7 +71,7 @@ impl CliOverrides {
     }
 
     /// Apply the overrides onto `config` in place.
-    pub fn apply(&self, config: &mut Config) {
+    pub const fn apply(&self, config: &mut Config) {
         if let Some(port) = self.port {
             config.server.port = port;
         }

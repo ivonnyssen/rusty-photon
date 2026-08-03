@@ -3,7 +3,7 @@
 //!
 //! Behaviour follows `docs/services/svbony-camera.md`'s "Behavioral
 //! contracts", with the load-bearing divergence from the `zwo-camera`
-//! template being the exposure path: SVBony has no snap-exposure API, so
+//! template being the exposure path: `SVBony` has no snap-exposure API, so
 //! every exposure rides the soft-trigger video-capture state machine (mode
 //! selection + video-capture start once at connect; each `StartExposure` is
 //! set-exposure → soft-trigger → `SVBGetVideoData` with a deadline) instead
@@ -76,7 +76,7 @@ struct Roi {
 /// Sensor geometry and capability data cached from `SVB_CAMERA_PROPERTY`/
 /// `_EX` and `SVBGetSensorPixelSize` at the connect handshake — unlike
 /// `zwo-camera`, these are **not** available at construction time because
-/// SVBony's SDK only returns them for an *open* camera (see the module
+/// `SVBony`'s SDK only returns them for an *open* camera (see the module
 /// docs).
 #[derive(Debug, Clone)]
 struct SensorInfo {
@@ -142,7 +142,7 @@ struct DeviceState {
     /// deadline → `CameraState::Error` (E9).
     last_error: Mutex<Option<String>>,
     /// Serializes the capture task's "check generation + commit result"
-    /// against `cancel_exposure`'s "bump generation + clear image_ready".
+    /// against `cancel_exposure`'s "bump generation + clear `image_ready`".
     result_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
@@ -151,7 +151,7 @@ struct DeviceState {
 }
 
 impl DeviceState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             sensor: Mutex::new(None),
             bin: AtomicU8::new(1),
@@ -197,7 +197,7 @@ impl DeviceState {
     }
 }
 
-/// One ASCOM Camera device per discovered SVBony camera.
+/// One ASCOM Camera device per discovered `SVBony` camera.
 #[derive(Clone, derive_more::Debug)]
 pub struct SvbonyCamera {
     #[debug(skip)]
@@ -451,7 +451,7 @@ impl SvbonyCamera {
         self.state.offset_min_max.lock().is_some()
     }
 
-    /// Run a blocking SDK-seam call off the async executor. The SVBony FFI
+    /// Run a blocking SDK-seam call off the async executor. The `SVBony` FFI
     /// calls do USB I/O, so running them directly on a Tokio worker could
     /// stall other Alpaca requests; offload them like the capture, connect,
     /// and pulse-guide paths.
@@ -479,7 +479,7 @@ fn handshake_err(step: &'static str) -> impl FnOnce(crate::backend::BackendError
 }
 
 /// Geometry validation (R2/R3). Rejects a zero, misaligned, or out-of-bounds
-/// sub-frame. SVBony's `SVBSetROIFormat` requires `width % 8 == 0` and
+/// sub-frame. `SVBony`'s `SVBSetROIFormat` requires `width % 8 == 0` and
 /// `height % 2 == 0` — byte-for-byte the same rule `zwo-camera` enforces for
 /// ASI.
 fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResult<()> {
@@ -525,14 +525,14 @@ fn lcm(a: u32, b: u32) -> u32 {
 }
 
 /// The largest sensor extent (≤ `max`) the driver reports such that the full
-/// frame divided by *every* supported bin is a valid SVBony ROI — i.e. the
+/// frame divided by *every* supported bin is a valid `SVBony` ROI — i.e. the
 /// binned extent is a multiple of `unit` (8 for width, 2 for height); the
 /// same mechanism as `zwo-camera`'s `aligned_sensor_extent` (R4).
 ///
-/// ConformU takes a full frame at every bin via `NumX = CameraXSize / bin`
+/// `ConformU` takes a full frame at every bin via `NumX = CameraXSize / bin`
 /// (and likewise `NumY`), so reporting the raw sensor size makes those
 /// binned full frames unachievable whenever `raw / bin` is not a multiple
-/// of `unit` — real-hardware ConformU flagged exactly this on the SV605CC
+/// of `unit` — real-hardware `ConformU` flagged exactly this on the SV605CC
 /// (3008 / 3 = 1002, not a multiple of 8).
 fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
     let step = supported_bins
@@ -568,7 +568,7 @@ fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
 const RAW16_MAX_ADU: u32 = u16::MAX as u32;
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y` (ST1).
-fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
+const fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
     match pattern {
         BayerPattern::Rg => (0, 0),
         BayerPattern::Bg => (1, 1),
@@ -578,7 +578,7 @@ fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
 }
 
 /// Map an ASCOM guide direction onto the `svbony-rs` one.
-fn guide_direction(direction: GuideDirection) -> svbony_rs::GuideDirection {
+const fn guide_direction(direction: GuideDirection) -> svbony_rs::GuideDirection {
     match direction {
         GuideDirection::North => svbony_rs::GuideDirection::North,
         GuideDirection::South => svbony_rs::GuideDirection::South,
@@ -1988,7 +1988,7 @@ mod tests {
     /// After an abort the capture task drains within ~one poll slice (the
     /// cancel-flag bail-out), so a new exposure is accepted promptly — not
     /// only after the aborted exposure's full `exposure*2+500ms` deadline —
-    /// keeping `CameraState = Idle` and "StartExposure accepted" consistent.
+    /// keeping `CameraState = Idle` and "`StartExposure` accepted" consistent.
     #[tokio::test]
     async fn a_new_exposure_is_accepted_promptly_after_an_abort() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -2088,7 +2088,7 @@ mod tests {
     }
 
     /// Reconnecting while a previous session's capture-cancel slot is still
-    /// populated cancels that capture (reset_exposure_state's take-branch).
+    /// populated cancels that capture (`reset_exposure_state`'s take-branch).
     #[tokio::test]
     async fn reconnecting_cancels_a_previous_sessions_capture_slot() {
         let cam = connected_device(MockCameraHandle::default());
