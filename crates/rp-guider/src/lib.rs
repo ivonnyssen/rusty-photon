@@ -55,7 +55,8 @@ pub struct SettleOverride {
 impl SettleOverride {
     /// `true` when every field is unset — the caller should send no
     /// `settle` object at all so the service's defaults apply.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.pixels.is_none() && self.time.is_none() && self.timeout.is_none()
     }
 }
@@ -306,6 +307,7 @@ impl GuiderServiceClient {
 
     /// The base URL the client was constructed with (no trailing
     /// slash). Useful for tests that want to log or assert.
+    #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -895,7 +897,7 @@ mod tests {
         let long = SettleOverride {
             pixels: None,
             time: None,
-            timeout: Some(Duration::from_secs(120)),
+            timeout: Some(Duration::from_mins(2)),
         };
         assert_eq!(
             client.settle_request_timeout(Some(&long)),
