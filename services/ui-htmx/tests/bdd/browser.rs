@@ -14,11 +14,11 @@
 //! scoped to *that group* — it can never match a developer's own Firefox. On
 //! Firefox <152 geckodriver's own exit does not reliably tear Firefox down
 //! (bugzilla 1430064), so [`BrowserSession::quit`] sweeps the group after the
-//! graceful WebDriver close, and [`BrowserSession::reap`] is the worst-case
+//! graceful `WebDriver` close, and [`BrowserSession::reap`] is the worst-case
 //! kill-the-tree path used when geckodriver has already died.
 //!
 //! Teardown ordering is also load-bearing (plan §10): [`BrowserSession::quit`]
-//! closes the WebDriver session — so geckodriver tears Firefox down — and it
+//! closes the `WebDriver` session — so geckodriver tears Firefox down — and it
 //! **must run before** the BFF/driver are stopped (a live session holds
 //! connections to the BFF open, which would block the BFF's graceful shutdown and
 //! cost it its `.profraw` coverage flush — see `docs/skills/testing.md` §5.4).
@@ -34,7 +34,7 @@ use thirtyfour::prelude::*;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-/// A live browser session: the WebDriver client plus the geckodriver child it
+/// A live browser session: the `WebDriver` client plus the geckodriver child it
 /// talks to (which leads the process group the whole browser tree lives in).
 pub struct BrowserSession {
     driver: WebDriver,
@@ -139,7 +139,7 @@ impl BrowserSession {
     }
 
     /// geckodriver's PID — equal to the PGID of the browser process group.
-    pub fn geckodriver_pid(&self) -> u32 {
+    pub const fn geckodriver_pid(&self) -> u32 {
         self.geckodriver_pid
     }
 
@@ -277,7 +277,7 @@ impl BrowserSession {
         }
     }
 
-    /// Graceful teardown: close the WebDriver session (geckodriver quits Firefox),
+    /// Graceful teardown: close the `WebDriver` session (geckodriver quits Firefox),
     /// sweep the process group as a safety net, then reap geckodriver. Call
     /// **before** stopping the BFF/driver (plan §10).
     pub async fn quit(self) {
@@ -299,7 +299,7 @@ impl BrowserSession {
 
     /// Worst-case kill-the-tree reaper (the plan §9 step 4 / §10 requires it). Used
     /// when geckodriver has already died (the simulated-crash path), so the
-    /// WebDriver client is simply abandoned — a round-trip would only hang.
+    /// `WebDriver` client is simply abandoned — a round-trip would only hang.
     ///
     /// SIGKILLs the whole process group (geckodriver leads it) **and** every
     /// still-tracked pid in `also_kill`. The group kill is the normal path; the
@@ -441,7 +441,7 @@ pub fn bff_profraw_flushed(coverage_dir: &OsStr) -> bool {
             && name.ends_with(".profraw")
             // `is_file()` guards against a (pathological) directory of that name:
             // a dir's metadata len is its block size, not 0, so len()>0 alone lies.
-            && entry.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false)
+            && entry.metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
     })
 }
 

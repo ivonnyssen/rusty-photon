@@ -18,7 +18,7 @@ use cucumber::when;
 
 use crate::world::UiWorld;
 
-/// Bounded DOM-poll budget (~5s at 100ms/iter): ample for the EventSource to open
+/// Bounded DOM-poll budget (~5s at 100ms/iter): ample for the `EventSource` to open
 /// and the first event to swap on a busy CI host, well under the nightly job's
 /// `timeout-minutes` cap.
 const MAX_POLLS: usize = 50;

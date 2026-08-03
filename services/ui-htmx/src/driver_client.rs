@@ -57,7 +57,8 @@ pub enum ConfigClientError {
 impl ConfigClientError {
     /// Whether this is the `ACTION_NOT_IMPLEMENTED` ASCOM error — i.e. the target
     /// driver does not expose the config actions.
-    pub fn is_action_not_implemented(&self) -> bool {
+    #[must_use]
+    pub const fn is_action_not_implemented(&self) -> bool {
         matches!(self, Self::Ascom { code, .. } if *code == ACTION_NOT_IMPLEMENTED)
     }
 }

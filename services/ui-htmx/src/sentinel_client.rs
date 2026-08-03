@@ -29,6 +29,7 @@ pub struct RestartOutcome {
 
 impl RestartOutcome {
     /// The platform accepted and ran the restart.
+    #[must_use]
     pub fn is_ok(&self) -> bool {
         self.status == "ok"
     }
@@ -36,6 +37,7 @@ impl RestartOutcome {
     /// Sentinel's recovery check never confirmed recovery within its budget.
     /// (The driver may still come back — the budget is Sentinel's, not the
     /// driver's — so the page keeps its own reconnect poll either way.)
+    #[must_use]
     pub fn recovery_timed_out(&self) -> bool {
         self.recovery.as_deref() == Some("timeout")
     }

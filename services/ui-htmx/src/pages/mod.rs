@@ -77,12 +77,14 @@ pub enum NavTab {
 /// The full HTML shell: dark theme, embedded CSS + HTMX, and the top nav — the
 /// three surface tabs plus the mock's pure-CSS night-vision toggle (a page-level
 /// red filter via `body:has(#night-vision:checked)`; no JavaScript).
+#[must_use]
 pub fn layout(title: &str, body: Markup) -> Markup {
     layout_with_nav(title, NavTab::Configuration, body)
 }
 
 /// [`layout`] with an explicit active tab (the config-page shell defaults to
 /// [`NavTab::Configuration`]).
+#[must_use]
 pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -166,7 +168,7 @@ pub struct FieldSpec {
 }
 
 impl FieldSpec {
-    fn input_type(&self) -> &'static str {
+    const fn input_type(&self) -> &'static str {
         match self.kind {
             FieldKind::Bool | FieldKind::IntSet { .. } => "checkbox",
             FieldKind::Int { .. } | FieldKind::Num { .. } => "number",
@@ -185,6 +187,7 @@ pub struct FieldModel {
 
 impl FieldModel {
     /// Build the model from a driver's `config.schema` response.
+    #[must_use]
     pub fn from_schema(resp: &ConfigSchemaResponse) -> Self {
         Self {
             fields: build_fields(&resp.schema),
@@ -201,6 +204,7 @@ impl FieldModel {
     /// (`alpaca_url`, not `equipment.cameras.0.alpaca_url`). The editability
     /// tiers don't apply inside an entry, so they are empty. `None` when the
     /// schema doesn't carry that kind (an rp older than the roster page).
+    #[must_use]
     pub fn from_item_schema(resp: &ConfigSchemaResponse, kind_key: &str) -> Option<Self> {
         let root = &resp.schema;
         let equipment = resolve(root.get("properties")?.get("equipment")?, root);
@@ -452,6 +456,7 @@ struct FieldCtx<'a> {
 /// render disabled; locked/identity fields render disabled behind an "unlock to
 /// edit" escape hatch unless listed in `unlocked`; `errors` annotate fields after
 /// a rejected apply.
+#[must_use]
 pub fn config_card(
     page: &Page<'_>,
     model: &FieldModel,
@@ -642,6 +647,7 @@ fn field_hints(
 
 /// The "applying — reconnecting" fragment: polls `…/status` once a second until
 /// the driver answers and the poll swaps in a fresh card.
+#[must_use]
 pub fn reconnecting_card(service: &str) -> Markup {
     polling_card(service, "Saved — the driver is reloading. Reconnecting…")
 }
@@ -651,6 +657,7 @@ pub fn reconnecting_card(service: &str) -> Markup {
 /// back — same poll wiring as the reload flow. `recovery_timed_out` adds that
 /// Sentinel's recovery check never confirmed recovery within its budget (the
 /// poll may still succeed — the budget is Sentinel's, not the driver's).
+#[must_use]
 pub fn restarting_card(service: &str, recovery_timed_out: bool) -> Markup {
     let message = if recovery_timed_out {
         "Restart requested via Sentinel, but its health check did not confirm \
@@ -677,6 +684,7 @@ fn polling_card(service: &str, message: &str) -> Markup {
 }
 
 /// An error card derived from a `ConfigClientError`, with a retry affordance.
+#[must_use]
 pub fn error_card(service: &str, err: &ConfigClientError) -> Markup {
     let message = if err.is_action_not_implemented() {
         "This driver does not expose configuration actions.".to_string()
@@ -687,11 +695,13 @@ pub fn error_card(service: &str, err: &ConfigClientError) -> Markup {
 }
 
 /// An error card with an explicit message (e.g. a malformed form submission).
+#[must_use]
 pub fn message_error_card(service: &str, message: &str) -> Markup {
     error_card_with_message(service, message)
 }
 
 /// An error card for a request that named a service the BFF doesn't know.
+#[must_use]
 pub fn unknown_service_card(service: &str) -> Markup {
     html! {
         div #config-card.card {
@@ -1008,6 +1018,7 @@ fn unlocked_set_from_json(model: &FieldModel, raw: Option<&str>) -> Vec<String> 
 
 /// Compute the unlocked set from a `?unlock=<field>` query value. Only a name
 /// that is actually a locked/identity field (per the schema) is honoured.
+#[must_use]
 pub fn unlocked_from_query(model: &FieldModel, unlock: Option<&str>) -> Vec<String> {
     match unlock {
         Some(name) if model.is_locked(name) => vec![name.to_string()],
@@ -1018,10 +1029,10 @@ pub fn unlocked_from_query(model: &FieldModel, unlock: Option<&str>) -> Vec<Stri
 // --- small JSON helpers --------------------------------------------------------
 
 /// Serialize `value` to JSON with object keys sorted recursively, so the bytes
-/// are deterministic regardless of serde_json's `preserve_order` feature (which
+/// are deterministic regardless of `serde_json`'s `preserve_order` feature (which
 /// changes `Value` map ordering and is unified on by a dev-dependency under
 /// `--all-features`). Inserting keys in sorted order is stable under both the
-/// `IndexMap` (preserve_order) and `BTreeMap` (default) `Map` backends.
+/// `IndexMap` (`preserve_order`) and `BTreeMap` (default) `Map` backends.
 fn canonical_json(value: &Value) -> String {
     fn sort_keys(value: &Value) -> Value {
         match value {
@@ -1087,7 +1098,7 @@ fn dotted_to_pointer(dotted: &str) -> String {
     pointer
 }
 
-/// Turn a dotted, snake_case sub-path into a readable label, e.g.
+/// Turn a dotted, `snake_case` sub-path into a readable label, e.g.
 /// `dec_limits.max_degrees` → `Dec limits · Max degrees`.
 fn humanize(path: &str) -> String {
     path.split('.')

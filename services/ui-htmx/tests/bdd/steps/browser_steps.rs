@@ -1,6 +1,6 @@
 //! Step definitions for browser.feature (`@browser`) — Layer C / P3.
 //!
-//! These drive a real headless Firefox via WebDriver to prove behaviors only a
+//! These drive a real headless Firefox via `WebDriver` to prove behaviors only a
 //! browser can establish: that `htmx.min.js` actually loads and executes the
 //! declared swaps. They reuse the `Given a dsd-fp2 driver running …` setup from
 //! [`super::config_page_steps`]; only the When/Then verbs here touch the browser.
@@ -20,7 +20,7 @@ const MAX_POLLS: usize = 50;
 /// The BFF must shut down within this budget after the browser is quit.
 /// bdd-infra's `stop()` SIGTERMs, waits 5s, then SIGKILLs; a graceful exit
 /// returns in milliseconds, while a shutdown blocked on a held browser
-/// connection returns only after the full 5s grace — having SIGKILLed the BFF
+/// connection returns only after the full 5s grace — having `SIGKILLed` the BFF
 /// and skipped its `atexit` coverage flush (testing.md §5.4). 4s sits clearly
 /// between the two: well above a real graceful stop, below the 5s SIGKILL point.
 const GRACEFUL_STOP_BUDGET: Duration = Duration::from_secs(4);
@@ -133,7 +133,7 @@ fn artifacts_captured(world: &mut UiWorld) {
             path.is_absolute(),
             "artifact path is not absolute: {path:?}"
         );
-        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let len = std::fs::metadata(path).map_or(0, |m| m.len());
         assert!(len > 0, "failure artifact missing or empty: {path:?}");
     }
 }

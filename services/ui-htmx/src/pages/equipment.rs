@@ -144,7 +144,7 @@ fn connected_of(status: &EquipmentStatus, entry: &RosterEntry) -> Option<bool> {
     status.connected(entry.kind.config_key(), &entry.id)
 }
 
-fn led_class(connected: Option<bool>) -> &'static str {
+const fn led_class(connected: Option<bool>) -> &'static str {
     match connected {
         Some(true) => "led ok",
         Some(false) => "led bad",
@@ -769,7 +769,7 @@ mod tests {
     use crate::rp_client::MockRpApi;
 
     /// A canned rp: serves a fixed config + schema, records applies, and
-    /// answers them with the restart classification (ApplyDisposition::Restart)
+    /// answers them with the restart classification (`ApplyDisposition::Restart`)
     /// or a fixed invalid response.
     struct RpStub {
         config: Mutex<Value>,

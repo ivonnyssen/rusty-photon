@@ -62,7 +62,7 @@ pub fn routes() -> Router<AppState> {
         .route("/fixtures/sse.js", get(sse_extension_js))
 }
 
-/// The SSE fixture page: one `sse-connect` EventSource feeding two `sse-swap`
+/// The SSE fixture page: one `sse-connect` `EventSource` feeding two `sse-swap`
 /// regions. Both must update from the single connection (browser-only proof).
 async fn sse_page() -> Markup {
     pages::layout(
@@ -82,7 +82,7 @@ async fn sse_page() -> Markup {
 }
 
 /// The streaming endpoint: emit two named events on a short timer (genuinely pushed
-/// *after* the browser's EventSource connects, not bundled into the initial
+/// *after* the browser's `EventSource` connects, not bundled into the initial
 /// response), then hold the connection open forever. The open stream is the
 /// decisive teardown hazard — see the module docs / axum #2673.
 async fn sse_stream() -> impl IntoResponse {

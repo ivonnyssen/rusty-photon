@@ -77,12 +77,12 @@ enum Severity {
 }
 
 impl Severity {
-    fn class(self) -> &'static str {
+    const fn class(self) -> &'static str {
         match self {
-            Severity::Ok => "sev-ok",
-            Severity::Bad => "sev-bad",
-            Severity::Live => "sev-live",
-            Severity::Warn => "sev-warn",
+            Self::Ok => "sev-ok",
+            Self::Bad => "sev-bad",
+            Self::Live => "sev-live",
+            Self::Warn => "sev-warn",
         }
     }
 }

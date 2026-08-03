@@ -61,6 +61,7 @@ impl EquipmentStatus {
     /// The live `connected` flag for a device by equipment kind + config id
     /// (`None` when rp doesn't know the device — e.g. a roster entry added to
     /// the config after rp last started).
+    #[must_use]
     pub fn connected(&self, kind_key: &str, id: &str) -> Option<bool> {
         if kind_key == "mount" {
             return self.mount.as_ref().map(|m| m.connected);
