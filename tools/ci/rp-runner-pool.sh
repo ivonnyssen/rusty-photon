@@ -214,13 +214,15 @@ slot_loop() {
     # anything again; after a few minutes of silence give up on the wait and
     # let the next iteration's reconcile decide.
     unknown=0
+    abandoned=0
     while true; do
       state=$(qm status "$vmid" 2>/dev/null | awk '{print $2}')
       [ "$state" = stopped ] && break
       if [ -z "$state" ]; then
         unknown=$((unknown + 1))
         if [ "$unknown" -ge 30 ]; then
-          log "$name" "status of $vmid unreadable for 5 minutes; abandoning the wait"
+          log "$name" "status of $vmid unreadable for 5 minutes; re-reconciling"
+          abandoned=1
           break
         fi
       else
@@ -228,6 +230,14 @@ slot_loop() {
       fi
       sleep 10
     done
+    # Abandoning the wait means "I no longer know what this VM is doing", which
+    # is not the same as "it finished" — destroying here would kill a job that
+    # is merely unobservable while qm is failing. Go back to the reconcile,
+    # which acts on a readable status or keeps retrying until there is one.
+    if [ "$abandoned" = 1 ]; then
+      sleep 30
+      continue
+    fi
     log "$name" "runner clone $vmid finished; destroying"
     destroy_clone "$vmid"
   done
