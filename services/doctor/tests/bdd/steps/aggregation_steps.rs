@@ -196,15 +196,14 @@ fn config_at_stub_with_auth(world: &mut DoctorWorld, file: String) {
 }
 
 #[given(expr = "a config file {string} declaring a port nothing listens on")]
-async fn config_at_dead_port(world: &mut DoctorWorld, file: String) {
-    // Bind-then-drop: the freed port is as close to guaranteed-closed as a
-    // test can stage without racing other suites for a fixed number.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("probe port bind");
-    let port = listener.local_addr().expect("probe addr").port();
-    drop(listener);
-    world.write_config(&file, &format!(r#"{{ "server": {{ "port": {port} }} }}"#));
+fn config_at_dead_port(world: &mut DoctorWorld, file: String) {
+    // Port 1 is reserved (root-only bind on Unix, outside every OS's
+    // dynamic port range) and never listening: connection refused by
+    // construction. Binding an ephemeral port and dropping it raced the
+    // other suites — under high test parallelism another suite's port-0
+    // server re-bound the freed port and answered the probe, which is an
+    // answer, not "does not answer".
+    world.write_config(&file, r#"{ "server": { "port": 1 } }"#);
 }
 
 #[given("a staged observatory credential")]

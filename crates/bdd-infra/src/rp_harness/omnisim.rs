@@ -1195,13 +1195,10 @@ mod tests {
 
     #[tokio::test]
     async fn restart_device_returns_err_when_connection_refused() {
-        // Bind a listener to grab a free port, then drop it so subsequent
-        // connects refuse — mirrors the is_healthy_returns_false test.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let base_url = format!("http://127.0.0.1:{port}");
-        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+        // Port 1: refused by construction, same reasoning as
+        // is_healthy_returns_false_when_connection_refused above — a
+        // bind-then-drop ephemeral port races the rest of the suite.
+        let err = OmniSimHandle::restart_device_at("http://127.0.0.1:1", "camera", 0)
             .await
             .expect_err("expected a transport error");
         assert!(
