@@ -84,8 +84,10 @@ jobs:
     steps:
       # The pool runner's .env supplies RP_LAN_CACHE_URL (a LAN address —
       # operator infrastructure, masked so it cannot appear in public logs).
+      # Deliberately unconditional: a no-op on hosted runners (the var is
+      # empty there), and not gated on runner.environment so the masking
+      # cannot be skipped by a context quirk.
       - name: Mask runner-provided cache endpoint
-        if: runner.environment == 'self-hosted'
         run: |
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then echo "::add-mask::$RP_LAN_CACHE_URL"; fi
 
