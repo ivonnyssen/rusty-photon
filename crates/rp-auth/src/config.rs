@@ -99,7 +99,7 @@ mod tests {
             #[serde(default)]
             auth: Option<AuthConfig>,
         }
-        let json = r#"{}"#;
+        let json = r"{}";
         let wrapper: Wrapper = serde_json::from_str(json).unwrap();
         assert!(wrapper.auth.is_none());
     }

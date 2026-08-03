@@ -19,6 +19,7 @@ pub fn hash_password(password: &str) -> Result<String> {
 /// Verify a plaintext password against an Argon2id hash.
 ///
 /// Returns `true` if the password matches the hash.
+#[must_use]
 pub fn verify_password(password: &str, hash: &str) -> bool {
     let Ok(parsed_hash) = PasswordHash::new(hash) else {
         return false;

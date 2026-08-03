@@ -40,18 +40,16 @@ async fn auth_middleware(
         return unauthorized_response();
     };
 
-    let decoded = match BASE64.decode(encoded) {
-        Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => {
-                debug!("Authorization header contains invalid UTF-8");
-                return unauthorized_response();
-            }
-        },
-        Err(_) => {
-            debug!("Authorization header contains invalid base64");
+    let decoded = if let Ok(bytes) = BASE64.decode(encoded) {
+        if let Ok(s) = String::from_utf8(bytes) {
+            s
+        } else {
+            debug!("Authorization header contains invalid UTF-8");
             return unauthorized_response();
         }
+    } else {
+        debug!("Authorization header contains invalid base64");
+        return unauthorized_response();
     };
 
     let Some((username, password)) = decoded.split_once(':') else {
