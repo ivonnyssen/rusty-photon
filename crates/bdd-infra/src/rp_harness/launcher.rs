@@ -25,12 +25,12 @@ pub async fn write_temp_config_file(prefix: &str, config: &Value) -> String {
     let pid = std::process::id();
     let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
     let config_path = std::env::temp_dir()
-        .join(format!("{}-{}-{}.json", prefix, pid, seq))
+        .join(format!("{prefix}-{pid}-{seq}.json"))
         .to_string_lossy()
         .to_string();
     tokio::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
         .await
-        .unwrap_or_else(|e| panic!("failed to write temp config '{}': {}", config_path, e));
+        .unwrap_or_else(|e| panic!("failed to write temp config '{config_path}': {e}"));
     config_path
 }
 
@@ -47,7 +47,7 @@ pub async fn start_rp(config: &Value) -> ServiceHandle {
 /// Returns `true` if rp became healthy, `false` on timeout.
 pub async fn wait_for_rp_healthy(rp_base_url: &str) -> bool {
     let client = reqwest::Client::new();
-    let url = format!("{}/health", rp_base_url);
+    let url = format!("{rp_base_url}/health");
     for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if let Ok(resp) = client.get(&url).send().await {

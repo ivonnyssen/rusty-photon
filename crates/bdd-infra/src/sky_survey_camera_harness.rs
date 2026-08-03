@@ -2,11 +2,11 @@
 //!
 //! The closed-loop centering scenarios in
 //! `services/rp/tests/features/` need a camera that follows the
-//! OmniSim Telescope (so a `slew` on the mount changes what the
+//! `OmniSim` Telescope (so a `slew` on the mount changes what the
 //! camera renders). This module provides:
 //!
 //! - [`SkyViewStub`] — an in-process axum server that emulates NASA
-//!   SkyView. It parses `Position` / `Pixels` / `Size` query params
+//!   `SkyView`. It parses `Position` / `Pixels` / `Size` query params
 //!   from the camera's request and returns a minimal FITS that
 //!   advertises matching `CRVAL1` / `CRVAL2`. The rp closed-loop
 //!   centering scenarios don't actually consume those CRVAL records
@@ -25,7 +25,7 @@
 //!   [`crate::ServiceHandle`], parses the bound port from stdout.
 //!
 //! The harness intentionally does not depend on the
-//! `sky-survey-camera` crate: the SkyView wire shape is the contract
+//! `sky-survey-camera` crate: the `SkyView` wire shape is the contract
 //! and the duplication is the point (mirroring the
 //! `plate_solver_stub` posture).
 
@@ -43,8 +43,8 @@ use serde_json::Value;
 use crate::rp_harness::write_temp_config_file;
 use crate::ServiceHandle;
 
-/// Handle for the in-process SkyView stub. The stub serves the same
-/// HEAD / GET surface NASA SkyView exposes; the camera's
+/// Handle for the in-process `SkyView` stub. The stub serves the same
+/// HEAD / GET surface NASA `SkyView` exposes; the camera's
 /// `SkyViewClient` connects to it via the `survey.endpoint` config
 /// override.
 #[derive(Debug)]
@@ -55,7 +55,7 @@ pub struct SkyViewStub {
 }
 
 impl SkyViewStub {
-    /// Bind a SkyView stub on `127.0.0.1:0` and return its public URL.
+    /// Bind a `SkyView` stub on `127.0.0.1:0` and return its public URL.
     pub async fn start() -> Self {
         let app = Router::new().fallback(any(handle_skyview));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -315,23 +315,27 @@ impl SkySurveyCameraConfigBuilder {
         }
     }
 
+    #[must_use]
     pub fn with_follow(mut self, follow: TelescopeFollow) -> Self {
         self.inner.follow = Some(follow);
         self
     }
 
-    pub fn with_sensor(mut self, width_px: u32, height_px: u32) -> Self {
+    #[must_use]
+    pub const fn with_sensor(mut self, width_px: u32, height_px: u32) -> Self {
         self.inner.sensor_width_px = width_px;
         self.inner.sensor_height_px = height_px;
         self
     }
 
-    pub fn with_initial_pointing(mut self, ra_deg: f64, dec_deg: f64) -> Self {
+    #[must_use]
+    pub const fn with_initial_pointing(mut self, ra_deg: f64, dec_deg: f64) -> Self {
         self.inner.initial_ra_deg = ra_deg;
         self.inner.initial_dec_deg = dec_deg;
         self
     }
 
+    #[must_use]
     pub fn build(self) -> SkySurveyCameraConfig {
         self.inner
     }
@@ -340,6 +344,7 @@ impl SkySurveyCameraConfigBuilder {
 impl SkySurveyCameraConfig {
     /// Serialize into the JSON shape `sky-survey-camera`'s config
     /// loader expects.
+    #[must_use]
     pub fn to_json(&self) -> Value {
         let mut pointing = serde_json::json!({
             "initial_ra_deg": self.initial_ra_deg,

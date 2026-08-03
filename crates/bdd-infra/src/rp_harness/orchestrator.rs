@@ -123,7 +123,7 @@ impl TestOrchestrator {
         });
 
         Self {
-            invoke_url: format!("http://127.0.0.1:{}/invoke", port),
+            invoke_url: format!("http://127.0.0.1:{port}/invoke"),
             port,
             invocations,
             cancelled,
@@ -216,7 +216,7 @@ async fn orchestrator_invoke_handler(
 /// Post orchestrator completion back to rp.
 async fn post_completion(mcp_server_url: &str, workflow_id: &str) {
     let base_url = mcp_server_url.trim_end_matches("/mcp");
-    let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
+    let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
 
     let client = reqwest::Client::new();
     let body = serde_json::json!({
@@ -233,7 +233,7 @@ async fn post_completion(mcp_server_url: &str, workflow_id: &str) {
 
 /// Drive a flat calibration workflow via MCP tool calls.
 ///
-/// Uses a fixed 100ms exposure since OmniSim produces instant images
+/// Uses a fixed 100ms exposure since `OmniSim` produces instant images
 /// regardless of duration.
 async fn run_flat_calibration(mcp_server_url: &str, workflow_id: &str, plan: &[(String, u32)]) {
     let client = McpTestClient::connect(mcp_server_url)

@@ -39,7 +39,7 @@
 //! # `rp-harness` feature
 //!
 //! Enabling the `rp-harness` cargo feature exposes the [`rp_harness`] module
-//! with higher-level helpers for tests that spawn rp alongside OmniSim and/or
+//! with higher-level helpers for tests that spawn rp alongside `OmniSim` and/or
 //! an orchestrator plugin: `OmniSimHandle`, `RpConfigBuilder`, `start_rp`,
 //! `WebhookReceiver`, `TestOrchestrator`, and `McpTestClient`. Services whose
 //! tests only need `ServiceHandle` should leave the feature off so they don't
@@ -205,7 +205,7 @@ pub fn __bdd_bazel_chdir() {
     for (k, v) in to_absolutize {
         std::env::set_var(&k, cwd.join(v));
     }
-    std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("bdd_main: chdir to {}: {}", dir, e));
+    std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("bdd_main: chdir to {dir}: {e}"));
 }
 
 pub mod doctor_smoke;
@@ -263,7 +263,7 @@ fn next_spawn_label(package_name: &str) -> String {
 
 /// Per-child `LLVM_PROFILE_FILE` for coverage collection under `bazel coverage`.
 ///
-/// Under `bazel coverage` rules_rust instruments the first-party service
+/// Under `bazel coverage` `rules_rust` instruments the first-party service
 /// binaries and sets `COVERAGE_DIR` for the test action, but only the test
 /// process's own `.profraw` is collected by default — a spawned child inherits
 /// the parent test's `LLVM_PROFILE_FILE` and would clobber it. Point each child
@@ -377,21 +377,21 @@ impl ServiceHandle {
         let stderr = child
             .stderr
             .take()
-            .unwrap_or_else(|| panic!("failed to capture {} stderr", package_name));
+            .unwrap_or_else(|| panic!("failed to capture {package_name} stderr"));
         let stderr_forward = spawn_stderr_forwarder(stderr, label);
 
         let stdout = child
             .stdout
             .take()
-            .unwrap_or_else(|| panic!("failed to capture {} stdout", package_name));
+            .unwrap_or_else(|| panic!("failed to capture {package_name} stdout"));
         let (port, stdout_drain) = parse_bound_port(stdout)
             .await
-            .unwrap_or_else(|| panic!("failed to parse bound port from {} output", package_name));
+            .unwrap_or_else(|| panic!("failed to parse bound port from {package_name} output"));
 
         Self {
             child: Some(child),
             port,
-            base_url: format!("http://127.0.0.1:{}", port),
+            base_url: format!("http://127.0.0.1:{port}"),
             stdout_drain: Some(stdout_drain),
             stderr_forward: Some(stderr_forward),
             name: package_name.to_string(),
@@ -418,39 +418,37 @@ impl ServiceHandle {
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| format!("failed to capture {} stderr", package_name))?;
+            .ok_or_else(|| format!("failed to capture {package_name} stderr"))?;
         let stderr_forward = spawn_stderr_forwarder(stderr, label);
 
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| format!("failed to capture {} stdout", package_name))?;
+            .ok_or_else(|| format!("failed to capture {package_name} stdout"))?;
 
         match tokio::time::timeout(Duration::from_secs(30), parse_bound_port(stdout)).await {
             Ok(Some((port, stdout_drain))) => Ok(Self {
                 child: Some(child),
                 port,
-                base_url: format!("http://127.0.0.1:{}", port),
+                base_url: format!("http://127.0.0.1:{port}"),
                 stdout_drain: Some(stdout_drain),
                 stderr_forward: Some(stderr_forward),
                 name: package_name.to_string(),
             }),
             Ok(None) => {
                 let status = child.wait().await;
-                Err(format!(
-                    "{} exited without binding: {:?}",
-                    package_name, status
-                ))
+                Err(format!("{package_name} exited without binding: {status:?}"))
             }
             Err(_) => {
                 let _ = child.kill().await;
-                Err(format!("timeout waiting for {} to bind", package_name))
+                Err(format!("timeout waiting for {package_name} to bind"))
             }
         }
     }
 
     /// Returns `true` if the service process is currently running.
-    pub fn is_running(&self) -> bool {
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
         self.child.is_some()
     }
 
@@ -470,17 +468,17 @@ impl ServiceHandle {
             if let Some(pid) = child.id() {
                 send_sigterm(pid);
 
-                match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(_) => (),
-                    Err(_) => {
-                        debug!(
-                            "{} did not exit after {GRACEFUL_EVENT}, forcing it down with \
-                             {FORCED_STOP}",
-                            self.name
-                        );
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                    }
+                if tokio::time::timeout(Duration::from_secs(5), child.wait())
+                    .await
+                    .is_err()
+                {
+                    debug!(
+                        "{} did not exit after {GRACEFUL_EVENT}, forcing it down with \
+                         {FORCED_STOP}",
+                        self.name
+                    );
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
                 }
             } else {
                 let _ = child.kill().await;
@@ -625,22 +623,22 @@ fn run_to_completion(
 
         let mut child = cmd
             .spawn()
-            .unwrap_or_else(|e| panic!("failed to spawn {}: {}", package_name, e));
+            .unwrap_or_else(|e| panic!("failed to spawn {package_name}: {e}"));
 
         use std::io::Write;
         if let Some(ref mut stdin) = child.stdin {
             stdin
                 .write_all(data)
-                .unwrap_or_else(|e| panic!("failed to write stdin for {}: {}", package_name, e));
+                .unwrap_or_else(|e| panic!("failed to write stdin for {package_name}: {e}"));
         }
         drop(child.stdin.take());
 
         child
             .wait_with_output()
-            .unwrap_or_else(|e| panic!("failed to wait on {}: {}", package_name, e))
+            .unwrap_or_else(|e| panic!("failed to wait on {package_name}: {e}"))
     } else {
         cmd.output()
-            .unwrap_or_else(|e| panic!("failed to run {}: {}", package_name, e))
+            .unwrap_or_else(|e| panic!("failed to run {package_name}: {e}"))
     }
 }
 
@@ -660,7 +658,7 @@ fn find_binary(package_name: &str) -> Option<String> {
     }
 
     let binary_name = if cfg!(target_os = "windows") {
-        format!("{}.exe", package_name)
+        format!("{package_name}.exe")
     } else {
         package_name.to_string()
     };
@@ -748,12 +746,8 @@ fn spawn_process(
     {
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
-    cmd.spawn().unwrap_or_else(|e| {
-        panic!(
-            "failed to start {} binary '{}': {}",
-            package_name, binary, e
-        )
-    })
+    cmd.spawn()
+        .unwrap_or_else(|e| panic!("failed to start {package_name} binary '{binary}': {e}"))
 }
 
 /// Forward a spawned child's stderr to this process's own stderr line by

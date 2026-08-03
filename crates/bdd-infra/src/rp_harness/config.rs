@@ -47,7 +47,7 @@ pub struct CoverCalibratorConfig {
     /// config. `None` ⇒ rp's default (3 s). The BDD harness pins this
     /// to a short duration (~100 ms) so cover/calibrator scenarios
     /// don't sit through 3-second polls; production rp deployments use
-    /// the upstream default. The OmniSim profile we ship at
+    /// the upstream default. The `OmniSim` profile we ship at
     /// `crates/bdd-infra/omnisim-config/...` keeps the simulator-side
     /// transitions short too — both knobs need to be small for the
     /// scenario wall-clock to drop.
@@ -101,7 +101,7 @@ pub struct RotatorConfig {
     pub device_number: u32,
 }
 
-/// ObservingConditions equipment entry.
+/// `ObservingConditions` equipment entry.
 #[derive(Debug, Clone)]
 pub struct ObservingConditionsConfig {
     pub id: String,
@@ -163,7 +163,8 @@ pub struct GuiderConfig {
 
 impl GuiderConfig {
     /// A url-only config: every default left to rp / the service.
-    pub fn url_only(url: String) -> Self {
+    #[must_use]
+    pub const fn url_only(url: String) -> Self {
         Self {
             url,
             timeout: None,
@@ -201,6 +202,7 @@ pub struct OpticalTrainConfig {
 }
 
 /// The `optical_trains[].auto_focus` block (rp.md § Optical Trains).
+///
 /// Which fields rp accepts depends on the train's purpose — imaging
 /// blocks carry the capture fields, the guiding train's block the
 /// metric-sweep ones — so everything but the geometry is optional
@@ -240,7 +242,8 @@ impl CoolingOverrides {
     /// polls, a 1 s plateau window (the simulator's curve updates
     /// every few ms, so 1 s of quiet is a real plateau), 100 ms
     /// warm-up steps, and a 30 s cooldown backstop.
-    pub fn fast() -> Self {
+    #[must_use]
+    pub const fn fast() -> Self {
         Self {
             poll_interval: Some(std::time::Duration::from_millis(250)),
             plateau_window: Some(std::time::Duration::from_secs(1)),
@@ -264,7 +267,7 @@ pub struct RpConfigBuilder {
     pub switches: Vec<SwitchConfig>,
     /// Rotators — roster membership + connectivity status only.
     pub rotators: Vec<RotatorConfig>,
-    /// ObservingConditions devices — roster membership + connectivity
+    /// `ObservingConditions` devices — roster membership + connectivity
     /// status only.
     pub observing_conditions: Vec<ObservingConditionsConfig>,
     /// Domes — roster membership + connectivity status only.
@@ -322,6 +325,7 @@ pub struct RpConfigBuilder {
 }
 
 impl RpConfigBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -374,7 +378,7 @@ impl RpConfigBuilder {
     /// Override rp's safety poll interval (overwrites any prior call).
     /// When unset, the emitted `safety` block is empty and rp's default
     /// (10 s) applies.
-    pub fn with_safety_poll_interval(&mut self, interval: std::time::Duration) -> &mut Self {
+    pub const fn with_safety_poll_interval(&mut self, interval: std::time::Duration) -> &mut Self {
         self.safety_poll_interval = Some(interval);
         self
     }
@@ -413,7 +417,7 @@ impl RpConfigBuilder {
     /// Set the observer site (latitude/longitude in degrees). Used by
     /// ephemeris and planner scenarios; also required to exercise
     /// the mount-side site validation rule on connect.
-    pub fn with_site(&mut self, latitude_degrees: f64, longitude_degrees: f64) -> &mut Self {
+    pub const fn with_site(&mut self, latitude_degrees: f64, longitude_degrees: f64) -> &mut Self {
         self.site = Some((latitude_degrees, longitude_degrees));
         self
     }
@@ -443,7 +447,11 @@ impl RpConfigBuilder {
     /// `cache_max_images`). Used by tests that want to drive evictions
     /// (e.g. setting `cache_max_images = 1` so the second capture evicts
     /// the first).
-    pub fn with_imaging(&mut self, cache_max_mib: usize, cache_max_images: usize) -> &mut Self {
+    pub const fn with_imaging(
+        &mut self,
+        cache_max_mib: usize,
+        cache_max_images: usize,
+    ) -> &mut Self {
         self.imaging_overrides = Some((cache_max_mib, cache_max_images));
         self
     }
@@ -453,7 +461,7 @@ impl RpConfigBuilder {
     /// shrink the advisory `centering_started` `max_duration_ms` so the
     /// Sentinel watchdog's per-operation timer fires in a couple of
     /// seconds instead of the ~40 s the defaults imply.
-    pub fn with_centering(
+    pub const fn with_centering(
         &mut self,
         solve_time_estimate: std::time::Duration,
         slew_overhead_estimate: std::time::Duration,
@@ -465,7 +473,7 @@ impl RpConfigBuilder {
     /// Set the `cooling` block's timing overrides (overwrites any
     /// prior call). When unset, the block is omitted and rp's
     /// defaults apply.
-    pub fn with_cooling(&mut self, cooling: CoolingOverrides) -> &mut Self {
+    pub const fn with_cooling(&mut self, cooling: CoolingOverrides) -> &mut Self {
         self.cooling = Some(cooling);
         self
     }
@@ -607,40 +615,37 @@ impl RpConfigBuilder {
 
         let data_directory = self.data_directory.clone().unwrap_or_else(|| {
             std::env::temp_dir()
-                .join(format!("rp-test-data-{}-{}", pid, seq))
+                .join(format!("rp-test-data-{pid}-{seq}"))
                 .to_string_lossy()
                 .to_string()
         });
 
         let session_state_file = self.session_state_file.clone().unwrap_or_else(|| {
             std::env::temp_dir()
-                .join(format!("rp-test-session-{}-{}.json", pid, seq))
+                .join(format!("rp-test-session-{pid}-{seq}.json"))
                 .to_string_lossy()
                 .to_string()
         });
 
-        let mount_value: Value = match &self.mount {
-            Some(m) => {
-                let mut obj = serde_json::json!({
-                    "alpaca_url": m.alpaca_url,
-                    "device_number": m.device_number,
-                });
-                if let Some(d) = m.settle_after_slew {
-                    obj["settle_after_slew"] = serde_json::json!(format!("{}ms", d.as_millis()));
-                }
-                if let Some(g) = &self.guider {
-                    obj["guiding"] = guiding_block(g);
-                }
-                obj
+        let mount_value: Value = if let Some(m) = &self.mount {
+            let mut obj = serde_json::json!({
+                "alpaca_url": m.alpaca_url,
+                "device_number": m.device_number,
+            });
+            if let Some(d) = m.settle_after_slew {
+                obj["settle_after_slew"] = serde_json::json!(format!("{}ms", d.as_millis()));
             }
-            None => {
-                assert!(
-                    self.guider.is_none(),
-                    "guiding is mount-scoped (equipment.mount.guiding): \
-                     call with_mount before with_guider"
-                );
-                Value::Null
+            if let Some(g) = &self.guider {
+                obj["guiding"] = guiding_block(g);
             }
+            obj
+        } else {
+            assert!(
+                self.guider.is_none(),
+                "guiding is mount-scoped (equipment.mount.guiding): \
+                 call with_mount before with_guider"
+            );
+            Value::Null
         };
 
         let optical_trains: Vec<Value> = self
@@ -808,10 +813,11 @@ fn guiding_block(g: &GuiderConfig) -> Value {
 /// Build a JSON config for the calibrator-flats service from a flat plan.
 ///
 /// The resulting config drives the real calibrator-flats orchestrator
-/// process against OmniSim's simulated camera/filter wheel/cover calibrator.
+/// process against `OmniSim`'s simulated camera/filter wheel/cover calibrator.
 /// Tolerance is `1.0` and `max_iterations = 1` so tests verify end-to-end
 /// plumbing (3-process coordination, cover lifecycle, session lifecycle)
 /// rather than convergence math — the latter is covered by unit tests.
+#[must_use]
 pub fn build_calibrator_flats_config(
     filters: &[(String, u32)],
     filter_wheel_id: Option<&str>,
@@ -1133,7 +1139,7 @@ mod tests {
         });
         b.with_guider(GuiderConfig {
             url: "http://127.0.0.1:11130".to_string(),
-            timeout: Some(std::time::Duration::from_secs(120)),
+            timeout: Some(std::time::Duration::from_mins(2)),
             settle_pixels: Some(0.8),
             settle_time: Some(std::time::Duration::from_secs(8)),
             settle_timeout: Some(std::time::Duration::from_secs(40)),

@@ -43,7 +43,7 @@ pub struct CannedGuiding {
     /// Whether `guiding/stats` reports an active guiding loop
     /// (`guiding: true`, `app_state: "Guiding"`). `false` reports a
     /// stopped guider (`app_state: "Stopped"`) — the state
-    /// refocus_train's pause/resume handshake checks before pausing.
+    /// `refocus_train`'s pause/resume handshake checks before pausing.
     pub guiding: bool,
     /// Delay applied before answering the settle-blocking endpoints
     /// (`guiding/start`, `dither`). Zero (the default) answers
@@ -179,7 +179,7 @@ impl GuiderStub {
             .await
             .expect("failed to bind guider stub");
         let port = listener.local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{}", port);
+        let url = format!("http://127.0.0.1:{port}");
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

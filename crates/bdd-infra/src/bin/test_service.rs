@@ -45,7 +45,7 @@ fn main() {
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    println!("bound_addr={}", addr);
+    println!("bound_addr={addr}");
 
     // In `--epipe-probe`/`--epipe-probe-stderr` mode hand off to the probe
     // runner, which keeps the process alive past SIGTERM (so it can write
@@ -80,7 +80,7 @@ const GRACEFUL_MARKER: &str = "GRACEFUL";
 /// that the workspace's own signal watcher handles the platform's graceful
 /// stop event — a hand-rolled `tokio::signal` await here would pass whatever
 /// the watcher does, which is exactly the vacuum that let an unhandled
-/// Windows CTRL_BREAK go unnoticed. On an unhandled event the OS default
+/// Windows `CTRL_BREAK` go unnoticed. On an unhandled event the OS default
 /// handler terminates the process, no cancellation is ever observed, and the
 /// marker stays empty.
 ///
@@ -127,12 +127,12 @@ impl ProbeStream {
     fn write_all(self, data: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         match self {
-            ProbeStream::Stdout => {
+            Self::Stdout => {
                 let mut out = std::io::stdout().lock();
                 out.write_all(data)?;
                 out.flush()
             }
-            ProbeStream::Stderr => {
+            Self::Stderr => {
                 let mut err = std::io::stderr().lock();
                 err.write_all(data)?;
                 err.flush()
@@ -173,7 +173,7 @@ fn run_probe_mode(marker: String, stream: ProbeStream) {
         let _ = &shutdown;
         // The probe thread terminates the process once its burst completes;
         // park here until then.
-        std::future::pending::<()>().await
+        std::future::pending::<()>().await;
     });
 }
 

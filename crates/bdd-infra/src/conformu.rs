@@ -8,10 +8,10 @@
 //! tests out of the Bazel build entirely. Driving the CLI directly here removes
 //! that dependency, so the tests compile under both Cargo and Bazel.
 //!
-//! The ConformU binary is located via the `CONFORMU_PATH` env var (set by the
+//! The `ConformU` binary is located via the `CONFORMU_PATH` env var (set by the
 //! conformu CI workflow and forwarded into the Bazel test sandbox). When it is
 //! unset the run is **skipped**, so the conformu integration tests stay inert in
-//! the normal cargo/bazel suites and fire only when ConformU is explicitly
+//! the normal cargo/bazel suites and fire only when `ConformU` is explicitly
 //! provided — preserving the old `#[ignore]` ergonomics without `#[ignore]`
 //! (which Bazel cannot selectively run via a tag).
 
@@ -24,14 +24,14 @@ use tokio::process::Command;
 /// Outcome of [`run_conformu`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConformuRun {
-    /// `CONFORMU_PATH` was not set, so ConformU was not run. Callers treat this
-    /// as a pass: the suite is inert unless ConformU is explicitly provided.
+    /// `CONFORMU_PATH` was not set, so `ConformU` was not run. Callers treat this
+    /// as a pass: the suite is inert unless `ConformU` is explicitly provided.
     Skipped,
-    /// ConformU ran and reported success (zero exit status).
+    /// `ConformU` ran and reported success (zero exit status).
     Passed,
 }
 
-/// Run the ASCOM ConformU `conformance` suite against a running Alpaca device.
+/// Run the ASCOM `ConformU` `conformance` suite against a running Alpaca device.
 ///
 /// Equivalent to:
 ///
@@ -45,7 +45,7 @@ pub enum ConformuRun {
 /// root (e.g. `http://127.0.0.1:PORT/`), typically `ServiceHandle::base_url`.
 ///
 /// Returns [`ConformuRun::Skipped`] when `CONFORMU_PATH` is unset,
-/// [`ConformuRun::Passed`] on success, and `Err` when ConformU exits non-zero.
+/// [`ConformuRun::Passed`] on success, and `Err` when `ConformU` exits non-zero.
 pub async fn run_conformu(
     device_type: &str,
     base_url: &str,
@@ -72,24 +72,24 @@ pub async fn run_conformu(
     Ok(ConformuRun::Passed)
 }
 
-/// Run both ConformU suites in their `*-settings` variants, where the device
+/// Run both `ConformU` suites in their `*-settings` variants, where the device
 /// under test **and** the enabled test set both come from `settings_file`
 /// (its `AlpacaDevice` block names the device; `TelescopeTests` etc. select
 /// the tests).
 ///
 /// This exists because the URL-argument commands (`alpacaprotocol <url>`,
-/// used by [`run_conformu`]) call ConformU's `SetFullTest()`, which
+/// used by [`run_conformu`]) call `ConformU`'s `SetFullTest()`, which
 /// force-enables every test — and some capability sets cannot satisfy the
 /// full set. The worked example is a `CanPulseGuide = false` Telescope
-/// (planetarium-bridge): the protocol suite's PulseGuide test polls
+/// (planetarium-bridge): the protocol suite's `PulseGuide` test polls
 /// `IsPulseGuiding` as its completion check and records the spec-mandated
-/// NOT_IMPLEMENTED answer as an error, so the test must be deselected —
+/// `NOT_IMPLEMENTED` answer as an error, so the test must be deselected —
 /// which only the `*-settings` commands honor.
 ///
-/// A deliberately omitted test produces a ConformU "configuration alert",
+/// A deliberately omitted test produces a `ConformU` "configuration alert",
 /// and alerts count into the exit code exactly like errors and issues. A
 /// run whose only marks are configuration alerts is therefore accepted as a
-/// pass here, detected via the summary line ConformU prints; errors and
+/// pass here, detected via the summary line `ConformU` prints; errors and
 /// issues still fail.
 pub async fn run_conformu_from_settings(
     settings_file: &Path,
@@ -108,7 +108,7 @@ pub async fn run_conformu_from_settings(
     Ok(ConformuRun::Passed)
 }
 
-/// Run a single ConformU mode, streaming its output. `device_url` is the
+/// Run a single `ConformU` mode, streaming its output. `device_url` is the
 /// positional device argument for the URL-based commands and `None` for the
 /// `*-settings` commands (which read the device from the settings file).
 /// Returns `Err` on a non-zero exit, except when the output's summary line
