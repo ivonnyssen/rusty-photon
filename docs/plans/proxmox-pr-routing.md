@@ -23,7 +23,7 @@ the full layered contract and its rationale.
 |-------|-------------|--------|-------------|
 | R1 | Isolation + credential hardening: runner VLAN (router + tagged template NIC), write credential removed from runner `.env`, fencing verified by dispatch job | **Done** (2026-08-02: probe matrix from inside a clone — GitHub + cache:8080 reachable, all other RFC1918 dropped; acceptance dispatch green through the fence) | infra only |
 | R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc updates | **Done** (2026-08-02: PR's own ubuntu leg self-tested on the pool pre-merge; first push-to-main ran on the pool and grew the LAN cache +894 objects via the write secret) | PR #849 |
-| R3 | Windows runner template: one-job service, sysprep'd template, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | In progress | infra + orchestrator PR |
+| R3 | Windows runner template: one-job service, template hygiene, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | **Template done** (2026-08-03: Server 2025 template VMID 904 builds `//...` green — 228/228 — and a linked clone boots to a responding agent in 10 s, waits for injection, consumes an injected config and powers off; msi measurement still outstanding) | PR #856, PR #857 |
 | R4 | Route Windows: `bazel / windows-latest` via the same expression, Windows kill switch; msi `build-verify` only if the R3 measurement beats hosted | Planned | — |
 | R5 | Route `bazel coverage`: same expression + provisioning guards in bazel-coverage.yml, Linux template warmed for the nightly/instrumented graph, shared `RP_POOL_LINUX` kill switch | Planned | — |
 
@@ -165,9 +165,27 @@ Mirrors the Linux template build (P2), with Windows specifics:
 3. **One-job service.** Windows equivalent of the Linux `gha-runner` unit: a
    service/scheduled task that waits for the injected JIT config, runs
    exactly one job (`run.cmd` with the JIT config), then shuts the VM down.
-4. **Template hygiene.** Sysprep/generalize before converting to a template
-   (the machine-identity wipe the Linux template does with
-   `machine-id` + `cloud-init clean`). NIC tagged with the runner VLAN.
+4. **Template hygiene.** Clear per-run state before converting to a template:
+   any leftover `.jitconfig` (a clone must never start with a spent single-use
+   config), the runner's `.runner`/`.credentials` pair, `_work`, `_diag`,
+   temp dirs and event logs. NIC tagged with the runner VLAN.
+
+   **Deliberately NOT `sysprep /generalize`,** despite it being the obvious
+   analogue of the Linux template's `machine-id` wipe: its specialize pass
+   runs on every clone boot and would add minutes to a pool whose value is
+   fast pickup, and none of what it buys applies here — Proxmox assigns each
+   clone a fresh MAC (so DHCP identity is already unique), only one Windows
+   clone exists at a time (so the duplicate computer name cannot collide),
+   the guests are not domain-joined, and the runner's identity comes from the
+   injected JIT config rather than the host name.
+
+   **Clock:** a linked clone inherits the template's RTC and boots badly out
+   of date (~9 hours in testing). That breaks TLS to GitHub, and it broke the
+   first one-job loop outright — a wall-clock wait deadline was already in
+   the past once Windows corrected the time, so clones powered themselves off
+   before the orchestrator could inject. The in-guest loop therefore forces a
+   time resync before touching the network and measures its wait with a
+   monotonic timer.
 5. **Orchestrator.** `rp-runner-pool.sh` is reworked from one hard-coded
    warm clone into pool *slots* (per-slot template VMID, clone VMID, name
    prefix, labels), one maintenance loop per slot: a Windows slot
