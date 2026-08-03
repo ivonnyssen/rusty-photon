@@ -168,26 +168,45 @@ fn normalize(name: &str) -> String {
     buf
 }
 
+// Field readers, one per width the `RPCAT001` header defines. The width is in
+// the name on purpose: these parse a fixed-layout file, so a caller must never
+// be able to pick a width by inference. `usize` in particular is not a wire
+// type — asking for one here would read 8 bytes from a 4-byte field.
+//
+// `first_chunk::<N>` hands back the `[u8; N]` that `from_le_bytes` wants
+// without indexing the slice element by element and without computing an end
+// offset, so these are total: no panic path, and nothing for
+// `arithmetic_side_effects` or `indexing_slicing` to flag. A slice that ends
+// short yields `None` and falls back to `0` — unreachable for a catalog that
+// passed `Catalog::load`, which checks the blob length against the layout its
+// header describes, so it is a defensive value rather than error handling.
+
 fn read_u32(bytes: &[u8], off: usize) -> u32 {
-    match bytes.get(off..off + 4) {
-        Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        None => 0,
-    }
+    bytes
+        .get(off..)
+        .and_then(<[u8]>::first_chunk::<4>)
+        .map_or(0, |b| u32::from_le_bytes(*b))
 }
 
 fn read_i32(bytes: &[u8], off: usize) -> i32 {
-    read_u32(bytes, off).cast_signed()
+    bytes
+        .get(off..)
+        .and_then(<[u8]>::first_chunk::<4>)
+        .map_or(0, |b| i32::from_le_bytes(*b))
 }
 
 fn read_i16(bytes: &[u8], off: usize) -> i16 {
-    match bytes.get(off..off + 2) {
-        Some(b) => i16::from_le_bytes([b[0], b[1]]),
-        None => 0,
-    }
+    bytes
+        .get(off..)
+        .and_then(<[u8]>::first_chunk::<2>)
+        .map_or(0, |b| i16::from_le_bytes(*b))
 }
 
 fn read_u16(bytes: &[u8], off: usize) -> u16 {
-    read_i16(bytes, off).cast_unsigned()
+    bytes
+        .get(off..)
+        .and_then(<[u8]>::first_chunk::<2>)
+        .map_or(0, |b| u16::from_le_bytes(*b))
 }
 
 /// Great-circle separation between two points given in degrees, via the
