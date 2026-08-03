@@ -188,6 +188,7 @@ impl PlateSolverClient {
 
     /// The base URL the client was constructed with (no trailing
     /// slash). Useful for tests that want to log or assert.
+    #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
