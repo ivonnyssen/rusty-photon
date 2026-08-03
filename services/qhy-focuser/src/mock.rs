@@ -68,13 +68,12 @@ impl MockState {
             .trim();
         debug!(command, "mock Q-Focuser processing command");
 
-        let parsed: serde_json::Value = match serde_json::from_str(command) {
-            Ok(v) => v,
-            Err(_) => {
-                debug!(command, "mock: invalid JSON command");
-                self.push_frame(r#"{"error": "invalid command"}"#);
-                return;
-            }
+        let parsed: serde_json::Value = if let Ok(v) = serde_json::from_str(command) {
+            v
+        } else {
+            debug!(command, "mock: invalid JSON command");
+            self.push_frame(r#"{"error": "invalid command"}"#);
+            return;
         };
 
         let cmd_id = parsed["cmd_id"].as_u64().unwrap_or(0);

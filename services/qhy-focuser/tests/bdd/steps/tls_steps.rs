@@ -17,7 +17,7 @@ fn qhy_configured_with_tls(world: &mut QhyFocuserWorld) {
     world.config = Some(qhy_focuser::Config {
         serial: qhy_focuser::SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval: std::time::Duration::from_secs(60),
+            polling_interval: std::time::Duration::from_mins(1),
             ..Default::default()
         },
         server: qhy_focuser::AlpacaServerConfig::new(0),
@@ -62,7 +62,7 @@ async fn alpaca_management_responds_https(world: &mut QhyFocuserWorld) {
         .as_ref()
         .expect("qhy-focuser not started")
         .port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     let mut ok = false;
     for _ in 0..60 {

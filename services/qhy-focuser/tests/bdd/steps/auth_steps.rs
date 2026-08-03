@@ -24,7 +24,7 @@ fn mock_config() -> qhy_focuser::Config {
     qhy_focuser::Config {
         serial: qhy_focuser::SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval: std::time::Duration::from_secs(60),
+            polling_interval: std::time::Duration::from_mins(1),
             ..Default::default()
         },
         server: qhy_focuser::AlpacaServerConfig::new(0),
@@ -143,7 +143,7 @@ async fn alpaca_responds_without_credentials(world: &mut QhyFocuserWorld) {
         .as_ref()
         .expect("qhy-focuser not started")
         .port;
-    let url = format!("http://127.0.0.1:{}/management/v1/configureddevices", port);
+    let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
     let mut ok = false;
     for _ in 0..60 {

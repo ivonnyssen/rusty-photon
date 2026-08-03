@@ -48,12 +48,13 @@ pub enum QhyResponse {
 impl QhyResponse {
     /// `idx` carried by this response — the protocol's reply-to-command
     /// correlator.
-    pub fn idx(&self) -> u8 {
+    #[must_use]
+    pub const fn idx(&self) -> u8 {
         match self {
-            QhyResponse::Version(_) => 1,
-            QhyResponse::Position(_) => 5,
-            QhyResponse::Temperature(_) => 4,
-            QhyResponse::Ack { idx } => *idx,
+            Self::Version(_) => 1,
+            Self::Position(_) => 5,
+            Self::Temperature(_) => 4,
+            Self::Ack { idx } => *idx,
         }
     }
 }
@@ -96,8 +97,8 @@ impl QhyCodecError {
     }
 }
 
-impl From<SessionError<QhyCodecError>> for QhyCodecError {
-    fn from(err: SessionError<QhyCodecError>) -> Self {
+impl From<SessionError<Self>> for QhyCodecError {
+    fn from(err: SessionError<Self>) -> Self {
         match err {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
@@ -177,17 +178,13 @@ impl From<SessionError<QhyCodecError>> for QhyFocuserError {
             // request (transport arm).
             SessionError::Transport(t) => t.into(),
             SessionError::Codec(QhyCodecError::Transport(t)) => t.into(),
-            SessionError::Codec(QhyCodecError::InvalidResponse(s)) => {
-                QhyFocuserError::InvalidResponse(s)
-            }
-            SessionError::Codec(QhyCodecError::Parse(s)) => QhyFocuserError::ParseError(s),
-            SessionError::Codec(c @ QhyCodecError::Utf8(_)) => {
-                QhyFocuserError::InvalidResponse(c.to_string())
-            }
-            SessionError::Codec(QhyCodecError::SkipExhausted(n)) => QhyFocuserError::Communication(
-                format!("device returned non-matching response ({n} frame(s) read)"),
-            ),
-            SessionError::SkipExhausted(n) => QhyFocuserError::Communication(format!(
+            SessionError::Codec(QhyCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
+            SessionError::Codec(QhyCodecError::Parse(s)) => Self::ParseError(s),
+            SessionError::Codec(c @ QhyCodecError::Utf8(_)) => Self::InvalidResponse(c.to_string()),
+            SessionError::Codec(QhyCodecError::SkipExhausted(n)) => Self::Communication(format!(
+                "device returned non-matching response ({n} frame(s) read)"
+            )),
+            SessionError::SkipExhausted(n) => Self::Communication(format!(
                 "device returned non-matching response ({n} frame{s} read)",
                 s = if n == 1 { "" } else { "s" }
             )),

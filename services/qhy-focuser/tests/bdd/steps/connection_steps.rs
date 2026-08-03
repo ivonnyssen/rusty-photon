@@ -1,4 +1,4 @@
-//! Step definitions for connection_lifecycle.feature
+//! Step definitions for `connection_lifecycle.feature`
 
 use crate::world::QhyFocuserWorld;
 use cucumber::{given, then, when};
@@ -48,8 +48,6 @@ fn connecting_should_fail_with(world: &mut QhyFocuserWorld, expected: String) {
         .expect("expected a connection error but none occurred");
     assert!(
         error.contains(&expected),
-        "expected error containing '{}', got: {}",
-        expected,
-        error
+        "expected error containing '{expected}', got: {error}"
     );
 }

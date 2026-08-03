@@ -23,5 +23,5 @@ async fn focuser_with_fast_polling(world: &mut QhyFocuserWorld) {
 
 #[when("I wait for polling to update")]
 async fn wait_for_polling(_world: &mut QhyFocuserWorld) {
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 }

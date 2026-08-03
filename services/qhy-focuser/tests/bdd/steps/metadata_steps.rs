@@ -1,4 +1,4 @@
-//! Step definitions for device_metadata.feature
+//! Step definitions for `device_metadata.feature`
 
 use crate::world::QhyFocuserWorld;
 use ascom_alpaca::ASCOMErrorCode;
@@ -100,9 +100,7 @@ async fn driver_info_should_contain(world: &mut QhyFocuserWorld, expected: Strin
     let info = world.focuser().driver_info().await.unwrap();
     assert!(
         info.contains(&expected),
-        "expected driver info to contain '{}', got: {}",
-        expected,
-        info
+        "expected driver info to contain '{expected}', got: {info}"
     );
 }
 
@@ -145,8 +143,7 @@ fn operation_should_fail_not_implemented(world: &mut QhyFocuserWorld) {
     assert_eq!(
         code,
         ASCOMErrorCode::NOT_IMPLEMENTED.raw(),
-        "expected NOT_IMPLEMENTED error code, got: {}",
-        code
+        "expected NOT_IMPLEMENTED error code, got: {code}"
     );
 }
 

@@ -1,6 +1,6 @@
 //! World struct for QHY-Focuser BDD tests
 //!
-//! Uses binary spawning via ServiceHandle and HTTP interaction via AlpacaClient.
+//! Uses binary spawning via `ServiceHandle` and HTTP interaction via `AlpacaClient`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub struct QhyFocuserWorld {
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,
-    /// Result of the last supported_actions query.
+    /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 
     /// Doctor-subcommand smoke state (staged config file + run output).
@@ -100,7 +100,7 @@ impl QhyFocuserWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
+    pub const fn bound_port(&self) -> u16 {
         self.focuser_handle
             .as_ref()
             .expect("service not started")
