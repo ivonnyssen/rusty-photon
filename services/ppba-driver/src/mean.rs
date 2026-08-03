@@ -25,7 +25,8 @@ pub struct SensorMean {
 
 impl SensorMean {
     /// Create a new sensor mean calculator with the given time window
-    pub fn new(window: Duration) -> Self {
+    #[must_use]
+    pub const fn new(window: Duration) -> Self {
         Self {
             samples: VecDeque::new(),
             window,
@@ -66,6 +67,7 @@ impl SensorMean {
     /// Get the mean of all samples in the current window
     ///
     /// Returns None if there are no samples available.
+    #[must_use]
     pub fn get_mean(&self) -> Option<f64> {
         if self.samples.is_empty() {
             return None;
@@ -78,6 +80,7 @@ impl SensorMean {
     /// Get the time elapsed since the last sample was added
     ///
     /// Returns None if no samples have been added yet.
+    #[must_use]
     pub fn time_since_last_update(&self) -> Option<Duration> {
         self.samples
             .back()
@@ -96,11 +99,13 @@ impl SensorMean {
     }
 
     /// Get the current time window
-    pub fn window(&self) -> Duration {
+    #[must_use]
+    pub const fn window(&self) -> Duration {
         self.window
     }
 
     /// Get the number of samples currently in the window
+    #[must_use]
     pub fn sample_count(&self) -> usize {
         self.samples.len()
     }
@@ -109,7 +114,7 @@ impl SensorMean {
 impl Default for SensorMean {
     fn default() -> Self {
         // Default to 5 minutes
-        Self::new(Duration::from_secs(300))
+        Self::new(Duration::from_mins(5))
     }
 }
 
@@ -121,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_new_sensor_mean() {
-        let window = Duration::from_secs(60);
+        let window = Duration::from_mins(1);
         let mean = SensorMean::new(window);
 
         assert_eq!(mean.window(), window);
@@ -131,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_add_sample() {
-        let mut mean = SensorMean::new(Duration::from_secs(60));
+        let mut mean = SensorMean::new(Duration::from_mins(1));
 
         mean.add_sample(10.0);
         assert_eq!(mean.sample_count(), 1);
@@ -148,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_time_since_last_update() {
-        let mut mean = SensorMean::new(Duration::from_secs(60));
+        let mut mean = SensorMean::new(Duration::from_mins(1));
 
         assert_eq!(mean.time_since_last_update(), None);
 
@@ -176,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_set_window() {
-        let mut mean = SensorMean::new(Duration::from_secs(60));
+        let mut mean = SensorMean::new(Duration::from_mins(1));
 
         mean.add_sample(10.0);
         sleep(Duration::from_millis(50));
@@ -196,6 +201,6 @@ mod tests {
     #[test]
     fn test_default() {
         let mean = SensorMean::default();
-        assert_eq!(mean.window(), Duration::from_secs(300));
+        assert_eq!(mean.window(), Duration::from_mins(5));
     }
 }

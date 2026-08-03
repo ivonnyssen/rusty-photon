@@ -48,7 +48,7 @@ pub struct SerialConfig {
 #[serde(deny_unknown_fields)]
 pub struct SwitchConfig {
     pub name: String,
-    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
+    /// ASCOM `UniqueID`. Minted as a `UUIDv4` on first run and persisted by
     /// `rusty_photon_config::materialize_identity`; never overwritten once set.
     /// Defaults to an empty string so a fresh config triggers materialization.
     #[serde(default)]
@@ -58,12 +58,12 @@ pub struct SwitchConfig {
     pub enabled: bool,
 }
 
-/// ObservingConditions device configuration
+/// `ObservingConditions` device configuration
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObservingConditionsConfig {
     pub name: String,
-    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
+    /// ASCOM `UniqueID`. Minted as a `UUIDv4` on first run and persisted by
     /// `rusty_photon_config::materialize_identity`; never overwritten once set.
     /// Defaults to an empty string so a fresh config triggers materialization.
     #[serde(default)]
@@ -76,24 +76,24 @@ pub struct ObservingConditionsConfig {
     pub averaging_period: Duration,
 }
 
-fn default_baud_rate() -> u32 {
+const fn default_baud_rate() -> u32 {
     9600
 }
 
-fn default_polling_interval() -> Duration {
-    Duration::from_millis(5000)
+const fn default_polling_interval() -> Duration {
+    Duration::from_secs(5)
 }
 
-fn default_timeout() -> Duration {
+const fn default_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_averaging_period() -> Duration {
-    Duration::from_secs(300) // 5 minutes
+const fn default_averaging_period() -> Duration {
+    Duration::from_mins(5) // 5 minutes
 }
 
 /// Platform-dependent default serial port. Both values are placeholders the
@@ -142,7 +142,7 @@ impl Default for ObservingConditionsConfig {
     }
 }
 
-/// Legacy DeviceConfig for backward compatibility during migration
+/// Legacy `DeviceConfig` for backward compatibility during migration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
@@ -177,6 +177,7 @@ pub struct CliOverrides {
 
 impl CliOverrides {
     /// Dotted JSON paths currently pinned by an active override.
+    #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
         if self.serial_port.is_some() {
@@ -248,7 +249,7 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 9600);
-        assert_eq!(config.serial.polling_interval, Duration::from_millis(5000));
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(5));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
         assert_eq!(config.server.port, 11112);
@@ -277,7 +278,7 @@ mod tests {
         assert_eq!(config.unique_id, "");
         assert!(!config.description.is_empty());
         assert!(config.enabled);
-        assert_eq!(config.averaging_period, Duration::from_secs(300)); // 5 minutes
+        assert_eq!(config.averaging_period, Duration::from_mins(5)); // 5 minutes
     }
 
     #[test]
@@ -289,7 +290,7 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(config.port, "COM3");
         assert_eq!(config.baud_rate, 9600);
-        assert_eq!(config.polling_interval, Duration::from_millis(5000));
+        assert_eq!(config.polling_interval, Duration::from_secs(5));
         assert_eq!(config.timeout, Duration::from_secs(2));
     }
 
@@ -344,7 +345,7 @@ mod tests {
         assert!(!config.observingconditions.enabled);
         assert_eq!(
             config.observingconditions.averaging_period,
-            Duration::from_secs(120)
+            Duration::from_mins(2)
         );
 
         assert_eq!(config.serial.port, "/dev/ttyACM0");
@@ -382,13 +383,13 @@ mod tests {
         assert_eq!(config.serial.port, "/dev/ttyUSB1");
         // These should have defaults
         assert_eq!(config.serial.baud_rate, 9600);
-        assert_eq!(config.serial.polling_interval, Duration::from_millis(5000));
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(5));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
         assert!(config.switch.enabled);
         assert!(config.observingconditions.enabled);
         assert_eq!(
             config.observingconditions.averaging_period,
-            Duration::from_secs(300)
+            Duration::from_mins(5)
         );
     }
 
@@ -439,7 +440,7 @@ mod tests {
     #[test]
     fn config_debug_works() {
         let config = Config::default();
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
 
         assert!(debug_str.contains("Config"));
         assert!(debug_str.contains("SwitchConfig"));

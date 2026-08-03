@@ -1,4 +1,4 @@
-//! Step definitions for connection_lifecycle.feature
+//! Step definitions for `connection_lifecycle.feature`
 //!
 //! Also defines shared steps used across multiple features:
 //! - "Given a running PPBA server"
@@ -133,7 +133,7 @@ fn last_error_code_should_be(world: &mut PpbaWorld, expected_code: String) {
         "INVALID_OPERATION" => ASCOMErrorCode::INVALID_OPERATION,
         "NOT_IMPLEMENTED" => ASCOMErrorCode::NOT_IMPLEMENTED,
         "VALUE_NOT_SET" => ASCOMErrorCode::VALUE_NOT_SET,
-        other => panic!("Unknown ASCOM error code: {}", other),
+        other => panic!("Unknown ASCOM error code: {other}"),
     };
     assert_eq!(
         error.code, expected,

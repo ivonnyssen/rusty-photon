@@ -1,6 +1,6 @@
-//! ConformU compliance tests for PPBA driver
+//! `ConformU` compliance tests for PPBA driver
 //!
-//! These tests verify ASCOM Alpaca compliance by running the ConformU test suite
+//! These tests verify ASCOM Alpaca compliance by running the `ConformU` test suite
 //! against the driver running in mock mode.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]

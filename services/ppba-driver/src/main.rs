@@ -54,7 +54,7 @@ struct Args {
     #[localized(help = "cli-help-enable-switch")]
     enable_switch: Option<bool>,
 
-    /// Enable/disable ObservingConditions device
+    /// Enable/disable `ObservingConditions` device
     #[arg(long)]
     #[localized(help = "cli-help-enable-observingconditions")]
     enable_observingconditions: Option<bool>,
@@ -70,7 +70,7 @@ struct Args {
     service: bool,
 }
 
-/// Subcommands. Help text is not localized — the LocalizedParser derive
+/// Subcommands. Help text is not localized — the `LocalizedParser` derive
 /// localizes only the top-level args (rp's CLI sets the same precedent).
 #[derive(clap::Subcommand)]
 enum Command {
@@ -91,10 +91,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
         rusty_photon_i18n::fl_active(|loader| fl!(loader, "error-invalid-log-level", value = s))
             .unwrap_or_else(|| {
-                format!(
-                    "Invalid log level: {}. Use: trace, debug, info, warn, error",
-                    s
-                )
+                format!("Invalid log level: {s}. Use: trace, debug, info, warn, error")
             })
     })
 }

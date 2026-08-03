@@ -68,12 +68,14 @@ impl PpbaManager {
     }
 
     /// Access the shared transport so devices can acquire sessions.
-    pub fn transport(&self) -> &Arc<SharedTransport<PpbaCodec>> {
+    #[must_use]
+    pub const fn transport(&self) -> &Arc<SharedTransport<PpbaCodec>> {
         &self.transport
     }
 
     /// Cheap, non-blocking snapshot — true between handshake completion
     /// and the start of teardown.
+    #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
     }
@@ -208,7 +210,7 @@ async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
-            _ = ctx.cancelled() => {
+            () = ctx.cancelled() => {
                 debug!("ppba poll loop received cancellation");
                 return;
             }
@@ -298,7 +300,7 @@ mod tests {
     #[tokio::test]
     async fn set_averaging_period_resizes_means() {
         let manager = make_manager();
-        let new_window = Duration::from_secs(120);
+        let new_window = Duration::from_mins(2);
         manager.set_averaging_period(new_window).await;
         let state = manager.get_cached_state().await;
         assert_eq!(state.temp_mean.window(), new_window);
@@ -397,12 +399,12 @@ mod tests {
         }
     }
 
-    /// Manager built with the InjectableFactory and a long poll interval
+    /// Manager built with the `InjectableFactory` and a long poll interval
     /// (300s) so the poll loop can't consume the armed failure before the
     /// test's foreground request does.
     fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<PpbaManager> {
         let mut config = Config::default();
-        config.serial.polling_interval = Duration::from_secs(300);
+        config.serial.polling_interval = Duration::from_mins(5);
         PpbaManager::new(config, factory)
     }
 

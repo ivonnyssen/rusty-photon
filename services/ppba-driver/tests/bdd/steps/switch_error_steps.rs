@@ -1,4 +1,4 @@
-//! Step definitions for switch_errors.feature
+//! Step definitions for `switch_errors.feature`
 
 use crate::world::PpbaWorld;
 use cucumber::{then, when};
@@ -167,8 +167,7 @@ async fn can_async_returns_false_for_all(world: &mut PpbaWorld, count: i32) {
     for id in 0..count {
         assert!(
             !switch.can_async(id as usize).await.unwrap(),
-            "switch {} should not support async ops",
-            id
+            "switch {id} should not support async ops"
         );
     }
 }
@@ -179,8 +178,7 @@ async fn state_change_complete_returns_true_for_all(world: &mut PpbaWorld, count
     for id in 0..count {
         assert!(
             switch.state_change_complete(id as usize).await.unwrap(),
-            "switch {} state change should be complete",
-            id
+            "switch {id} state change should be complete"
         );
     }
 }

@@ -1,4 +1,4 @@
-//! Step definitions for observing_conditions.feature
+//! Step definitions for `observing_conditions.feature`
 
 use crate::steps::infrastructure::default_test_config;
 use crate::world::PpbaWorld;
@@ -179,9 +179,7 @@ async fn oc_device_description_should_contain(world: &mut PpbaWorld, expected: S
     let desc = world.oc_ref().description().await.unwrap();
     assert!(
         desc.contains(&expected),
-        "expected OC description to contain '{}', got: {}",
-        expected,
-        desc
+        "expected OC description to contain '{expected}', got: {desc}"
     );
 }
 
@@ -190,9 +188,7 @@ async fn oc_device_driver_info_should_contain(world: &mut PpbaWorld, expected: S
     let info = world.oc_ref().driver_info().await.unwrap();
     assert!(
         info.contains(&expected),
-        "expected OC driver info to contain '{}', got: {}",
-        expected,
-        info
+        "expected OC driver info to contain '{expected}', got: {info}"
     );
 }
 
@@ -207,9 +203,7 @@ async fn average_period_should_be_approximately(world: &mut PpbaWorld, expected:
     let period = world.oc_ref().average_period().await.unwrap();
     assert!(
         (period - expected).abs() < 0.001,
-        "expected average period ~{}, got {}",
-        expected,
-        period
+        "expected average period ~{expected}, got {period}"
     );
 }
 
@@ -218,9 +212,7 @@ async fn average_period_should_be(world: &mut PpbaWorld, expected: f64) {
     let period = world.oc_ref().average_period().await.unwrap();
     assert!(
         (period - expected).abs() < f64::EPSILON,
-        "expected average period {}, got {}",
-        expected,
-        period
+        "expected average period {expected}, got {period}"
     );
 }
 
@@ -229,9 +221,7 @@ async fn temperature_should_be_approximately(world: &mut PpbaWorld, expected: f6
     let temp = world.oc_ref().temperature().await.unwrap();
     assert!(
         (temp - expected).abs() < 0.1,
-        "expected temperature ~{}, got {}",
-        expected,
-        temp
+        "expected temperature ~{expected}, got {temp}"
     );
 }
 
@@ -240,9 +230,7 @@ async fn humidity_should_be_approximately(world: &mut PpbaWorld, expected: f64) 
     let humidity = world.oc_ref().humidity().await.unwrap();
     assert!(
         (humidity - expected).abs() < 0.1,
-        "expected humidity ~{}, got {}",
-        expected,
-        humidity
+        "expected humidity ~{expected}, got {humidity}"
     );
 }
 
@@ -251,9 +239,7 @@ async fn dewpoint_should_be_approximately(world: &mut PpbaWorld, expected: f64) 
     let dewpoint = world.oc_ref().dew_point().await.unwrap();
     assert!(
         (dewpoint - expected).abs() < 0.1,
-        "expected dewpoint ~{}, got {}",
-        expected,
-        dewpoint
+        "expected dewpoint ~{expected}, got {dewpoint}"
     );
 }
 
@@ -270,10 +256,7 @@ async fn sensor_description_should_contain(
         .unwrap();
     assert!(
         desc.to_lowercase().contains(&expected.to_lowercase()),
-        "expected sensor description for '{}' to contain '{}', got: {}",
-        sensor,
-        expected,
-        desc
+        "expected sensor description for '{sensor}' to contain '{expected}', got: {desc}"
     );
 }
 
@@ -295,8 +278,7 @@ async fn sensor_description_case_insensitive(
         .unwrap();
     assert_eq!(
         desc1, desc2,
-        "sensor descriptions for '{}' and '{}' should match",
-        sensor1, sensor2
+        "sensor descriptions for '{sensor1}' and '{sensor2}' should match"
     );
 }
 
@@ -309,10 +291,7 @@ async fn time_since_last_update_less_than(world: &mut PpbaWorld, sensor: String,
         .unwrap();
     assert!(
         time < max_time,
-        "expected time < {}, got {} for sensor '{}'",
-        max_time,
-        time,
-        sensor
+        "expected time < {max_time}, got {time} for sensor '{sensor}'"
     );
 }
 

@@ -1,4 +1,4 @@
-//! Step definitions for switch_metadata.feature
+//! Step definitions for `switch_metadata.feature`
 
 use crate::steps::infrastructure::default_test_config;
 use crate::world::PpbaWorld;
@@ -60,9 +60,7 @@ async fn switch_device_description_should_be(world: &mut PpbaWorld, expected: St
     let desc = world.switch_ref().description().await.unwrap();
     assert!(
         desc.contains(&expected),
-        "expected description to contain '{}', got: {}",
-        expected,
-        desc
+        "expected description to contain '{expected}', got: {desc}"
     );
 }
 
@@ -71,9 +69,7 @@ async fn switch_device_driver_info_should_contain(world: &mut PpbaWorld, expecte
     let info = world.switch_ref().driver_info().await.unwrap();
     assert!(
         info.contains(&expected),
-        "expected driver info to contain '{}', got: {}",
-        expected,
-        info
+        "expected driver info to contain '{expected}', got: {info}"
     );
 }
 
@@ -94,11 +90,7 @@ async fn all_switches_have_names(world: &mut PpbaWorld, count: i32) {
     let switch = world.switch_ref();
     for id in 0..count {
         let name = switch.get_switch_name(id as usize).await.unwrap();
-        assert!(
-            !name.is_empty(),
-            "switch {} should have a non-empty name",
-            id
-        );
+        assert!(!name.is_empty(), "switch {id} should have a non-empty name");
     }
 }
 
@@ -109,8 +101,7 @@ async fn all_switches_have_descriptions(world: &mut PpbaWorld, count: i32) {
         let desc = switch.get_switch_description(id as usize).await.unwrap();
         assert!(
             !desc.is_empty(),
-            "switch {} should have a non-empty description",
-            id
+            "switch {id} should have a non-empty description"
         );
     }
 }
@@ -125,16 +116,11 @@ async fn all_switches_consistent(world: &mut PpbaWorld) {
 
         assert!(
             min < max,
-            "switch {} min ({}) should be less than max ({})",
-            id,
-            min,
-            max
+            "switch {id} min ({min}) should be less than max ({max})"
         );
         assert!(
             step > 0.0,
-            "switch {} step should be positive, got {}",
-            id,
-            step
+            "switch {id} step should be positive, got {step}"
         );
     }
 }
@@ -148,10 +134,7 @@ async fn switch_min_value_should_be(world: &mut PpbaWorld, id: i32, expected: f6
         .unwrap();
     assert!(
         (min - expected).abs() < f64::EPSILON,
-        "switch {} min: expected {}, got {}",
-        id,
-        expected,
-        min
+        "switch {id} min: expected {expected}, got {min}"
     );
 }
 
@@ -164,10 +147,7 @@ async fn switch_max_value_should_be(world: &mut PpbaWorld, id: i32, expected: f6
         .unwrap();
     assert!(
         (max - expected).abs() < f64::EPSILON,
-        "switch {} max: expected {}, got {}",
-        id,
-        expected,
-        max
+        "switch {id} max: expected {expected}, got {max}"
     );
 }
 
@@ -178,9 +158,7 @@ async fn all_switches_positive_step(world: &mut PpbaWorld, count: i32) {
         let step = switch.switch_step(id as usize).await.unwrap();
         assert!(
             step > 0.0,
-            "switch {} should have positive step, got {}",
-            id,
-            step
+            "switch {id} should have positive step, got {step}"
         );
     }
 }

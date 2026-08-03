@@ -58,7 +58,7 @@ async fn alpaca_management_responds_https(world: &mut PpbaWorld) {
         .expect("TLS certs not generated")
         .https_client();
     let port = world.ppba.as_ref().expect("ppba-driver not started").port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
     let mut ok = false;
     for _ in 0..60 {

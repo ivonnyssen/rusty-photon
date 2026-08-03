@@ -14,7 +14,7 @@ pub struct PpbaWorld {
     /// Handle to the running ppba-driver process
     pub ppba: Option<ServiceHandle>,
 
-    /// Base URL of the running server (e.g. "http://127.0.0.1:12345")
+    /// Base URL of the running server (e.g. "<http://127.0.0.1:12345>")
     pub base_url: Option<String>,
 
     /// Config JSON built up during Given steps, written to temp file before start
@@ -23,7 +23,7 @@ pub struct PpbaWorld {
     /// Typed ASCOM Switch device client
     pub switch: Option<Arc<dyn Switch>>,
 
-    /// Typed ASCOM ObservingConditions device client
+    /// Typed ASCOM `ObservingConditions` device client
     pub oc: Option<Arc<dyn ObservingConditions>>,
 
     /// ASCOM error from the last "try" operation
@@ -37,7 +37,7 @@ pub struct PpbaWorld {
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,
-    /// Result of the last supported_actions query.
+    /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 }
 
@@ -106,7 +106,7 @@ impl PpbaWorld {
     }
 
     /// The OS-assigned port the spawned service bound.
-    pub fn bound_port(&self) -> u16 {
+    pub const fn bound_port(&self) -> u16 {
         self.ppba.as_ref().expect("service not started").port
     }
 
@@ -162,7 +162,7 @@ impl PpbaWorld {
             .as_ref()
     }
 
-    /// Get a reference to the typed ObservingConditions device.
+    /// Get a reference to the typed `ObservingConditions` device.
     pub fn oc_ref(&self) -> &dyn ObservingConditions {
         self.oc.as_ref().expect("OC device not discovered").as_ref()
     }
@@ -183,9 +183,9 @@ impl PpbaWorld {
 
         // Try device endpoints and management endpoint (always available)
         let urls = [
-            format!("{}/api/v1/switch/0/name", base),
-            format!("{}/api/v1/observingconditions/0/name", base),
-            format!("{}/management/apiversions", base),
+            format!("{base}/api/v1/switch/0/name"),
+            format!("{base}/api/v1/observingconditions/0/name"),
+            format!("{base}/management/apiversions"),
         ];
 
         for _ in 0..120 {
