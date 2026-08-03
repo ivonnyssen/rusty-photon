@@ -27,7 +27,7 @@ const RESERVED: &[&str] = &[
 ];
 
 /// Typed value of a FITS header card. The variants map 1:1 to the
-/// FITSv4 §4.2 value types we serialize.
+/// `FITSv4` §4.2 value types we serialize.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeywordValue {
     /// FITS logical: emitted as `T` or `F` right-justified at column 30.
@@ -38,7 +38,7 @@ pub enum KeywordValue {
     Float(f64),
     /// FITS character string: emitted as `'value   '` starting at column 11,
     /// internally padded to at least 8 characters and any embedded `'`
-    /// doubled per FITSv4 §4.2.1.1.
+    /// doubled per `FITSv4` §4.2.1.1.
     Str(String),
 }
 
@@ -54,7 +54,7 @@ pub struct Keyword {
 impl Keyword {
     /// Build a keyword card from a key and a typed value.
     ///
-    /// Validates per FITSv4 §4.1.2.1: name is ≤ 8 chars, drawn from the
+    /// Validates per `FITSv4` §4.1.2.1: name is ≤ 8 chars, drawn from the
     /// restricted set `[A-Z0-9_-]` (case-insensitive — the input is
     /// uppercased). Reserved keywords (the writer emits SIMPLE, BITPIX,
     /// NAXIS{,1,2}, BSCALE, BZERO, END itself) are rejected. Float
@@ -167,7 +167,7 @@ pub fn write_u16_image<W: Write + ?Sized>(
     ];
 
     let body = serialize_image(16, &managed, pixels, width, height, extra, |out, &p| {
-        let raw = (p as i32 - 32768) as i16;
+        let raw = (i32::from(p) - 32768) as i16;
         out.extend_from_slice(&raw.to_be_bytes());
     })?;
     w.write_all(&body)?;
@@ -222,10 +222,10 @@ where
 
     // Header.
     write_card(&mut out, &Card::logical("SIMPLE", true))?;
-    write_card(&mut out, &Card::integer("BITPIX", bitpix as i64))?;
+    write_card(&mut out, &Card::integer("BITPIX", i64::from(bitpix)))?;
     write_card(&mut out, &Card::integer("NAXIS", 2))?;
-    write_card(&mut out, &Card::integer("NAXIS1", width as i64))?;
-    write_card(&mut out, &Card::integer("NAXIS2", height as i64))?;
+    write_card(&mut out, &Card::integer("NAXIS1", i64::from(width)))?;
+    write_card(&mut out, &Card::integer("NAXIS2", i64::from(height)))?;
     for c in managed_pre_user {
         write_card(&mut out, c)?;
     }
@@ -255,24 +255,24 @@ pub(crate) struct Card {
 }
 
 impl Card {
-    fn integer(key: &str, value: i64) -> Card {
-        Card {
+    fn integer(key: &str, value: i64) -> Self {
+        Self {
             key: pad_key(key),
             value: KeywordValue::Int(value),
             comment: None,
         }
     }
 
-    fn logical(key: &str, value: bool) -> Card {
-        Card {
+    fn logical(key: &str, value: bool) -> Self {
+        Self {
             key: pad_key(key),
             value: KeywordValue::Bool(value),
             comment: None,
         }
     }
 
-    fn from_keyword(kw: &Keyword) -> Card {
-        Card {
+    fn from_keyword(kw: &Keyword) -> Self {
+        Self {
             key: kw.key,
             value: kw.value.clone(),
             comment: kw.comment.clone(),
@@ -415,7 +415,7 @@ fn format_float(f: f64) -> String {
         return raw;
     };
     let (sign, exp_digits) = match exp.chars().next() {
-        Some('+') | Some('-') => exp.split_at(1),
+        Some('+' | '-') => exp.split_at(1),
         _ => ("+", exp),
     };
     // Pad exponent digits to at least 2.
@@ -521,7 +521,7 @@ mod tests {
         let raw = fitsrs_read_pixels_i16(&buf);
         assert_eq!(raw, vec![-32768, 0, 32767, -20423]);
         // Apply BSCALE/BZERO ourselves and confirm we get the originals back.
-        let recovered: Vec<u16> = raw.iter().map(|r| (*r as i32 + 32768) as u16).collect();
+        let recovered: Vec<u16> = raw.iter().map(|r| (i32::from(*r) + 32768) as u16).collect();
         assert_eq!(recovered, pixels);
     }
 
@@ -554,7 +554,7 @@ mod tests {
         let exp = header.get("EXPTIME").expect("EXPTIME present");
         match exp {
             fitsrs::card::Value::Float { value, .. } => {
-                assert!((value - 2.5).abs() < 1e-9, "got {value}")
+                assert!((value - 2.5).abs() < 1e-9, "got {value}");
             }
             other => panic!("expected EXPTIME to be float, got {other:?}"),
         }
@@ -566,7 +566,7 @@ mod tests {
         let err = write_i32_image(&mut buf, &[1, 2, 3], 2, 2, &[]).unwrap_err();
         match err {
             FitsError::DimensionMismatch { got, expected, .. } => {
-                assert_eq!((got, expected), (3, 4))
+                assert_eq!((got, expected), (3, 4));
             }
             other => panic!("unexpected error: {other:?}"),
         }
