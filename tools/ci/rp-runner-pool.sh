@@ -108,19 +108,30 @@ destroy_clone() {
 slot_loop() {
   local name=$1 template=$2 vmid=$3 os=$4 labels=$5
 
-  # Reconcile a clone left behind by a previous run of this service. If it has
-  # no injection marker it was created but never configured — a restart in
-  # that window would otherwise be unrecoverable: the guest waits for a config
-  # that will never arrive (the Linux runner script has no no-config timeout
-  # at all), and the poweroff wait below waits for a shutdown that never
-  # comes, wedging the slot permanently. A clone WITH a marker is running a
-  # real job, so it is left alone and simply waited on.
-  if qm status "$vmid" >/dev/null 2>&1 && [ ! -e "$STATE_DIR/$vmid.injected" ]; then
-    log "$name" "clone $vmid predates this run and never received a config; destroying"
-    destroy_clone "$vmid"
-  fi
-
   while true; do
+    # Establish the invariant the rest of the iteration depends on: either the
+    # VM does not exist, or it exists AND holds a real job. A clone with no
+    # injection marker was created but never configured, and nothing will ever
+    # shut it down — the guest waits for a config that cannot arrive (the
+    # Linux runner script has no no-config timeout at all) while the poweroff
+    # wait below waits for a shutdown that never comes, wedging the slot
+    # permanently. Two ways to reach that state: this service restarting
+    # mid-window, and a destroy that did not take (a Proxmox lock, say), which
+    # is why the check runs every iteration rather than once at startup. A
+    # clone WITH a marker is left alone: an orchestrator restart must never
+    # abort an in-flight job.
+    if qm status "$vmid" >/dev/null 2>&1 && [ ! -e "$STATE_DIR/$vmid.injected" ]; then
+      log "$name" "clone $vmid exists but never received a config; destroying"
+      destroy_clone "$vmid"
+      # If the destroy did not take, do not fall through into the poweroff
+      # wait — retry the reconcile instead, so a transient lock resolves.
+      if qm status "$vmid" >/dev/null 2>&1; then
+        log "$name" "clone $vmid still present after destroy; retrying"
+        sleep 30
+        continue
+      fi
+    fi
+
     if ! qm status "$vmid" >/dev/null 2>&1; then
       qm clone "$template" "$vmid" --name "$name" >/dev/null || { sleep 30; continue; }
       qm start "$vmid" >/dev/null
