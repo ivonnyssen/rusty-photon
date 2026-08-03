@@ -1,4 +1,4 @@
-//! Step definitions for focuser_readings.feature
+//! Step definitions for `focuser_readings.feature`
 
 use crate::world::ScopsWorld;
 use ascom_alpaca::ASCOMErrorCode;
@@ -73,7 +73,6 @@ fn operation_should_fail_not_connected(world: &mut ScopsWorld) {
     assert_eq!(
         code,
         ASCOMErrorCode::NOT_CONNECTED.raw(),
-        "expected NOT_CONNECTED error code, got: {}",
-        code
+        "expected NOT_CONNECTED error code, got: {code}"
     );
 }

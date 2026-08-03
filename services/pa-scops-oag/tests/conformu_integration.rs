@@ -1,6 +1,6 @@
-//! ConformU compliance tests for the Pegasus Scops OAG driver
+//! `ConformU` compliance tests for the Pegasus Scops OAG driver
 //!
-//! These tests verify ASCOM Alpaca compliance by running the ConformU test suite
+//! These tests verify ASCOM Alpaca compliance by running the `ConformU` test suite
 //! against the driver running in mock mode.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
@@ -132,10 +132,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     match &result {
-        Ok(_) => {}
+        Ok(()) => {}
         Err(e) => {
             println!("ConformU compliance tests FAILED");
-            println!("Error: {}", e);
+            println!("Error: {e}");
         }
     }
 

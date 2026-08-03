@@ -24,7 +24,7 @@ fn test_config(focuser_enabled: bool) -> Config {
     Config {
         serial: SerialConfig {
             port: "/dev/mock".to_string(),
-            polling_interval: Duration::from_secs(60),
+            polling_interval: Duration::from_mins(1),
             ..Default::default()
         },
         server: AlpacaServerConfig::new(0),
@@ -69,7 +69,7 @@ async fn spawn_server(
 }
 
 async fn get_status(port: u16, path: &str) -> u16 {
-    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let url = format!("http://127.0.0.1:{port}{path}");
     reqwest::get(&url).await.unwrap().status().as_u16()
 }
 
@@ -107,7 +107,7 @@ async fn test_server_binds_to_os_assigned_port() {
 
     assert_ne!(port, 0, "OS should have assigned a real port");
 
-    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await;
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;
     assert!(stream.is_ok(), "Server should be reachable on bound port");
 
     stop.send(()).expect("server task should still be running");

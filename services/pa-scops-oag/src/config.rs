@@ -55,7 +55,7 @@ pub struct SerialConfig {
 #[serde(deny_unknown_fields)]
 pub struct FocuserConfig {
     pub name: String,
-    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run by
+    /// ASCOM `UniqueID`. Minted as a `UUIDv4` on first run by
     /// `rusty_photon_config::materialize_identity` (JSON pointer
     /// `/focuser/unique_id`), persisted, and never overwritten. Defaults to an
     /// empty string so an absent or empty value triggers minting rather than
@@ -73,25 +73,25 @@ pub struct FocuserConfig {
     pub max_step: u32,
 }
 
-fn default_baud_rate() -> u32 {
+const fn default_baud_rate() -> u32 {
     // The Scops OAG (Pegasus DMFC family) speaks 19200 8N1. This unit does not
     // respond at 9600 — see docs/services/pa-scops-oag.md "Hardware Constraints".
     19200
 }
 
-fn default_polling_interval() -> Duration {
-    Duration::from_millis(1000)
+const fn default_polling_interval() -> Duration {
+    Duration::from_secs(1)
 }
 
-fn default_timeout() -> Duration {
+const fn default_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_max_step() -> u32 {
+const fn default_max_step() -> u32 {
     // The travel range the official Pegasus Astro software enforces for the
     // Scops OAG (positions 0–22000).
     22_000
@@ -153,6 +153,7 @@ pub struct CliOverrides {
 impl CliOverrides {
     /// Dotted JSON paths currently pinned by an active override. Reported by
     /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    #[must_use]
     pub fn pinned_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
         if self.serial_port.is_some() {
@@ -211,7 +212,7 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 19200);
-        assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(1));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
         assert_eq!(config.server.port, 11123);
@@ -242,7 +243,7 @@ mod tests {
         // The Scops OAG only responds at 19200 — guard the default against
         // regression to the DMFC doc's "try 9600" footnote.
         assert_eq!(config.baud_rate, 19200);
-        assert_eq!(config.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.polling_interval, Duration::from_secs(1));
         assert_eq!(config.timeout, Duration::from_secs(2));
     }
 
@@ -316,7 +317,7 @@ mod tests {
         assert_eq!(config.focuser.name, "Minimal Scops");
         assert_eq!(config.serial.port, "/dev/ttyUSB1");
         assert_eq!(config.serial.baud_rate, 19200);
-        assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(1));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 22_000);

@@ -21,7 +21,7 @@ use crate::config_actions::ScopsFocuserDriver;
 use crate::error::ScopsOagError;
 use crate::manager::FocuserManager;
 
-/// Guard macro that returns NOT_CONNECTED if the device is not connected.
+/// Guard macro that returns `NOT_CONNECTED` if the device is not connected.
 macro_rules! ensure_connected {
     ($self:ident) => {
         if !$self.connected().await.is_ok_and(|connected| connected) {
@@ -48,6 +48,7 @@ pub struct ScopsFocuserDevice {
 }
 
 impl ScopsFocuserDevice {
+    #[must_use]
     pub fn new(config: FocuserConfig, manager: Arc<FocuserManager>) -> Self {
         Self {
             config,
@@ -59,6 +60,7 @@ impl ScopsFocuserDevice {
 
     /// Attach the config-action context, enabling `config.get` / `config.apply`
     /// / `config.schema` on this device.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<ScopsFocuserDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
@@ -225,7 +227,9 @@ impl Focuser for ScopsFocuserDevice {
 
         let guard = self.session.read().await;
         let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-        self.manager.move_absolute(session, position as i64).await?;
+        self.manager
+            .move_absolute(session, i64::from(position))
+            .await?;
         Ok(())
     }
 }
