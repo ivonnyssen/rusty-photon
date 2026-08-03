@@ -66,7 +66,7 @@ impl CliOverrides {
     }
 
     /// Apply the overrides onto `config` in place.
-    pub fn apply(&self, config: &mut Config) {
+    pub const fn apply(&self, config: &mut Config) {
         if let Some(port) = self.port {
             config.server.port = port;
         }

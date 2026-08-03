@@ -133,9 +133,10 @@ impl FocuserWorld {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        if !self.empty_backend {
-            panic!("zwo-focuser did not register a Focuser device within 20s");
-        }
+        assert!(
+            self.empty_backend,
+            "zwo-focuser did not register a Focuser device within 20s"
+        );
     }
 
     pub fn focuser(&self) -> Arc<dyn Focuser> {
