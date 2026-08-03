@@ -1,4 +1,4 @@
-//! In-process FP2 simulator used by tests and ConformU.
+//! In-process FP2 simulator used by tests and `ConformU`.
 //!
 //! Implements [`TransportFactory`] from
 //! [`rusty_photon_shared_transport`]. Each `open()` hands out a fresh
@@ -106,10 +106,12 @@ pub struct MockTransportFactory {
 }
 
 impl MockTransportFactory {
-    pub fn with_state(state: MockState) -> Self {
+    #[must_use]
+    pub const fn with_state(state: MockState) -> Self {
         Self { state }
     }
 
+    #[must_use]
     pub fn state(&self) -> MockState {
         self.state.clone()
     }
@@ -122,7 +124,7 @@ impl TransportFactory for MockTransportFactory {
     }
 }
 
-/// FrameTransport that talks to a shared [`MockState`] via a queued
+/// `FrameTransport` that talks to a shared [`MockState`] via a queued
 /// request/response loopback. The internal queue holds at most one frame
 /// — `send_frame` enqueues a response and `recv_frame` consumes it.
 pub struct MockFrameTransport {
@@ -131,7 +133,7 @@ pub struct MockFrameTransport {
 }
 
 impl MockFrameTransport {
-    fn new(state: MockState) -> Self {
+    const fn new(state: MockState) -> Self {
         Self {
             state,
             pending: None,
@@ -158,7 +160,7 @@ impl MockFrameTransport {
                 } else {
                     255 // in-between
                 };
-                format!("({})", v)
+                format!("({v})")
             }
             "GPOS" => format!("({})", inner.cover_angle),
             "GMOV" => {
@@ -168,7 +170,7 @@ impl MockFrameTransport {
                 // arrival raced the driver's optimistic `Moving` write
                 // (device.rs `execute_move`) against the next poll tick;
                 // see issue #423.
-                let resp = format!("({})", if inner.motor_running { 1 } else { 0 });
+                let resp = format!("({})", i32::from(inner.motor_running));
                 inner.motor_running = false;
                 resp
             }
@@ -179,7 +181,7 @@ impl MockFrameTransport {
                 }
                 "(OK)".to_string()
             }
-            "GLON" => format!("({})", if inner.light_on { 1 } else { 0 }),
+            "GLON" => format!("({})", i32::from(inner.light_on)),
             "GLBR" => format!("({})", inner.brightness),
             "GHTT" => format!("({:.6})", inner.heater_temp),
             "GHTM" => format!("({})", inner.heater_mode),

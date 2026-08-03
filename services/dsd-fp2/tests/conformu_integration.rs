@@ -1,7 +1,7 @@
-//! ConformU compliance tests for the Deep Sky Dad FP2 driver.
+//! `ConformU` compliance tests for the Deep Sky Dad FP2 driver.
 //!
 //! Spawns the dsd-fp2 binary with the mock transport factory and points
-//! ConformU at it. The binary must be pre-built with `--features mock`
+//! `ConformU` at it. The binary must be pre-built with `--features mock`
 //! (which `--features conformu` implies); CI builds with
 //! `--all-features` so the right path is exercised automatically.
 

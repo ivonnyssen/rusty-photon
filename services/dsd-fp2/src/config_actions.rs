@@ -62,7 +62,7 @@ impl ConfigurableDriver for DsdFp2Driver {
                 msg: "must be greater than 0".to_string(),
             });
         }
-        if config.cover_calibrator.max_brightness > MAX_BRIGHTNESS as u32 {
+        if config.cover_calibrator.max_brightness > u32::from(MAX_BRIGHTNESS) {
             errors.push(FieldError {
                 path: "cover_calibrator.max_brightness".to_string(),
                 msg: format!("must be <= {MAX_BRIGHTNESS} (hardware ceiling)"),
@@ -202,7 +202,7 @@ mod tests {
     fn validate_accepts_max_brightness_at_ceiling() {
         let config = Config {
             cover_calibrator: CoverCalibratorConfig {
-                max_brightness: MAX_BRIGHTNESS as u32,
+                max_brightness: u32::from(MAX_BRIGHTNESS),
                 unique_id: "dsd-fp2-test-id".to_string(),
                 ..CoverCalibratorConfig::default()
             },

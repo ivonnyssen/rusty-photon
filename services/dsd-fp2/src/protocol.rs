@@ -52,18 +52,19 @@ impl Command {
     /// no terminator is appended here — the closing `]` is part of the
     /// payload itself. The `SerialFrameTransport`'s configured terminator
     /// (`)`) only applies to reads.
+    #[must_use]
     pub fn encode(&self) -> String {
         match self {
-            Command::GetFirmware => "[GFRM]".to_string(),
-            Command::GetCoverState => "[GOPS]".to_string(),
-            Command::GetMotorState => "[GMOV]".to_string(),
-            Command::SetTarget(deg) => format!("[STRG{}]", deg),
-            Command::StartMove => "[SMOV]".to_string(),
-            Command::GetLight => "[GLON]".to_string(),
-            Command::SetLight(on) => if *on { "[SLON1]" } else { "[SLON0]" }.to_string(),
-            Command::GetBrightness => "[GLBR]".to_string(),
-            Command::SetBrightness(b) => format!("[SLBR{:04}]", b),
-            Command::GetHeaterTemp => "[GHTT]".to_string(),
+            Self::GetFirmware => "[GFRM]".to_string(),
+            Self::GetCoverState => "[GOPS]".to_string(),
+            Self::GetMotorState => "[GMOV]".to_string(),
+            Self::SetTarget(deg) => format!("[STRG{deg}]"),
+            Self::StartMove => "[SMOV]".to_string(),
+            Self::GetLight => "[GLON]".to_string(),
+            Self::SetLight(on) => if *on { "[SLON1]" } else { "[SLON0]" }.to_string(),
+            Self::GetBrightness => "[GLBR]".to_string(),
+            Self::SetBrightness(b) => format!("[SLBR{b:04}]"),
+            Self::GetHeaterTemp => "[GHTT]".to_string(),
         }
     }
 }
@@ -120,7 +121,7 @@ impl RawResponse {
     /// Parse a non-negative integer that fits in `u16`.
     pub fn parse_u16(&self) -> Result<u16> {
         let n = self.parse_int()?;
-        if !(0..=u16::MAX as i32).contains(&n) {
+        if !(0..=i32::from(u16::MAX)).contains(&n) {
             return Err(DsdFp2Error::MalformedResponse(format!(
                 "value out of u16 range: {:?}",
                 self.body
@@ -180,6 +181,7 @@ pub struct FirmwareInfo {
 
 impl FirmwareInfo {
     /// True if this firmware advertises the FP2 board.
+    #[must_use]
     pub fn is_fp2(&self) -> bool {
         self.board.contains("DeepSkyDad.FP2")
     }

@@ -1,4 +1,4 @@
-//! Step definitions for connection_lifecycle.feature.
+//! Step definitions for `connection_lifecycle.feature`.
 
 use cucumber::{given, then, when};
 

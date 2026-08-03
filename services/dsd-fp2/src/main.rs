@@ -65,12 +65,8 @@ enum Command {
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
-    s.parse().map_err(|_| {
-        format!(
-            "Invalid log level: {}. Use: trace, debug, info, warn, error",
-            s
-        )
-    })
+    s.parse()
+        .map_err(|_| format!("Invalid log level: {s}. Use: trace, debug, info, warn, error"))
 }
 
 fn main() -> ServiceResult {

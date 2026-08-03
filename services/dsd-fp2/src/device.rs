@@ -1,4 +1,4 @@
-//! ASCOM Alpaca CoverCalibrator device for the Deep Sky Dad FP2.
+//! ASCOM Alpaca `CoverCalibrator` device for the Deep Sky Dad FP2.
 //!
 //! Holds an `Arc<FlatPanelManager>` (the service-wide façade over
 //! `SharedTransport<Fp2Codec>`) plus a per-device session slot.
@@ -26,7 +26,7 @@ use crate::error::DsdFp2Error;
 use crate::manager::FlatPanelManager;
 use crate::protocol::{Command, CLOSED_ANGLE, MAX_BRIGHTNESS, OPEN_ANGLE};
 
-/// Deep Sky Dad FP2 as an ASCOM CoverCalibrator.
+/// Deep Sky Dad FP2 as an ASCOM `CoverCalibrator`.
 #[derive(derive_more::Debug)]
 pub struct DsdFp2Device {
     config: CoverCalibratorConfig,
@@ -42,6 +42,7 @@ pub struct DsdFp2Device {
 }
 
 impl DsdFp2Device {
+    #[must_use]
     pub fn new(config: CoverCalibratorConfig, manager: Arc<FlatPanelManager>) -> Self {
         Self {
             config,
@@ -52,6 +53,7 @@ impl DsdFp2Device {
     }
 
     /// Attach the config-action context, enabling `config.get` / `config.apply`.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<DsdFp2Driver>) -> Self {
         self.config_ctx = Some(ctx);
         self
@@ -60,7 +62,7 @@ impl DsdFp2Device {
     /// Hardware-clamped configurable maximum. ASCOM `MaxBrightness` and
     /// `calibrator_on`'s validation share this so they can't disagree.
     fn effective_max_brightness(&self) -> u32 {
-        self.config.max_brightness.min(MAX_BRIGHTNESS as u32)
+        self.config.max_brightness.min(u32::from(MAX_BRIGHTNESS))
     }
 }
 
@@ -93,30 +95,25 @@ impl Device for DsdFp2Device {
         if already_open == connected {
             return Ok(());
         }
-        match connected {
-            true => {
-                // `?` does SessionError<DsdFp2Error> → DsdFp2Error via the
-                // From impl in error.rs, then DsdFp2Error → ASCOMError via
-                // the second From impl on `?`.
-                let session = self
-                    .manager
-                    .transport()
-                    .acquire()
-                    .await
-                    .map_err(DsdFp2Error::from)?;
-                *slot = Some(session);
-                debug!("FP2 device connected");
-            }
-            false => {
-                if let Some(session) = slot.take() {
-                    // `Session::close` returns `Result<_, TransportError>`;
-                    // `From<TransportError> for DsdFp2Error` handles the
-                    // first hop, and `From<DsdFp2Error> for ASCOMError`
-                    // does the second on `?`.
-                    session.close().await.map_err(DsdFp2Error::from)?;
-                    debug!("FP2 device disconnected");
-                }
-            }
+        if connected {
+            // `?` does SessionError<DsdFp2Error> → DsdFp2Error via the
+            // From impl in error.rs, then DsdFp2Error → ASCOMError via
+            // the second From impl on `?`.
+            let session = self
+                .manager
+                .transport()
+                .acquire()
+                .await
+                .map_err(DsdFp2Error::from)?;
+            *slot = Some(session);
+            debug!("FP2 device connected");
+        } else if let Some(session) = slot.take() {
+            // `Session::close` returns `Result<_, TransportError>`;
+            // `From<TransportError> for DsdFp2Error` handles the
+            // first hop, and `From<DsdFp2Error> for ASCOMError`
+            // does the second on `?`.
+            session.close().await.map_err(DsdFp2Error::from)?;
+            debug!("FP2 device disconnected");
         }
         Ok(())
     }
@@ -164,7 +161,7 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(state.brightness.unwrap_or(0) as u32)
+        Ok(u32::from(state.brightness.unwrap_or(0)))
     }
 
     async fn max_brightness(&self) -> ASCOMResult<u32> {
@@ -180,13 +177,13 @@ impl CoverCalibrator for DsdFp2Device {
     }
 
     /// The FP2 firmware has no halt-motion opcode; once `[SMOV]` starts a
-    /// move it runs to completion. The ASCOM ICoverCalibratorV2 spec
+    /// move it runs to completion. The ASCOM `ICoverCalibratorV2` spec
     /// requires `HaltCover` to throw `MethodNotImplementedException`
     /// "if cover movement cannot be interrupted" — see
     /// <https://ascom-standards.org/newdocs/covercalibrator.html>. We
     /// honour that here.
     ///
-    /// **Known ConformU divergence.** ConformU 4.3 flags this as an
+    /// **Known `ConformU` divergence.** `ConformU` 4.3 flags this as an
     /// "issue" anyway because `CoverCalibratorTester.TestHaltCover` does
     /// not distinguish `MethodNotImplementedException` from other
     /// exceptions in its async-cover branch (it treats every exception
@@ -307,7 +304,7 @@ async fn execute_move(device: &DsdFp2Device, angle: u16) -> ASCOMResult<()> {
 }
 
 /// Derive `CoverStatus` from cached state.
-fn derive_cover_state(motor_running: Option<bool>, cover_raw: Option<i32>) -> CoverStatus {
+const fn derive_cover_state(motor_running: Option<bool>, cover_raw: Option<i32>) -> CoverStatus {
     match (motor_running, cover_raw) {
         (Some(true), _) => CoverStatus::Moving,
         (Some(false), Some(0)) => CoverStatus::Closed,
@@ -320,7 +317,7 @@ fn derive_cover_state(motor_running: Option<bool>, cover_raw: Option<i32>) -> Co
 /// Derive `CalibratorStatus` from cached state. There's no `On` variant in
 /// the ASCOM enum — `Ready` is what callers expect when the lamp is lit
 /// and stable, which the FP2 always is (no warm-up).
-fn derive_calibrator_state(light_on: Option<bool>) -> CalibratorStatus {
+const fn derive_calibrator_state(light_on: Option<bool>) -> CalibratorStatus {
     match light_on {
         Some(true) => CalibratorStatus::Ready,
         Some(false) => CalibratorStatus::Off,
@@ -382,7 +379,7 @@ mod mock_tests {
         Config {
             serial: SerialConfig {
                 port: "/dev/mock".to_string(),
-                polling_interval: Duration::from_secs(60),
+                polling_interval: Duration::from_mins(1),
                 ..Default::default()
             },
             server: AlpacaServerConfig::new(0),
@@ -496,7 +493,7 @@ mod mock_tests {
         let (device, _) = make_device();
         device.set_connected(true).await.unwrap();
         let err = device
-            .calibrator_on(MAX_BRIGHTNESS as u32 + 1)
+            .calibrator_on(u32::from(MAX_BRIGHTNESS) + 1)
             .await
             .unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
@@ -544,7 +541,7 @@ mod mock_tests {
         // Config default is MAX_BRIGHTNESS; the impl caps anyway.
         assert_eq!(
             device.max_brightness().await.unwrap(),
-            MAX_BRIGHTNESS as u32
+            u32::from(MAX_BRIGHTNESS)
         );
     }
 
@@ -749,7 +746,7 @@ mod mock_tests {
         assert_eq!(
             persisted
                 .pointer("/cover_calibrator/max_brightness")
-                .and_then(|v| v.as_u64()),
+                .and_then(serde_json::Value::as_u64),
             Some(2048)
         );
 

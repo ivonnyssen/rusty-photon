@@ -29,13 +29,13 @@ rusty_photon_driver::driver_error! {
 /// arm passes the inner error through verbatim. The `Transport(t)` arm routes
 /// through the macro-generated [`From<TransportError>`], and `SkipExhausted(n)`
 /// becomes a `Communication` variant.
-impl From<SessionError<DsdFp2Error>> for DsdFp2Error {
-    fn from(err: SessionError<DsdFp2Error>) -> Self {
+impl From<SessionError<Self>> for DsdFp2Error {
+    fn from(err: SessionError<Self>) -> Self {
         match err {
             SessionError::Codec(inner) => inner,
             SessionError::Transport(t) => t.into(),
             SessionError::SkipExhausted(n) => {
-                DsdFp2Error::Communication(format!("skip exhausted ({n} frames)"))
+                Self::Communication(format!("skip exhausted ({n} frames)"))
             }
         }
     }
@@ -51,50 +51,50 @@ mod tests {
     #[test]
     fn display_not_connected() {
         let err = DsdFp2Error::NotConnected;
-        assert_eq!(format!("{}", err), "not connected");
+        assert_eq!(format!("{err}"), "not connected");
     }
 
     #[test]
     fn display_serial_port() {
         let err = DsdFp2Error::SerialPort("no such device".to_string());
-        assert_eq!(format!("{}", err), "serial port error: no such device");
+        assert_eq!(format!("{err}"), "serial port error: no such device");
     }
 
     #[test]
     fn display_timeout() {
         let err = DsdFp2Error::Timeout("read timed out".to_string());
-        assert_eq!(format!("{}", err), "timeout: read timed out");
+        assert_eq!(format!("{err}"), "timeout: read timed out");
     }
 
     #[test]
     fn display_io() {
         let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe");
         let err = DsdFp2Error::Io(io);
-        assert_eq!(format!("{}", err), "io error: broken pipe");
+        assert_eq!(format!("{err}"), "io error: broken pipe");
     }
 
     #[test]
     fn display_malformed_response() {
         let err = DsdFp2Error::MalformedResponse("()".to_string());
-        assert_eq!(format!("{}", err), "malformed response: ()");
+        assert_eq!(format!("{err}"), "malformed response: ()");
     }
 
     #[test]
     fn display_invalid_value() {
         let err = DsdFp2Error::InvalidValue("brightness 9000".to_string());
-        assert_eq!(format!("{}", err), "invalid value: brightness 9000");
+        assert_eq!(format!("{err}"), "invalid value: brightness 9000");
     }
 
     #[test]
     fn display_communication() {
         let err = DsdFp2Error::Communication("link down".to_string());
-        assert_eq!(format!("{}", err), "device communication error: link down");
+        assert_eq!(format!("{err}"), "device communication error: link down");
     }
 
     #[test]
     fn display_handshake_failed() {
         let err = DsdFp2Error::HandshakeFailed("wrong board id".to_string());
-        assert_eq!(format!("{}", err), "handshake failed: wrong board id");
+        assert_eq!(format!("{err}"), "handshake failed: wrong board id");
     }
 
     #[test]
