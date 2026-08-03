@@ -43,8 +43,8 @@ async fn invoke_handler(
     );
 
     // Spawn the workflow in the background so we can acknowledge immediately
-    let wf_id = workflow_id.clone();
-    let mcp_url = mcp_server_url.clone();
+    let wf_id = workflow_id;
+    let mcp_url = mcp_server_url;
     let plan_clone = plan.clone();
 
     tokio::spawn(async move {
@@ -80,7 +80,7 @@ async fn invoke_handler(
     let estimated = plan
         .initial_duration
         .saturating_mul(total_frames)
-        .saturating_add(std::time::Duration::from_secs(60));
+        .saturating_add(std::time::Duration::from_mins(1));
 
     let ack = serde_json::json!({
         "estimated_duration": humantime::format_duration(estimated).to_string(),
@@ -97,7 +97,7 @@ async fn post_completion(
     plan: &FlatPlan,
 ) {
     let base_url = mcp_server_url.trim_end_matches("/mcp");
-    let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
+    let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
 
     let filters: Vec<Value> = result
         .filters_completed
@@ -127,7 +127,7 @@ async fn post_completion(
 
 async fn post_failure(mcp_server_url: &str, workflow_id: &str, error: &str, plan: &FlatPlan) {
     let base_url = mcp_server_url.trim_end_matches("/mcp");
-    let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
+    let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
 
     let body = serde_json::json!({
         "status": "error",
