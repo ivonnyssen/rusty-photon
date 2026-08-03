@@ -1030,10 +1030,11 @@ mod tests {
 
     #[tokio::test]
     async fn is_healthy_returns_false_when_connection_refused() {
-        // Port 1 is reserved (root-only bind) and never listening: connection
-        // refused by construction. A bind-then-drop ephemeral port raced the
-        // rest of the suite — another test could re-bind it in the window and
-        // answer the probe.
+        // Port 1 (tcpmux) sits outside every OS's dynamic port range and is
+        // privileged on Unix, so no test process can occupy it and nothing
+        // on a CI or dev host listens there — the connect reliably refuses.
+        // A bind-then-drop ephemeral port raced the rest of the suite —
+        // another test could re-bind it in the window and answer the probe.
         assert!(!OmniSimProcess::is_healthy("http://127.0.0.1:1").await);
     }
 

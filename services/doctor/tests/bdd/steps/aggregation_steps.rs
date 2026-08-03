@@ -197,9 +197,10 @@ fn config_at_stub_with_auth(world: &mut DoctorWorld, file: String) {
 
 #[given(expr = "a config file {string} declaring a port nothing listens on")]
 fn config_at_dead_port(world: &mut DoctorWorld, file: String) {
-    // Port 1 is reserved (root-only bind on Unix, outside every OS's
-    // dynamic port range) and never listening: connection refused by
-    // construction. Binding an ephemeral port and dropping it raced the
+    // Port 1 (tcpmux) sits outside every OS's dynamic port range and is
+    // privileged on Unix, so no test process here can occupy it and
+    // nothing on a CI or dev host listens there — the probe reliably gets
+    // a refusal. Binding an ephemeral port and dropping it raced the
     // other suites — under high test parallelism another suite's port-0
     // server re-bound the freed port and answered the probe, which is an
     // answer, not "does not answer".
