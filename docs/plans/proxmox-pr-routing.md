@@ -20,8 +20,8 @@ the full layered contract and its rationale.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| R1 | Isolation + credential hardening: runner VLAN (router + VLAN-aware bridge + tagged template NIC), write credential removed from runner `.env`, fencing verified by dispatch job | Planned | — |
-| R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc + ADR updates | Planned | — |
+| R1 | Isolation + credential hardening: runner VLAN (router + tagged template NIC), write credential removed from runner `.env`, fencing verified by dispatch job | **Done** (2026-08-02: probe matrix from inside a clone — GitHub + cache:8080 reachable, all other RFC1918 dropped; acceptance dispatch green through the fence) | infra only |
+| R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc updates | In progress | — |
 | R3 | Windows runner template: one-job service, sysprep'd template, orchestrator second pool slot, validation dispatch job, msi compile timing measurement | Planned | — |
 | R4 | Route Windows: `bazel / windows-latest` + msi `build-verify` via the same expression, Windows kill switch | Planned | — |
 
