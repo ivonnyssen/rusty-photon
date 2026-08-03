@@ -216,7 +216,7 @@ impl CloudflareDnsProvider {
         // would walk only impossible candidates — reject it before any
         // API query, and likewise a single-label domain, which no
         // registrable zone (two labels minimum) can contain.
-        if domain.split('.').any(|label| label.is_empty()) {
+        if domain.split('.').any(str::is_empty) {
             return Err(TlsError::Config(format!(
                 "domain '{domain}' is malformed: a leading, trailing, or doubled dot \
                  produces an empty label, which can never match a Cloudflare zone name"
@@ -314,6 +314,7 @@ pub struct ChalltestsrvDnsProvider {
 
 #[cfg(feature = "mock")]
 impl ChalltestsrvDnsProvider {
+    #[must_use]
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),

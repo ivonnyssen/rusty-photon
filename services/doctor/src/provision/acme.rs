@@ -33,7 +33,7 @@ pub trait AcmeClient: Send + Sync {
     ) -> Result<Option<String>>;
 
     /// Run the full ACME order flow for a wildcard domain:
-    /// create order, solve DNS-01 challenges, finalize, return (cert_pem, key_pem).
+    /// create order, solve DNS-01 challenges, finalize, return (`cert_pem`, `key_pem`).
     ///
     /// Must be called after `create_or_load_account`.
     async fn order_certificate(&self, domain: String) -> Result<(String, String)>;

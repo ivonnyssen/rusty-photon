@@ -32,11 +32,13 @@ pub const CREDENTIAL_USERNAME: &str = "observatory";
 const CREDENTIAL_LENGTH: usize = 32;
 
 /// The pki tree under the resolved config root.
+#[must_use]
 pub fn pki_dir(config_dir: &Path) -> PathBuf {
     config_dir.join("pki")
 }
 
 /// The canonical plaintext credential copy.
+#[must_use]
 pub fn credential_path(config_dir: &Path) -> PathBuf {
     pki_dir(config_dir).join("credential")
 }
@@ -50,6 +52,7 @@ fn service_key_path(pki: &Path, service: &str) -> PathBuf {
 }
 
 /// The `server.tls` block value pointing a service at its issued pair.
+#[must_use]
 pub fn tls_block_value(config_dir: &Path, service: &str) -> serde_json::Value {
     let pki = absolute_pki_dir(config_dir);
     json!({
@@ -65,6 +68,7 @@ pub fn tls_block_value(config_dir: &Path, service: &str) -> serde_json::Value {
 /// reqwest trust configuration cannot verify self-signed and
 /// publicly-trusted targets at once, so one self-signed newcomer would be
 /// unreachable by every already-flipped client.
+#[must_use]
 pub fn acme_active(config_dir: &Path) -> bool {
     config_dir.join("acme.json").is_file()
 }
@@ -74,6 +78,7 @@ pub fn acme_active(config_dir: &Path) -> bool {
 /// `None` until both halves exist: `--fix` never wires paths that are not
 /// there, and conjuring the pair is `tls issue --acme`'s (and renewal's)
 /// job, never `--fix`'s.
+#[must_use]
 pub fn acme_tls_block_value(config_dir: &Path) -> Option<serde_json::Value> {
     let pki = absolute_pki_dir(config_dir);
     let cert = acme_config::acme_cert_path(&pki);
@@ -88,6 +93,7 @@ pub fn acme_tls_block_value(config_dir: &Path) -> Option<serde_json::Value> {
 
 /// The pki dir as an absolute path, so config-written paths stay valid
 /// whatever directory a service later starts from.
+#[must_use]
 pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
     std::path::absolute(pki_dir(config_dir)).unwrap_or_else(|_| pki_dir(config_dir))
 }
@@ -187,6 +193,7 @@ pub struct PkiOwnership {
 /// config root doctor cannot stat. An entry doctor cannot stat is not
 /// reported: its ownership is unproven, not wrong.
 #[cfg(unix)]
+#[must_use]
 pub fn pki_ownership(config_dir: &Path) -> Option<PkiOwnership> {
     use std::os::unix::fs::MetadataExt;
     let root_meta = std::fs::metadata(config_dir).ok()?;
@@ -358,6 +365,7 @@ pub fn ensure_material(
 }
 
 /// The credential plaintext from the canonical pki copy, when present.
+#[must_use]
 pub fn read_credential(config_dir: &Path) -> Option<String> {
     let content = std::fs::read_to_string(credential_path(config_dir)).ok()?;
     let trimmed = content.trim();
@@ -460,6 +468,7 @@ const CLIENT_WIRING: &[ClientWiring] = &[
 /// needs. Present (non-null) blocks are operator intent and get no op.
 /// Empty when the service has no usable config or the material is not
 /// there to point at.
+#[must_use]
 pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
     CLIENT_WIRING
         .iter()
@@ -622,7 +631,7 @@ mod tests {
     use super::*;
 
     fn services(names: &[&str]) -> Vec<String> {
-        names.iter().map(|s| s.to_string()).collect()
+        names.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[cfg(unix)]
@@ -801,16 +810,13 @@ mod tests {
         let file = dir.path().join("ca-key.pem");
         std::fs::write(&file, "key material").unwrap();
         const NOBODY: u32 = 65534;
-        match align_entry(&file, NOBODY, NOBODY) {
-            Err(problem) => {
-                assert!(problem.contains("ca-key.pem"), "{problem}");
-                assert!(problem.contains("could not chown"), "{problem}");
-            }
-            Ok(()) => {
-                use std::os::unix::fs::MetadataExt;
-                let meta = std::fs::metadata(&file).unwrap();
-                assert_eq!(meta.uid(), NOBODY, "a privileged run must have chowned it");
-            }
+        if let Err(problem) = align_entry(&file, NOBODY, NOBODY) {
+            assert!(problem.contains("ca-key.pem"), "{problem}");
+            assert!(problem.contains("could not chown"), "{problem}");
+        } else {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&file).unwrap();
+            assert_eq!(meta.uid(), NOBODY, "a privileged run must have chowned it");
         }
     }
 

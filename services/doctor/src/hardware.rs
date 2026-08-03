@@ -22,7 +22,7 @@ pub const SERVICE_USER: &str = "rusty-photon";
 
 /// The qhy firmware helper's three artifacts — its own idempotency gate,
 /// mirrored here (`services/qhy-camera/pkg/rusty-photon-qhy-firmware-install`;
-/// tests/tree_parity.rs asserts the paths against the script). Any subset
+/// `tests/tree_parity.rs` asserts the paths against the script). Any subset
 /// is a partial install that must re-converge, so the check wants all
 /// three.
 pub const QHY_FIRMWARE_ARTIFACTS: [(&str, PathKind); 3] = [
@@ -35,6 +35,7 @@ const QHY_FIRMWARE_HELPER: &str = "/usr/sbin/rusty-photon-qhy-firmware-install";
 
 /// What the hardware gatherer should probe, derived from the catalog and
 /// the scanned configs — the checks then judge exactly these answers.
+#[must_use]
 pub fn probe_request(scans: &[ServiceScan], facts: &PlatformFacts) -> ProbeRequest {
     let mut req = ProbeRequest {
         service_user: SERVICE_USER.to_string(),
@@ -81,6 +82,7 @@ fn rp_data_directory(scans: &[ServiceScan]) -> Option<String> {
 /// Run the family. No hardware facts (a staged scenario without a
 /// `hardware` object) means no hardware story to judge — the family is
 /// skipped, never probed underneath a mock.
+#[must_use]
 pub fn checks(ctx: &Context) -> Vec<Check> {
     let Some(hw) = &ctx.hardware else {
         return Vec::new();
@@ -235,7 +237,7 @@ fn serial_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &m
     }
 }
 
-/// Will the service user's open() succeed? Linux, packaged mode — the
+/// Will the service user's `open()` succeed? Linux, packaged mode — the
 /// judgment needs the unit's `SupplementaryGroups=` and the service user,
 /// neither of which exists on a dev checkout. The verdict models what the
 /// kernel grants: the union of the unit's groups and the account's own
@@ -287,8 +289,7 @@ fn serial_access(
                  account-level{} membership — the unit declares no matching \
                  SupplementaryGroups= entry",
                 hw.group_name(node.gid)
-                    .map(|g| format!(" {g} group"))
-                    .unwrap_or_else(|| " group".to_string()),
+                    .map_or_else(|| " group".to_string(), |g| format!(" {g} group")),
             )
         };
         checks.push(Check::ok("hardware.serial-access", svc(scan), detail));

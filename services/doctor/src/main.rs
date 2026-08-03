@@ -26,7 +26,7 @@ struct Cli {
     /// the services themselves use. Scopes the pki tree too.
     #[arg(long, global = true)]
     config_dir: Option<PathBuf>,
-    /// Emit the DoctorReport JSON instead of the human-readable report.
+    /// Emit the `DoctorReport` JSON instead of the human-readable report.
     #[arg(long, global = true)]
     json: bool,
     /// Apply the machine-applicable fixes and the provisioning pass
@@ -68,7 +68,7 @@ enum TlsCommand {
     /// (never the CA itself), and re-order the ACME wildcard pair when
     /// acme.json exists and the pair is missing or due. A no-op otherwise.
     /// `<config-root>/renew.env` (KEY=VALUE per line), if present, is
-    /// parsed first as a fallback so `$VAR`-indirected dns_credentials can
+    /// parsed first as a fallback so `$VAR`-indirected `dns_credentials` can
     /// resolve on an unattended run.
     Renew {
         /// Ignore the renewal windows and renew everything both legs own.
@@ -278,13 +278,8 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
     };
 
     if cli.json {
-        let report = Report::new(
-            env!("CARGO_PKG_VERSION"),
-            ctx.mode,
-            config_dir.clone(),
-            Vec::new(),
-        )
-        .with_fixes_applied(applied);
+        let report = Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, config_dir, Vec::new())
+            .with_fixes_applied(applied);
         if let Err(code) = print_json(&report) {
             return code;
         }
@@ -348,13 +343,8 @@ fn run_tls_renew(cli: &Cli, force: bool) -> ExitCode {
         eprintln!("doctor: warning: {warning}");
     }
     if cli.json {
-        let report = Report::new(
-            env!("CARGO_PKG_VERSION"),
-            ctx.mode,
-            config_dir.clone(),
-            Vec::new(),
-        )
-        .with_fixes_applied(applied);
+        let report = Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, config_dir, Vec::new())
+            .with_fixes_applied(applied);
         if let Err(code) = print_json(&report) {
             return code;
         }
@@ -413,13 +403,8 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     }
 
     if cli.json {
-        let report = Report::new(
-            env!("CARGO_PKG_VERSION"),
-            ctx.mode,
-            config_dir.clone(),
-            Vec::new(),
-        )
-        .with_fixes_applied(applied);
+        let report = Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, config_dir, Vec::new())
+            .with_fixes_applied(applied);
         if let Err(code) = print_json(&report) {
             return code;
         }

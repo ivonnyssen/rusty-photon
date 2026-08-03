@@ -209,7 +209,7 @@ impl DoctorWorld {
                 .write(true)
                 .open(path)
                 .expect("reopen for backdating");
-            file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_hours(1))
                 .expect("backdate mtime");
         }
         self.snapshot_pki();
@@ -409,7 +409,7 @@ impl DoctorWorld {
             .into_owned()
     }
 
-    pub fn report(&self) -> &serde_json::Value {
+    pub const fn report(&self) -> &serde_json::Value {
         self.report.as_ref().expect("run doctor with --json first")
     }
 

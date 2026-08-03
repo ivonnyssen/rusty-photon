@@ -41,11 +41,13 @@ pub struct CatalogEntry {
 impl CatalogEntry {
     /// The platform-neutral unit stem: `rusty-photon-<name>` names the
     /// systemd unit, the Windows service, and the brew formula alike.
+    #[must_use]
     pub fn unit_name(&self) -> String {
         format!("rusty-photon-{}", self.name)
     }
 
     /// The config file name inside the config directory.
+    #[must_use]
     pub fn config_file(&self) -> String {
         format!("{}.json", self.name)
     }
@@ -182,22 +184,26 @@ pub static UDEV_RULES: &[UdevRule] = &[
 ];
 
 /// The shipped udev rule of one service, when it ships one.
+#[must_use]
 pub fn udev_rule_for(service: &str) -> Option<&'static UdevRule> {
     UDEV_RULES.iter().find(|r| r.service == service)
 }
 
 /// Every packaged service, alphabetical.
+#[must_use]
 pub fn catalog() -> &'static [CatalogEntry] {
     &CATALOG
 }
 
 /// Look up a service by name.
+#[must_use]
 pub fn entry(name: &str) -> Option<&'static CatalogEntry> {
     catalog().iter().find(|e| e.name == name)
 }
 
 /// Look up a service by its `rusty-photon-<name>` unit stem (with or
 /// without a `.service` suffix).
+#[must_use]
 pub fn entry_for_unit(unit: &str) -> Option<&'static CatalogEntry> {
     let stem = unit.strip_suffix(".service").unwrap_or(unit);
     let name = stem.strip_prefix("rusty-photon-")?;
