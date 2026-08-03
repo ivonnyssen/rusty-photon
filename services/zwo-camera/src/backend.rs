@@ -139,7 +139,7 @@ pub struct ZwoCameraHandle {
 impl ZwoCameraHandle {
     /// Build a handle for the camera at enumeration `index`, with its cached
     /// [`CameraInfo`] and the serial-derived `unique_id` read at enumeration.
-    pub fn new(sdk: zwo_rs::Sdk, index: usize, info: CameraInfo, unique_id: String) -> Self {
+    pub const fn new(sdk: zwo_rs::Sdk, index: usize, info: CameraInfo, unique_id: String) -> Self {
         Self {
             sdk,
             index,
@@ -418,7 +418,7 @@ pub(crate) mod mock {
     use std::sync::atomic::AtomicBool;
 
     /// Build the `ASI2600MM-Pro-Simulated` control set (Gain, Exposure, Offset,
-    /// Temperature, CoolerOn, TargetTemp), mirroring `zwo-rs`'s `sim_control_caps`.
+    /// Temperature, `CoolerOn`, `TargetTemp`), mirroring `zwo-rs`'s `sim_control_caps`.
     fn default_caps() -> Vec<ControlCaps> {
         let cap = |name: &str, control_type, min, max, default, is_writable| ControlCaps {
             name: name.to_string(),
@@ -474,7 +474,7 @@ pub(crate) mod mock {
     }
 
     #[derive(Debug)]
-    pub(crate) struct MockCameraHandle {
+    pub struct MockCameraHandle {
         info: CameraInfo,
         caps: Vec<ControlCaps>,
         open: AtomicBool,

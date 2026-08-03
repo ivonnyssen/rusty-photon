@@ -102,7 +102,7 @@ impl ServerBuilder {
     /// Register no cameras regardless of what the SDK reports — the test-only
     /// empty-backend path exercising the zero-camera startup (contract C0).
     #[must_use]
-    pub fn with_empty(mut self, empty: bool) -> Self {
+    pub const fn with_empty(mut self, empty: bool) -> Self {
         self.force_empty = empty;
         self
     }
@@ -127,7 +127,7 @@ impl ServerBuilder {
         }
 
         let mut server = Server::new(CargoServerInfo!());
-        for cam in cameras.iter() {
+        for cam in &cameras {
             let handle: Arc<dyn CameraHandle> = Arc::new(ZwoCameraHandle::new(
                 zwo_rs::Sdk::new()?,
                 cam.index,
@@ -230,7 +230,7 @@ pub struct BoundServer {
 impl BoundServer {
     /// The address the listener is bound to (useful when the port was `0`).
     #[must_use]
-    pub fn local_addr(&self) -> SocketAddr {
+    pub const fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -250,15 +250,12 @@ impl BoundServer {
             discovery,
         } = self;
         let serve = async {
-            let result = match tls {
-                Some(ref tls_config) => {
-                    debug!("serving over TLS");
-                    rusty_photon_tls::server::serve_tls(listener, app, tls_config, shutdown).await
-                }
-                None => {
-                    debug!("serving plain HTTP");
-                    rusty_photon_tls::server::serve_plain(listener, app, shutdown).await
-                }
+            let result = if let Some(ref tls_config) = tls {
+                debug!("serving over TLS");
+                rusty_photon_tls::server::serve_tls(listener, app, tls_config, shutdown).await
+            } else {
+                debug!("serving plain HTTP");
+                rusty_photon_tls::server::serve_plain(listener, app, shutdown).await
             };
             result.map_err(|e| ZwoCameraError::Server(e.to_string()))
         };
@@ -380,8 +377,8 @@ mod simulation_tests {
     }
 
     /// `devices` overrides are keyed by the bare SDK serial, not the prefixed
-    /// `ZWO:{name}:{serial}` UniqueID. The simulated camera's serial resolves an
-    /// override entry; the UniqueID does not.
+    /// `ZWO:{name}:{serial}` `UniqueID`. The simulated camera's serial resolves an
+    /// override entry; the `UniqueID` does not.
     #[tokio::test]
     async fn device_overrides_are_keyed_by_serial_not_unique_id() {
         let cam = &enumerate_cameras().await.unwrap()[0];
