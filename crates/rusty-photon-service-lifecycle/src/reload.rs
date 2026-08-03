@@ -29,6 +29,7 @@ impl ReloadSignal {
     /// service's run loop with synthetic reload events, and for callers
     /// that want a reload source not tied to OS signals (e.g. a file
     /// watcher feeding the same primitive).
+    #[must_use]
     pub fn new() -> Self {
         Self {
             notify: Arc::new(Notify::new()),

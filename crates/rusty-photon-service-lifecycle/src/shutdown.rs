@@ -17,12 +17,13 @@ pub struct Shutdown {
 
 impl Shutdown {
     #[allow(dead_code)] // wired up by the runner in Phase 1 impl
-    pub(crate) fn from_token(token: CancellationToken) -> Self {
+    pub(crate) const fn from_token(token: CancellationToken) -> Self {
         Self { token }
     }
 
     /// Clone of the underlying [`CancellationToken`] for handing to
     /// subtasks or APIs that take a token directly.
+    #[must_use]
     pub fn token(&self) -> CancellationToken {
         self.token.clone()
     }
@@ -41,6 +42,7 @@ impl Shutdown {
     }
 
     /// Returns `true` if shutdown has already been requested.
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }

@@ -110,7 +110,7 @@ pub struct TracingGuard {
 
 impl TracingGuard {
     /// Guard for the console path: nothing to flush.
-    fn inert() -> Self {
+    const fn inert() -> Self {
         Self {
             #[cfg(feature = "scm")]
             _worker: None,
@@ -185,7 +185,7 @@ mod scm_file {
         }
     }
 
-    /// The service log directory under a ProgramData root:
+    /// The service log directory under a `ProgramData` root:
     /// `<program_data>\rusty-photon\logs`.
     fn log_dir_under(program_data: &Path) -> PathBuf {
         program_data.join("rusty-photon").join("logs")
@@ -225,7 +225,7 @@ mod scm_file {
     /// composition as [`init_tracing`], with the fmt layer writing to the
     /// rolling file (ANSI off — these are plain-text log files). Falls back
     /// to the stderr subscriber if the log file cannot be opened, so a
-    /// mis-ACLed ProgramData never blocks service startup. Idempotent like
+    /// mis-ACLed `ProgramData` never blocks service startup. Idempotent like
     /// [`init_tracing`]: a redundant call keeps the already-installed
     /// subscriber and returns an inert guard (see [`guard_for`]).
     pub(super) fn init(
