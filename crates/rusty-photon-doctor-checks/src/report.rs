@@ -51,7 +51,7 @@ pub enum Status {
 /// one service's config file. Primitive ops keep the schema
 /// forward-parseable — an aggregator that does not recognize a newer op
 /// simply cannot apply it, instead of misparsing the check.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum FixOp {
     SetNumber {
@@ -102,17 +102,17 @@ impl FixOp {
     /// The service whose config file (or certificate) this op targets
     /// (`None` for host-wide provisioning actions and ops from a newer
     /// binary).
+    #[must_use]
     pub fn service(&self) -> Option<&str> {
         match self {
-            FixOp::SetNumber { service, .. }
-            | FixOp::SetString { service, .. }
-            | FixOp::SetObject { service, .. }
-            | FixOp::RemoveKey { service, .. }
-            | FixOp::GenerateCert { service } => Some(service),
-            FixOp::GenerateCa
-            | FixOp::MintCredential
-            | FixOp::RenewAcme { .. }
-            | FixOp::Unknown => None,
+            Self::SetNumber { service, .. }
+            | Self::SetString { service, .. }
+            | Self::SetObject { service, .. }
+            | Self::RemoveKey { service, .. }
+            | Self::GenerateCert { service } => Some(service),
+            Self::GenerateCa | Self::MintCredential | Self::RenewAcme { .. } | Self::Unknown => {
+                None
+            }
         }
     }
 }
@@ -120,35 +120,35 @@ impl FixOp {
 impl std::fmt::Display for FixOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FixOp::SetNumber {
+            Self::SetNumber {
                 service,
                 pointer,
                 value,
             } => write!(f, "{service}.json: set {pointer} to {value}"),
-            FixOp::SetString {
+            Self::SetString {
                 service,
                 pointer,
                 value,
             } => write!(f, "{service}.json: set {pointer} to \"{value}\""),
             // The value may carry credential material (a password hash, the
             // client plaintext), so only the pointer is printed.
-            FixOp::SetObject {
+            Self::SetObject {
                 service, pointer, ..
             } => write!(f, "{service}.json: set {pointer}"),
-            FixOp::RemoveKey { service, pointer } => {
+            Self::RemoveKey { service, pointer } => {
                 write!(f, "{service}.json: remove {pointer}")
             }
-            FixOp::GenerateCa => write!(f, "pki: generated the CA certificate and key"),
-            FixOp::GenerateCert { service } => {
+            Self::GenerateCa => write!(f, "pki: generated the CA certificate and key"),
+            Self::GenerateCert { service } => {
                 write!(f, "pki: issued a certificate pair for {service}")
             }
-            FixOp::MintCredential => {
+            Self::MintCredential => {
                 write!(f, "pki: minted the observatory credential")
             }
-            FixOp::RenewAcme { domain } => {
+            Self::RenewAcme { domain } => {
                 write!(f, "pki: renewed the ACME wildcard pair for *.{domain}")
             }
-            FixOp::Unknown => write!(f, "an operation this doctor build does not know"),
+            Self::Unknown => write!(f, "an operation this doctor build does not know"),
         }
     }
 }
@@ -163,7 +163,7 @@ pub struct AppliedFix {
     pub op: FixOp,
 }
 
-fn unknown_fix_op() -> FixOp {
+const fn unknown_fix_op() -> FixOp {
     FixOp::Unknown
 }
 
@@ -228,6 +228,7 @@ impl Check {
     }
 
     /// Attach a machine-applicable fix plan.
+    #[must_use]
     pub fn with_fixes(mut self, fixes: Vec<FixOp>) -> Self {
         self.fixes = fixes;
         self
@@ -266,6 +267,7 @@ impl Report {
     /// A central-doctor report. `version` is the emitting binary's own
     /// `CARGO_PKG_VERSION` — a parameter, not an `env!` here, because this
     /// crate's version is not the binary's.
+    #[must_use]
     pub fn new(version: &str, mode: Mode, config_dir: PathBuf, checks: Vec<Check>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -280,6 +282,7 @@ impl Report {
 
     /// A per-service report (`mode: service`), self-identified by the
     /// emitting service's catalog name.
+    #[must_use]
     pub fn for_service(
         version: &str,
         service: &str,
@@ -293,6 +296,7 @@ impl Report {
     }
 
     /// Record what a `--fix` run wrote.
+    #[must_use]
     pub fn with_fixes_applied(mut self, fixes_applied: Vec<AppliedFix>) -> Self {
         self.fixes_applied = fixes_applied;
         self
@@ -303,6 +307,7 @@ impl Report {
     /// aggregating a newer binary's report, and treating an unrecognized
     /// outcome as clean would let the exit code disagree with the rendered
     /// report.
+    #[must_use]
     pub fn has_failures(&self) -> bool {
         self.checks
             .iter()

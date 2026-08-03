@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 
 use crate::report::{Mode, Report, Status};
 
+#[must_use]
 pub fn render(report: &Report) -> String {
     let mut out = String::new();
     let central_mode = match report.mode {

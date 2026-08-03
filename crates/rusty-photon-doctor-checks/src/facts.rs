@@ -99,6 +99,7 @@ impl HardwareFacts {
     /// Whether any present USB device matches the given identity: vendor,
     /// plus product when asked, plus `model` as a product-string substring
     /// when asked.
+    #[must_use]
     pub fn usb_present(&self, vendor: &str, product: Option<&str>, model: Option<&str>) -> bool {
         self.usb.iter().any(|d| {
             d.vendor == vendor
@@ -109,6 +110,7 @@ impl HardwareFacts {
 
     /// The group name behind a gid, when the gid belongs to a gathered
     /// group — for diagnostics ("the node is group-owned by `dialout`").
+    #[must_use]
     pub fn group_name(&self, gid: u32) -> Option<&str> {
         self.groups
             .iter()
@@ -139,6 +141,7 @@ pub struct ProbeRequest {
 /// Gather hardware facts from the running host, read-only. Probe failures
 /// degrade to absence with a `debug!` trail — "not there" is a legitimate
 /// answer, not an error.
+#[must_use]
 pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     let mut facts = HardwareFacts::default();
     for path in &req.paths {
