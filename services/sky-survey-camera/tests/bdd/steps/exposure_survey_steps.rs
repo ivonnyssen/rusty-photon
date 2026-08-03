@@ -94,9 +94,10 @@ async fn start_exposure_dark(world: &mut SkySurveyCameraWorld) {
 
 #[then(expr = "the resulting image has dimensions {int} by {int}")]
 async fn image_dimensions(world: &mut SkySurveyCameraWorld, w: u32, h: u32) {
-    if !world.wait_for_image_ready(Duration::from_secs(10)).await {
-        panic!("image never became ready within 10s");
-    }
+    assert!(
+        world.wait_for_image_ready(Duration::from_secs(10)).await,
+        "image never became ready within 10s"
+    );
     let (actual_w, actual_h) = world.get_image_dimensions().await;
     assert_eq!(
         (actual_w, actual_h),
@@ -107,9 +108,10 @@ async fn image_dimensions(world: &mut SkySurveyCameraWorld, w: u32, h: u32) {
 
 #[then("every pixel of the resulting image is zero")]
 async fn image_all_zero(world: &mut SkySurveyCameraWorld) {
-    if !world.wait_for_image_ready(Duration::from_secs(10)).await {
-        panic!("image never became ready within 10s");
-    }
+    assert!(
+        world.wait_for_image_ready(Duration::from_secs(10)).await,
+        "image never became ready within 10s"
+    );
     world.assert_image_all_zero().await;
 }
 
@@ -133,15 +135,16 @@ async fn exposure_fails_unspecified(world: &mut SkySurveyCameraWorld) {
         let body: serde_json::Value = response.json().await.expect("response not JSON");
         let err = body
             .get("ErrorNumber")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32;
         if err == 0x500 {
             world.last_ascom_error = Some(err);
             return;
         }
-        if err != 0 && err != 0x40B {
-            panic!("expected ASCOM UNSPECIFIED_ERROR (0x500), got {err:#X}");
-        }
+        assert!(
+            !(err != 0 && err != 0x40B),
+            "expected ASCOM UNSPECIFIED_ERROR (0x500), got {err:#X}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("exposure never failed with UNSPECIFIED_ERROR within {deadline:?}");

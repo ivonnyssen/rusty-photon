@@ -1,9 +1,9 @@
-//! ConformU compliance tests for sky-survey-camera.
+//! `ConformU` compliance tests for sky-survey-camera.
 //!
-//! Verifies ICameraV3 conformance against the simulator running with
-//! the configured SkyView endpoint pointed at an in-process stub HTTP
+//! Verifies `ICameraV3` conformance against the simulator running with
+//! the configured `SkyView` endpoint pointed at an in-process stub HTTP
 //! server. The stub serves a minimal FITS payload synthesised by
-//! [`MockSurveyClient`]'s helper so ConformU can drive
+//! [`MockSurveyClient`]'s helper so `ConformU` can drive
 //! `StartExposure` / `ImageArray` end-to-end without touching NASA.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]

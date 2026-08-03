@@ -28,7 +28,7 @@ pub struct Config {
 pub struct DeviceConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Omitting it in the config file loads as an
-    /// empty string here; `run` then mints a spec-compliant UUIDv4 via
+    /// empty string here; `run` then mints a spec-compliant `UUIDv4` via
     /// [`rusty_photon_config::materialize_identity`] and persists it
     /// (`/device/unique_id`), so the next load reads the stable id.
     /// There is no `Config::default()` — optics fields are mandatory,
@@ -78,11 +78,11 @@ pub struct TelescopeFollowConfig {
     pub alpaca_url: String,
     #[serde(default)]
     pub device_number: u32,
-    /// Constant offset added to mount RA before the SkyView request.
+    /// Constant offset added to mount RA before the `SkyView` request.
     /// Phase 2 keeps this at the default `0.0`; Phase 3 uses it.
     #[serde(default)]
     pub offset_ra_arcsec: f64,
-    /// Constant offset added to mount Dec before the SkyView request.
+    /// Constant offset added to mount Dec before the `SkyView` request.
     #[serde(default)]
     pub offset_dec_arcsec: f64,
     /// Per-read timeout on `right_ascension` / `declination` against
@@ -98,7 +98,7 @@ pub struct TelescopeFollowConfig {
     pub auth: Option<ClientAuthConfig>,
 }
 
-fn default_telescope_request_timeout() -> Duration {
+const fn default_telescope_request_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
@@ -122,7 +122,7 @@ pub struct RotatorFollowConfig {
     pub auth: Option<ClientAuthConfig>,
 }
 
-fn default_rotator_request_timeout() -> Duration {
+const fn default_rotator_request_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
@@ -135,7 +135,7 @@ pub struct SurveyConfig {
     pub request_timeout: Duration,
     #[schemars(with = "String")]
     pub cache_dir: PathBuf,
-    /// Base URL the SurveyClient hits. Defaults to NASA SkyView; tests
+    /// Base URL the `SurveyClient` hits. Defaults to NASA `SkyView`; tests
     /// override it with a stub server.
     #[serde(default = "default_survey_endpoint")]
     pub endpoint: String,

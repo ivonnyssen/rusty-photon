@@ -1,4 +1,4 @@
-//! NASA SkyView HTTP backend + thin disk cache for the v0 simulator.
+//! NASA `SkyView` HTTP backend + thin disk cache for the v0 simulator.
 //!
 //! The cache key is a `DefaultHasher`-derived hex string over the
 //! `SurveyRequest` fields; that is non-cryptographic and not stable
@@ -64,6 +64,7 @@ impl SurveyRequest {
     /// Rust versions (`DefaultHasher` is documented as such). The
     /// cache is local-only and operators clear `cache_dir` manually,
     /// so cross-version stability is not a requirement.
+    #[must_use]
     pub fn cache_key(&self) -> String {
         let mut h = DefaultHasher::new();
         self.survey.hash(&mut h);

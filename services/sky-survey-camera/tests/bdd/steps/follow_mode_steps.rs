@@ -37,7 +37,7 @@ fn rotator_updated(world: &mut SkySurveyCameraWorld, position_angle: f64) {
 }
 
 #[given("the camera is configured to follow that mount")]
-fn follow_with_zero_offset(_world: &mut SkySurveyCameraWorld) {
+const fn follow_with_zero_offset(_world: &mut SkySurveyCameraWorld) {
     // `spawn_mount_stub` already set `telescope_endpoint_override`,
     // and the world's offset fields default to 0.0. This step exists
     // to make follow-mode wiring explicit in the feature file.
@@ -46,7 +46,7 @@ fn follow_with_zero_offset(_world: &mut SkySurveyCameraWorld) {
 #[given(
     expr = "the camera is configured to follow that mount with offset RA {float} arcsec and Dec {float} arcsec"
 )]
-fn follow_with_offset(world: &mut SkySurveyCameraWorld, ra_arcsec: f64, dec_arcsec: f64) {
+const fn follow_with_offset(world: &mut SkySurveyCameraWorld, ra_arcsec: f64, dec_arcsec: f64) {
     world.telescope_offset_ra_arcsec = ra_arcsec;
     world.telescope_offset_dec_arcsec = dec_arcsec;
 }
@@ -150,8 +150,7 @@ async fn drive_exposure_then_get_position(world: &mut SkySurveyCameraWorld) -> V
         .expect("failed to read GET position body");
     assert!(
         status.is_success(),
-        "GET /sky-survey/position returned {} (body: {body_text})",
-        status
+        "GET /sky-survey/position returned {status} (body: {body_text})"
     );
     serde_json::from_str(&body_text)
         .unwrap_or_else(|e| panic!("position body not JSON: {e} (body: {body_text})"))

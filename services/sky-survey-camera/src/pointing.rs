@@ -14,6 +14,7 @@ pub struct PointingState {
 }
 
 impl PointingState {
+    #[must_use]
     pub fn new(ra_deg: f64, dec_deg: f64, rotation_deg: f64) -> Self {
         Self {
             ra_deg,
@@ -73,6 +74,7 @@ pub struct SharedPointing {
 }
 
 impl SharedPointing {
+    #[must_use]
     pub fn new(initial: PointingState) -> Self {
         Self {
             state: RwLock::new(initial),
@@ -190,7 +192,9 @@ impl TelescopeFollow {
         // because reaching ±90 on top of a sane mount usually means
         // the offset is misconfigured.
         let ra_deg = raw_ra_deg.rem_euclid(360.0);
-        let dec_deg = if !(-90.0..=90.0).contains(&raw_dec_deg) {
+        let dec_deg = if (-90.0..=90.0).contains(&raw_dec_deg) {
+            raw_dec_deg
+        } else {
             warn!(
                 offset_dec_arcsec = self.offset_dec_arcsec,
                 mount_dec_deg = pos.dec_deg,
@@ -198,8 +202,6 @@ impl TelescopeFollow {
                 "follow-mode Dec offset pushed past ±90°; clamping"
             );
             raw_dec_deg.clamp(-90.0, 90.0)
-        } else {
-            raw_dec_deg
         };
         // F8: source rotation from the rotator's position angle when
         // configured; otherwise fall back to the static value. A
@@ -228,7 +230,8 @@ pub enum PointingSource {
 }
 
 impl PointingSource {
-    pub fn is_follow_mode(&self) -> bool {
+    #[must_use]
+    pub const fn is_follow_mode(&self) -> bool {
         matches!(self, Self::Telescope(_))
     }
 

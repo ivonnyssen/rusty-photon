@@ -4,7 +4,7 @@
 //!
 //! [`MockSurveyClient`] returns a deterministic, valid FITS payload
 //! sized to the binned sensor of the request. [`synthetic_fits`] is
-//! the same generator exposed as a free function so the ConformU
+//! the same generator exposed as a free function so the `ConformU`
 //! integration test's in-process HTTP stub can reuse it. The data is
 //! a small ramp keyed on `(pixels_x, pixels_y)` so cache hits remain
 //! useful and downstream image-processing tools see something more
@@ -29,7 +29,8 @@ use crate::survey::{SurveyClient, SurveyError, SurveyRequest};
 pub struct MockSurveyClient;
 
 impl MockSurveyClient {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -53,6 +54,7 @@ impl SurveyClient for MockSurveyClient {
 /// FITS — e.g. tests that pair the cutout with a plate-solver mock
 /// configured to round-trip the embedded CRVAL — should use
 /// [`synthetic_fits_with_wcs`] instead.
+#[must_use]
 pub fn synthetic_fits(width: u32, height: u32) -> Vec<u8> {
     build_synthetic_fits(width, height, None)
 }
@@ -63,6 +65,7 @@ pub fn synthetic_fits(width: u32, height: u32) -> Vec<u8> {
 /// `CTYPE1/2`, `CRVAL1/2`, `CRPIX1/2`, `CDELT1/2`. Used by tests that
 /// need the FITS to advertise its own pointing so a downstream
 /// "plate-solver" can read it back via `CRVAL1/2`.
+#[must_use]
 pub fn synthetic_fits_with_wcs(
     width: u32,
     height: u32,
@@ -92,7 +95,7 @@ struct WcsHeader {
 /// megapixel is a comfortable upper bound that fits in ~128 MB at
 /// 16-bit + WCS overhead. The cap exists because `synthetic_fits[_with_wcs]`
 /// is reached not only by in-crate tests (which always pass small
-/// dimensions) but also by ConformU's in-process SkyView stub in
+/// dimensions) but also by `ConformU`'s in-process `SkyView` stub in
 /// `tests/conformu_integration.rs`, which forwards query-derived
 /// `Pixels=` values; a malformed request would otherwise drive a
 /// `vec![0u16; w*h]`-equivalent allocation that can OOM the test
@@ -134,8 +137,8 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
     header.push_str(&pad_record(&format!("NAXIS1  = {width:>20}")));
     header.push_str(&pad_record(&format!("NAXIS2  = {height:>20}")));
     if let Some(w) = &wcs {
-        let crpix1 = (width as f64) / 2.0 + 0.5;
-        let crpix2 = (height as f64) / 2.0 + 0.5;
+        let crpix1 = f64::from(width) / 2.0 + 0.5;
+        let crpix2 = f64::from(height) / 2.0 + 0.5;
         let cdelt = w.pixel_scale_arcsec / 3600.0;
         header.push_str(&string_record("CTYPE1", "RA---TAN"));
         header.push_str(&string_record("CTYPE2", "DEC--TAN"));

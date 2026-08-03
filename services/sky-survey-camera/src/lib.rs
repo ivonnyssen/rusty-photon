@@ -1,5 +1,5 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! sky-survey-camera: ASCOM Alpaca Camera simulator backed by NASA SkyView.
+//! sky-survey-camera: ASCOM Alpaca Camera simulator backed by NASA `SkyView`.
 
 // Internal-only: holds the shared `build_alpaca_client` helper
 // (`pub(crate)`), used by `mount` and `rotator`. Not part of the public
@@ -214,7 +214,7 @@ pub async fn run_with_client_ctx(
 /// hit the configured endpoint via [`survey::SkyViewClient`]. The
 /// `mock` module exposes [`MockSurveyClient`] and the
 /// [`mock::synthetic_fits`] helper as library-only types: the
-/// ConformU integration test re-uses `synthetic_fits` inside an
+/// `ConformU` integration test re-uses `synthetic_fits` inside an
 /// in-process axum stub that the binary fetches from over HTTP, and
 /// `MockSurveyClient` is available to any future test that prefers
 /// to call [`run_with_client`] directly with a synthetic backend.
