@@ -1,6 +1,6 @@
 //! BDD world for the operation-watchdog end-to-end suite.
 //!
-//! Holds the real processes (OmniSim, rp, sentinel), the in-process
+//! Holds the real processes (`OmniSim`, rp, sentinel), the in-process
 //! plate-solver stub used to wedge a `center_on_target` call, a local
 //! Pushover stub so the watchdog's escalations land in sentinel's dashboard
 //! history without a network round-trip, and the directory-backed stub
@@ -143,7 +143,7 @@ impl WatchdogE2eWorld {
                 // well past the ~2 s watchdog deadline (the watchdog, not this
                 // timeout, is what we want to fire).
                 url: stub.url.clone(),
-                timeout: Some(Duration::from_secs(60)),
+                timeout: Some(Duration::from_mins(1)),
                 default_search_radius_deg: None,
             });
         }
@@ -266,7 +266,7 @@ impl WatchdogE2eWorld {
             .collect()
     }
 
-    /// Start the full stack: OmniSim (when equipment is needed), the Pushover
+    /// Start the full stack: `OmniSim` (when equipment is needed), the Pushover
     /// stub, a real rp, then a real sentinel whose watchdog subscribes to rp.
     pub async fn start_stack(&mut self) {
         if self.plate_solver_mode != PlateSolverMode::None {
