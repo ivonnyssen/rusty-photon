@@ -228,24 +228,21 @@ fn build_usb(
     product: Option<String>,
     model: Option<String>,
 ) -> Result<Option<UsbMeta>, String> {
-    match vendor {
-        Some(vendor) => {
-            require_hex4("usb_vendor", &vendor)?;
-            if let Some(product) = &product {
-                require_hex4("usb_product", product)?;
-            }
-            Ok(Some(UsbMeta {
-                vendor,
-                product,
-                model,
-            }))
+    if let Some(vendor) = vendor {
+        require_hex4("usb_vendor", &vendor)?;
+        if let Some(product) = &product {
+            require_hex4("usb_product", product)?;
         }
-        None => {
-            if product.is_some() || model.is_some() {
-                return Err("usb_product/usb_model require usb_vendor".to_string());
-            }
-            Ok(None)
+        Ok(Some(UsbMeta {
+            vendor,
+            product,
+            model,
+        }))
+    } else {
+        if product.is_some() || model.is_some() {
+            return Err("usb_product/usb_model require usb_vendor".to_string());
         }
+        Ok(None)
     }
 }
 

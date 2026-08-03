@@ -32,7 +32,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The unified default bind address: all interfaces.
-fn default_bind_address() -> IpAddr {
+const fn default_bind_address() -> IpAddr {
     IpAddr::V4(Ipv4Addr::UNSPECIFIED)
 }
 
@@ -58,7 +58,8 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Plain HTTP on `0.0.0.0:{port}` — the shape services use for their
     /// self-created default configs.
-    pub fn new(port: u16) -> Self {
+    #[must_use]
+    pub const fn new(port: u16) -> Self {
         Self {
             port,
             bind_address: default_bind_address(),
@@ -68,7 +69,8 @@ impl ServerConfig {
     }
 
     /// The address the listener binds to.
-    pub fn socket_addr(&self) -> SocketAddr {
+    #[must_use]
+    pub const fn socket_addr(&self) -> SocketAddr {
         SocketAddr::new(self.bind_address, self.port)
     }
 }
@@ -103,7 +105,8 @@ pub struct AlpacaServerConfig {
 impl AlpacaServerConfig {
     /// Plain HTTP on `0.0.0.0:{port}` with discovery off — the shape drivers
     /// use for their self-created default configs.
-    pub fn new(port: u16) -> Self {
+    #[must_use]
+    pub const fn new(port: u16) -> Self {
         Self {
             port,
             bind_address: default_bind_address(),
@@ -114,13 +117,15 @@ impl AlpacaServerConfig {
     }
 
     /// The address the listener binds to.
-    pub fn socket_addr(&self) -> SocketAddr {
+    #[must_use]
+    pub const fn socket_addr(&self) -> SocketAddr {
         SocketAddr::new(self.bind_address, self.port)
     }
 
     /// The common-subset view (everything except `discovery_port`) that
     /// consumers reading the `server` block out of arbitrary service configs
     /// use to treat both shapes uniformly.
+    #[must_use]
     pub fn core(&self) -> ServerConfig {
         ServerConfig {
             port: self.port,
@@ -160,7 +165,8 @@ pub struct AdvertisingServerConfig {
 impl AdvertisingServerConfig {
     /// Plain HTTP on `0.0.0.0:{port}`, advertising the derived URL — the
     /// shape services use for their self-created default configs.
-    pub fn new(port: u16) -> Self {
+    #[must_use]
+    pub const fn new(port: u16) -> Self {
         Self {
             port,
             bind_address: default_bind_address(),
@@ -171,13 +177,15 @@ impl AdvertisingServerConfig {
     }
 
     /// The address the listener binds to.
-    pub fn socket_addr(&self) -> SocketAddr {
+    #[must_use]
+    pub const fn socket_addr(&self) -> SocketAddr {
         SocketAddr::new(self.bind_address, self.port)
     }
 
     /// The common-subset view (everything except `advertised_url`) that
     /// consumers reading the `server` block out of arbitrary service configs
     /// use to treat every shape uniformly.
+    #[must_use]
     pub fn core(&self) -> ServerConfig {
         ServerConfig {
             port: self.port,
@@ -195,6 +203,7 @@ impl AdvertisingServerConfig {
 pub struct AdvertisedUrl(String);
 
 impl AdvertisedUrl {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
