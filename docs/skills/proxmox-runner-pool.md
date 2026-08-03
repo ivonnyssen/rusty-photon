@@ -33,8 +33,11 @@ Components:
   (`OMNISIM_PATH`, `PEBBLE_PATH`, `PEBBLE_CHALLTESTSRV_PATH`,
   `QHYCCD_SDK_DIR`, `ZWO_SDK_LIB_DIR`, `LIBCLANG_PATH`, `BAZELISK_HOME`,
   `CARGO_HOME`, `RUSTUP_HOME`, `RP_LAN_CACHE_URL`), which is the Windows
-  analogue of the Linux runner's `.env`. A `gha-runner` scheduled task
-  (AtStartup, SYSTEM) plays the systemd unit's role. Two Windows-only
+  analogue of the Linux runner's `.env`. The one exception is the runner
+  itself, which lives at `C:\actions-runner` (mirroring the Linux
+  `/home/ci/actions-runner`) — that is where the orchestrator injects
+  `.jitconfig`, so a template rebuild must keep the path. A `gha-runner`
+  scheduled task (AtStartup, SYSTEM) plays the systemd unit's role. Two Windows-only
   requirements: `BAZEL_SH` must point at Git's `bash.exe` or Bazel reports
   "No suitable shell toolchain found", and `QHYCCD_SDK_DIR` only reaches
   build actions because `.bazelrc` forwards it (a machine-wide SDK is

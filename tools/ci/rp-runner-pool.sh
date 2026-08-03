@@ -74,7 +74,11 @@ inject_jitconfig() {
       qm guest exec "$vmid" -- /bin/bash -c "printf %s \"$jit\" > /home/ci/actions-runner/.jitconfig.tmp && chown ci:ci /home/ci/actions-runner/.jitconfig.tmp && mv /home/ci/actions-runner/.jitconfig.tmp /home/ci/actions-runner/.jitconfig"
       ;;
     windows)
-      qm guest exec "$vmid" -- powershell.exe -NoProfile -NonInteractive -Command "Set-Content -Path 'C:\\actions-runner\\.jitconfig.tmp' -Value '$jit' -NoNewline -Encoding ascii; Move-Item -Force 'C:\\actions-runner\\.jitconfig.tmp' 'C:\\actions-runner\\.jitconfig'"
+      # PowerShell exits 0 even when a cmdlet raises a non-terminating error,
+      # so the caller's exitcode check alone would accept a failed write and
+      # then deadlock waiting for a job that can never start. Force errors to
+      # terminate, confirm the landed file is non-empty, and exit explicitly.
+      qm guest exec "$vmid" -- powershell.exe -NoProfile -NonInteractive -Command "\$ErrorActionPreference='Stop'; try { Set-Content -Path 'C:\\actions-runner\\.jitconfig.tmp' -Value '$jit' -NoNewline -Encoding ascii; Move-Item -Force 'C:\\actions-runner\\.jitconfig.tmp' 'C:\\actions-runner\\.jitconfig'; if ((Get-Item 'C:\\actions-runner\\.jitconfig').Length -le 0) { exit 1 }; exit 0 } catch { exit 1 }"
       ;;
     *)
       echo "unknown guest os '$os'" >&2
