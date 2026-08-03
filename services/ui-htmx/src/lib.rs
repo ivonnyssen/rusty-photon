@@ -1252,7 +1252,7 @@ mod tests {
     async fn config_restart_roster_key_restarts_the_matched_service() {
         let sentinel = sentinel_listing(vec![listed("dsd-fp2", Some(11119))]);
         let state = rp_state_with_config_client(Arc::new(GoodRoster)).with_sentinel_client(
-            Arc::clone(&sentinel) as Arc<dyn SentinelClient>,
+            Arc::<StubSentinel>::clone(&sentinel),
             "http://127.0.0.1:11114",
         );
         let response = config_restart(

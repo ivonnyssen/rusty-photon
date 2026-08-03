@@ -805,7 +805,7 @@ mod tests {
             )])));
             let restarts = Arc::new(RestartManager::new(
                 Arc::clone(&registry),
-                Arc::clone(&manager) as Arc<dyn ServiceManager>,
+                Arc::<RecordingManager>::clone(&manager),
                 fast_policy().restart_budget,
             ));
             let notifier = Arc::new(RecordingNotifier::default());
@@ -813,9 +813,9 @@ mod tests {
             let ctx = SupervisionContext {
                 policy: fast_policy(),
                 registry: Arc::clone(&registry),
-                http: Arc::clone(&http) as Arc<dyn HttpClient>,
+                http: Arc::<ScriptedHttp>::clone(&http),
                 restarts: Arc::clone(&restarts),
-                notifiers: vec![Arc::clone(&notifier) as Arc<dyn Notifier>],
+                notifiers: vec![Arc::<RecordingNotifier>::clone(&notifier)],
                 state: Arc::clone(&state),
             };
             let supervisor = ServiceHealthSupervisor::new(SVC.to_string(), ctx);
@@ -1349,10 +1349,13 @@ mod tests {
 
     impl LoopFixture {
         fn spawn(manager: Arc<ScriptedDiscovery>) -> Self {
+            // Coerced once up front: `Arc::clone` takes its type parameter
+            // from the expected type, so it cannot do the unsizing itself.
+            let manager: Arc<dyn ServiceManager> = manager;
             let registry: ServiceRegistry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
             let restarts = Arc::new(RestartManager::new(
                 Arc::clone(&registry),
-                Arc::clone(&manager) as Arc<dyn ServiceManager>,
+                Arc::clone(&manager),
                 fast_policy().restart_budget,
             ));
             let state = new_state_handle(vec![], 100);
@@ -1364,12 +1367,7 @@ mod tests {
                 notifiers: vec![],
                 state: Arc::clone(&state),
             };
-            let supervisor = DiscoverySupervisor::new(
-                Arc::clone(&manager) as Arc<dyn ServiceManager>,
-                None,
-                None,
-                ctx,
-            );
+            let supervisor = DiscoverySupervisor::new(Arc::clone(&manager), None, None, ctx);
             let cancel = CancellationToken::new();
             let handle = tokio::spawn({
                 let cancel = cancel.clone();

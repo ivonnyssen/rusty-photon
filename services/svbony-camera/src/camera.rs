@@ -1993,7 +1993,7 @@ mod tests {
     async fn a_new_exposure_is_accepted_promptly_after_an_abort() {
         let handle = Arc::new(MockCameraHandle::default());
         handle.set_capture_delay(Duration::from_secs(30));
-        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
         cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -2026,7 +2026,7 @@ mod tests {
     #[tokio::test]
     async fn sdk_control_failures_surface_the_sdk_detail() {
         let handle = Arc::new(MockCameraHandle::default().with_pulse_guide());
-        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
         cam.connect().unwrap();
         handle.fail_controls.store(true, AtomicOrdering::SeqCst);
         let cases: [(ASCOMError, &str); 11] = [
@@ -2081,7 +2081,7 @@ mod tests {
     async fn a_failed_handshake_step_leaves_the_device_disconnected() {
         let handle = Arc::new(MockCameraHandle::default());
         handle.fail_property.store(true, AtomicOrdering::SeqCst);
-        let cam = SvbonyCamera::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
         let err = cam.connect().unwrap_err();
         assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
         assert!(!handle.is_open(), "failed handshake must close the camera");
