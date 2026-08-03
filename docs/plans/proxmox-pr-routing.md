@@ -38,17 +38,22 @@ tracked in #765).
 
 The single behavioral contract everything below implements:
 
+In the table and throughout this plan, "cloud cache" means the Cloudflare
+R2-backed remote cache (`--config=remote-cache`) — spelled out to avoid
+colliding with the R1–R4 phase identifiers.
+
 | Event | Linux leg runs on | Cache | Cache writes |
 |---|---|---|---|
 | `pull_request`, same-repo branch | pool | LAN | no (anonymous read) |
-| `pull_request`, fork (after approval) | GitHub-hosted | R2 | no |
+| `pull_request`, fork (after approval) | GitHub-hosted | cloud | no |
 | `push` to main | pool | LAN | yes (repo secret) |
-| nightly `schedule` | GitHub-hosted | R2 | yes (as today) |
-| macOS / Windows legs (until R4) | GitHub-hosted | R2 | as today |
+| nightly `schedule` | GitHub-hosted | cloud | yes (as today) |
+| macOS / Windows legs (until R4) | GitHub-hosted | cloud | as today |
 
 The nightly schedule staying **hosted** is deliberate: it is what keeps the
-R2 cache's Linux entries warm, so a fork PR (which always runs hosted) still
-gets a warm cache. The LAN cache is instead warmed by every push to main.
+cloud cache's Linux entries warm, so a fork PR (which always runs hosted)
+still gets a warm cache. The LAN cache is instead warmed by every push to
+main.
 
 ## R1 — Isolation and credential hardening
 
@@ -102,15 +107,17 @@ same required check from a hosted runner.
 2. **Kill switch.** `RP_POOL_LINUX` is a repo Actions *variable*, opt-in
    (`== 'on'`): flippable in the UI or via `gh api` with no commit when the
    pool host is down. Failure symptom if it isn't flipped: the required
-   check sits queued (GitHub fails it after ~24 h). Documented in the skill
-   doc's ops section.
+   check sits queued until GitHub's documented job-queue limit ends it (a
+   self-hosted job queued for 24 hours is automatically cancelled — see
+   [GitHub Actions limits](https://docs.github.com/en/actions/reference/limits)).
+   Documented in the skill doc's ops section.
 3. **LAN cache write secret.** New repo secret carrying the cache write
    credential, attached to the Bazel steps only when
-   `github.event_name == 'push'` — the same event-gating pattern the R2
-   (cloud) cache's `CACHE_WRITE_TOKEN` already uses. Fork PRs receive no
+   `github.event_name == 'push'` — the same event-gating pattern the cloud
+   cache's `CACHE_WRITE_TOKEN` already uses. Fork PRs receive no
    secrets at all; same-repo PR events are excluded by the event gate. Pool
    jobs use `--remote_cache="$RP_LAN_CACHE_URL"`; hosted jobs keep
-   `--config=remote-cache` (R2) exactly as today.
+   `--config=remote-cache` (the cloud cache) exactly as today.
 4. **Skip provisioning on the pool.** The install steps (lld, bazelisk,
    OmniSim, Pebble, QHY SDK, ZWO SDK) get
    `if: runner.environment == 'github-hosted'` — the template already ships

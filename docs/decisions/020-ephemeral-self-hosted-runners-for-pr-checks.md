@@ -55,7 +55,7 @@ failure of the others.
    what anonymous reads need (the LAN cache URL, masked in logs). The cache
    **write** credential is a GitHub Actions secret attached only on `push`
    events — fork PRs receive no secrets at all, and same-repo PR events are
-   excluded by the event gate. This mirrors the R2 cloud cache's
+   excluded by the event gate. This mirrors the Cloudflare R2 cloud cache's
    public-read/token-write poisoning defense exactly.
 5. **Network fencing.** Runner VMs live on a dedicated VLAN that can reach
    the WAN, DNS, and the LAN build cache's port — nothing else on RFC1918.
