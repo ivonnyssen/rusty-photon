@@ -64,24 +64,28 @@ impl MechanicalDegrees {
     ///
     /// Callers must reject non-finite input first (the ASCOM boundary and the
     /// wire parsers both do); a non-finite value would propagate as `NaN`.
+    #[must_use]
     pub fn new(deg: f64) -> Self {
         Self(normalise_deg(deg))
     }
 
     /// The underlying degree value in `[0, 360)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 
     /// Quantise to the `MD:nn.nn` wire precision (1/100°), then re-normalise
     /// so a near-boundary value like `359.999` becomes `0.00` rather than the
     /// out-of-range `360.00`.
+    #[must_use]
     pub fn quantise_to_wire(self) -> Self {
         Self::new((self.0 * 100.0).round() / 100.0)
     }
 
     /// Apply a relative rotation (degrees, may be negative), staying in the
     /// mechanical frame. Models the target of ASCOM `Move(delta)`.
+    #[must_use]
     pub fn rotate(self, delta: f64) -> Self {
         Self::new(self.0 + delta)
     }
@@ -90,12 +94,14 @@ impl MechanicalDegrees {
 impl SkyDegrees {
     /// Construct from a degree value, normalising into `[0, 360)`. See
     /// [`MechanicalDegrees::new`] for the non-finite precondition.
+    #[must_use]
     pub fn new(deg: f64) -> Self {
         Self(normalise_deg(deg))
     }
 
     /// The underlying degree value in `[0, 360)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -103,16 +109,18 @@ impl SkyDegrees {
 impl SyncOffset {
     /// A zero offset — the unsynced state, and what `clear_session_state`
     /// resets to on disconnect.
-    pub const ZERO: SyncOffset = SyncOffset(0.0);
+    pub const ZERO: Self = Self(0.0);
 
     /// Construct from a degree value, normalising into `[0, 360)`. See
     /// [`MechanicalDegrees::new`] for the non-finite precondition.
+    #[must_use]
     pub fn new(deg: f64) -> Self {
         Self(normalise_deg(deg))
     }
 
     /// The underlying offset value in `[0, 360)`.
-    pub fn value(self) -> f64 {
+    #[must_use]
+    pub const fn value(self) -> f64 {
         self.0
     }
 }
@@ -154,7 +162,8 @@ pub struct Steps(pub i32);
 
 impl Steps {
     /// The underlying signed step count.
-    pub fn value(self) -> i32 {
+    #[must_use]
+    pub const fn value(self) -> i32 {
         self.0
     }
 }
@@ -164,7 +173,7 @@ impl Steps {
 /// sign convention lives in the mock — so it is deliberately not a `From`.
 impl From<Steps> for MechanicalDegrees {
     fn from(steps: Steps) -> Self {
-        MechanicalDegrees::new(f64::from(steps.0) / STEPS_PER_DEGREE)
+        Self::new(f64::from(steps.0) / STEPS_PER_DEGREE)
     }
 }
 

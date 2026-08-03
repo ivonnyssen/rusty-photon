@@ -93,8 +93,8 @@ impl FalconCodecError {
     }
 }
 
-impl From<SessionError<FalconCodecError>> for FalconCodecError {
-    fn from(err: SessionError<FalconCodecError>) -> Self {
+impl From<SessionError<Self>> for FalconCodecError {
+    fn from(err: SessionError<Self>) -> Self {
         match err {
             SessionError::Transport(t) => Self::Transport(t),
             SessionError::Codec(c) => c,
@@ -199,19 +199,15 @@ impl From<SessionError<FalconCodecError>> for FalconRotatorError {
             // request (transport arm).
             SessionError::Transport(t) => t.into(),
             SessionError::Codec(FalconCodecError::Transport(t)) => t.into(),
-            SessionError::Codec(FalconCodecError::InvalidResponse(s)) => {
-                FalconRotatorError::InvalidResponse(s)
-            }
-            SessionError::Codec(FalconCodecError::Parse(s)) => FalconRotatorError::ParseError(s),
+            SessionError::Codec(FalconCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
+            SessionError::Codec(FalconCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(c @ FalconCodecError::Utf8(_)) => {
-                FalconRotatorError::InvalidResponse(c.to_string())
+                Self::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(FalconCodecError::SkipExhausted(n)) => {
-                FalconRotatorError::Communication(format!(
-                    "device returned non-matching response ({n} frame(s) read)"
-                ))
-            }
-            SessionError::SkipExhausted(n) => FalconRotatorError::Communication(format!(
+            SessionError::Codec(FalconCodecError::SkipExhausted(n)) => Self::Communication(
+                format!("device returned non-matching response ({n} frame(s) read)"),
+            ),
+            SessionError::SkipExhausted(n) => Self::Communication(format!(
                 "device returned non-matching response ({n} frame(s) read)"
             )),
         }
@@ -600,7 +596,7 @@ mod tests {
             SessionError::Codec(FalconCodecError::SkipExhausted(7));
         match FalconRotatorError::from(err) {
             FalconRotatorError::Communication(s) => {
-                assert!(s.contains("non-matching") && s.contains("7"));
+                assert!(s.contains("non-matching") && s.contains('7'));
             }
             other => panic!("expected Communication, got {other:?}"),
         }
@@ -611,7 +607,7 @@ mod tests {
         let err: SessionError<FalconCodecError> = SessionError::SkipExhausted(2);
         match FalconRotatorError::from(err) {
             FalconRotatorError::Communication(s) => {
-                assert!(s.contains("non-matching") && s.contains("2"));
+                assert!(s.contains("non-matching") && s.contains('2'));
             }
             other => panic!("expected Communication, got {other:?}"),
         }

@@ -1,4 +1,4 @@
-//! Step definitions for sync_offset.feature
+//! Step definitions for `sync_offset.feature`
 
 use crate::world::FalconRotatorWorld;
 use cucumber::{then, when};

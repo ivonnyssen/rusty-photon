@@ -52,6 +52,7 @@ impl FalconTransportFactory {
     }
 
     /// Build a factory from the service [`SerialConfig`](crate::config::SerialConfig).
+    #[must_use]
     pub fn from_config(config: &crate::config::SerialConfig) -> Self {
         Self::new(config.port.clone(), config.baud_rate, config.timeout)
     }

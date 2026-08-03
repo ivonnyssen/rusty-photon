@@ -58,7 +58,7 @@ async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
 }
 
 async fn get(port: u16, path: &str) -> reqwest::Response {
-    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let url = format!("http://127.0.0.1:{port}{path}");
     reqwest::get(&url).await.unwrap()
 }
 

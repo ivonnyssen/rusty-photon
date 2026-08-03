@@ -29,7 +29,7 @@ use crate::manager::FalconManager;
 use crate::units::{MechanicalDegrees, SkyDegrees};
 use rusty_photon_driver::ConfigActionCtx;
 
-/// Guard macro that returns NOT_CONNECTED if the device is not connected.
+/// Guard macro that returns `NOT_CONNECTED` if the device is not connected.
 ///
 /// Mirrors the qhy-focuser / ppba-driver pattern: a single
 /// `ensure_connected!` line at the top of each device-bound method so
@@ -74,6 +74,7 @@ impl FalconRotatorDevice {
 
     /// Attach the shared config-action context, enabling `config.get` /
     /// `config.apply` / `config.schema` on this device.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FalconRotatorDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self

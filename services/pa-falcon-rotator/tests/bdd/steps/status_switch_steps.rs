@@ -1,4 +1,4 @@
-//! Step definitions for status_switch.feature
+//! Step definitions for `status_switch.feature`
 //!
 //! Phase 3e wires every step body. The status switch exposes two read-only
 //! switches: id 0 (raw voltage from `VS`) and id 1 (limit-hit boolean from

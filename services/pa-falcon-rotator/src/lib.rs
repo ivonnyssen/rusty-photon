@@ -83,10 +83,12 @@ impl Default for ServerBuilder {
 }
 
 impl ServerBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         // Rebuild the default factory from the new config so the
         // builder's factory always reflects the configured serial port
@@ -105,6 +107,7 @@ impl ServerBuilder {
     /// Wire the config-action source (persist path + CLI overrides) so both
     /// registered devices advertise `config.get` / `config.apply` /
     /// `config.schema`.
+    #[must_use]
     pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
         self.config_source = Some((path, overrides));
         self
@@ -112,6 +115,7 @@ impl ServerBuilder {
 
     /// Hand the devices the in-process reload trigger fired after a `config.apply`
     /// that needs a reload.
+    #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
         self
@@ -214,7 +218,7 @@ impl ServerBuilder {
             // and the only stdout consumer (bdd-infra's port parser) never runs
             // services with --service.
             if !rusty_photon_service_lifecycle::is_scm_service() {
-                println!("Bound Alpaca server bound_addr={}", local_addr);
+                println!("Bound Alpaca server bound_addr={local_addr}");
             }
             info!("Bound Alpaca server bound_addr={}", local_addr);
 
@@ -254,12 +258,12 @@ pub struct BoundServer {
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
     /// Held so `start()` can call `manager.transport().shutdown()` after
-    /// the HTTP server stops. No-op in LazyAcquire mode.
+    /// the HTTP server stops. No-op in `LazyAcquire` mode.
     manager: Arc<FalconManager>,
 }
 
 impl BoundServer {
-    pub fn listen_addr(&self) -> SocketAddr {
+    pub const fn listen_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
@@ -279,16 +283,12 @@ impl BoundServer {
             manager,
         } = self;
         let serve = async {
-            match tls {
-                Some(ref tls_config) => {
-                    info!("pa-falcon-rotator started on {} (TLS)", local_addr);
-                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                        .await
-                }
-                None => {
-                    info!("pa-falcon-rotator started on {}", local_addr);
-                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
-                }
+            if let Some(ref tls_config) = tls {
+                info!("pa-falcon-rotator started on {} (TLS)", local_addr);
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+            } else {
+                info!("pa-falcon-rotator started on {}", local_addr);
+                rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
             }
         };
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;

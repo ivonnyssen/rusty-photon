@@ -1,10 +1,10 @@
 //! World struct for pa-falcon-rotator BDD tests
 //!
 //! Runs the ASCOM Alpaca server in-process on an ephemeral port so the
-//! test holds the same `Arc<MockFalconTransportFactory>` the FalconManager
+//! test holds the same `Arc<MockFalconTransportFactory>` the `FalconManager`
 //! drives. That gives every scenario direct access to mock device state
-//! (set the reported mechanical position, voltage, motor_reverse,
-//! limit_detect flag) and to the wire-level `command_log` (assert which
+//! (set the reported mechanical position, voltage, `motor_reverse`,
+//! `limit_detect` flag) and to the wire-level `command_log` (assert which
 //! commands were sent and in what order) — both of which the feature
 //! files exercise.
 //!
@@ -40,7 +40,7 @@ pub struct FalconRotatorWorld {
     pub server_handle: Option<JoinHandle<()>>,
     /// Bound address of the in-process server (ephemeral port).
     pub server_addr: Option<SocketAddr>,
-    /// Mock factory shared with the FalconManager — drives device state
+    /// Mock factory shared with the `FalconManager` — drives device state
     /// and records the wire-level command log.
     pub mock: Option<Arc<MockFalconTransportFactory>>,
     /// Alpaca HTTP client for the Rotator device.
@@ -150,7 +150,7 @@ impl FalconRotatorWorld {
             .expect("status switch not acquired")
     }
 
-    pub fn mock(&self) -> &Arc<MockFalconTransportFactory> {
+    pub const fn mock(&self) -> &Arc<MockFalconTransportFactory> {
         self.mock.as_ref().expect("mock not initialised")
     }
 

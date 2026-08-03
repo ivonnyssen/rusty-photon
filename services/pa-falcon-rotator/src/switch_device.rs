@@ -97,8 +97,8 @@ impl TryFrom<usize> for SwitchId {
     /// checks so out-of-range ids never hit `INVALID_OPERATION` paths).
     fn try_from(id: usize) -> ASCOMResult<Self> {
         match id {
-            SWITCH_ID_VOLTAGE => Ok(SwitchId::Voltage),
-            SWITCH_ID_LIMIT => Ok(SwitchId::Limit),
+            SWITCH_ID_VOLTAGE => Ok(Self::Voltage),
+            SWITCH_ID_LIMIT => Ok(Self::Limit),
             _ => Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!("Switch id {id} out of range (valid: 0..{SWITCH_COUNT})"),
@@ -135,6 +135,7 @@ impl FalconStatusSwitchDevice {
 
     /// Attach the shared config-action context, enabling `config.get` /
     /// `config.apply` / `config.schema` on this device.
+    #[must_use]
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FalconRotatorDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self

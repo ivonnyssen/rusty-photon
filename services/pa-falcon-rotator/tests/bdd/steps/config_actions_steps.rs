@@ -1,7 +1,7 @@
-//! Step definitions for config_actions.feature.
+//! Step definitions for `config_actions.feature`.
 //!
 //! Reuses the `Given a running pa-falcon-rotator service` step from
-//! connection_steps. The in-process server is built with the config-action
+//! `connection_steps`. The in-process server is built with the config-action
 //! context wired (see `world::start_service`), so both devices dispatch the
 //! actions against one config file + reload signal.
 
