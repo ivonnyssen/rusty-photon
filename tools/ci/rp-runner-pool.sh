@@ -176,6 +176,18 @@ slot_loop() {
         continue
       fi
       # Only now is the clone recoverable across a restart of this service.
+      #
+      # Ordering is deliberate, and this is the safe direction. Dying in the
+      # sliver between a successful injection and this line loses a clone that
+      # was about to run a job — one aborted job, and the pool immediately
+      # rebuilds the slot. Writing the marker FIRST would instead lose a clone
+      # that never got a config, which nothing recovers: the guest waits
+      # forever for a config that will not come and this loop waits forever
+      # for its poweroff. A transient, self-healing failure beats a permanent
+      # one. Note also that the guest deletes .jitconfig the moment it reads
+      # it (~2 s), so the file's presence cannot be used to detect a running
+      # job — proving liveness needs the runner's state from the GitHub API,
+      # tracked in the pool health-check issue.
       : > "$STATE_DIR/$vmid.injected"
       log "$name" "runner clone $vmid up and registered"
     fi
