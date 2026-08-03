@@ -134,6 +134,12 @@ slot_loop() {
 
     if ! qm status "$vmid" >/dev/null 2>&1; then
       qm clone "$template" "$vmid" --name "$name" >/dev/null || { sleep 30; continue; }
+      # A marker can outlive the clone it described: killing this service
+      # between the destroy and its `rm` leaves one behind, and the next clone
+      # of the same VMID would then look already-configured to the reconcile
+      # above and never be recovered. Clearing here binds the marker to THIS
+      # clone instance.
+      rm -f "$STATE_DIR/$vmid.injected"
       qm start "$vmid" >/dev/null
 
       # Windows clones take appreciably longer than Linux to reach a
