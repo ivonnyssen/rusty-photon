@@ -122,12 +122,12 @@ const fn default_watch_poll() -> Duration {
 /// noise, rejected at load. Defaults to 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "i64")]
-pub struct WatchWindow(u32);
+pub struct WatchWindow(usize);
 
 impl WatchWindow {
     #[must_use]
     pub const fn value(self) -> usize {
-        self.0 as usize
+        self.0
     }
 }
 
@@ -141,7 +141,7 @@ impl TryFrom<i64> for WatchWindow {
     type Error = String;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        match u32::try_from(value) {
+        match usize::try_from(value) {
             Ok(v) if v >= 3 => Ok(Self(v)),
             _ => Err(format!(
                 "focus_watch.window must be an integer >= 3, got {value}"

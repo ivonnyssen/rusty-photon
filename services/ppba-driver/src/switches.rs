@@ -8,72 +8,75 @@ pub const MAX_SWITCH: usize = <SwitchId as strum::EnumCount>::COUNT;
 
 /// Switch identifiers for the PPBA device
 ///
-/// The discriminants are the ASCOM switch ids and must stay contiguous from
-/// zero: `MAX_SWITCH` is derived from the variant count, and `from_id` maps by
-/// discriminant, so a gap would make ids in `0..MAX_SWITCH` unresolvable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumCount, strum::FromRepr)]
+/// The ASCOM switch id is [`SwitchInfo::id`], not the variant's discriminant,
+/// so variants may be reordered freely. The ids must stay contiguous from
+/// zero: `MAX_SWITCH` is the variant count, so every id in `0..MAX_SWITCH`
+/// has to resolve through [`Self::from_id`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumCount, strum::VariantArray)]
 pub enum SwitchId {
     // Controllable switches (CanWrite = true)
     /// Quad 12V output (boolean: 0=off, 1=on)
-    Quad12V = 0,
+    Quad12V,
     /// Adjustable output (boolean: 0=off, 1=on)
-    AdjustableOutput = 1,
+    AdjustableOutput,
     /// Dew Heater A PWM (analog: 0-255)
-    DewHeaterA = 2,
+    DewHeaterA,
     /// Dew Heater B PWM (analog: 0-255)
-    DewHeaterB = 3,
+    DewHeaterB,
     /// USB Hub control (boolean: 0=off, 1=on)
-    UsbHub = 4,
+    UsbHub,
     /// Auto-Dew enable (boolean: 0=off, 1=on)
-    AutoDew = 5,
+    AutoDew,
 
     // Read-only switches - Power Statistics (from PS command)
     /// Average current draw in Amps
-    AverageCurrent = 6,
+    AverageCurrent,
     /// Cumulative amp-hours consumed
-    AmpHours = 7,
+    AmpHours,
     /// Cumulative watt-hours consumed
-    WattHours = 8,
+    WattHours,
     /// Device uptime in hours
-    Uptime = 9,
+    Uptime,
 
     // Read-only switches - Sensor Data (from PA command)
     /// Input voltage in Volts
-    InputVoltage = 10,
+    InputVoltage,
     /// Total current draw in Amps
-    TotalCurrent = 11,
+    TotalCurrent,
     /// Ambient temperature in Celsius
-    Temperature = 12,
+    Temperature,
     /// Relative humidity percentage
-    Humidity = 13,
+    Humidity,
     /// Calculated dewpoint in Celsius
-    Dewpoint = 14,
+    Dewpoint,
     /// Power warning flag (overcurrent/short)
-    PowerWarning = 15,
+    PowerWarning,
 }
 
 impl SwitchId {
-    /// Try to convert a usize to a `SwitchId`, returning `None` when the id is
-    /// outside `0..MAX_SWITCH`
+    /// Try to convert a usize to a `SwitchId`, returning `None` when no
+    /// switch carries that id.
     #[must_use]
-    pub const fn from_id(id: usize) -> Option<Self> {
-        Self::from_repr(id)
+    pub fn from_id(id: usize) -> Option<Self> {
+        <Self as strum::VariantArray>::VARIANTS
+            .iter()
+            .copied()
+            .find(|switch| switch.info().id == id)
     }
 
     /// Get the numeric ID for this switch
     #[must_use]
     pub const fn id(&self) -> usize {
-        *self as usize
+        self.info().id
     }
 
     /// Get the switch information for this switch
     #[must_use]
     pub const fn info(&self) -> SwitchInfo {
-        let id = self.id();
         match self {
             // Controllable switches
             Self::Quad12V => SwitchInfo {
-                id,
+                id: 0,
                 name: "Quad 12V Output",
                 description: "Controls the quad 12V power output",
                 can_write: true,
@@ -82,7 +85,7 @@ impl SwitchId {
                 step: 1.0,
             },
             Self::AdjustableOutput => SwitchInfo {
-                id,
+                id: 1,
                 name: "Adjustable Output",
                 description: "Controls the adjustable voltage output on/off",
                 can_write: true,
@@ -91,7 +94,7 @@ impl SwitchId {
                 step: 1.0,
             },
             Self::DewHeaterA => SwitchInfo {
-                id,
+                id: 2,
                 name: "Dew Heater A",
                 description: "PWM control for Dew Heater A (0-255)",
                 can_write: true,
@@ -100,7 +103,7 @@ impl SwitchId {
                 step: 1.0,
             },
             Self::DewHeaterB => SwitchInfo {
-                id,
+                id: 3,
                 name: "Dew Heater B",
                 description: "PWM control for Dew Heater B (0-255)",
                 can_write: true,
@@ -109,7 +112,7 @@ impl SwitchId {
                 step: 1.0,
             },
             Self::UsbHub => SwitchInfo {
-                id,
+                id: 4,
                 name: "USB Hub",
                 description: "Controls the USB 2.0 hub power",
                 can_write: true,
@@ -118,7 +121,7 @@ impl SwitchId {
                 step: 1.0,
             },
             Self::AutoDew => SwitchInfo {
-                id,
+                id: 5,
                 name: "Auto-Dew",
                 description: "Enables automatic dew heater control",
                 can_write: true,
@@ -129,7 +132,7 @@ impl SwitchId {
 
             // Read-only switches - Power Statistics
             Self::AverageCurrent => SwitchInfo {
-                id,
+                id: 6,
                 name: "Average Current",
                 description: "Average current draw in Amps",
                 can_write: false,
@@ -138,7 +141,7 @@ impl SwitchId {
                 step: 0.01,
             },
             Self::AmpHours => SwitchInfo {
-                id,
+                id: 7,
                 name: "Amp Hours",
                 description: "Cumulative amp-hours consumed",
                 can_write: false,
@@ -147,7 +150,7 @@ impl SwitchId {
                 step: 0.01,
             },
             Self::WattHours => SwitchInfo {
-                id,
+                id: 8,
                 name: "Watt Hours",
                 description: "Cumulative watt-hours consumed",
                 can_write: false,
@@ -156,7 +159,7 @@ impl SwitchId {
                 step: 0.1,
             },
             Self::Uptime => SwitchInfo {
-                id,
+                id: 9,
                 name: "Uptime",
                 description: "Device uptime in hours",
                 can_write: false,
@@ -167,7 +170,7 @@ impl SwitchId {
 
             // Read-only switches - Sensor Data
             Self::InputVoltage => SwitchInfo {
-                id,
+                id: 10,
                 name: "Input Voltage",
                 description: "Input voltage in Volts",
                 can_write: false,
@@ -176,7 +179,7 @@ impl SwitchId {
                 step: 0.1,
             },
             Self::TotalCurrent => SwitchInfo {
-                id,
+                id: 11,
                 name: "Total Current",
                 description: "Total current draw in Amps",
                 can_write: false,
@@ -185,7 +188,7 @@ impl SwitchId {
                 step: 0.01,
             },
             Self::Temperature => SwitchInfo {
-                id,
+                id: 12,
                 name: "Temperature",
                 description: "Ambient temperature in Celsius",
                 can_write: false,
@@ -194,7 +197,7 @@ impl SwitchId {
                 step: 0.1,
             },
             Self::Humidity => SwitchInfo {
-                id,
+                id: 13,
                 name: "Humidity",
                 description: "Relative humidity percentage",
                 can_write: false,
@@ -203,7 +206,7 @@ impl SwitchId {
                 step: 1.0,
             },
             Self::Dewpoint => SwitchInfo {
-                id,
+                id: 14,
                 name: "Dewpoint",
                 description: "Calculated dewpoint in Celsius",
                 can_write: false,
@@ -212,7 +215,7 @@ impl SwitchId {
                 step: 0.1,
             },
             Self::PowerWarning => SwitchInfo {
-                id,
+                id: 15,
                 name: "Power Warning",
                 description: "Power warning flag (overcurrent/short circuit)",
                 can_write: false,

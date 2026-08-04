@@ -564,7 +564,7 @@ string is derived *from*:
 |---|---|
 | An error type | `thiserror` — `#[error("…")]` |
 | **Any** `Display` — a variant name, a per-variant literal, or a string interpolating runtime fields | `derive_more` — `#[display("…")]` |
-| Variant iteration, count, or discriminant conversion | `strum` — `VariantArray`, `EnumCount`, `FromRepr` |
+| Variant iteration, count, or integer → variant | `strum` — `VariantArray`, `EnumCount`, `FromRepr` |
 | An allocation-free `&'static str`, or a `Display` that must round-trip back through `FromStr` | `strum` — `IntoStaticStr`, `Display` + `EnumString` |
 | A parse error a **human or an ASCOM client reads** | hand-written `FromStr` + a bespoke error |
 
@@ -574,10 +574,20 @@ plain case with no attributes at all, and it is the only one of the two
 that can interpolate a field. Reach past it to `strum` only for something
 `derive_more` cannot express:
 
-- **`VariantArray` / `EnumCount` / `FromRepr`** have no `derive_more`
-  counterpart, and they retire whole classes of drift: a hand-maintained
-  `const ALL` array that silently omits a variant, and a hand-synced
-  `COUNT` constant.
+- **`VariantArray` / `EnumCount`** have no `derive_more` counterpart, and
+  they retire whole classes of drift: a hand-maintained `const ALL` array
+  that silently omits a variant, and a hand-synced `COUNT` constant.
+  `FromRepr` does have one — `derive_more`'s `TryFrom` with
+  `#[try_from(repr)]` — which returns `Result` where strum returns
+  `Option`; pick by which the call site wants.
+
+**No derive in either crate converts a variant *to* an integer.** strum's
+18 derives and `derive_more`'s 19 all go the other way or work on variant
+fields; `num_enum::IntoPrimitive` is the crate that does it, and it is not
+a workspace dependency. So a type that needs a stable numeric id should
+carry it as data rather than lean on the discriminant — `SwitchId` keeps
+its ASCOM ids in `SwitchInfo::id` and resolves `from_id` through that
+table, which also frees the variants to be reordered.
 - **`IntoStaticStr`** yields `&'static str`; `derive_more`'s only string
   derive allocates. `ConfigAction::name()` is `self.into()` because of it.
 - **`Display` + `EnumString`** read the *same* `#[strum(serialize = "…")]`
