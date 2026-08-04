@@ -23,9 +23,15 @@ the full layered contract and its rationale.
 |-------|-------------|--------|-------------|
 | R1 | Isolation + credential hardening: runner VLAN (router + tagged template NIC), write credential removed from runner `.env`, fencing verified by dispatch job | **Done** (2026-08-02: probe matrix from inside a clone — GitHub + cache:8080 reachable, all other RFC1918 dropped; acceptance dispatch green through the fence) | infra only |
 | R2 | Route Linux: conditional `runs-on` in bazel.yml (push + same-repo PRs), LAN write secret gated on push, skip provisioning steps on the pool, kill-switch variable, doc updates | **Done** (2026-08-02: PR's own ubuntu leg self-tested on the pool pre-merge; first push-to-main ran on the pool and grew the LAN cache +894 objects via the write secret) | PR #849 |
-| R3 | Windows runner template: one-job service, template hygiene, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | **Done** (2026-08-03: Server 2025 template VMID 904 builds `//...` green — 228/228; orchestrator deployed with three slots and all three JIT-registered within 17 s, including the first real Windows registration; msi measurement still outstanding) | PR #856, PR #857 |
+| R3 | Windows runner template: one-job service, template hygiene, orchestrator multi-slot rework (Windows slot + second Linux slot), validation dispatch job, msi compile timing measurement | **Done** (2026-08-03: first Server 2025 template — VMID 904, **since superseded by 906 in R4**, see that row — built `//...` green 228/228; orchestrator deployed with three slots and all three JIT-registered within 17 s, including the first real Windows registration; msi measurement still outstanding) | PR #856, PR #857 |
 | R4 | Route Windows: `bazel / windows-latest` via the same expression, `RP_POOL_WINDOWS` kill switch; msi `build-verify` only if the R3 measurement beats hosted | **Bazel leg done** (2026-08-03: routing correct on the first job; two template gaps it exposed — no PowerShell 7, and a session-0 runner that OmniSim cannot start under — fixed in template 906, full build+test+BDD green there); msi still measurement-gated | this PR |
 | R5 | Route `bazel coverage`: same expression + provisioning guards in bazel-coverage.yml, Linux template warmed for the nightly/instrumented graph, shared `RP_POOL_LINUX` kill switch | Planned | — |
+
+VMIDs named in the rows above are **historical record, not current state** —
+a phase row says which template that phase built. The single source of truth
+for what the pool clones today is the `SLOTS` array in
+`tools/ci/rp-runner-pool.sh`; check there during an incident or a rebuild,
+never this table.
 
 R1 is strictly first (it closes residual risk before exposure increases).
 R2 depends on R1. R3 is independent of R2 and can proceed in parallel once
