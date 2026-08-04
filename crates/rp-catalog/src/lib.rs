@@ -485,11 +485,12 @@ impl Catalog {
     }
 
     /// Row references come from the packed key and named tables. A
-    /// corrupt blob can carry one past the end of its section, and the
-    /// `read_*` helpers answer `0` for an out-of-range read — which
-    /// would materialize a plausible-looking target at (0, 0) named
-    /// after the first pool string. Bounding the index makes that read
-    /// as a miss, like every other unaddressable position here.
+    /// corrupt blob can carry one past the end of its section, and an
+    /// overrunning index does not read zeros: the sections are
+    /// contiguous, so it reads the *next* section's bytes as this
+    /// one's fields and yields a fully-formed target with a plausible
+    /// position, magnitude and size. Bounding the index makes it a
+    /// miss, like every other unaddressable position here.
     fn materialize(&self, row_ref: u32) -> Option<ResolvedTarget> {
         let idx = position(row_ref & !STAR_BIT);
         if row_ref & STAR_BIT == 0 {

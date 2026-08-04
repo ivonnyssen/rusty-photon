@@ -102,9 +102,9 @@ fn pool_str_reads_an_unaddressable_offset_as_absent() {
 }
 
 /// A row reference past the end of its section must read as a miss.
-/// The `read_*` helpers answer `0` out of range, so an unbounded index
-/// would yield a target at (0, 0) carrying the first pool string as its
-/// name — plausible enough to be believed.
+/// The sections are contiguous, so an unbounded index reads the next
+/// section's bytes as this section's fields rather than reading zeros,
+/// and produces a fully-formed target — believable enough to act on.
 #[test]
 fn materialize_reads_an_out_of_range_row_reference_as_a_miss() {
     let c = cat();
