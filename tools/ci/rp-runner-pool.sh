@@ -102,10 +102,17 @@ log() { echo "$(date -Is) [$1] ${*:2}"; }
 # limit) and is deliberately NOT a verdict — the same discipline the wait loop
 # applies to an unreadable `qm status`, and the reason this uses -sS rather
 # than -f: a 404 must be readable as a result, not collapsed into a transport
-# failure. A 404 IS a verdict. A JIT runner exists from the moment its config
-# is minted (status `offline` until it connects) and is deleted by GitHub the
-# moment its single job ends, so "absent" means "no longer working" — never
-# "not registered yet".
+# failure.
+#
+# "gone" folds together three states that cannot be told apart from outside
+# and need not be, because they mean the same thing to a slot: never
+# connected, died, or finished. A JIT runner exists from the moment its config
+# is minted and reads `offline` until it connects; when its job ends GitHub
+# deletes some registrations outright (404) and leaves others sitting
+# `offline` — in this pool the Windows clones leak entries that way and the
+# Linux ones do not. That asymmetry is harmless here: a slot only ever asks
+# about the id it minted for the clone it is watching, and each of those
+# states means that clone is not working a job.
 runner_state() {
   local id=$1 body code
   body=$(mktemp) || { echo unknown; return; }
@@ -273,8 +280,9 @@ slot_loop() {
     # idle clone is `online`, a busy one is `online`, and only a clone that is
     # no longer working its job reads otherwise. The strike count exists
     # because "not online" is briefly TRUE on the happy path too: the runner
-    # is deleted the instant its job ends, a few seconds before the guest
-    # finishes powering off. Normal shutdowns lose that race by minutes, so
+    # stops reading `online` the instant its job ends, a few seconds before
+    # the guest finishes powering off. Normal shutdowns lose that race by
+    # minutes, so
     # the grace period never fires on them — but a shutdown that hangs past it
     # is exactly the wedge this is here to catch, and reclaiming it then is
     # correct.
