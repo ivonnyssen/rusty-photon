@@ -3,6 +3,8 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::guiding::GUIDER_METRICS_WINDOW;
+
 /// What a train is for. The guiding train tells rp which camera's
 /// focus and rotation state the guider depends on; everything else is
 /// an imaging train.
@@ -152,10 +154,6 @@ impl TryFrom<i64> for SweepHalfWidth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "i64")]
 pub struct FramesPerStep(u32);
-
-/// The guider service's per-frame metrics ring size (phd2-guider.md
-/// § `GET /api/v1/guiding/metrics`).
-const GUIDER_METRICS_WINDOW: i64 = 50;
 
 impl FramesPerStep {
     #[must_use]

@@ -117,17 +117,26 @@ const fn default_watch_poll() -> Duration {
     Duration::from_secs(5)
 }
 
+/// The guider service's per-frame metrics ring size (phd2-guider.md
+/// § `GET /api/v1/guiding/metrics`). Every config value counted in
+/// guide frames is bounded by it: the ring is the whole supply, so a
+/// larger request can never be satisfied.
+pub(crate) const GUIDER_METRICS_WINDOW: i64 = 50;
+
 /// The focus watch's median window in frames. Parse-don't-validate:
 /// a parabola of medians needs history — fewer than 3 frames is
-/// noise, rejected at load. Defaults to 10.
+/// noise — and the metrics ring holds at most
+/// [`GUIDER_METRICS_WINDOW`] frames, so a larger window would leave
+/// the watch permanently below its own threshold and silently never
+/// fire. Both bounds are rejected at load. Defaults to 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "i64")]
-pub struct WatchWindow(u32);
+pub struct WatchWindow(usize);
 
 impl WatchWindow {
     #[must_use]
     pub const fn value(self) -> usize {
-        self.0 as usize
+        self.0
     }
 }
 
@@ -141,10 +150,11 @@ impl TryFrom<i64> for WatchWindow {
     type Error = String;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        match u32::try_from(value) {
-            Ok(v) if v >= 3 => Ok(Self(v)),
+        match usize::try_from(value) {
+            Ok(v) if v >= 3 && value <= GUIDER_METRICS_WINDOW => Ok(Self(v)),
             _ => Err(format!(
-                "focus_watch.window must be an integer >= 3, got {value}"
+                "focus_watch.window must be an integer between 3 and \
+                 {GUIDER_METRICS_WINDOW} (the guider metrics window), got {value}"
             )),
         }
     }
@@ -280,7 +290,7 @@ const fn default_guiding_timeout() -> Duration {
 mod tests {
     use std::time::Duration;
 
-    use super::{FocusWatchConfig, RecalibrateAboveDeg};
+    use super::{FocusWatchConfig, RecalibrateAboveDeg, GUIDER_METRICS_WINDOW};
     use crate::config::load_config;
     use crate::config::test_support::MINIMAL_CONFIG_JSON;
 
@@ -460,11 +470,23 @@ mod tests {
         assert_eq!(parsed.degrade_ratio.value(), 1.5);
         assert_eq!(parsed.poll_interval, Duration::from_millis(250));
 
-        let window_err =
-            serde_json::from_value::<FocusWatchConfig>(serde_json::json!({ "window": 2 }))
-                .unwrap_err()
-                .to_string();
-        assert!(window_err.contains("focus_watch.window must be an integer >= 3"));
+        // The upper bound is the guider's metrics ring: a window past it
+        // could never be filled, so the watch would never fire.
+        let at_cap: FocusWatchConfig =
+            serde_json::from_value(serde_json::json!({ "window": GUIDER_METRICS_WINDOW })).unwrap();
+        assert_eq!(at_cap.window.value(), 50);
+
+        for bad_window in [2, GUIDER_METRICS_WINDOW + 1] {
+            let err = serde_json::from_value::<FocusWatchConfig>(
+                serde_json::json!({ "window": bad_window }),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("focus_watch.window must be an integer between 3 and 50"),
+                "window {bad_window} gave: {err}"
+            );
+        }
         for bad_ratio in [1.0, 0.5, f64::NAN] {
             let err = serde_json::from_value::<FocusWatchConfig>(
                 serde_json::json!({ "degrade_ratio": bad_ratio }),
