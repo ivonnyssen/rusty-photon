@@ -57,13 +57,22 @@ failure of the others.
    events — fork PRs receive no secrets at all, and same-repo PR events are
    excluded by the event gate. This mirrors the Cloudflare R2 cloud cache's
    public-read/token-write poisoning defense exactly.
+
+   One bounded exception, on Windows only: the template enables autologon,
+   which stores that VM's local administrator password in the registry in
+   cleartext. It buys the interactive desktop session the test suite needs
+   (see the skill doc), and it is not what this layer guards against — the
+   credential unlocks nothing beyond the ephemeral clone, on which the job
+   already runs elevated. It stays bounded because only one Windows clone
+   runs at a time and the Linux template does not share the password.
 5. **Network fencing.** Runner VMs live on a dedicated VLAN that can reach
    the WAN, DNS, and the LAN build cache's port — nothing else on RFC1918.
    Pool control runs over the QEMU guest agent, which needs no network
    path, so fencing cannot break pool mechanics.
 6. **A no-commit kill switch.** Routing is gated on a repo Actions variable
-   (opt-in), so a pool outage is a settings flip back to hosted runners,
-   not an emergency workflow PR while a required check blocks every merge.
+   (opt-in) — one per pool OS, since the venues fail independently — so a
+   pool outage is a settings flip back to hosted runners, not an emergency
+   workflow PR while a required check blocks every merge.
 
 Residual risk, with all layers up: an approved-despite-review malicious
 fork job steals one VM's CPU for at most the job timeout and has WAN egress

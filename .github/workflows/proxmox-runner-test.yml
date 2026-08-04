@@ -8,7 +8,9 @@
 #
 # The runner is an ephemeral clone of a pre-provisioned VM template (SDKs,
 # OmniSim, Pebble, bazelisk baked in), registered just-in-time for exactly
-# one job and destroyed afterwards — hence no install steps here. The LAN
+# one job and destroyed afterwards — hence no install steps here. There is
+# one job per pool OS; dispatch this workflow after rebuilding either
+# template, which is what the Windows job's parity step is for. The LAN
 # cache endpoint comes from the runner's own .env (RP_LAN_CACHE_URL), never
 # from this file, and is masked first thing so it cannot appear in public
 # logs. All use of the cache here is read-only: no write credential exists
@@ -34,6 +36,79 @@ jobs:
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then echo "::add-mask::$RP_LAN_CACHE_URL"; fi
 
       - uses: actions/checkout@v7
+
+      - name: bazel build
+        timeout-minutes: 30
+        run: |
+          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
+          fi
+          bazel build "${FLAGS[@]}" //...
+
+      - name: bazel test (fast)
+        run: |
+          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
+          fi
+          bazel test "${FLAGS[@]}" \
+            --test_tag_filters=-requires-cargo,-bdd,-conformu //...
+
+      - name: bazel test (BDD)
+        run: |
+          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
+          fi
+          bazel test "${FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
+            --test_output=all //...
+
+  build-test-windows:
+    runs-on: [self-hosted, Windows, X64, proxmox-ephemeral-windows]
+    name: ephemeral-runner / windows
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Mask runner-provided cache endpoint
+        run: |
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then echo "::add-mask::$RP_LAN_CACHE_URL"; fi
+
+      # The Windows template has to supply what GitHub's hosted image supplies,
+      # and a gap in it is otherwise invisible until a real job trips over it —
+      # a missing `pwsh` cost bazel.yml's first pool Windows run, because a
+      # stock Server install ships only Windows PowerShell 5.1 and `shell: pwsh`
+      # then has nothing to run. Assert the assumptions here, before the build,
+      # so a template rebuild that drops one fails loudly on dispatch instead of
+      # on someone's PR.
+      - name: Verify template parity with the hosted image
+        run: |
+          set -euo pipefail
+          fail=0
+          command -v pwsh >/dev/null || { echo "::error::pwsh (PowerShell 7) missing"; fail=1; }
+          # BAZEL_SH is a native Windows path; swap separators before testing
+          # it, since this shell's own file tests do not reliably accept
+          # backslashes. Default-expand FIRST: under `set -u` a substitution
+          # on an unset variable aborts the step outright, which would skip
+          # both this diagnostic and every check below it — the opposite of
+          # what a parity check is for.
+          bazel_sh="${BAZEL_SH:-}"
+          bazel_sh="${bazel_sh//\\//}"
+          [[ -n "$bazel_sh" && -x "$bazel_sh" ]] || { echo "::error::BAZEL_SH unset or not executable"; fail=1; }
+          for var in QHYCCD_SDK_DIR ZWO_SDK_LIB_DIR OMNISIM_PATH PEBBLE_PATH \
+                     PEBBLE_CHALLTESTSRV_PATH LIBCLANG_PATH; do
+            [[ -n "${!var:-}" ]] || { echo "::error::$var unset"; fail=1; }
+          done
+          command -v bazel >/dev/null || { echo "::error::bazel missing"; fail=1; }
+          command -v git >/dev/null || { echo "::error::git missing"; fail=1; }
+          exit $fail
+
+      - uses: actions/checkout@v7
+
+      - name: Shorten Bazel output base
+        run: echo 'startup --output_base=C:/b' > user.bazelrc
 
       - name: bazel build
         timeout-minutes: 30

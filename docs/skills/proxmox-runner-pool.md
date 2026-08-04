@@ -37,11 +37,47 @@ Components:
   itself, which lives at `C:\actions-runner` (mirroring the Linux
   `/home/ci/actions-runner`) — that is where the orchestrator injects
   `.jitconfig`, so a template rebuild must keep the path. A `gha-runner`
-  scheduled task (AtStartup, SYSTEM) plays the systemd unit's role. Two Windows-only
-  requirements: `BAZEL_SH` must point at Git's `bash.exe` or Bazel reports
-  "No suitable shell toolchain found", and `QHYCCD_SDK_DIR` only reaches
-  build actions because `.bazelrc` forwards it (a machine-wide SDK is
-  invisible to the `GITHUB_WORKSPACE` fallback hosted runners rely on).
+  scheduled task plays the systemd unit's role, and **it must run in an
+  interactive desktop session, not as SYSTEM** — see below. Three
+  Windows-only requirements: `BAZEL_SH` must point at Git's `bash.exe` or
+  Bazel reports "No suitable shell toolchain found"; `QHYCCD_SDK_DIR` only
+  reaches build actions because `.bazelrc` forwards it (a machine-wide SDK is
+  invisible to the `GITHUB_WORKSPACE` fallback hosted runners rely on); and
+  **PowerShell 7 (`pwsh`) must be installed**, because a stock Windows Server
+  ships only Windows PowerShell 5.1 and every `shell: pwsh` step then has
+  nothing to run — the failure that broke this venue's first real job.
+
+  The general rule behind that last one: **the template must supply whatever
+  GitHub's hosted image supplies and the workflows assume.** Hosted images
+  carry a large pre-installed inventory that workflow YAML consumes without
+  ever naming it as a dependency, so a gap is invisible until a job trips
+  over it. `proxmox-runner-test.yml`'s Windows job asserts the ones known to
+  matter before it builds — extend it whenever a workflow starts depending on
+  something new from the image, and dispatch it after any template rebuild.
+* **The Windows runner needs an interactive desktop session.** The
+  `gha-runner` task runs as `Administrator` with `LogonType=Interactive` and
+  an **AtLogOn** trigger, and the template has autologon enabled
+  (`AutoAdminLogon`/`DefaultUserName`/`DefaultPassword` under
+  `HKLM\...\Winlogon`) so that session exists from boot. Running it as
+  SYSTEM instead puts the job in session 0, which has no desktop — and
+  OmniSim builds a **system tray icon** at startup, so it throws
+  `System.InvalidOperationException: TryCreate failed` and dies with exit
+  code `0xe0434352`. Every BDD suite then fails or times out while `bazel
+  build` stays perfectly green, which is exactly how this stayed hidden until
+  the venue's first real job. GitHub's own hosted Windows images use the same
+  autologon arrangement.
+
+  **The credential tradeoff is deliberate and bounded.** Autologon stores the
+  local administrator password in the registry in cleartext, which reads at
+  first glance like a breach of ADR-020 layer 4 ("no standing credentials on
+  the runner"). That layer is about credentials which unlock something
+  *outside* the VM — a GitHub token, a cache write key. This one unlocks only
+  the ephemeral clone itself, on which the job already runs elevated, so it
+  grants a malicious job nothing it does not already have. What keeps the
+  blast radius at one VM: the pool runs a single Windows clone at a time, the
+  clones are VLAN-fenced, and the Linux template does not share the password.
+  Do not extend this to a second concurrent Windows slot without revisiting
+  it.
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in the script's
@@ -75,8 +111,9 @@ dangerous combination. The rule bifurcates by runner kind
   `pull_request` jobs under ADR-020's six-layer contract: a fork-excluding
   `runs-on` expression (every falsy branch lands on GitHub-hosted), the
   fork-PR approval checkpoint, JIT single-use VMs, no credentials on the
-  runner, VLAN fencing, and the `RP_POOL_LINUX` kill-switch variable.
-  bazel.yml's Linux leg is the implementation. **Approving a fork PR's
+  runner, VLAN fencing, and the per-OS kill-switch variables
+  (`RP_POOL_LINUX`, `RP_POOL_WINDOWS`).
+  bazel.yml's Linux and Windows legs are the implementation. **Approving a fork PR's
   workflow runs is the human layer: review the workflow-file diff first —
   a fork can only reach this pool by editing `runs-on`.**
 * Runners are **JIT-registered and single-use**: the config injected into a
@@ -122,17 +159,31 @@ dangerous combination. The rule bifurcates by runner kind
   ```
 
   This is part of the one-time setup contract.
-* **Kill switch:** routing of bazel.yml's Linux leg to the pool is gated on
-  the repo Actions variable `RP_POOL_LINUX` being `on`. If the pool host is
-  down, required checks sit queued with no error anywhere (GitHub cancels a
-  self-hosted job only after 24 hours in queue) — unset or flip the
-  variable (`gh variable set RP_POOL_LINUX --body off`) and re-run; jobs
-  route back to GitHub-hosted runners with no commit needed.
-* **Pins live in two places:** the hosted install steps in bazel.yml and
-  the pool template carry the same toolchain pins (bazelisk, OmniSim,
-  Pebble, camera SDKs). Bumping a pin in the workflow requires rebuilding
-  the template (procedure below) — the pool otherwise keeps running the old
-  pin silently.
+* **Kill switches, one per OS:** routing of bazel.yml's Linux leg is gated
+  on the repo Actions variable `RP_POOL_LINUX` being `on`, and its Windows
+  leg on `RP_POOL_WINDOWS`. They are separate because the venues fail
+  independently — a wedged Windows slot or a stale Windows template should
+  not cost Linux its speed. If the pool host is down, required checks sit
+  queued with no error anywhere (a queued self-hosted job is cancelled only
+  after 24 hours — see
+  [GitHub Actions limits](https://docs.github.com/en/actions/reference/limits))
+  — flip the switch for whichever OS is affected and
+  re-run; that OS routes back to GitHub-hosted runners with no commit
+  needed. Match the variable to the leg that is stuck:
+
+  ```sh
+  gh variable set RP_POOL_LINUX  --body off   # bazel / ubuntu-latest (and, after R5, bazel coverage)
+  gh variable set RP_POOL_WINDOWS --body off  # bazel / windows-latest
+  ```
+
+  A whole-pool evacuation — the host is down, rather than one slot — means
+  running both.
+* **Pins live in three places:** the hosted install steps in bazel.yml and
+  *both* pool templates (Linux and Windows) carry the same toolchain pins
+  (bazelisk, OmniSim, Pebble, camera SDKs). Bumping a pin in the workflow
+  requires rebuilding both templates (procedure below) — the pool otherwise
+  keeps running the old pin silently, and a pin bumped on only one template
+  makes the two OS legs disagree about what they tested.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
@@ -141,7 +192,25 @@ dangerous combination. The rule bifurcates by runner kind
 * To update the runner toolchain (new SDK pin, new runner release), boot a
   fresh clone of the template, apply the change, wipe `/etc/machine-id`, run
   `cloud-init clean`, power off, and convert to the new template — then roll
-  the template VMID forward in `rp-runner-pool.sh`.
+  the template VMID forward in `rp-runner-pool.sh`. Validate the new template
+  by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
+  forward, and validate with the whole job: `bazel build` alone never spawns
+  OmniSim, so it cannot see a template that can build but cannot test.
+* **Windows template rebuilds, two things that will bite:**
+  * **Do not `sysprep /generalize`.** It looks like the analogue of the Linux
+    template's `machine-id` wipe, but its specialize pass runs on every clone
+    boot and would add minutes to a pool whose whole value is fast pickup —
+    and nothing it buys applies here: Proxmox gives each clone a fresh MAC,
+    only one Windows clone exists at a time so a duplicate computer name
+    cannot collide, the guests are not domain-joined, and the runner's
+    identity comes from the injected JIT config rather than the host name.
+  * **A linked clone inherits the template's RTC** and boots badly out of
+    date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
+    means an in-guest script must never use a wall-clock deadline: the first
+    one-job loop computed an end time, Windows then corrected the clock past
+    it, and every clone powered itself off before the orchestrator could
+    inject. The loop resyncs time before touching the network and measures
+    its wait with a monotonic timer.
 * What lives where: **VMIDs are in the repo**, in `rp-runner-pool.sh`'s
   `SLOTS` array — they are local to one hypervisor, meaningless anywhere else,
   and the orchestrator needs them to do its job. What is deliberately absent
