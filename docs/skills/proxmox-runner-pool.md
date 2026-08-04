@@ -164,8 +164,10 @@ dangerous combination. The rule bifurcates by runner kind
   leg on `RP_POOL_WINDOWS`. They are separate because the venues fail
   independently — a wedged Windows slot or a stale Windows template should
   not cost Linux its speed. If the pool host is down, required checks sit
-  queued with no error anywhere (GitHub cancels a self-hosted job only after
-  24 hours in queue) — flip the switch for whichever OS is affected and
+  queued with no error anywhere (a queued self-hosted job is cancelled only
+  after 24 hours — see
+  [GitHub Actions limits](https://docs.github.com/en/actions/reference/limits))
+  — flip the switch for whichever OS is affected and
   re-run; that OS routes back to GitHub-hosted runners with no commit
   needed. Match the variable to the leg that is stuck:
 
@@ -190,7 +192,25 @@ dangerous combination. The rule bifurcates by runner kind
 * To update the runner toolchain (new SDK pin, new runner release), boot a
   fresh clone of the template, apply the change, wipe `/etc/machine-id`, run
   `cloud-init clean`, power off, and convert to the new template — then roll
-  the template VMID forward in `rp-runner-pool.sh`.
+  the template VMID forward in `rp-runner-pool.sh`. Validate the new template
+  by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
+  forward, and validate with the whole job: `bazel build` alone never spawns
+  OmniSim, so it cannot see a template that can build but cannot test.
+* **Windows template rebuilds, two things that will bite:**
+  * **Do not `sysprep /generalize`.** It looks like the analogue of the Linux
+    template's `machine-id` wipe, but its specialize pass runs on every clone
+    boot and would add minutes to a pool whose whole value is fast pickup —
+    and nothing it buys applies here: Proxmox gives each clone a fresh MAC,
+    only one Windows clone exists at a time so a duplicate computer name
+    cannot collide, the guests are not domain-joined, and the runner's
+    identity comes from the injected JIT config rather than the host name.
+  * **A linked clone inherits the template's RTC** and boots badly out of
+    date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
+    means an in-guest script must never use a wall-clock deadline: the first
+    one-job loop computed an end time, Windows then corrected the clock past
+    it, and every clone powered itself off before the orchestrator could
+    inject. The loop resyncs time before touching the network and measures
+    its wait with a monotonic timer.
 * What lives where: **VMIDs are in the repo**, in `rp-runner-pool.sh`'s
   `SLOTS` array — they are local to one hypervisor, meaningless anywhere else,
   and the orchestrator needs them to do its job. What is deliberately absent
