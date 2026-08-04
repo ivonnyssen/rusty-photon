@@ -358,7 +358,7 @@ mod tests {
     }
 
     fn disconnected_device() -> FalconRotatorDevice {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         FalconRotatorDevice::new(RotatorConfig::default(), manager)
     }
 
@@ -383,7 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_comes_from_config() {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         let device = FalconRotatorDevice::new(
             RotatorConfig {
                 unique_id: "test-rotator-unique-id".to_string(),
@@ -524,9 +524,7 @@ mod mock_tests {
         Arc<FalconManager>,
         Arc<MockFalconTransportFactory>,
     ) {
-        let manager = FalconManager::new(
-            Arc::clone(&factory) as Arc<dyn rusty_photon_shared_transport::TransportFactory>
-        );
+        let manager = FalconManager::new(Arc::<MockFalconTransportFactory>::clone(&factory));
         let device = FalconRotatorDevice::new(RotatorConfig::default(), Arc::clone(&manager));
         (device, manager, factory)
     }
@@ -731,10 +729,9 @@ mod mock_tests {
         // closed the transport.
         use crate::switch_device::FalconStatusSwitchDevice;
         use crate::SwitchConfig;
-        use rusty_photon_shared_transport::TransportFactory;
 
         let factory = Arc::new(MockFalconTransportFactory::default());
-        let manager = FalconManager::new(Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::<MockFalconTransportFactory>::clone(&factory));
         let rotator = FalconRotatorDevice::new(RotatorConfig::default(), Arc::clone(&manager));
         let switch = FalconStatusSwitchDevice::new(SwitchConfig::default(), Arc::clone(&manager));
 

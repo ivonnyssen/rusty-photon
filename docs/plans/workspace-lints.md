@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Not started | |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), L5a below |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -308,6 +308,85 @@ lossless, so what it leaves behind is the genuinely lossy set — and every
 L5's problem. What remains is the work L5 was always going to be.
 
 Crate by crate, `rp` last — it carries the largest share on its own.
+
+### `as_conversions` is not one problem
+
+Join each `as_conversions` span with whichever of clippy's five diagnostic cast
+lints fired at the same span. That is the compiler's own verdict on what the
+cast can lose, and it classifies far better than reading source text. Over the
+485 sites left after #854:
+
+| n | what also fired | what fixing it needs |
+|---:|---|---|
+| 162 | nothing | total by type — only a spelling to pick |
+| 98 | truncation, float source | a rounding / clamp policy |
+| 77 | truncation | genuine `try_from` candidates |
+| 67 | sign loss / possible wrap | same-width sign flip |
+| 66 | precision loss | int → float; no `From` impl exists |
+| 8 | truncation, bounded on the same line | `#[expect]` with a reason |
+| 7 | — | FFI / opaque platform types |
+
+The 162 + 67 that clippy proves total then split by *shape*, and a shape has one
+answer rather than 229:
+
+| n | shape | answer |
+|---:|---|---|
+| 101 | `x as usize` | no `From<u32> for usize` — needs a policy |
+| 62 | `i32 as usize` from a cucumber `{int}` parameter | change the step signature; `{int}` parses via `FromStr`, so `usize` works and 37 steps already do it |
+| 32 | trait-object coercion | not a value conversion — L5a below |
+| 12 | `x as u64` | as with `usize` |
+| 16 | masked / const narrowing, `char` ↔ int, byte-string | per-site |
+
+Two shapes look mechanical and are not. `hfr.rs`'s `r as usize` sits in a loop
+whose body needs signed arithmetic (`(r - cx) * (r - cx)`) and whose bounds feed
+`f64::from` — retyping the loop breaks both. And a `const` cannot use `From` at
+all (`u32::from` is not const-stable), so `const RAW16_MAX_ADU: u32 = u16::MAX
+as u32` has no `From` spelling available.
+
+### L5a — trait-object coercions
+
+32 sites cast to a trait object. These are unsizing coercions, not value
+conversions: nothing can be lost, and the fix is to give the compiler a
+coercion site instead of an `as`. Three shapes, and only one is subtle.
+
+**`Arc::clone(&x) as Arc<dyn T>` cannot simply lose its cast.** `Arc::clone`
+takes its type parameter from the *expected* type, so an `Arc<dyn T>`
+expectation makes it demand `&Arc<dyn T>` and the unsizing never gets a chance:
+
+```
+808 |     Arc::clone(&manager),
+    |     ---------- ^^^^^^^^ expected `&Arc<dyn ServiceManager>`, found `&Arc<RecordingManager>`
+```
+
+Two spellings work. Where the concrete `Arc` is not needed afterwards, coerce
+the binding once and every later `Arc::clone` reads normally:
+
+```rust
+fn spawn(manager: Arc<ScriptedDiscovery>) -> Self {
+    let manager: Arc<dyn ServiceManager> = manager;
+```
+
+Where it *is* needed — which is 17 of these 19 sites, all test fixtures that
+hand the trait object to the code under test and keep the mock for assertions —
+pin the type parameter with a turbofish so the coercion lands on the result:
+
+```rust
+FalconManager::new(Arc::<MockFalconTransportFactory>::clone(&factory))
+```
+
+`x.clone()` also compiles (method resolution takes the type from the receiver),
+but it drops the explicit `Arc::clone` spelling the workspace uses to keep
+refcount bumps visible.
+
+`Arc::new(Concrete) as Arc<dyn T>` just loses its cast — the argument alone
+fixes the type parameter, so the coercion applies to the result.
+
+That leaves 7 of the 32: `s as &dyn ProgressEmitter` in `rp`'s MCP tools, where
+the cast sits in a closure body. A closure with an inferred return type is not a
+coercion site, so these need either an explicit closure return type or an
+`#[expect]` — and unlike the other 25 they are production code. Collapsing the
+trait object is not an alternative: `ProgressEmitter` has a second impl that
+the unit tests count progress notifications through.
 
 ## L6a — split the CI channels
 

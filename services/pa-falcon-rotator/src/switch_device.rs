@@ -412,7 +412,7 @@ mod tests {
     }
 
     fn disconnected_device() -> FalconStatusSwitchDevice {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         FalconStatusSwitchDevice::new(SwitchConfig::default(), manager)
     }
 
@@ -464,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_comes_from_config() {
-        let manager = FalconManager::new(Arc::new(NoopFactory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::new(NoopFactory));
         let device = FalconStatusSwitchDevice::new(
             SwitchConfig {
                 unique_id: "test-switch-unique-id".to_string(),
@@ -570,11 +570,10 @@ mod tests {
 mod mock_tests {
     use super::*;
     use crate::mock::MockFalconTransportFactory;
-    use rusty_photon_shared_transport::TransportFactory;
 
     async fn connected_device() -> (FalconStatusSwitchDevice, Arc<MockFalconTransportFactory>) {
         let factory = Arc::new(MockFalconTransportFactory::default());
-        let manager = FalconManager::new(Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::<MockFalconTransportFactory>::clone(&factory));
         let device = FalconStatusSwitchDevice::new(SwitchConfig::default(), manager);
         device.set_connected(true).await.unwrap();
         (device, factory)

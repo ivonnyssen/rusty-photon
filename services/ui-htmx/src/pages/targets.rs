@@ -1396,12 +1396,7 @@ mod tests {
     async fn every_targets_handler_renders_the_no_rp_card_without_an_rp() {
         // `AppState::with_client` carries no rp state — the shape the
         // stubbed-driver unit states use.
-        let state = || {
-            axum::extract::State(AppState::with_client(
-                "stub",
-                Arc::new(UnusedConfig) as Arc<dyn ConfigClient>,
-            ))
-        };
+        let state = || axum::extract::State(AppState::with_client("stub", Arc::new(UnusedConfig)));
         let no_rp = "No rp orchestrator is configured";
         let html = body_of(page(state(), HeaderMap::new()).await).await;
         assert!(html.contains(no_rp), "{html}");

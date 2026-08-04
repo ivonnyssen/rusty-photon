@@ -315,7 +315,7 @@ mod tests {
         (
             RestartManager::new(
                 registry_with(names),
-                Arc::clone(&scripted) as Arc<dyn ServiceManager>,
+                Arc::<ScriptedManager>::clone(&scripted),
                 Duration::from_secs(1),
             ),
             scripted,

@@ -890,7 +890,7 @@ mod tests {
             state,
             config,
             Arc::new(tokio::sync::RwLock::new(services)),
-            Arc::clone(&corrective) as Arc<dyn Corrective>,
+            Arc::<RecordingCorrective>::clone(&corrective),
         );
         (monitor, messages, corrective)
     }

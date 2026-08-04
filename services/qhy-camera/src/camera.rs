@@ -1545,7 +1545,7 @@ mod tests {
         handle: MockCameraHandle,
     ) -> (QhyCameraDevice, Arc<MockCameraHandle>) {
         let handle = Arc::new(handle);
-        let device = QhyCameraDevice::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None);
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
         device.connect().unwrap();
         (device, handle)
     }
@@ -2256,7 +2256,7 @@ mod tests {
         let handle = MockCameraHandle::default();
         handle.set_single_frame_delay(Duration::from_millis(600));
         let handle = Arc::new(handle);
-        let device = QhyCameraDevice::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None)
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
         device.connect().unwrap();
         device
@@ -2369,7 +2369,7 @@ mod tests {
         let handle = MockCameraHandle::default();
         handle.set_single_frame_delay(Duration::from_millis(600));
         let handle = Arc::new(handle);
-        let device = QhyCameraDevice::new(Arc::clone(&handle) as Arc<dyn CameraHandle>, None)
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
         device.connect().unwrap();
         device

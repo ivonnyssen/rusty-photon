@@ -362,7 +362,7 @@ mod mock_tests {
 
     fn make_manager() -> (Arc<FalconManager>, Arc<MockFalconTransportFactory>) {
         let factory = Arc::new(MockFalconTransportFactory::default());
-        let manager = FalconManager::new(Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::<MockFalconTransportFactory>::clone(&factory));
         (manager, factory)
     }
 
@@ -755,7 +755,7 @@ mod mock_tests {
 
     fn make_injectable_manager() -> (Arc<FalconManager>, Arc<InjectableFactory>) {
         let factory = Arc::new(InjectableFactory::default());
-        let manager = FalconManager::new(Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let manager = FalconManager::new(Arc::<InjectableFactory>::clone(&factory));
         (manager, factory)
     }
 
