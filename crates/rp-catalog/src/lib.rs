@@ -480,12 +480,18 @@ impl Catalog {
         })
     }
 
+    /// Row references come from the packed key and named tables. A
+    /// corrupt blob can carry one past the end of its section, and the
+    /// `read_*` helpers answer `0` for an out-of-range read — which
+    /// would materialize a plausible-looking target at (0, 0) named
+    /// after the first pool string. Bounding the index makes that read
+    /// as a miss, like every other unaddressable position here.
     fn materialize(&self, row_ref: u32) -> Option<ResolvedTarget> {
         let idx = position(row_ref & !STAR_BIT);
-        if row_ref & STAR_BIT != 0 {
-            self.materialize_star(idx)
+        if row_ref & STAR_BIT == 0 {
+            (idx < self.dso_count).then(|| self.materialize_dso(idx))?
         } else {
-            self.materialize_dso(idx)
+            (idx < self.star_count).then(|| self.materialize_star(idx))?
         }
     }
 

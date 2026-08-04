@@ -72,10 +72,27 @@ fn load_rejects_truncated_blob() {
 #[test]
 fn pool_str_reads_an_unaddressable_offset_as_absent() {
     let c = cat();
+    // The addition itself overflows.
     assert_eq!(c.pool_str(usize::MAX), "");
-    // One past the pool's last byte: in range for the addition, out of
-    // range for the blob.
-    assert_eq!(c.pool_str(c.bytes.len()), "");
+    // The exact boundary: `pool + off` lands one past the blob's last
+    // byte, so the addition is in range and only the lookup misses.
+    assert_eq!(c.pool_str(c.bytes.len() - c.pool), "");
+}
+
+/// A row reference past the end of its section must read as a miss.
+/// The `read_*` helpers answer `0` out of range, so an unbounded index
+/// would yield a target at (0, 0) carrying the first pool string as its
+/// name — plausible enough to be believed.
+#[test]
+fn materialize_reads_an_out_of_range_row_reference_as_a_miss() {
+    let c = cat();
+    let past_dso = u32::try_from(c.dso_count).unwrap();
+    let past_star = u32::try_from(c.star_count).unwrap();
+    assert_eq!(c.materialize(past_dso), None);
+    assert_eq!(c.materialize(STAR_BIT | past_star), None);
+    // The last valid row of each section still materializes.
+    assert!(c.materialize(past_dso - 1).is_some());
+    assert!(c.materialize(STAR_BIT | (past_star - 1)).is_some());
 }
 
 // --- name resolution ---------------------------------------------------
