@@ -165,10 +165,17 @@ dangerous combination. The rule bifurcates by runner kind
   independently — a wedged Windows slot or a stale Windows template should
   not cost Linux its speed. If the pool host is down, required checks sit
   queued with no error anywhere (GitHub cancels a self-hosted job only after
-  24 hours in queue) — unset or flip the relevant variable
-  (`gh variable set RP_POOL_WINDOWS --body off`) and re-run; that OS routes
-  back to GitHub-hosted runners with no commit needed. A whole-pool
-  evacuation means flipping both.
+  24 hours in queue) — flip the switch for whichever OS is affected and
+  re-run; that OS routes back to GitHub-hosted runners with no commit
+  needed. Match the variable to the leg that is stuck:
+
+  ```sh
+  gh variable set RP_POOL_LINUX  --body off   # bazel / ubuntu-latest (and, after R5, bazel coverage)
+  gh variable set RP_POOL_WINDOWS --body off  # bazel / windows-latest
+  ```
+
+  A whole-pool evacuation — the host is down, rather than one slot — means
+  running both.
 * **Pins live in three places:** the hosted install steps in bazel.yml and
   *both* pool templates (Linux and Windows) carry the same toolchain pins
   (bazelisk, OmniSim, Pebble, camera SDKs). Bumping a pin in the workflow
