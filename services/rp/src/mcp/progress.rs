@@ -100,6 +100,16 @@ impl ProgressSink {
     pub(crate) fn from_request_context(ctx: &RequestContext<RoleServer>) -> Option<Self> {
         Self::from_peer_and_meta(ctx.peer.clone(), &ctx.meta)
     }
+
+    /// View this sink as the trait object the helpers take. Callers
+    /// hold an `Option<ProgressSink>` and the helpers want an
+    /// `Option<&dyn ProgressEmitter>`; unsizing does not reach inside
+    /// `Option`, and a closure with an inferred return type is not a
+    /// coercion site, so `.as_ref().map(ProgressSink::as_emitter)` is
+    /// the spelling that lets the coercion happen here instead.
+    pub(crate) fn as_emitter(&self) -> &dyn ProgressEmitter {
+        self
+    }
 }
 
 #[async_trait]

@@ -81,7 +81,7 @@ impl McpHandler {
         // `Peer::new` is `pub(crate)`, so unit tests can't build
         // a peer themselves).
         let sink = ProgressSink::from_request_context(&ctx);
-        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        let emitter = sink.as_ref().map(ProgressSink::as_emitter);
         self.slew_inner(params, emitter).await
     }
 
@@ -250,7 +250,7 @@ impl McpHandler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let sink = ProgressSink::from_request_context(&ctx);
-        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        let emitter = sink.as_ref().map(ProgressSink::as_emitter);
         self.park_inner(params, emitter).await
     }
 
