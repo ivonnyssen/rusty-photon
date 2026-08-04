@@ -2611,8 +2611,11 @@ guide loop, and is idle otherwise:
 All `focus_watch` fields are optional —
 `{ "window": 10, "degrade_ratio": 1.25, "cooldown": "10m",
 "escalation_deadline": "10m", "poll_interval": "5s" }` are the
-defaults; `window` must be ≥ 3 and `degrade_ratio` a finite number
-> 1.0, rejected at load otherwise. Omitting the block disables the
+defaults; `window` must be between 3 and 50 and `degrade_ratio` a
+finite number > 1.0, rejected at load otherwise. The upper bound is the
+guider service's per-frame metrics ring — 50 frames is the whole supply
+the watch draws medians from, so a larger window could never be filled
+and the watch would silently never fire. Omitting the block disables the
 watch entirely.
 
 ### Plate Solver
