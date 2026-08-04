@@ -64,6 +64,20 @@ fn load_rejects_truncated_blob() {
     ));
 }
 
+/// `materialize_dso` passes `usize::MAX` for a DSO whose type index is
+/// out of range, and `position` saturates to it for a field too large
+/// for the target's `usize`. Both land in `pool_str`, which adds the
+/// offset to the pool base — so an unchecked add panics in debug and
+/// wraps onto an unrelated byte in release. It has to read as absent.
+#[test]
+fn pool_str_reads_an_unaddressable_offset_as_absent() {
+    let c = cat();
+    assert_eq!(c.pool_str(usize::MAX), "");
+    // One past the pool's last byte: in range for the addition, out of
+    // range for the blob.
+    assert_eq!(c.pool_str(c.bytes.len()), "");
+}
+
 // --- name resolution ---------------------------------------------------
 
 #[test]

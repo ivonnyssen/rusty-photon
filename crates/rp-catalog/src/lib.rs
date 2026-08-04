@@ -188,6 +188,27 @@ fn read_u32(bytes: &[u8], off: usize) -> u32 {
         .map_or(0, |b| u32::from_le_bytes(*b))
 }
 
+/// Widen a field that has already been read into the position it names.
+///
+/// This is the one place the `u32` a wire field *is* becomes the `usize`
+/// an offset or a row index *means* — the note above still holds, and
+/// nothing here reads a `usize` off the wire.
+///
+/// `usize` is at least 32 bits on every target the workspace builds
+/// for, so the saturation is unreachable rather than lossy. Where it
+/// could happen the answer is still right: a position past `usize::MAX`
+/// is past the end of any blob, and every consumer reads an
+/// out-of-range position as a miss.
+fn position(field: u32) -> usize {
+    usize::try_from(field).unwrap_or(usize::MAX)
+}
+
+/// Read a little-endian `u32` field and widen it to the position it
+/// names. Every offset in `RPCAT001` is stored this way.
+fn read_position(bytes: &[u8], off: usize) -> usize {
+    position(read_u32(bytes, off))
+}
+
 fn read_i32(bytes: &[u8], off: usize) -> i32 {
     bytes
         .get(off..)
@@ -268,12 +289,12 @@ impl Catalog {
         if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC {
             return Err(CatalogError::BadMagic);
         }
-        let dso = read_u32(bytes, 8) as usize;
-        let star = read_u32(bytes, 12) as usize;
-        let keys = read_u32(bytes, 16) as usize;
-        let named = read_u32(bytes, 20) as usize;
-        let types = read_u32(bytes, 24) as usize;
-        let pool = read_u32(bytes, 28) as usize;
+        let dso = read_position(bytes, 8);
+        let star = read_position(bytes, 12);
+        let keys = read_position(bytes, 16);
+        let named = read_position(bytes, 20);
+        let types = read_position(bytes, 24);
+        let pool = read_position(bytes, 28);
         let catalog = Self::layout(bytes, dso, star, keys, named, types, pool);
         let expected = catalog.pool + pool;
         if bytes.len() != expected {
@@ -335,15 +356,24 @@ impl Catalog {
         }
     }
 
+    /// Resolve a pool offset to its length-prefixed string, or `""` if
+    /// the offset does not name one.
+    ///
+    /// Callers pass offsets straight from the file, and `materialize_dso`
+    /// passes `usize::MAX` deliberately for an out-of-table type. Adding
+    /// that to `self.pool` overflows, so every step here is checked: an
+    /// offset that cannot name a string reads as absent instead of
+    /// panicking in debug and wrapping onto an unrelated byte in release.
     fn pool_str(&self, off: usize) -> &str {
-        let Some(&len) = self.bytes.get(self.pool + off) else {
-            return "";
-        };
-        let start = self.pool + off + 1;
-        self.bytes
-            .get(start..start + len as usize)
-            .and_then(|b| std::str::from_utf8(b).ok())
-            .unwrap_or_default()
+        self.pool_str_at(off).unwrap_or_default()
+    }
+
+    fn pool_str_at(&self, off: usize) -> Option<&str> {
+        let at = self.pool.checked_add(off)?;
+        let &len = self.bytes.get(at)?;
+        let start = at.checked_add(1)?;
+        let end = start.checked_add(usize::from(len))?;
+        std::str::from_utf8(self.bytes.get(start..end)?).ok()
     }
 
     fn dso_coord_degrees(&self, idx: usize) -> (f64, f64) {
@@ -361,7 +391,7 @@ impl Catalog {
     }
 
     fn dso_name(&self, idx: usize) -> &str {
-        self.pool_str(read_u32(self.bytes, self.dso_name + 4 * idx) as usize)
+        self.pool_str(read_position(self.bytes, self.dso_name + 4 * idx))
     }
 
     fn dso_rank(&self, idx: usize) -> u8 {
@@ -383,7 +413,7 @@ impl Catalog {
                 Ordering::Less => lo = mid + 1,
                 Ordering::Greater => hi = mid,
                 Ordering::Equal => {
-                    let off = read_u32(self.bytes, self.named + 8 * mid + 4) as usize;
+                    let off = read_position(self.bytes, self.named + 8 * mid + 4);
                     return Some(self.pool_str(off));
                 }
             }
@@ -413,11 +443,11 @@ impl Catalog {
 
     fn materialize_dso(&self, idx: usize) -> Option<ResolvedTarget> {
         let (ra, dec) = self.dso_coord_degrees(idx);
-        let type_idx = self.bytes.get(self.dso_type + idx).copied().unwrap_or(0) as usize;
+        let type_idx = usize::from(self.bytes.get(self.dso_type + idx).copied().unwrap_or(0));
         let type_off = if type_idx < self.type_count {
-            read_u32(self.bytes, self.types + 4 * type_idx) as usize
+            read_position(self.bytes, self.types + 4 * type_idx)
         } else {
-            usize::MAX // out-of-table index reads as an empty type string
+            usize::MAX // out-of-table index: `pool_str` reads it as absent
         };
         let size = match read_u16(self.bytes, self.dso_size + 2 * idx) {
             0 => None,
@@ -451,7 +481,7 @@ impl Catalog {
     }
 
     fn materialize(&self, row_ref: u32) -> Option<ResolvedTarget> {
-        let idx = (row_ref & !STAR_BIT) as usize;
+        let idx = position(row_ref & !STAR_BIT);
         if row_ref & STAR_BIT != 0 {
             self.materialize_star(idx)
         } else {
@@ -460,7 +490,7 @@ impl Catalog {
     }
 
     fn key_at(&self, idx: usize) -> &str {
-        self.pool_str(read_u32(self.bytes, self.keys + 8 * idx) as usize)
+        self.pool_str(read_position(self.bytes, self.keys + 8 * idx))
     }
 
     fn key_ref_at(&self, idx: usize) -> u32 {
