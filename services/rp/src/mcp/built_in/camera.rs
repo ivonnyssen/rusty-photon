@@ -67,7 +67,7 @@ impl McpHandler {
         // emission as a no-op. See `mcp::progress` for the rmcp
         // 300 s session keep-alive race this guards against.
         let sink = ProgressSink::from_request_context(&ctx);
-        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        let emitter = sink.as_ref().map(ProgressSink::as_emitter);
         self.capture_inner(params, emitter).await
     }
 

@@ -244,7 +244,7 @@ pub(crate) struct CenterOnTargetAdapter<'a> {
 
 impl CenterOnTargetAdapter<'_> {
     fn emitter(&self) -> Option<&dyn ProgressEmitter> {
-        self.progress.as_ref().map(|s| s as &dyn ProgressEmitter)
+        self.progress.as_ref().map(ProgressSink::as_emitter)
     }
 }
 

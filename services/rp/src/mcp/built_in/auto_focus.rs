@@ -837,7 +837,7 @@ impl McpHandler {
             }),
         ));
 
-        let emitter = progress_sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        let emitter = progress_sink.as_ref().map(ProgressSink::as_emitter);
         let result: Result<GuideAfOutcome, String> = async {
             let mut watermark = 0;
             let mut curve_points = Vec::with_capacity(grid.len());
@@ -1078,7 +1078,7 @@ pub(crate) struct AutoFocusAdapter<'a> {
 
 impl AutoFocusAdapter<'_> {
     fn emitter(&self) -> Option<&dyn ProgressEmitter> {
-        self.progress.as_ref().map(|s| s as &dyn ProgressEmitter)
+        self.progress.as_ref().map(ProgressSink::as_emitter)
     }
 }
 

@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), L5a below |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862 and this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -381,12 +381,31 @@ refcount bumps visible.
 `Arc::new(Concrete) as Arc<dyn T>` just loses its cast — the argument alone
 fixes the type parameter, so the coercion applies to the result.
 
-That leaves 7 of the 32: `s as &dyn ProgressEmitter` in `rp`'s MCP tools, where
-the cast sits in a closure body. A closure with an inferred return type is not a
-coercion site, so these need either an explicit closure return type or an
-`#[expect]` — and unlike the other 25 they are production code. Collapsing the
-trait object is not an alternative: `ProgressEmitter` has a second impl that
-the unit tests count progress notifications through.
+The last 7 of the 32 are `s as &dyn ProgressEmitter` in `rp`'s MCP tools, all
+one shape: an `Option<ProgressSink>` becoming the `Option<&dyn ProgressEmitter>`
+the helpers in `internals` take. Two things block the obvious fix at once —
+unsizing does not reach inside `Option`, and a closure with an inferred return
+type is not a coercion site — so neither the argument's type nor the two
+adapters' declared `-> Option<&dyn ProgressEmitter>` can drive the coercion.
+Collapsing the trait object is not an alternative either: `ProgressEmitter` has
+a second impl that the unit tests count progress notifications through.
+
+An inherent method on `ProgressSink` gives the coercion one named home and
+leaves every call site shorter than the cast did:
+
+```rust
+impl ProgressSink {
+    pub(crate) fn as_emitter(&self) -> &dyn ProgressEmitter {
+        self
+    }
+}
+
+let emitter = sink.as_ref().map(ProgressSink::as_emitter);
+```
+
+An explicit closure return type (`|s| -> &dyn ProgressEmitter { s }`) and a
+turbofish on `map` both compile too, but each repeats the trait object at all
+seven sites.
 
 ## L6a — split the CI channels
 

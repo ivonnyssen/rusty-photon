@@ -29,7 +29,7 @@ impl McpHandler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let sink = ProgressSink::from_request_context(&ctx);
-        let emitter = sink.as_ref().map(|s| s as &dyn ProgressEmitter);
+        let emitter = sink.as_ref().map(ProgressSink::as_emitter);
         self.move_focuser_inner(params, emitter).await
     }
 
