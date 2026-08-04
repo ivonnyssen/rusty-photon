@@ -767,7 +767,7 @@ mod tests {
         // single `Debug` line.
         let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
         let result = ServiceRunner::new("test-report")
-            .run(|_shutdown| async move { Err(Box::new(StartupError(RootCause)) as RunError) });
+            .run(|_shutdown| async move { Err(RunError::from(StartupError(RootCause))) });
 
         let rendered = format!("{:?}", result.unwrap_err());
         assert!(

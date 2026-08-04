@@ -364,13 +364,17 @@ mod tests {
         let factory = MockQhyTransportFactory::default();
         let mut t = open(&factory).await;
         let mut buf = Vec::new();
-        for (cmd, idx) in [
-            (br#"{"cmd_id": 13, "speed": 5}"# as &[u8], 13u64),
+        // Typed on the binding: the rows are byte-string literals of
+        // differing length, so the element type has to be named
+        // somewhere for them to unsize to a common `&[u8]`.
+        let cases: &[(&[u8], u64)] = &[
+            (br#"{"cmd_id": 13, "speed": 5}"#, 13),
             (br#"{"cmd_id": 7, "rev": 1}"#, 7),
             (br#"{"cmd_id": 16, "ihold": 10, "irun": 20}"#, 16),
             (br#"{"cmd_id": 19, "pdn_d": 1}"#, 19),
             (br#"{"cmd_id": 3}"#, 3),
-        ] {
+        ];
+        for &(cmd, idx) in cases {
             t.send_frame(cmd).await.unwrap();
             t.recv_frame(&mut buf).await.unwrap();
             let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
