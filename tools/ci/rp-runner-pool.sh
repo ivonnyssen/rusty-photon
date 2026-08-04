@@ -70,9 +70,16 @@ HEALTH_GRACE_MINS=$((HEALTH_PROBE_EVERY * HEALTH_STRIKES * 10 / 60))
 # shell and runner directory, nothing else). Sizing note: every slot keeps one
 # clone powered on at all times, so the host must hold the sum of their
 # memory — see the capacity section of docs/plans/proxmox-pr-routing.md.
+#
+# The name is cosmetic and safe to change: it names the clone VM, prefixes
+# this slot's log lines, and forms the GitHub runner name ("<name>-<epoch>").
+# Nothing keys on it — the reconcile below matches clones by VMID and marker
+# file — so a rename takes effect as each slot next recreates its clone,
+# leaving no stale state behind. What must NOT change casually are the labels,
+# which workflows select on.
 SLOTS=(
-  "runner-eph|903|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-eph2|903|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|903|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|903|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|906|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
 
