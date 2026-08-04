@@ -164,8 +164,8 @@ fn percent_decode(s: &str) -> String {
         match bytes[i] {
             b'+' => out.push(b' '),
             b'%' if i + 2 < bytes.len() => {
-                let hi = (bytes[i + 1] as char).to_digit(16);
-                let lo = (bytes[i + 2] as char).to_digit(16);
+                let hi = char::from(bytes[i + 1]).to_digit(16);
+                let lo = char::from(bytes[i + 2]).to_digit(16);
                 match (hi, lo) {
                     (Some(h), Some(l)) => {
                         out.push((h * 16 + l) as u8);
