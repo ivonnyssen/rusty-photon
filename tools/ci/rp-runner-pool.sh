@@ -78,7 +78,7 @@ SLOTS=(
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id
 # rather than assuming 1 so a plan change can't silently break registration.
-GROUP_ID=$(curl -fsS \
+GROUP_ID=$(curl -fsS --connect-timeout 5 --max-time 30 \
   -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
   -H "Accept: application/vnd.github+json" \
   "https://api.github.com/orgs/$ORG/actions/runner-groups" \
@@ -116,13 +116,22 @@ log() { echo "$(date -Is) [$1] ${*:2}"; }
 runner_state() {
   local id=$1 body code
   body=$(mktemp) || { echo unknown; return; }
-  code=$(curl -sS -o "$body" -w '%{http_code}' \
+  # Bounded, because this runs inline in the slot's wait loop: an unbounded
+  # curl against a black-holed api.github.com would stop the slot observing
+  # `qm status` at all, including its clone's clean poweroff. A timeout prints
+  # http_code 000 and so degrades to "unknown", which is exactly right.
+  code=$(curl -sS --connect-timeout 5 --max-time 15 -o "$body" -w '%{http_code}' \
     -H @<(printf 'Authorization: Bearer %s' "$(cat "$TOKEN_FILE")") \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/orgs/$ORG/actions/runners/$id" 2>/dev/null)
   case "$code" in
-    200) python3 -c 'import json,sys; print("online" if json.load(sys.stdin).get("status") == "online" else "gone")' \
-           <"$body" 2>/dev/null || echo unknown ;;
+    # Both verdicts require positive evidence; anything else is "unknown".
+    # Mapping "not explicitly online" to "gone" would make a schema change or
+    # a truncated 200 body read as a dead runner and reclaim a healthy clone
+    # ten minutes later, which is the one outcome this function must never
+    # produce by accident.
+    200) python3 -c 'import json,sys; s=json.load(sys.stdin).get("status"); print("online" if s == "online" else "gone" if s == "offline" else "unknown")' \
+      <"$body" 2>/dev/null || echo unknown ;;
     404) echo gone ;;
     *) echo unknown ;;
   esac
@@ -211,7 +220,13 @@ slot_loop() {
 
       # The auth header arrives via process substitution (bash printf is a
       # builtin), so the PAT never appears on any process command line.
-      mint=$(curl -fsS -X POST \
+      #
+      # Bounded like the other calls, with one tradeoff worth naming: this is
+      # the only POST, so a timeout that fires after GitHub created the runner
+      # but before the response arrived leaks a registration. A stalled slot
+      # is the worse failure — it serves no jobs at all — and a leaked
+      # registration is inert.
+      mint=$(curl -fsS --connect-timeout 5 --max-time 30 -X POST \
         -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
