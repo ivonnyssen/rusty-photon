@@ -339,7 +339,14 @@ slot_loop() {
       # `running` rather than "anything but stopped" is deliberate — it leaves
       # a `paused`/`suspended` clone alone, on the grounds that a VM in that
       # state was put there by an operator who is probably looking at it.
-      if [ -n "$runner_id" ] && [ "$state" = running ] &&
+      # Skipping tick 0 is what makes HEALTH_GRACE_MINS true rather than
+      # approximate: N probes starting at t=0 span only N-1 intervals, so the
+      # reclaim would land a minute early and the log message would overstate
+      # the grace it had actually allowed. Starting at t=60s also drops a
+      # probe that carried no information — a clone whose config landed
+      # seconds ago cannot have connected yet, so that reading is `gone` on
+      # the happy path every time.
+      if [ -n "$runner_id" ] && [ "$state" = running ] && [ "$tick" -gt 0 ] &&
         [ $((tick % HEALTH_PROBE_EVERY)) -eq 0 ]; then
         case "$(runner_state "$runner_id")" in
           online) offline=0 ;;
