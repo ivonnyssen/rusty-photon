@@ -352,6 +352,16 @@ pub(crate) fn crop_subframe(
     nx: u32,
     ny: u32,
 ) -> Result<Vec<i32>, String> {
+    // This walks `src` a row at a time, so the geometry has to describe
+    // it. `rp_fits` establishes that on decode, but a survey response is
+    // remote input and this function must not slice on a guarantee made
+    // somewhere else.
+    if src_w.checked_mul(src_h) != Some(src.len()) {
+        return Err(format!(
+            "source geometry ({src_w},{src_h}) does not match {} pixels",
+            src.len()
+        ));
+    }
     let out_of_bounds =
         || format!("subframe ({sx}+{nx},{sy}+{ny}) exceeds source ({src_w},{src_h})");
     // A subframe too large to be a `usize` cannot fit the source
@@ -916,6 +926,21 @@ mod tests {
         let src: Vec<i32> = vec![0; 12];
         crop_subframe(&src, 4, 3, 3, 0, 2, 1).unwrap_err();
         crop_subframe(&src, 4, 3, 0, 2, 1, 2).unwrap_err();
+    }
+
+    /// A survey response short of the geometry its header declares must
+    /// not be sliced by row — the subframe bounds check alone compares
+    /// against the declared size, not the buffer.
+    #[test]
+    fn crop_subframe_rejects_geometry_that_does_not_describe_the_buffer() {
+        let short: Vec<i32> = vec![0; 8]; // 4×3 declared, 8 pixels present
+        let err = crop_subframe(&short, 4, 3, 0, 0, 4, 3).unwrap_err();
+        assert!(
+            err.contains("does not match 8 pixels"),
+            "unexpected error: {err}"
+        );
+        // The full-frame passthrough shortcut must not slip past it either.
+        crop_subframe(&short, 4, 3, 1, 1, 2, 2).unwrap_err();
     }
 
     /// Trait stub usable from `cfg(test)` without enabling the

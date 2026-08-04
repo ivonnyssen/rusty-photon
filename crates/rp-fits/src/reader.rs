@@ -60,6 +60,26 @@ pub enum Pixels {
     F64(Vec<f64>),
 }
 
+impl Pixels {
+    /// Decoded pixel count, whatever the on-disk type.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::U8(v) => v.len(),
+            Self::I16(v) => v.len(),
+            Self::I32(v) => v.len(),
+            Self::I64(v) => v.len(),
+            Self::F32(v) => v.len(),
+            Self::F64(v) => v.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Read the primary HDU of a FITS stream. Returns the on-disk pixel
 /// data plus BSCALE/BZERO/BLANK metadata. The reader must support
 /// seeking — `Cursor<&[u8]>` and `BufReader<File>` both qualify.
@@ -102,6 +122,21 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
         FitsPixels::F32(it) => Pixels::F32(it.collect()),
         FitsPixels::F64(it) => Pixels::F64(it.collect()),
     };
+
+    // The geometry describes `data`, so establish that here instead of
+    // leaving each consumer to discover it. A truncated stream decodes
+    // to fewer pixels than `NAXIS1 × NAXIS2` promises, and a consumer
+    // that walks it by row — sky-survey-camera crops survey responses
+    // fetched over HTTP — would slice past the end.
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| FitsError::Parse(format!("NAXIS {width}×{height} overflows a buffer")))?;
+    if data.len() != expected {
+        return Err(FitsError::Parse(format!(
+            "pixel count {} does not match NAXIS {width}×{height} (expected {expected})",
+            data.len()
+        )));
+    }
 
     Ok(FitsImage {
         width,
@@ -214,6 +249,26 @@ mod tests {
         assert_eq!(img.bscale, 1.0);
         assert_eq!(img.bzero, 0.0);
         assert!(img.blank.is_none());
+    }
+
+    /// A stream whose data section ends early decodes to fewer pixels
+    /// than `NAXIS` promises. `FitsImage`'s geometry describes its
+    /// buffer, so that has to be a parse error here — a consumer that
+    /// walks the buffer by row would otherwise slice past the end.
+    #[test]
+    fn truncated_data_section_is_a_parse_error() {
+        let pixels: Vec<i32> = (0..64).collect();
+        let mut buf = Vec::new();
+        write_i32_image(&mut buf, &pixels, 8, 8, &[]).unwrap();
+        // Keep the header block, drop most of the pixel data.
+        buf.truncate(2880 + 32);
+
+        let err = read_primary(Cursor::new(&buf[..])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not match NAXIS"),
+            "expected a pixel-count error, got: {msg}"
+        );
     }
 
     #[test]
