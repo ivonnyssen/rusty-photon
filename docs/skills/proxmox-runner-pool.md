@@ -189,10 +189,32 @@ dangerous combination. The rule bifurcates by runner kind
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
   is immediate. Replacement after a job takes under a minute (linked clone +
   boot + JIT registration).
+* **A wedged clone is reclaimed; an idle one never is.** While a slot waits
+  for its clone to power itself off, it polls that clone's runner through the
+  GitHub API once a minute and destroys the clone after ten consecutive polls
+  report the runner not connected. This is a check on the runner's liveness
+  and deliberately *not* a cap on how long a clone may live: an idle runner
+  reads `online` and so does a busy one, so neither is ever reclaimed, while a
+  guest that wedges — BSOD, hung shutdown, a runner process that dies without
+  powering off — would otherwise hold its slot forever. With a single Windows
+  slot that is the whole venue lost, silently. Two rules keep it honest: an
+  API that cannot be reached is never a verdict (the slot keeps waiting), and
+  every reclaim is logged with its reason, so a recurring wedge shows up in
+  the journal as a pattern instead of as capacity quietly going missing.
+* **The guest one-job scripts live in the repo**, in `tools/ci/runner-guest/`:
+  `one-job.sh` (Linux, installed as `/home/ci/run-one-job.sh` and run by the
+  `gha-runner` systemd unit) and `one-job.ps1` (Windows, installed at
+  `C:\actions-runner\one-job.ps1` and run by the `gha-runner` scheduled task).
+  They are the source of truth — a template rebuild copies them in rather than
+  editing the guest's copy in place. Both wait a bounded 30 minutes for the
+  injected config and power the VM off if it never arrives; that is the
+  guest's own backstop for the orchestrator being stopped, which is the one
+  case the slot health check above cannot cover.
 * To update the runner toolchain (new SDK pin, new runner release), boot a
-  fresh clone of the template, apply the change, wipe `/etc/machine-id`, run
-  `cloud-init clean`, power off, and convert to the new template — then roll
-  the template VMID forward in `rp-runner-pool.sh`. Validate the new template
+  fresh clone of the template, apply the change, copy in the guest one-job
+  script from `tools/ci/runner-guest/` if it has changed, wipe
+  `/etc/machine-id`, run `cloud-init clean`, power off, and convert to the new
+  template — then roll the template VMID forward in `rp-runner-pool.sh`. Validate the new template
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.

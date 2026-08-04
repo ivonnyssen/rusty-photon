@@ -13,6 +13,11 @@
 # serves bazel.yml and bazel-coverage.yml (both fire on the same PR event)
 # without one queueing behind the other.
 #
+# While a slot waits for its clone to finish, it also watches that clone's
+# runner through the GitHub API, so a guest that wedges is reclaimed rather
+# than holding the slot forever. See the wait loop in slot_loop for why the
+# check is on the runner's liveness and never on elapsed time.
+#
 # Deployment (on the Proxmox host, as root — see
 # docs/skills/proxmox-runner-pool.md):
 #   install -m 755 rp-runner-pool.sh /usr/local/sbin/
@@ -48,6 +53,16 @@ TOKEN_FILE=/etc/rp-runner/github-token
 STATE_DIR=/run/rp-runner-pool
 mkdir -p "$STATE_DIR"
 
+# Slot health check (see the wait loop at the end of slot_loop). That loop
+# polls every 10 seconds; probing the runner's GitHub-side state is an API
+# call rather than a local one, so it runs on every Nth poll instead. A slot
+# reclaims its clone after STRIKES consecutive probes report the runner not
+# connected. The grace is derived from the same numbers so the log message
+# cannot drift from the behaviour.
+HEALTH_PROBE_EVERY=6
+HEALTH_STRIKES=10
+HEALTH_GRACE_MINS=$((HEALTH_PROBE_EVERY * HEALTH_STRIKES * 10 / 60))
+
 # Pool slots: name|template VMID|clone VMID|guest OS|labels
 #
 # Clone VMIDs must be unique and must not collide with any other VM on the
@@ -74,6 +89,38 @@ if [ -z "${GROUP_ID:-}" ]; then
 fi
 
 log() { echo "$(date -Is) [$1] ${*:2}"; }
+
+# Report whether the GitHub-side runner a clone was registered as is currently
+# connected: "online", "gone", or "unknown".
+#
+# This is the signal that tells an IDLE clone from a WEDGED one, which no
+# timer can do — see the wait loop. `online` covers both idle-and-waiting and
+# busy-running-a-job; either way the clone is doing its job and must not be
+# touched.
+#
+# "unknown" means the API could not be asked (transport error, 5xx, rate
+# limit) and is deliberately NOT a verdict — the same discipline the wait loop
+# applies to an unreadable `qm status`, and the reason this uses -sS rather
+# than -f: a 404 must be readable as a result, not collapsed into a transport
+# failure. A 404 IS a verdict. A JIT runner exists from the moment its config
+# is minted (status `offline` until it connects) and is deleted by GitHub the
+# moment its single job ends, so "absent" means "no longer working" — never
+# "not registered yet".
+runner_state() {
+  local id=$1 body code
+  body=$(mktemp) || { echo unknown; return; }
+  code=$(curl -sS -o "$body" -w '%{http_code}' \
+    -H @<(printf 'Authorization: Bearer %s' "$(cat "$TOKEN_FILE")") \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/orgs/$ORG/actions/runners/$id" 2>/dev/null)
+  case "$code" in
+    200) python3 -c 'import json,sys; print("online" if json.load(sys.stdin).get("status") == "online" else "gone")' \
+           <"$body" 2>/dev/null || echo unknown ;;
+    404) echo gone ;;
+    *) echo unknown ;;
+  esac
+  rm -f "$body"
+}
 
 # Write the JIT config into the guest. Both variants write a temp file and
 # rename it, because the in-guest runner polls for a NON-EMPTY .jitconfig and
@@ -111,15 +158,14 @@ slot_loop() {
   while true; do
     # Establish the invariant the rest of the iteration depends on: either the
     # VM does not exist, or it exists AND holds a real job. A clone with no
-    # injection marker was created but never configured, and nothing will ever
-    # shut it down — the guest waits for a config that cannot arrive (the
-    # Linux runner script has no no-config timeout at all) while the poweroff
-    # wait below waits for a shutdown that never comes, wedging the slot
-    # permanently. Two ways to reach that state: this service restarting
-    # mid-window, and a destroy that did not take (a Proxmox lock, say), which
-    # is why the check runs every iteration rather than once at startup. A
-    # clone WITH a marker is left alone: an orchestrator restart must never
-    # abort an in-flight job.
+    # injection marker was created but never configured, so the health check
+    # below cannot watch it — it has no runner id to watch — and the guest's
+    # own no-config timeout is then the only thing that would end it, half an
+    # hour of a slot held for nothing. Two ways to reach that state: this
+    # service restarting mid-window, and a destroy that did not take (a
+    # Proxmox lock, say), which is why the check runs every iteration rather
+    # than once at startup. A clone WITH a marker is left alone: an
+    # orchestrator restart must never abort an in-flight job.
     if qm status "$vmid" >/dev/null 2>&1 && [ ! -e "$STATE_DIR/$vmid.injected" ]; then
       log "$name" "clone $vmid exists but never received a config; destroying"
       destroy_clone "$vmid"
@@ -158,13 +204,18 @@ slot_loop() {
 
       # The auth header arrives via process substitution (bash printf is a
       # builtin), so the PAT never appears on any process command line.
-      JIT=$(curl -fsS -X POST \
+      mint=$(curl -fsS -X POST \
         -H @<(printf 'Authorization: Bearer %s' "$(cat $TOKEN_FILE)") \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/orgs/$ORG/actions/runners/generate-jitconfig" \
-        -d "{\"name\":\"$name-$(date +%s)\",\"runner_group_id\":$GROUP_ID,\"labels\":$labels,\"work_folder\":\"_work\"}" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["encoded_jit_config"])')
-      if [ -z "${JIT:-}" ]; then
+        -d "{\"name\":\"$name-$(date +%s)\",\"runner_group_id\":$GROUP_ID,\"labels\":$labels,\"work_folder\":\"_work\"}")
+      JIT=$(printf '%s' "$mint" | python3 -c 'import json,sys; print(json.load(sys.stdin)["encoded_jit_config"])' 2>/dev/null)
+      # The mint response also names the runner it created. That id is how the
+      # health check identifies THIS clone's runner among the pool's, so it is
+      # as essential as the config itself: without it the slot has no way to
+      # tell an idle clone from a wedged one.
+      RUNNER_ID=$(printf '%s' "$mint" | python3 -c 'import json,sys; print(json.load(sys.stdin)["runner"]["id"])' 2>/dev/null)
+      if [ -z "${JIT:-}" ] || [ -z "${RUNNER_ID:-}" ]; then
         log "$name" "jitconfig mint failed; destroying $vmid"
         destroy_clone "$vmid"
         sleep 60
@@ -192,29 +243,59 @@ slot_loop() {
       # for its poweroff. A transient, self-healing failure beats a permanent
       # one. Note also that the guest deletes .jitconfig the moment it reads
       # it (~2 s), so the file's presence cannot be used to detect a running
-      # job — proving liveness needs the runner's state from the GitHub API,
-      # tracked in the pool health-check issue.
-      : > "$STATE_DIR/$vmid.injected"
+      # job — proving liveness needs the runner's state from the GitHub API.
+      # That is also why the marker carries the runner id rather than being
+      # empty: it is what lets the health check below survive a restart of
+      # this service and keep watching a clone it did not itself register.
+      printf '%s\n' "$RUNNER_ID" > "$STATE_DIR/$vmid.injected"
       log "$name" "runner clone $vmid up and registered"
     fi
 
-    # The clone powers itself off after its single job. This wait is
-    # deliberately unbounded: a registered clone with no job yet assigned is
-    # not stalled, it is WARM — sitting here ready to be picked is the whole
-    # point of the pool, and a wall-clock cap would periodically destroy
-    # healthy idle runners and put cold-start latency back on every job. A
-    # genuinely wedged guest (hung shutdown, dead runner process) does hold a
-    # slot, but distinguishing that from idle needs a health check rather than
-    # a timer — tracked separately.
-    # Only a confirmed `stopped` ends the wait. An unreadable status is NOT
-    # "stopped": stderr is suppressed here, so a transient failure (host under
-    # load, a lock) yields an empty string, and treating that as stopped would
-    # destroy a VM still running a job. Unknown therefore means keep waiting —
-    # but not forever, since a VM removed out of band would never report
-    # anything again; after a few minutes of silence give up on the wait and
-    # let the next iteration's reconcile decide.
+    # The GitHub runner id of whatever clone occupies this slot — the one just
+    # injected above, or one inherited from before a restart of this service.
+    # An empty marker (one written by an older version of this script) simply
+    # means no health check for that clone; the wait then behaves as it did
+    # before, which is the right way to degrade.
+    runner_id=$(cat "$STATE_DIR/$vmid.injected" 2>/dev/null)
+
+    # The clone powers itself off after its single job.
+    #
+    # This wait is NOT bounded by wall clock. A registered clone with no job
+    # yet assigned is not stalled, it is WARM — sitting here ready to be
+    # picked is the whole point of the pool — so a time limit would
+    # periodically destroy healthy idle runners and put cold-start latency
+    # back on every job. What it is bounded by is the runner's own liveness:
+    # a guest that wedges (hung shutdown, BSOD, a runner process that dies
+    # without ever powering off) would otherwise hold its slot forever, and
+    # with a single Windows slot that is the whole venue lost, silently.
+    #
+    # `runner_state` is what separates those two cases; a timer cannot. An
+    # idle clone is `online`, a busy one is `online`, and only a clone that is
+    # no longer working its job reads otherwise. The strike count exists
+    # because "not online" is briefly TRUE on the happy path too: the runner
+    # is deleted the instant its job ends, a few seconds before the guest
+    # finishes powering off. Normal shutdowns lose that race by minutes, so
+    # the grace period never fires on them — but a shutdown that hangs past it
+    # is exactly the wedge this is here to catch, and reclaiming it then is
+    # correct.
+    #
+    # Deliberately not part of the verdict: `qm agent ping`. It cannot tell a
+    # healthy idle guest from one whose runner died under a live kernel, and
+    # OR-ing it in would reclaim busy clones whose agent merely timed out
+    # under build load. The GitHub state already covers every wedge it would.
+    #
+    # Only a confirmed `stopped` ends the wait normally. An unreadable status
+    # is NOT "stopped": stderr is suppressed here, so a transient failure
+    # (host under load, a lock) yields an empty string, and treating that as
+    # stopped would destroy a VM still running a job. Unknown therefore means
+    # keep waiting — but not forever, since a VM removed out of band would
+    # never report anything again; after a few minutes of silence give up on
+    # the wait and let the next iteration's reconcile decide.
     unknown=0
     abandoned=0
+    offline=0
+    tick=0
+    reason=finished
     while true; do
       state=$(qm status "$vmid" 2>/dev/null | awk '{print $2}')
       [ "$state" = stopped ] && break
@@ -228,7 +309,28 @@ slot_loop() {
       else
         unknown=0
       fi
+
+      # Probe only while the VM is confirmed running: an unreadable status
+      # already has its own handling above, and a clone that is mid-shutdown
+      # should be judged by `stopped` arriving, not by its runner going away.
+      # `running` rather than "anything but stopped" is deliberate — it leaves
+      # a `paused`/`suspended` clone alone, on the grounds that a VM in that
+      # state was put there by an operator who is probably looking at it.
+      if [ -n "$runner_id" ] && [ "$state" = running ] &&
+        [ $((tick % HEALTH_PROBE_EVERY)) -eq 0 ]; then
+        case "$(runner_state "$runner_id")" in
+          online) offline=0 ;;
+          gone) offline=$((offline + 1)) ;;
+          unknown) : ;; # could not ask — hold the count, do not judge
+        esac
+        if [ "$offline" -ge "$HEALTH_STRIKES" ]; then
+          reason="wedged (runner $runner_id not connected for $HEALTH_GRACE_MINS minutes while the VM stayed up)"
+          break
+        fi
+      fi
+
       sleep 10
+      tick=$((tick + 1))
     done
     # Abandoning the wait means "I no longer know what this VM is doing", which
     # is not the same as "it finished" — destroying here would kill a job that
@@ -238,7 +340,9 @@ slot_loop() {
       sleep 30
       continue
     fi
-    log "$name" "runner clone $vmid finished; destroying"
+    # Logged with its reason either way, so a recurring wedge shows up in the
+    # journal as a pattern rather than as capacity quietly going missing.
+    log "$name" "runner clone $vmid $reason; destroying"
     destroy_clone "$vmid"
   done
 }
