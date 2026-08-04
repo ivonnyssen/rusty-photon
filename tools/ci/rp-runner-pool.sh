@@ -55,13 +55,18 @@ mkdir -p "$STATE_DIR"
 
 # Slot health check (see the wait loop at the end of slot_loop). That loop
 # polls every 10 seconds; probing the runner's GitHub-side state is an API
-# call rather than a local one, so it runs on every Nth poll instead. A slot
-# reclaims its clone after STRIKES consecutive probes report the runner not
-# connected. The grace is derived from the same numbers so the log message
-# cannot drift from the behaviour.
+# call rather than a local one, so it runs on every Nth poll — once a minute.
+#
+# A slot reclaims its clone once HEALTH_STRIKES probes have come back `gone`
+# with no `online` between them. That is deliberately NOT "consecutive polls":
+# a probe that could not reach the API returns `unknown`, which neither
+# increments nor resets the count, so an API outage stretches the grace rather
+# than counting toward it. The values below therefore set a floor of ten
+# minutes, not a fixed duration — which is why the reclaim log reports the
+# time actually elapsed. That number is what separates a clean wedge from ten
+# strikes dribbled out across an hour of flaky API.
 HEALTH_PROBE_EVERY=6
 HEALTH_STRIKES=10
-HEALTH_GRACE_MINS=$((HEALTH_PROBE_EVERY * HEALTH_STRIKES * 10 / 60))
 
 # Pool slots: name|template VMID|clone VMID|guest OS|labels
 #
@@ -346,11 +351,10 @@ slot_loop() {
       # `running` rather than "anything but stopped" is deliberate — it leaves
       # a `paused`/`suspended` clone alone, on the grounds that a VM in that
       # state was put there by an operator who is probably looking at it.
-      # Skipping tick 0 is what makes HEALTH_GRACE_MINS true rather than
-      # approximate: N probes starting at t=0 span only N-1 intervals, so the
-      # reclaim would land a minute early and the log message would overstate
-      # the grace it had actually allowed. Starting at t=60s also drops a
-      # probe that carried no information — a clone whose config landed
+      # Skipping tick 0 is what keeps the ten-minute floor honest: N probes
+      # starting at t=0 span only N-1 intervals, so the earliest possible
+      # reclaim would land a minute short of it. Starting at t=60s also drops
+      # a probe that carried no information — a clone whose config landed
       # seconds ago cannot have connected yet, so that reading is `gone` on
       # the happy path every time.
       if [ -n "$runner_id" ] && [ "$state" = running ] && [ "$tick" -gt 0 ] &&
@@ -361,7 +365,12 @@ slot_loop() {
           unknown) : ;; # could not ask — hold the count, do not judge
         esac
         if [ "$offline" -ge "$HEALTH_STRIKES" ]; then
-          reason="wedged (runner $runner_id not connected for $HEALTH_GRACE_MINS minutes while the VM stayed up)"
+          # Both numbers, because they differ whenever the API was flaky: the
+          # strike count is fixed, the elapsed time is not. A reclaim at the
+          # ten-minute floor is a clean wedge; one at forty minutes means the
+          # probes spent most of that time unable to reach GitHub, which is a
+          # different problem wearing the same log line.
+          reason="wedged (runner $runner_id not connected on $HEALTH_STRIKES probes over $((tick * 10 / 60))m while the VM stayed up)"
           break
         fi
       fi

@@ -191,8 +191,14 @@ dangerous combination. The rule bifurcates by runner kind
   boot + JIT registration).
 * **A wedged clone is reclaimed; an idle one never is.** While a slot waits
   for its clone to power itself off, it polls that clone's runner through the
-  GitHub API once a minute and destroys the clone after ten consecutive polls
-  report the runner not connected. This is a check on the runner's liveness
+  GitHub API once a minute and destroys the clone once ten polls have reported
+  the runner not connected with no `online` between them. Not ten *consecutive*
+  polls: a poll that cannot reach the API counts for neither side, so an API
+  outage stretches the grace instead of driving a reclaim. Ten minutes is
+  therefore the floor, not the duration — the reclaim log prints the time
+  actually elapsed, and a number well above ten is telling you the API was
+  flaky rather than that a clone sat wedged that long. This is a check on the
+  runner's liveness
   and deliberately *not* a cap on how long a clone may live: an idle runner
   reads `online` and so does a busy one, so neither is ever reclaimed, while a
   guest that wedges — BSOD, hung shutdown, a runner process that dies without
