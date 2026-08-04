@@ -127,14 +127,19 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
 ///
 /// Returns `(pixels, width, height)`. The pixel vector is flat
 /// row-major; `width` is `NAXIS1` (the fastest-varying axis), `height`
-/// is `NAXIS2`. `rp_fits::reader` applies BSCALE/BZERO so the caller
+/// is `NAXIS2`. Both are `usize`: every caller uses them to index or
+/// shape `pixels`, and the fixed-width `NAXIS` values they came from
+/// belong to the header, not to the buffer. The `write_fits_*` pair
+/// above takes `u32` for the mirror-image reason — those dimensions
+/// are on their way *into* a header card.
+/// `rp_fits::reader` applies BSCALE/BZERO so the caller
 /// sees physical ADU values regardless of on-disk encoding. `BLANK`
 /// sentinel pixels are *not* remapped at this layer — they pass
 /// through unscaled and may surface as ordinary numeric ADU values.
 /// Per ADR-001 Amendment A the wrapper exposes BLANK on the typed
 /// `read_primary` path; consumers that need explicit handling should
 /// use that entry point instead of `read_fits_pixels`.
-pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, u32, u32)> {
+pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, usize, usize)> {
     let path = path.as_ref();
     debug!(path = %path.display(), "reading FITS pixels");
     let file = File::open(path).map_err(|e| {

@@ -5034,8 +5034,7 @@ fn load_auto_focus_fixtures() -> Vec<ndarray::Array3<i32>> {
         .map(|bytes| {
             let (pixels, w, h) = rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(*bytes))
                 .expect("decode fixture");
-            ndarray::Array3::from_shape_vec((w as usize, h as usize, 1), pixels)
-                .expect("fixture shape")
+            ndarray::Array3::from_shape_vec((w, h, 1), pixels).expect("fixture shape")
         })
         .collect()
 }

@@ -30,10 +30,16 @@ use crate::writer::KeywordValue;
 /// Decoded primary HDU. `data` is the on-disk numeric type; consumers
 /// that want a single typed `Vec<T>` should use [`read_primary_as_i32`]
 /// or apply their own scaling.
+///
+/// `width` and `height` are `usize` because everything a caller does
+/// with them — `data.len()`, a row offset, an `ndarray` shape — indexes
+/// the buffer alongside. The fixed-width `NAXIS` values they were
+/// parsed from stay on the writer's side of the boundary, where they
+/// are header cards rather than lengths.
 #[derive(Debug, Clone)]
 pub struct FitsImage {
-    pub width: u32,
-    pub height: u32,
+    pub width: usize,
+    pub height: usize,
     pub data: Pixels,
     /// FITS `BSCALE` (default 1.0). Multiplied into the raw pixel value.
     pub bscale: f64,
@@ -78,9 +84,9 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
             naxis.len()
         )));
     }
-    let width = u32::try_from(naxis[0])
+    let width = usize::try_from(naxis[0])
         .map_err(|_| FitsError::Parse(format!("NAXIS1 out of range: {}", naxis[0])))?;
-    let height = u32::try_from(naxis[1])
+    let height = usize::try_from(naxis[1])
         .map_err(|_| FitsError::Parse(format!("NAXIS2 out of range: {}", naxis[1])))?;
 
     let bscale = read_float_keyword(image_hdu.get_header(), "BSCALE").unwrap_or(1.0);
@@ -112,7 +118,7 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
 /// matching the legacy sky-survey-camera and rp behaviour.
 pub fn read_primary_as_i32<R: Read + Seek + Debug>(
     reader: R,
-) -> Result<(Vec<i32>, u32, u32), FitsError> {
+) -> Result<(Vec<i32>, usize, usize), FitsError> {
     let img = read_primary(reader)?;
     let scale = |v: f64| -> i32 {
         let scaled = v * img.bscale + img.bzero;

@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for &d in &OFFSETS {
         let path = fixture_path(d);
         let (pixels, w, h) = read_fits_pixels(&path)?;
-        let arr: Array2<i32> = Array2::from_shape_vec((w as usize, h as usize), pixels)?;
+        let arr: Array2<i32> = Array2::from_shape_vec((w, h), pixels)?;
         // Same parameters the BDD will use:
         //   threshold_sigma=5.0  (default)
         //   min_area=4

@@ -352,7 +352,7 @@ impl McpHandler {
         let max_a = params.max_area;
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             imaging::measure_basic(arr.view(), threshold, min_a, max_a, None)
         })
@@ -390,7 +390,7 @@ impl McpHandler {
         let max_iters = params.max_iters;
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             clip_outcome(arr.view(), &ResolvedClipParams { k, max_iters })
         })
@@ -435,7 +435,7 @@ impl McpHandler {
         };
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             detect_outcome(arr.view(), &resolved, None)
         })
@@ -483,7 +483,7 @@ impl McpHandler {
         let stamp = params.stamp_half_size;
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             imaging::measure_stars(arr.view(), threshold, min_a, max_a, None, stamp)
         })
@@ -529,7 +529,7 @@ impl McpHandler {
         let max_a = params.max_area;
         tokio::task::spawn_blocking(move || {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width as usize, height as usize), pixels)
+            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
             imaging::compute_snr(arr.view(), threshold, min_a, max_a, None)
         })
