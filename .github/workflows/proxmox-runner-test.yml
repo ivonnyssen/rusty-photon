@@ -90,8 +90,12 @@ jobs:
           command -v pwsh >/dev/null || { echo "::error::pwsh (PowerShell 7) missing"; fail=1; }
           # BAZEL_SH is a native Windows path; swap separators before testing
           # it, since this shell's own file tests do not reliably accept
-          # backslashes.
-          bazel_sh="${BAZEL_SH//\\//}"
+          # backslashes. Default-expand FIRST: under `set -u` a substitution
+          # on an unset variable aborts the step outright, which would skip
+          # both this diagnostic and every check below it — the opposite of
+          # what a parity check is for.
+          bazel_sh="${BAZEL_SH:-}"
+          bazel_sh="${bazel_sh//\\//}"
           [[ -n "$bazel_sh" && -x "$bazel_sh" ]] || { echo "::error::BAZEL_SH unset or not executable"; fail=1; }
           for var in QHYCCD_SDK_DIR ZWO_SDK_LIB_DIR OMNISIM_PATH PEBBLE_PATH \
                      PEBBLE_CHALLTESTSRV_PATH LIBCLANG_PATH; do
