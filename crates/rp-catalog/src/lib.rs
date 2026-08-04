@@ -296,7 +296,11 @@ impl Catalog {
         let types = read_position(bytes, 24);
         let pool = read_position(bytes, 28);
         let catalog = Self::layout(bytes, dso, star, keys, named, types, pool);
-        let expected = catalog.pool + pool;
+        // A corrupt header can describe a layout no blob could hold. That
+        // is the same failure as a short one — the bytes it asks for are
+        // not there — so saturating reports `Truncated` instead of
+        // overflowing the comparison that detects it.
+        let expected = catalog.pool.saturating_add(pool);
         if bytes.len() != expected {
             return Err(CatalogError::Truncated {
                 expected,

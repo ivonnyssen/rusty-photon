@@ -64,6 +64,28 @@ fn load_rejects_truncated_blob() {
     ));
 }
 
+/// Valid magic followed by six section counts of `u32::MAX`. The layout
+/// that describes is far larger than any blob, so validation has to
+/// reach its length comparison and report `Truncated` — not overflow on
+/// the way there.
+static ABSURD_HEADER_BLOB: [u8; HEADER_LEN] = {
+    let mut blob = [0xFFu8; HEADER_LEN];
+    let mut i = 0;
+    while i < 8 {
+        blob[i] = MAGIC[i];
+        i += 1;
+    }
+    blob
+};
+
+#[test]
+fn load_rejects_a_header_describing_more_bytes_than_can_exist() {
+    assert!(matches!(
+        Catalog::load(&ABSURD_HEADER_BLOB),
+        Err(CatalogError::Truncated { .. })
+    ));
+}
+
 /// `materialize_dso` passes `usize::MAX` for a DSO whose type index is
 /// out of range, and `position` saturates to it for a field too large
 /// for the target's `usize`. Both land in `pool_str`, which adds the
