@@ -268,14 +268,37 @@ dangerous combination. The rule bifurcates by runner kind
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.
-* **Windows template rebuilds, two things that will bite:**
+* **Windows template rebuilds, things that will bite:**
+  * **The template must provision the MSI packaging toolchain**, or the msi
+    job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
+    cannot run on the pool even though `bazel build` is green. Three parts,
+    all measured the hard way:
+    * **.NET SDK** — the wix CLI is a dotnet global tool; `build-msi.ps1`
+      fails its own `dotnet not found` precondition without it.
+    * **`DOTNET_ROOT` set machine-wide** — not optional. `wix.exe` is a
+      framework-dependent apphost and resolves the runtime through this
+      variable, never through PATH, so `dotnet --version` can succeed while
+      every global tool dies with "You must install .NET to run this
+      application / .NET location: Not found".
+    * **wix at the pinned version** (matching `$WixVersion` in
+      `build-msi.ps1`) on a machine-wide tool path — `--tool-path`, not
+      `--global`, so the job's user sees it.
+
+    Provision alongside the other `C:\ci` toolchain, machine-scoped. Note the
+    verify step must run under `pwsh` (PowerShell 7): Windows PowerShell 5.1
+    reads `.ps1` in the ANSI codepage and mangles the scripts' UTF-8 dashes
+    into parse errors. `msi.yml` already uses `shell: pwsh`.
   * **Do not `sysprep /generalize`.** It looks like the analogue of the Linux
     template's `machine-id` wipe, but its specialize pass runs on every clone
     boot and would add minutes to a pool whose whole value is fast pickup —
-    and nothing it buys applies here: Proxmox gives each clone a fresh MAC,
-    only one Windows clone exists at a time so a duplicate computer name
-    cannot collide, the guests are not domain-joined, and the runner's
-    identity comes from the injected JIT config rather than the host name.
+    and little it buys applies here: Proxmox gives each clone a fresh MAC, the
+    guests are not domain-joined, and the runner's identity comes from the
+    injected JIT config rather than the host name. **Duplicate computer names
+    do occur** once more than one clone runs at a time (both come up as
+    `RUNNER-TPL` on the same segment) — measured to be benign here (no
+    NetBT/Tcpip name-conflict events, registration unaffected), but that is
+    "harmless", not "cannot happen". If a second concurrent Windows slot is
+    ever added, see #872 for the name-collision and shared-credential review.
   * **A linked clone inherits the template's RTC** and boots badly out of
     date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
     means an in-guest script must never use a wall-clock deadline: the first
