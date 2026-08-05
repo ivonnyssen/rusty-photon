@@ -116,6 +116,20 @@ impl QhyFilterWheelDevice {
         let (Ok(count), Ok(position)) = (usize::try_from(count), usize::try_from(position)) else {
             return Err(ASCOMError::NOT_CONNECTED);
         };
+        // `cfw_ascii_to_slot` degrades a nonstandard CFW status byte into
+        // `byte - 0x30` rather than failing, so from here an unreadable status
+        // is indistinguishable from a slot past the wheel's own count. Caching
+        // one would make `Position` report a slot `Names` has no entry for, so
+        // treat it as a handshake that did not establish the wheel's state.
+        if position >= count {
+            debug!(
+                filter_wheel = %self.unique_id,
+                slots = count,
+                reported = position,
+                "CFW reported a slot outside its own slot count; refusing the handshake"
+            );
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
         *self.state.number_of_filters.lock() = Some(count);
         *self.state.target_position.lock() = Some(position);
         *self.state.settled_position.lock() = Some(position);
@@ -440,6 +454,26 @@ mod tests {
         assert_eq!(
             device.set_position(99).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_handshake_slot_outside_the_wheel_is_refused() {
+        // `cfw_ascii_to_slot` decodes any nonstandard CFW status byte as
+        // `byte - 0x30`, which for anything past 'F' lands well outside the
+        // wheel's slot count — 'N' (0x4E) decodes to 30 on a 7-slot wheel.
+        // Caching that would make `Position` report a slot `Names` has no
+        // entry for.
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.set_reported_position(30);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+
+        let err = device.connect().unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !handle.is_open().unwrap(),
+            "a refused handshake must close the handle"
         );
     }
 

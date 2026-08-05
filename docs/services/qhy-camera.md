@@ -486,7 +486,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `QueryFilter()` returns a cached member and `GetQHYCCDCFWStatus` runs only
   while the move is `IPS_BUSY`.
 - **FW2.** `set_position` validates `index < filter_count` and commands the SDK;
-  out-of-range returns `INVALID_VALUE`.
+  out-of-range returns `INVALID_VALUE`. The check runs on the slot as ASCOM
+  sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
+  past 2^32 is rejected rather than wrapped onto a real slot.
+- **FW2a.** The connect handshake refuses a wheel whose reported slot is outside
+  its own reported slot count (`NOT_CONNECTED`, handle closed). The CFW status
+  decode degrades any nonstandard status byte to `byte - 0x30` rather than
+  failing, so from the driver's side an unreadable status is indistinguishable
+  from an impossible slot — caching one would make `Position` report a slot
+  `Names` has no entry for. A wheel caught mid-move at connect is refused and
+  the connect retried, rather than seeding the cache from a slot that is not
+  where it settles.
 - **FW3.** `FocusOffsets` returns zeros per filter in v0.
 
 ---

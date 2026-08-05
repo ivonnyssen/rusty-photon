@@ -669,9 +669,9 @@ impl Camera {
             }
             state.is_initialized = true;
             // Reset ROI to full frame based on current readout mode
-            // The mode index is an SDK `u32` and the mode table is a `Vec`. One
-            // this target cannot address falls back to the full chip, exactly as
-            // an out-of-range index already does.
+            // The mode index is an SDK `u32` and the mode table is a `Vec`. An
+            // index this target cannot address falls back to the full chip,
+            // exactly as an out-of-range one already does.
             let mode_index = usize::try_from(state.readout_mode).ok();
             let (width, height) = mode_index
                 .and_then(|i| state.config.readout_modes.get(i))
