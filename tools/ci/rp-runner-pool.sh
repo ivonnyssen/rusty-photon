@@ -85,13 +85,23 @@ HEALTH_STRIKES=10
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 907 = Linux, 908 = Windows, both 16 GB / 12 vCPU — measured sizing, not the
-# old 32/28 GB estimates. The previous templates (903 Linux, 906 Windows) are
-# retained on the root mirror as a one-line rollback.
+# 917 = Linux, 908 = Windows, both 16 GB / 12 vCPU — measured sizing, not the
+# old 32/28 GB estimates. 917 replaces the first cipool Linux template (907),
+# which was templated with a populated /etc/machine-id and so handed every
+# clone the same DHCP identity and IP; 917 is built with machine-id wiped.
+# Both templates carry firewall=1 on their NIC, so clones inherit it and the
+# per-clone policy written in slot_loop takes effect (clone-to-clone isolation).
+#
+# Two Windows slots share template 908: GitHub dispatches a Windows pool job to
+# whichever clone is free, so a second slot removes the cross-branch queue that
+# a single Windows runner created. The shared-autologon-credential concern this
+# raised (both clones hold the same local admin password) is mitigated by the
+# NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|907|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|907|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|917|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|917|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|908|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-win2|908|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id
@@ -180,10 +190,30 @@ inject_jitconfig() {
   esac
 }
 
+# Per-clone network isolation. Every pool clone talks only to GitHub and the
+# LAN cache (both off-subnet, reached through the gateway) and never to a peer,
+# so the firewall drops all inbound and permits all outbound. `dhcp: 1` keeps
+# the clone's own lease working; established/related return traffic (the cache,
+# GitHub) is allowed automatically. The template NIC carries firewall=1 so the
+# clone inherits it — this file supplies the policy. It matters most for the
+# two Windows slots, which share one local-admin password: without it a
+# compromised clone could reach a peer's SMB/RDP/WinRM (ICMP echo is still
+# permitted by the Proxmox default and carries no such risk).
+FW_DIR=/etc/pve/firewall
+write_clone_firewall() {
+  cat > "$FW_DIR/$1.fw" <<'FW'
+[OPTIONS]
+enable: 1
+policy_in: DROP
+policy_out: ACCEPT
+dhcp: 1
+FW
+}
+
 destroy_clone() {
   qm stop "$1" >/dev/null 2>&1
   qm destroy "$1" --purge >/dev/null 2>&1
-  rm -f "$STATE_DIR/$1.injected"
+  rm -f "$STATE_DIR/$1.injected" "$FW_DIR/$1.fw"
 }
 
 slot_loop() {
@@ -214,6 +244,10 @@ slot_loop() {
 
     if ! qm status "$vmid" >/dev/null 2>&1; then
       qm clone "$template" "$vmid" --name "$name" >/dev/null || { sleep 30; continue; }
+      # Write the isolation policy before the clone boots, so the first packet
+      # it sends is already filtered — the clone inherits firewall=1 from the
+      # template NIC and this supplies the rules.
+      write_clone_firewall "$vmid"
       # A marker can outlive the clone it described: killing this service
       # between the destroy and its `rm` leaves one behind, and the next clone
       # of the same VMID would then look already-configured to the reconcile

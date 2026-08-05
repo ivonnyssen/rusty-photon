@@ -74,10 +74,17 @@ Components:
   *outside* the VM — a GitHub token, a cache write key. This one unlocks only
   the ephemeral clone itself, on which the job already runs elevated, so it
   grants a malicious job nothing it does not already have. What keeps the
-  blast radius at one VM: the pool runs a single Windows clone at a time, the
-  clones are VLAN-fenced, and the Linux template does not share the password.
-  Do not extend this to a second concurrent Windows slot without revisiting
-  it.
+  blast radius at one VM: the clones are VLAN-fenced from the rest of the
+  network, the Linux template does not share the password, and — now that two
+  Windows slots share this credential — each clone's NIC drops all inbound
+  traffic (the per-clone firewall policy written by the orchestrator; see the
+  storage/isolation notes below), so a compromised clone cannot reach a peer's
+  SMB/RDP/WinRM even knowing the shared password. Measured directly: clone-to-
+  clone TCP is refused on every port; only ICMP echo passes, which carries no
+  credential and no lateral-movement capability. Adding a *third* concurrent
+  Windows slot needs no new review — the isolation is per-clone, not
+  pair-specific — but re-confirm the host has the RAM and that cipool still
+  scales at the new concurrency (fio, per docs below) before doing so.
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in the script's
@@ -126,6 +133,18 @@ Components:
   cap the demand-data hit rate sits near 73%, so a quarter of data reads go
   to the platter unnecessarily. Right-sizing the slots frees RAM that is
   better spent here than on slot allocation nobody touches.
+* **Per-clone network isolation.** Both templates carry `firewall=1` on their
+  NIC, and `slot_loop` writes `/etc/pve/firewall/<vmid>.fw` for each clone with
+  `policy_in: DROP` / `policy_out: ACCEPT` / `dhcp: 1` (removed in
+  `destroy_clone`). A pool clone only ever talks to GitHub and the LAN cache —
+  both off-subnet, reached through the gateway — and never to a peer, so
+  dropping all inbound costs nothing and blocks clone-to-clone TCP entirely.
+  This is what makes two Windows slots sharing one local-admin password safe
+  (see the autologon note in the security model). The host firewall stays
+  unconfigured, so host SSH is never affected; only the guest NICs are filtered.
+  Known residual: Proxmox permits ICMP echo regardless of the DROP policy —
+  clones can ping each other but nothing more, which carries no
+  lateral-movement risk.
 
 ## Security Model — DO NOT WEAKEN
 
@@ -268,6 +287,17 @@ dangerous combination. The rule bifurcates by runner kind
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.
+  * **The `/etc/machine-id` wipe is not optional, and booting the template to
+    verify it repopulates it.** systemd only regenerates a *unique* machine-id
+    when the file is empty at boot; a non-empty one is kept. A Linux template
+    captured with a populated machine-id hands every clone the same one, hence
+    the same DHCP client identity and the same leased IP — two slots then
+    collide on one address, with ARP flapping and intermittent return-traffic
+    loss that presents as a flake, not a clean failure. So the wipe must be the
+    **last** thing before `qm template`: if you boot the clone to check
+    anything (bazel, the warm cache), re-wipe `/etc/machine-id` (and clear
+    `/var/lib/dhcp/*.leases`) afterwards. Windows is immune — its clones DHCP
+    by MAC, which Proxmox regenerates per clone.
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
