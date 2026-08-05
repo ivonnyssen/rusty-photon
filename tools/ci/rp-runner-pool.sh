@@ -208,6 +208,12 @@ policy_in: DROP
 policy_out: ACCEPT
 dhcp: 1
 FW
+  # Confirm the policy actually landed. The script does not run under `set -e`,
+  # and a failed or truncated write (/etc/pve unavailable, full filesystem)
+  # must not pass silently: a clone booted without this inbound DROP would be
+  # reachable by a peer on SMB/RDP/WinRM. Return the grep status so the caller
+  # can treat a missing policy as fatal.
+  grep -q '^policy_in: DROP$' "$FW_DIR/$1.fw" 2>/dev/null
 }
 
 destroy_clone() {
@@ -246,8 +252,15 @@ slot_loop() {
       qm clone "$template" "$vmid" --name "$name" >/dev/null || { sleep 30; continue; }
       # Write the isolation policy before the clone boots, so the first packet
       # it sends is already filtered — the clone inherits firewall=1 from the
-      # template NIC and this supplies the rules.
-      write_clone_firewall "$vmid"
+      # template NIC and this supplies the rules. If the policy fails to land,
+      # booting anyway would leave the clone unisolated (peer SMB/RDP/WinRM
+      # reachable), so treat it as fatal: destroy and retry rather than start.
+      if ! write_clone_firewall "$vmid"; then
+        log "$name" "firewall policy for $vmid did not land; destroying"
+        destroy_clone "$vmid"
+        sleep 30
+        continue
+      fi
       # A marker can outlive the clone it described: killing this service
       # between the destroy and its `rm` leaves one behind, and the next clone
       # of the same VMID would then look already-configured to the reconcile

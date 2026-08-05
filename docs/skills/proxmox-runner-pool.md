@@ -80,8 +80,11 @@ Components:
   traffic (the per-clone firewall policy written by the orchestrator; see the
   storage/isolation notes below), so a compromised clone cannot reach a peer's
   SMB/RDP/WinRM even knowing the shared password. Measured directly: clone-to-
-  clone TCP is refused on every port; only ICMP echo passes, which carries no
-  credential and no lateral-movement capability. Adding a *third* concurrent
+  clone TCP is silently dropped on every port — because the policy is
+  `policy_in: DROP`, connections hang and time out rather than being refused
+  with a RST/ICMP reject, so validate isolation by expecting a timeout, not a
+  "connection refused". Only ICMP echo passes, which carries no credential and
+  no lateral-movement capability. Adding a *third* concurrent
   Windows slot needs no new review — the isolation is per-clone, not
   pair-specific — but re-confirm the host has the RAM and that cipool still
   scales at the new concurrency (fio, per docs below) before doing so.
