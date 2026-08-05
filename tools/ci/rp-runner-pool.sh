@@ -201,31 +201,35 @@ inject_jitconfig() {
 # permitted by the Proxmox default and carries no such risk).
 FW_DIR=/etc/pve/firewall
 write_clone_firewall() {
-  cat > "$FW_DIR/$1.fw" <<'FW'
+  local f="$FW_DIR/$1.fw" rc
+  cat > "$f" <<'FW'
 [OPTIONS]
 enable: 1
 policy_in: DROP
 policy_out: ACCEPT
 dhcp: 1
 FW
-  # Confirm the policy actually landed. The script does not run under `set -e`,
-  # and a failed or truncated write (/etc/pve unavailable, full filesystem)
-  # must not pass silently: a clone booted without this inbound DROP would be
-  # reachable by a peer on SMB/RDP/WinRM. Return the grep status so the caller
-  # can treat a missing policy as fatal.
-  grep -q '^policy_in: DROP$' "$FW_DIR/$1.fw" 2>/dev/null
+  rc=$?
+  # The clone is only isolated if BOTH the firewall is enabled and the inbound
+  # policy is DROP — `policy_in: DROP` under a missing `enable: 1` is inert. The
+  # script does not run under `set -e`, so verify the write here: cat returns 0
+  # only when every byte was written (a truncated/ENOSPC write returns
+  # non-zero), and both key directives must be present, so a partial write or a
+  # stale file can never pass as isolated. The caller treats failure as fatal.
+  [ "$rc" -eq 0 ] \
+    && grep -q '^enable: 1$' "$f" \
+    && grep -q '^policy_in: DROP$' "$f"
 }
 
 destroy_clone() {
   qm stop "$1" >/dev/null 2>&1
-  qm destroy "$1" --purge >/dev/null 2>&1
   rm -f "$STATE_DIR/$1.injected"
-  # Only drop the isolation policy once the VM is actually gone. If the destroy
-  # did not take (a transient Proxmox lock), the clone still exists and must
-  # keep its inbound DROP; the caller retries the destroy, which clears the
-  # file on a later successful pass. A recreated VMID rewrites its .fw before
-  # boot, so a briefly-orphaned file is harmless.
-  qm status "$1" >/dev/null 2>&1 || rm -f "$FW_DIR/$1.fw"
+  # Drop the isolation policy only when the destroy actually removed the VM.
+  # Keying cleanup off `qm destroy` succeeding — not a `qm status` probe, which
+  # can fail transiently while the clone still exists — keeps a still-present
+  # clone's inbound DROP in place; the caller retries the destroy. A recreated
+  # VMID rewrites its .fw before boot, so a briefly-orphaned file is harmless.
+  qm destroy "$1" --purge >/dev/null 2>&1 && rm -f "$FW_DIR/$1.fw"
 }
 
 slot_loop() {
