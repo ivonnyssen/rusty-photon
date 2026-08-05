@@ -43,17 +43,60 @@ Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
 the strongest motivation — the remote-cache wedge ladder — is tracked in
 #765).
 
-### Host capacity (20 cores / 94 GB)
+### Host capacity (14 cores / 20 threads, 94 GB)
 
-Target steady state after R5: three warm slots — 2× Linux (16 vCPU,
-24 GB each; shrunk from 32 GB, to be confirmed by measuring peak RAM during
-a real job before the resize) + 1× Windows (16 vCPU, 28 GB) — ~76 GB
-committed, leaving headroom for the host and the cache LXC. vCPU is
-deliberately overcommitted (48 vCPU on 20 cores): jobs are bursty, and even
-two full builds landing together get ~10 effective cores each, still a
-multiple of the hosted runners' 4. A PR event fires at most three pool jobs
-(ubuntu, coverage, windows); msi — if routed — queues briefly behind the
-Windows bazel leg rather than earning a fourth slot.
+Slot RAM is **16 GB on both OSes**, measured rather than estimated. Method:
+`bazel clean` then the full `build` + `test` + `bdd` sequence on a real slot,
+sampling every 2s, run at two sizes so the elastic component is visible.
+
+| | Linux (peak anon) | Windows (peak committed) |
+|---|---|---|
+| large slot | 9.35 GiB @ 32 GB | 14.63 GiB @ 20 GB |
+| **16 GB slot** | **8.96 GiB** | **13.90 GiB** |
+| headroom at 16 GB | 5.23 GiB available | 6.29 GiB available, 3% pagefile |
+| wall clock | 479s → 459s | 578s → 578s |
+
+Two things that make "peak vs slot size" the wrong way to budget:
+
+* **Demand is elastic.** Bazel sizes its JVM heap and its action concurrency
+  (`--local_ram_resources` defaults to 67% of visible RAM) from the box it is
+  given, so halving the slot *lowered* peak demand on both OSes. Shrinking a
+  slot partly shrinks the workload.
+* **The two numbers are not comparable to each other.** Linux `AnonPages` and
+  Windows *committed bytes* are each the metric that governs their own OS's
+  failure mode — an OOM kill on Linux, commit exhaustion on Windows. Windows
+  genuinely costs more (see #874: `--jobs=64` permits 64 heavyweight processes
+  on a 16-core guest, and the peak lands in the link phase), but the ~1.5×
+  ratio is indicative, not arithmetic.
+
+The rule: **slot RAM ≥ 1.5× the measured peak of the heaviest workload,
+re-measured when that workload changes.** The bazel job is the heaviest — the
+MSI packaging job peaks near 9 GiB, well under it, because cargo self-limits
+to core count.
+
+**Disk, not RAM, is the binding constraint on slot count.** Clone disks belong
+on `cipool` (the 4 TB NVMe), not the root mirror. Measured with fio, ZFS
+file-based, mixed 70/30 16k — one job per simulated slot:
+
+| concurrent jobs | rpool (500 GB QLC mirror) | cipool (4 TB) |
+|---|---|---|
+| 1 | 2,595 IOPS | 6,733 IOPS |
+| 2 | 3,336 IOPS | 9,846 IOPS |
+| 3 | **3,259 IOPS — declines** | **11,258 IOPS — still scaling** |
+
+The root mirror saturates between one and two concurrent jobs and gets *worse*
+at three, with p99.9 latency reaching 3.5s; 1.27% of random writes exceed two
+seconds. That is QLC past its SLC cache, and it is why a slot count above two
+is only useful once clone disks live on `cipool`.
+
+vCPU is deliberately overcommitted, but the ceiling is real: the host is a
+mobile i9-13900H with 14 cores / 20 threads. Three 16-vCPU slots is 2.4×;
+a fourth slot should drop per-slot vCPU (~12) rather than hold 16, since
+adding slots adds queueing capacity, not CPU.
+
+A PR event fires at most three pool jobs (ubuntu, coverage, windows); msi — if
+routed — queues briefly behind the Windows bazel leg. A second Windows slot is
+gated on #872, not on capacity.
 
 ## Venue and cache matrix
 

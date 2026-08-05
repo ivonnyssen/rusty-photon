@@ -97,6 +97,36 @@ Components:
   only on push-to-main events, mirroring the cloud cache's poisoning
   defense (ADR-020 layer 4).
 
+* **Storage layout: clone disks and the cache belong on `cipool`, never the
+  root mirror.** `rpool` is a mirror of two 500 GB QLC drives; `cipool` is a
+  single 4 TB NVMe with `compression=lz4`. Three reasons this split is
+  load-bearing, all measured:
+
+  * **The root mirror collapses under concurrency.** fio, mixed 70/30 16k,
+    one job per simulated slot: rpool goes 2,595 → 3,336 → **3,259** IOPS at
+    1/2/3 jobs — it saturates between one and two and *declines* at three,
+    with p99.9 latency hitting 3.5s. `cipool` goes 6,733 → 9,846 → **11,258**
+    and is still scaling. Sustained sequential write is 119 MiB/s on rpool
+    (in 510 MiB/s bursts separated by 2–5s stalls, which is QLC past its SLC
+    cache) against 2,180 MiB/s on cipool.
+  * **Mirroring disposable data doubles writes for nothing.** A clone's disk
+    is destroyed with the clone; if it were lost mid-job the job simply
+    reruns. `cipool` is deliberately non-redundant.
+  * **The cache does not fit on rpool.** `bazel-remote` is configured with a
+    230 GiB ceiling and grows steadily (the cloud R2 cache reaches ~150 GB
+    within its 7-day retention window). rpool has well under that free, and
+    it also holds the host OS and every template — so an unconstrained cache
+    there is a host-outage risk, not merely a slow one.
+
+  Clones inherit their template's storage, so moving the pool to `cipool`
+  means rebuilding the templates there (`qm clone --full --storage cipool`,
+  then `qm template`), not moving live clones.
+
+* **ZFS ARC is capped well below what this host can afford.** With a 1 GiB
+  cap the demand-data hit rate sits near 73%, so a quarter of data reads go
+  to the platter unnecessarily. Right-sizing the slots frees RAM that is
+  better spent here than on slot allocation nobody touches.
+
 ## Security Model — DO NOT WEAKEN
 
 This repo is public, and on `pull_request` events Actions executes the
@@ -216,6 +246,20 @@ dangerous combination. The rule bifurcates by runner kind
   injected config and power the VM off if it never arrives; that is the
   guest's own backstop for the orchestrator being stopped, which is the one
   case the slot health check above cannot cover.
+* **The whole Windows action cache hangs off `GITHUB_WORKSPACE`.**
+  `.bazelrc` sets `build:windows --action_env=GITHUB_WORKSPACE`, so that path
+  string is baked into every Windows action key. Consequences worth knowing
+  before they surprise someone:
+  * Change the runner's work-directory layout — a different `_work` root, a
+    renamed runner — and **every Windows job goes cold at once**, with no
+    error to explain it.
+  * Reproducing a Windows build by hand outside the Actions runner gets a
+    100% cache miss unless `GITHUB_WORKSPACE` is exported to exactly the
+    path CI used. That is a useful property when deliberately measuring an
+    uncached build, and a baffling one when not.
+
+  Linux does **not** carry this variable in its action env, so the two
+  venues behave differently here.
 * To update the runner toolchain (new SDK pin, new runner release), boot a
   fresh clone of the template, apply the change, copy in the guest one-job
   script from `tools/ci/runner-guest/` if it has changed, wipe
