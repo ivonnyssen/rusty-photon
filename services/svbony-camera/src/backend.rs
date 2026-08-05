@@ -23,6 +23,13 @@
 //! output format + exposure control + trigger + the `exposure*2+500ms`
 //! `SVBGetVideoData` deadline, state-machine step 2), and pulse-guide.
 //!
+//! **The download format is the caller's choice, not this seam's.**
+//! `capture` applies whatever [`CaptureRequest::image_type`] carries and
+//! sizes its buffer from that format's `bytes_per_pixel`. `camera.rs`
+//! negotiates the format once at connect from the camera's advertised
+//! `SupportedVideoFormat` and publishes it as the ASCOM readout mode
+//! (RM1/RM2) — this file never assumes 16-bit.
+//!
 //! **How `capture` aborts (hardware-verified, SV605CC).** `SVBony` has no
 //! data-preserving or interruptible stop at the SDK level: real-hardware
 //! probing confirmed that a concurrent `SVBStopVideoCapture` is *tolerated*
@@ -114,6 +121,11 @@ pub struct CaptureRequest {
     /// soft-trigger path vs the non-trigger free-running restart fallback
     /// (state-machine step 5).
     pub is_trigger_cam: bool,
+    /// The download format to configure for this frame — the readout mode
+    /// the device negotiated at connect against the camera's
+    /// `SupportedVideoFormat` (RM1/RM2). Sizes the `SVBGetVideoData` buffer
+    /// and tells `camera.rs` which unpack the bytes need.
+    pub image_type: ImageType,
     /// Wall-clock integration time the capture honours **under the
     /// `simulation` feature only** — `svbony-rs`'s simulated
     /// `get_video_data` never literally waits (see its doc comment), unlike
@@ -205,7 +217,8 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Run one exposure under a single SDK lock: set ROI + output format +
     /// `SVB_EXPOSURE`, trigger a frame (soft trigger, or a free-running
     /// restart for a non-trigger camera), then `SVBGetVideoData` with the
-    /// `exposure*2+500ms` deadline. Returns the raw Raw16 frame bytes.
+    /// `exposure*2+500ms` deadline. Returns the raw frame bytes in
+    /// [`CaptureRequest::image_type`]'s layout.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
     /// Issue an ST4 guide pulse (`SVBPulseGuide`) — blocks at the SDK level
@@ -384,11 +397,12 @@ impl CameraHandle for SvbonyCameraHandle {
                 request.height,
                 request.bin,
             )?;
-            // Always download 16-bit for uniform downstream handling — an
-            // MVP choice (the SV605CC also supports Raw8; picking the
-            // higher-precision format matches `zwo-camera`'s always-Raw16
-            // posture).
-            camera.set_output_image_type(ImageType::Raw16)?;
+            // The device negotiated this format against the camera's
+            // `SupportedVideoFormat` at connect and publishes it as the
+            // ASCOM readout mode (RM1). Re-applied per exposure rather
+            // than once at connect so a mode change between exposures
+            // needs no separate SDK call.
+            camera.set_output_image_type(request.image_type)?;
             camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
         }
 
@@ -436,7 +450,7 @@ impl CameraHandle for SvbonyCameraHandle {
             0u8;
             request.width as usize
                 * request.height as usize
-                * ImageType::Raw16.bytes_per_pixel()
+                * request.image_type.bytes_per_pixel()
         ];
 
         // Poll `SVBGetVideoData` in short slices instead of one blocking call
@@ -538,11 +552,38 @@ mod handle_tests {
             bin: 1,
             exposure_us: 1_000,
             is_trigger_cam: true,
+            image_type: ImageType::Raw16,
             duration: Duration::from_millis(1),
             cancel: Arc::new(AtomicBool::new(false)),
         };
         let frame = handle.capture(request).unwrap();
         assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+
+    /// A `Raw8` request configures the SDK for 8-bit output and downloads
+    /// one byte per pixel — the fallback path a camera without `Raw16`
+    /// takes, and the one an operator selects via the readout mode (RM2).
+    #[test]
+    fn production_handle_capture_downloads_the_requested_8_bit_format() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let request = CaptureRequest {
+            start_x: 0,
+            start_y: 0,
+            width: 64,
+            height: 64,
+            bin: 1,
+            exposure_us: 1_000,
+            is_trigger_cam: true,
+            image_type: ImageType::Raw8,
+            duration: Duration::from_millis(1),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let frame = handle.capture(request).unwrap();
+        assert_eq!(frame.len(), 64 * 64);
         handle.close().unwrap();
     }
 
@@ -563,6 +604,7 @@ mod handle_tests {
             bin: 1,
             exposure_us: 30_000_000,
             is_trigger_cam: true,
+            image_type: ImageType::Raw16,
             duration: Duration::from_secs(30),
             cancel: Arc::new(AtomicBool::new(true)),
         };
@@ -796,6 +838,16 @@ pub(crate) mod mock {
             self
         }
 
+        /// Present a model advertising exactly `formats` as its
+        /// `SupportedVideoFormat` — the default mirrors the SV605CC's
+        /// `[Raw8, Raw16]`. Drives the readout-mode negotiation (RM1) and
+        /// its no-usable-format connect failure (RM3), neither of which
+        /// the `svbony-rs` simulation can present.
+        pub fn with_video_formats(self, formats: Vec<ImageType>) -> Self {
+            self.property.lock().supported_video_formats = formats;
+            self
+        }
+
         pub fn set_capture_delay(&self, delay: Duration) {
             *self.capture_delay.lock() = delay;
         }
@@ -965,7 +1017,9 @@ pub(crate) mod mock {
             }
             Ok(vec![
                 0u8;
-                request.width as usize * request.height as usize * 2
+                request.width as usize
+                    * request.height as usize
+                    * request.image_type.bytes_per_pixel()
             ])
         }
 
