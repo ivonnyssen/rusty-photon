@@ -64,12 +64,16 @@ fn main() {
         // Small ROI first, then the full frame at bin 1 and bin 2: the field
         // reports of unreliable 16-bit on ASI120-class cameras describe
         // bandwidth-dependent failures, which a 320x240 crop would not reach.
-        let full_w = info.max_width - info.max_width % 8;
-        let full_h = info.max_height - info.max_height % 2;
+        // Every geometry must satisfy the SDK's width%8 / height%2 rule, and
+        // the binned one must satisfy it *after* halving — `full_h / 2` is odd
+        // whenever `max_height % 4 != 0`, so align each one independently.
+        let align = |w: u32, h: u32| (w - w % 8, h - h % 2);
+        let (full_w, full_h) = align(info.max_width, info.max_height);
+        let (bin2_w, bin2_h) = align(full_w / 2, full_h / 2);
         let geometries = [
             (PROBE_W, PROBE_H, 1),
             (full_w, full_h, 1),
-            (full_w / 2 - (full_w / 2) % 8, full_h / 2, 2),
+            (bin2_w, bin2_h, 2),
         ];
         for (w, h, bin) in geometries {
             for image_type in [ImageType::Raw16, ImageType::Raw8] {
@@ -91,7 +95,12 @@ fn trial(camera: &Camera, image_type: ImageType, width: u32, height: u32, bin: u
         }
     }
 
-    match camera.roi_format() {
+    // Everything below is sized and decoded from what the SDK says the ROI IS,
+    // never from what we asked for. A silent substitution is precisely what
+    // this probe exists to catch, and sizing from the request would hide it
+    // behind a `BufferTooSmall` download error or decode the bytes at the
+    // wrong element width.
+    let roi = match camera.roi_format() {
         Ok(roi) => {
             println!(
                 "    read back            : {}x{} bin {} {:?}{}",
@@ -105,9 +114,13 @@ fn trial(camera: &Camera, image_type: ImageType, width: u32, height: u32, bin: u
                     "   <-- MISMATCH: the SDK silently kept another format"
                 }
             );
+            roi
         }
-        Err(e) => println!("    read back            : FAILED ({e})"),
-    }
+        Err(e) => {
+            println!("    read back            : FAILED ({e})");
+            return;
+        }
+    };
 
     if let Err(e) = camera.set_control_value(ControlType::Exposure, EXPOSURE_US, false) {
         println!("    set exposure         : FAILED ({e})");
@@ -144,7 +157,10 @@ fn trial(camera: &Camera, image_type: ImageType, width: u32, height: u32, bin: u
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    let needed = width as usize * height as usize * image_type.bytes_per_pixel();
+    let Some(needed) = roi.buffer_len() else {
+        println!("    download             : frame too large to address on this target");
+        return;
+    };
     let mut buf = vec![0u8; needed];
     match camera.download_exposure(&mut buf) {
         Ok(()) => {
@@ -152,7 +168,7 @@ fn trial(camera: &Camera, image_type: ImageType, width: u32, height: u32, bin: u
                 "    download             : OK ({needed} bytes in {:?})",
                 started.elapsed()
             );
-            report_pixels(&buf, image_type);
+            report_pixels(&buf, roi.image_type);
         }
         Err(e) => println!("    download             : FAILED ({e})"),
     }

@@ -142,8 +142,12 @@ struct DeviceState {
     /// format", so a frame is never captured in one format while `ReadoutMode`
     /// and `MaxADU` report another (RM1).
     ///
-    /// **Lock order:** a path needing both this and another of this struct's
-    /// locks takes this one first.
+    /// **Lock order:** no other lock of this struct is held or taken while this
+    /// one is — both critical sections touch only atomics and
+    /// [`ZwoCamera::readout_formats`], which needs none. Callers do take other
+    /// locks *before* acquiring this (`start_exposure` reads `intended_roi` via
+    /// `validated_geometry`), but those are released by then, so this lock
+    /// participates in no ordering pair at all.
     readout_mode_lock: Mutex<()>,
     /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
     /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
