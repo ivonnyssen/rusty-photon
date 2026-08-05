@@ -187,10 +187,12 @@ struct DeviceState {
     /// interleave into a frame captured in one format while `ReadoutMode` and
     /// `MaxADU` report the other (RM1).
     ///
-    /// **Lock order:** outermost of this struct's locks — both holders take it
-    /// before reading [`Self::sensor`]. Nothing holds `sensor` while waiting
-    /// (its accessor clones and releases), so the order is discipline for
-    /// future edits rather than a live hazard.
+    /// **Lock order:** a path that needs *both* this lock and [`Self::sensor`]
+    /// takes this one first — `start_exposure` holds it across
+    /// `selected_format`'s `sensor` read, and `set_readout_mode` matches. Most
+    /// `sensor` reads need no lock at all and take none. Nothing ever holds
+    /// `sensor` while waiting (its accessor clones and releases), so this order
+    /// is discipline for future edits rather than a live hazard.
     readout_mode_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
