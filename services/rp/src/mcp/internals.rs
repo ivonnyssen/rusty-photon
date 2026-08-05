@@ -892,9 +892,17 @@ impl McpHandler {
                 .await
                 .map_err(|e| format!("failed to download image array: {e}"))?;
 
-            let (dim_x, dim_y, _planes) = image_array.dim();
-            let width = dim_x as u32;
-            let height = dim_y as u32;
+            let (width, height, _planes) = image_array.dim();
+
+            // The JSON sidecar carries fixed-width dimensions, so this is
+            // where the frame geometry stops being a buffer length. The
+            // FITS writer takes the lengths directly.
+            let (Ok(doc_width), Ok(doc_height)) = (u32::try_from(width), u32::try_from(height))
+            else {
+                return Err(format!(
+                    "captured frame {width}x{height} is too large to record in a sidecar"
+                ));
+            };
 
             // `captured_max_adu` decides whether we need a u16 or i32 buffer,
             // so it is consulted *before* collecting pixels to let us collect
@@ -964,7 +972,7 @@ impl McpHandler {
             // Dispatch on max_adu, collecting pixels directly into the
             // narrowest type each path needs and reusing the same buffer
             // for the cache insert.
-            let shape = (width as usize, height as usize);
+            let shape = (width, height);
             let cached_pixels: Option<CachedPixels> = match captured_max_adu {
                 Some(max_adu) if u16::try_from(max_adu).is_ok() => {
                     let max_adu_i32 = max_adu.cast_signed();
@@ -1005,8 +1013,8 @@ impl McpHandler {
                 id: document_id.clone(),
                 captured_at: captured_at.to_rfc3339(),
                 file_path: image_path.clone(),
-                width,
-                height,
+                width: doc_width,
+                height: doc_height,
                 camera_id: Some(camera_id.to_string()),
                 duration: Some(duration),
                 max_adu: captured_max_adu,

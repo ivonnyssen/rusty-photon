@@ -203,7 +203,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // produces byte-identical files.
         let doc_id = format!("autofocus-fixture-{d:+04}");
 
-        write_fits_u16(&path, &pixels, WIDTH, HEIGHT, &doc_id).await?;
+        write_fits_u16(
+            &path,
+            &pixels,
+            usize::try_from(WIDTH)?,
+            usize::try_from(HEIGHT)?,
+            &doc_id,
+        )
+        .await?;
         println!("  {}  HFR={:.3} px  → {}", name, hfr, path.display());
     }
 
