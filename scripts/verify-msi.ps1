@@ -279,12 +279,15 @@ Write-Host "== ${flagProbe}: OK (restarted after a clean error exit - failure-ac
 # Capture the log content that satisfies the wait and branch on THAT snapshot,
 # rather than re-reading afterwards: a second read could see later writes or a
 # rotated tail and report a different outcome than the one that actually passed.
-$qhyLog = ''
+# The probe runs in a child scope (WaitFor's `& $probe`), so the capture must
+# be script-scoped to survive back to the branch below; every reference here is
+# spelled `$script:qhyLog` so the single-variable intent is unambiguous.
+$script:qhyLog = ''
 WaitFor 'qhy-camera' "the delay-load to resolve either way (started, or reported the missing DLL - not a loader crash)" {
     $script:qhyLog = ServiceLogContent 'qhy-camera'
     $script:qhyLog -match 'Service started successfully|qhyccd\.dll not found'
 } 30
-if ($qhyLog -match 'qhyccd\.dll not found') {
+if ($script:qhyLog -match 'qhyccd\.dll not found') {
     Write-Host "== qhy-camera: OK (preflight reported the missing DLL - no loader crash)"
 } else {
     Write-Host "== qhy-camera: OK (delay-load resolved - service started)"
