@@ -267,10 +267,17 @@ async fn run_exposure_inner(
     // `nx`/`ny` stay fixed-width for `crop_subframe`, which takes the
     // subframe as the ASCOM device state it is. The outcome carries the
     // same numbers as the geometry of the buffer it holds, so convert
-    // once here. `StartExposure` has already bounded both against the
-    // binned sensor.
-    let out_w = usize::try_from(nx).unwrap_or(usize::MAX);
-    let out_h = usize::try_from(ny).unwrap_or(usize::MAX);
+    // once here. Fallible rather than saturating because the dark-frame
+    // path below *allocates* `out_w * out_h` elements — a saturated
+    // length would abort the process instead of reporting anything.
+    // `StartExposure` has already bounded both against the binned sensor,
+    // so this reports a configuration no camera could have.
+    let (Ok(out_w), Ok(out_h)) = (usize::try_from(nx), usize::try_from(ny)) else {
+        return Err(format!("subframe {nx}x{ny} is too large to address"));
+    };
+    let Some(out_pixels) = out_w.checked_mul(out_h) else {
+        return Err(format!("subframe {nx}x{ny} is too large to address"));
+    };
 
     // Hold `Exposing` state for the requested duration so clients
     // (incl. ConformU) can observe the camera mid-exposure. Capped at
@@ -289,7 +296,7 @@ async fn run_exposure_inner(
         return Ok(ExposureOutcome {
             width: out_w,
             height: out_h,
-            data: vec![0i32; out_w.saturating_mul(out_h)],
+            data: vec![0i32; out_pixels],
         });
     }
 

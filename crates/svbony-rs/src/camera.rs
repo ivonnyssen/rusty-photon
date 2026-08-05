@@ -865,20 +865,24 @@ impl Camera {
     /// type (`roi.width × roi.height × image_type.bytes_per_pixel()`).
     ///
     /// # Errors
-    /// Returns [`Error::Svb`] if either underlying read fails.
+    /// Returns [`Error::Svb`] if either underlying read fails, or
+    /// [`SvbError::InvalidSize`] if the ROI describes a frame this target
+    /// cannot address.
     pub fn frame_buffer_len(&self) -> Result<usize> {
         let roi = self.roi_format()?;
         let image_type = self.output_image_type()?;
         // The ROI is device state and arrives fixed-width; the length it
-        // describes is a `usize`, so the conversion belongs here. A frame
-        // too large to address saturates rather than wrapping, so
-        // `get_video_data`'s length check rejects every buffer instead of
-        // accepting one sized from a wrapped product.
-        let width = usize::try_from(roi.width).unwrap_or(usize::MAX);
-        let height = usize::try_from(roi.height).unwrap_or(usize::MAX);
-        Ok(width
-            .saturating_mul(height)
-            .saturating_mul(image_type.bytes_per_pixel()))
+        // describes is a `usize`, so the conversion belongs here. Fallible
+        // rather than saturating because callers allocate this many bytes
+        // as well as compare against it — `usize::MAX` would serve the
+        // comparison and abort the allocation.
+        let too_large = || Error::Svb(SvbError::InvalidSize);
+        let width = usize::try_from(roi.width).map_err(|_| too_large())?;
+        let height = usize::try_from(roi.height).map_err(|_| too_large())?;
+        width
+            .checked_mul(height)
+            .and_then(|px| px.checked_mul(image_type.bytes_per_pixel()))
+            .ok_or_else(too_large)
     }
 
     /// Read the current [`CameraMode`].

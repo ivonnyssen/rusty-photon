@@ -234,21 +234,23 @@ pub struct RoiFormat {
 
 impl RoiFormat {
     /// Byte length of one full frame in this format
-    /// (`width × height × bytes/pixel`).
+    /// (`width × height × bytes/pixel`), or `None` when that product
+    /// exceeds what this target can address.
     ///
     /// The ROI is device state and arrives fixed-width; the length it
-    /// describes is a `usize`, so the conversion belongs here. A frame
-    /// too large to address saturates rather than wrapping: the callers
-    /// that matter compare a buffer against this value before handing
-    /// it to the SDK, and `usize::MAX` makes every buffer too small
-    /// instead of one sized from a wrapped product.
+    /// describes is a `usize`, so the conversion belongs here.
+    ///
+    /// Fallible rather than saturating because callers do two different
+    /// things with the answer: compare a caller-supplied buffer against
+    /// it, and *allocate* one. `usize::MAX` would serve the first — every
+    /// buffer is too small — and abort the second.
     #[must_use]
-    pub fn buffer_len(&self) -> usize {
-        let width = usize::try_from(self.width).unwrap_or(usize::MAX);
-        let height = usize::try_from(self.height).unwrap_or(usize::MAX);
+    pub fn buffer_len(&self) -> Option<usize> {
+        let width = usize::try_from(self.width).ok()?;
+        let height = usize::try_from(self.height).ok()?;
         width
-            .saturating_mul(height)
-            .saturating_mul(self.image_type.bytes_per_pixel())
+            .checked_mul(height)?
+            .checked_mul(self.image_type.bytes_per_pixel())
     }
 }
 
@@ -791,7 +793,13 @@ impl Camera {
     /// # Errors
     /// Returns [`Error::Asi`] if `buf` is too small or the download fails.
     pub fn download_exposure(&self, buf: &mut [u8]) -> Result<()> {
-        let need = self.roi_format()?.buffer_len();
+        // A frame this target cannot address is, from the caller's side,
+        // exactly "your buffer is too small" — no buffer it could pass
+        // would satisfy it.
+        let need = self
+            .roi_format()?
+            .buffer_len()
+            .ok_or(Error::Asi(AsiError::BufferTooSmall))?;
         if buf.len() < need {
             return Err(Error::Asi(AsiError::BufferTooSmall));
         }
@@ -1275,7 +1283,7 @@ mod tests {
         assert_eq!(default.height, 4176);
         assert_eq!(default.bin, 1);
         assert_eq!(default.image_type, ImageType::Raw16);
-        assert_eq!(default.buffer_len(), 6248 * 4176 * 2);
+        assert_eq!(default.buffer_len(), Some(6248 * 4176 * 2));
 
         // A binned, sub-framed ROI.
         cam.set_roi_format(800, 600, 2, ImageType::Raw8).unwrap();
@@ -1284,11 +1292,34 @@ mod tests {
         assert_eq!(roi.height, 600);
         assert_eq!(roi.bin, 2);
         assert_eq!(roi.image_type, ImageType::Raw8);
-        assert_eq!(roi.buffer_len(), 800 * 600);
+        assert_eq!(roi.buffer_len(), Some(800 * 600));
         // Setting the ROI re-centres the start position (binned coordinates).
         let (sx, sy) = cam.start_pos().unwrap();
         assert_eq!(sx, (6248 / 2 - 800) / 2);
         assert_eq!(sy, (4176 / 2 - 600) / 2);
+    }
+
+    /// An ROI describing more bytes than this target can address has no
+    /// buffer length — callers allocate from this, so it must not hand
+    /// back a saturated one they would then try to allocate.
+    #[test]
+    fn buffer_len_declines_a_frame_too_large_to_address() {
+        let unaddressable = RoiFormat {
+            width: u32::MAX,
+            height: u32::MAX,
+            bin: 1,
+            image_type: ImageType::Rgb24,
+        };
+        assert_eq!(unaddressable.buffer_len(), None);
+
+        // One that does fit still answers, so the check is not vacuous.
+        let ordinary = RoiFormat {
+            width: 800,
+            height: 600,
+            bin: 1,
+            image_type: ImageType::Rgb24,
+        };
+        assert_eq!(ordinary.buffer_len(), Some(800 * 600 * 3));
     }
 
     #[cfg(feature = "simulation")]
@@ -1378,7 +1409,7 @@ mod tests {
         // byte-at-a-time fill took >10 s here and tripped ConformU's timeout.
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
-        let need = cam.roi_format().unwrap().buffer_len();
+        let need = cam.roi_format().unwrap().buffer_len().unwrap();
         assert_eq!(need, 6248 * 4176 * 2);
         cam.start_exposure(false).unwrap();
         assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Working);
@@ -1413,7 +1444,7 @@ mod tests {
         assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Working);
         assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Success);
 
-        let mut buf = vec![0u8; cam.roi_format().unwrap().buffer_len()];
+        let mut buf = vec![0u8; cam.roi_format().unwrap().buffer_len().unwrap()];
         cam.download_exposure(&mut buf).unwrap();
         assert_eq!(buf.len(), 800 * 600 * 2);
     }

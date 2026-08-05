@@ -143,19 +143,20 @@ pub struct CaptureRequest {
 
 impl CaptureRequest {
     /// Byte length of one frame at this request's geometry and download
-    /// format.
+    /// format, or `None` when that product exceeds what this target can
+    /// address.
     ///
     /// The ROI arrives fixed-width because it is ASCOM device state; the
-    /// buffer it describes is a length, so the conversion belongs here. A
-    /// frame too large to address saturates rather than wrapping, so
-    /// `get_video_data`'s own length check rejects every buffer instead of
-    /// accepting one sized from a wrapped product.
-    fn frame_len(&self) -> usize {
-        let width = usize::try_from(self.width).unwrap_or(usize::MAX);
-        let height = usize::try_from(self.height).unwrap_or(usize::MAX);
+    /// buffer it describes is a length, so the conversion belongs here.
+    /// Fallible rather than saturating because the caller *allocates* this
+    /// many bytes — `usize::MAX` would abort the process instead of
+    /// reporting anything.
+    fn frame_len(&self) -> Option<usize> {
+        let width = usize::try_from(self.width).ok()?;
+        let height = usize::try_from(self.height).ok()?;
         width
-            .saturating_mul(height)
-            .saturating_mul(self.image_type.bytes_per_pixel())
+            .checked_mul(height)?
+            .checked_mul(self.image_type.bytes_per_pixel())
     }
 }
 
@@ -464,7 +465,10 @@ impl CameraHandle for SvbonyCameraHandle {
             }
         }
 
-        let mut buf = vec![0u8; request.frame_len()];
+        let frame_len = request.frame_len().ok_or_else(|| {
+            BackendError("frame is too large to address on this target".to_string())
+        })?;
+        let mut buf = vec![0u8; frame_len];
 
         // Poll `SVBGetVideoData` in short slices instead of one blocking call
         // for the whole `exposure_us*2+500ms` deadline, releasing the SDK
@@ -549,6 +553,34 @@ mod handle_tests {
 
         handle.close().unwrap();
         assert!(!handle.is_open());
+    }
+
+    /// A request describing more bytes than this target can address has no
+    /// frame length. `capture` allocates from it, so a saturated answer
+    /// would be an allocation abort rather than a reported error.
+    #[test]
+    fn frame_len_declines_a_request_too_large_to_address() {
+        let unaddressable = CaptureRequest {
+            start_x: 0,
+            start_y: 0,
+            width: u32::MAX,
+            height: u32::MAX,
+            bin: 1,
+            exposure_us: 1_000,
+            is_trigger_cam: true,
+            image_type: ImageType::Raw16,
+            duration: Duration::from_millis(1),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        assert_eq!(unaddressable.frame_len(), None);
+
+        // One that does fit still answers, so the check is not vacuous.
+        let ordinary = CaptureRequest {
+            width: 800,
+            height: 600,
+            ..unaddressable
+        };
+        assert_eq!(ordinary.frame_len(), Some(800 * 600 * 2));
     }
 
     #[test]

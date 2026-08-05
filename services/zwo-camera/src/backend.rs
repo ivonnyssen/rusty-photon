@@ -328,7 +328,10 @@ impl CameraHandle for ZwoCameraHandle {
         // from `request` instead duplicated the bytes-per-pixel constant,
         // so a future non-Raw16 path would have had to remember to
         // change it here too.
-        let mut buf = vec![0u8; camera.roi_format()?.buffer_len()];
+        let frame_len = camera.roi_format()?.buffer_len().ok_or_else(|| {
+            BackendError("frame is too large to address on this target".to_string())
+        })?;
+        let mut buf = vec![0u8; frame_len];
         camera.download_exposure(&mut buf)?;
         Ok(Some(buf))
     }
