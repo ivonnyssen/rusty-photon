@@ -137,8 +137,8 @@ impl Keyword {
 pub fn write_u8_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[u8],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     extra: &[Keyword],
 ) -> Result<(), FitsError> {
     let body = serialize_image(8, &[], pixels, width, height, extra, |out, &p| {
@@ -154,8 +154,8 @@ pub fn write_u8_image<W: Write + ?Sized>(
 pub fn write_u16_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[u16],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     extra: &[Keyword],
 ) -> Result<(), FitsError> {
     // BSCALE = 1.0, BZERO = 32768.0 — the standard u16 dance. These are
@@ -178,8 +178,8 @@ pub fn write_u16_image<W: Write + ?Sized>(
 pub fn write_i32_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[i32],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     extra: &[Keyword],
 ) -> Result<(), FitsError> {
     let body = serialize_image(32, &[], pixels, width, height, extra, |out, &p| {
@@ -197,16 +197,16 @@ fn serialize_image<T, F>(
     bitpix: i8,
     managed_pre_user: &[Card],
     pixels: &[T],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     extra: &[Keyword],
     mut emit: F,
 ) -> Result<Vec<u8>, FitsError>
 where
     F: FnMut(&mut Vec<u8>, &T),
 {
-    let expected = (width as usize)
-        .checked_mul(height as usize)
+    let expected = width
+        .checked_mul(height)
         .ok_or_else(|| FitsError::Unsupported(format!("dimensions overflow: {width}x{height}")))?;
     if pixels.len() != expected {
         return Err(FitsError::DimensionMismatch {
@@ -217,15 +217,20 @@ where
         });
     }
 
-    let bytes_per_pixel = (bitpix.unsigned_abs() as usize) / 8;
+    let bytes_per_pixel = usize::from(bitpix.unsigned_abs()) / 8;
     let mut out = Vec::with_capacity(BLOCK_SIZE + expected * bytes_per_pixel + BLOCK_SIZE);
 
     // Header.
     write_card(&mut out, &Card::logical("SIMPLE", true))?;
     write_card(&mut out, &Card::integer("BITPIX", i64::from(bitpix)))?;
     write_card(&mut out, &Card::integer("NAXIS", 2))?;
-    write_card(&mut out, &Card::integer("NAXIS1", i64::from(width)))?;
-    write_card(&mut out, &Card::integer("NAXIS2", i64::from(height)))?;
+    let (Ok(naxis1), Ok(naxis2)) = (i64::try_from(width), i64::try_from(height)) else {
+        return Err(FitsError::Unsupported(format!(
+            "dimensions exceed a NAXIS card: {width}x{height}"
+        )));
+    };
+    write_card(&mut out, &Card::integer("NAXIS1", naxis1))?;
+    write_card(&mut out, &Card::integer("NAXIS2", naxis2))?;
     for c in managed_pre_user {
         write_card(&mut out, c)?;
     }
@@ -570,6 +575,18 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    /// Dimensions whose product no buffer could hold must be reported,
+    /// not wrapped into a plausible-looking pixel count.
+    #[test]
+    fn rejects_dimensions_that_overflow_a_pixel_count() {
+        let mut buf = Vec::new();
+        let err = write_i32_image(&mut buf, &[], usize::MAX, usize::MAX, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("dimensions overflow"),
+            "expected an overflow error, got: {err}"
+        );
     }
 
     #[test]

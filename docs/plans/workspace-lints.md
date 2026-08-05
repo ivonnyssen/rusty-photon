@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b started in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871 and the capture/write path in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -431,8 +431,7 @@ not how to spell it:
 That resolves each site without judgment. `rp-fits`' reader hands back a buffer
 and its shape, so it yields `usize` — which also deletes a step, since it had
 been parsing `NAXIS` from `i64` into a `u32` that every caller immediately
-widened again. Its writer takes dimensions bound for a header card, so those
-stay `u32`. Alpaca `NumX`/`StartX`, the `ImageBytes` header, the sidecar
+widened again. Alpaca `NumX`/`StartX`, the `ImageBytes` header, the sidecar
 JSON's `width`, and a PNG's dimensions are all fixed-width for the same reason;
 `crop_subframe`, `Array2::from_shape_vec`, and a preview's subsampling are all
 `usize`.
@@ -441,6 +440,29 @@ Boundary conversions that survive get folded into an error the function already
 returns — an ASCOM subframe too large for a `usize` cannot fit the source
 buffer either, so it lands in the existing bounds check rather than earning a
 variant of its own.
+
+The writer looked like the exception, because its dimensions are *both* a
+`NAXIS` header card and the length of the buffer being validated against them.
+Taking them as `u32` there was the first answer; measuring it changed the
+verdict. `u32` parameters left the capture path narrowing `image_array.dim()`
+from `usize` to `u32` only to widen it straight back for the `Array2` shape,
+and left `FitsError::DimensionMismatch` carrying `got: usize` and
+`expected: usize` beside `width: u32`. Taking `usize` collapses both, and the
+`i64::try_from` it adds on the `NAXIS` side is offset by the `checked_mul`
+overflow arm becoming *reachable* — with `u32` parameters that arm is dead code
+on every 64-bit target, and with `usize` it is a two-line test. The narrowing
+that remains sits at the JSON sidecar, which is genuinely a serialized field.
+
+So the boundary belongs at the last consumer that needs a fixed width, not at
+the first function that touches one. Two consequences worth carrying forward:
+
+- **A conversion is not free wherever it lands.** Pushed into
+  `gen_autofocus_fixtures`, one landed on `-D clippy::expect_used` and only
+  resolved because `main` returns `Box<dyn Error>`, making `?` available.
+- **Retyping a boundary can relocate rather than remove it.** The
+  `sky-survey-camera` BDD harness holds dimensions that are simultaneously a
+  `vec![0u16; n]` length and `f64` WCS header cards, and `f64::from(usize)`
+  does not exist. It converts explicitly instead.
 
 ## L6a — split the CI channels
 

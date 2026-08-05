@@ -56,11 +56,15 @@ pub fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>> {
 pub async fn write_grayscale_u16_fits<P: AsRef<Path>>(
     path: P,
     pixels: &[u16],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     headers: Option<&[(&str, &str)]>,
 ) -> Result<()> {
-    let expected_size = (width as usize) * (height as usize);
+    let Some(expected_size) = width.checked_mul(height) else {
+        return Err(Phd2Error::InvalidState(format!(
+            "Dimensions {width}x{height} overflow a pixel count"
+        )));
+    };
     if pixels.len() != expected_size {
         return Err(Phd2Error::InvalidState(format!(
             "Pixel count {} does not match dimensions {}x{} (expected {})",
@@ -170,6 +174,19 @@ mod tests {
         let pixels = vec![1u16, 2, 3, 4];
         let result = write_grayscale_u16_fits("/tmp/test.fits", &pixels, 2, 3, None).await;
         assert!(result.is_err());
+    }
+
+    /// Dimensions whose product no buffer could hold are rejected
+    /// rather than wrapped into a plausible pixel count.
+    #[tokio::test]
+    async fn write_grayscale_u16_fits_rejects_overflowing_dimensions() {
+        let err = write_grayscale_u16_fits("/tmp/test.fits", &[], usize::MAX, usize::MAX, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("overflow a pixel count"),
+            "expected an overflow error, got: {err}"
+        );
     }
 
     #[tokio::test]

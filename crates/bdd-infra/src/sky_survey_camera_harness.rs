@@ -240,12 +240,18 @@ fn synth_fits_with_wcs(
         Keyword::new("CDELT2", KeywordValue::Float(cdelt)).unwrap(),
     ];
 
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
+    // The dimensions arrive as a `Pixels=` query field and end up as
+    // both a buffer length and `f64` WCS header cards, so this is the
+    // boundary: `f64::from` wants the wire type, the allocation and the
+    // writer want the length.
+    let w = usize::try_from(width).expect("width fits usize");
+    let h = usize::try_from(height).expect("height fits usize");
+    let pixel_count = w
+        .checked_mul(h)
         .expect("width * height overflows usize (callers must cap dimensions)");
     let pixels = vec![0u16; pixel_count];
     let mut out = Vec::new();
-    write_u16_image(&mut out, &pixels, width, height, &extras).expect("write_u16_image");
+    write_u16_image(&mut out, &pixels, w, h, &extras).expect("write_u16_image");
     out
 }
 

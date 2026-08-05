@@ -485,11 +485,13 @@ fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>>;
 /// `fitrs`-based path widened to BITPIX=32 because it could not write
 /// unsigned values). Atomic and durable: stages, fsyncs, renames,
 /// fsyncs the parent dir.
+/// `width`/`height` are `usize` because they describe `pixels`; the
+/// writer narrows them to `NAXIS1`/`NAXIS2` header cards itself.
 async fn write_grayscale_u16_fits(
     path: impl AsRef<Path>,
     pixels: &[u16],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     headers: Option<&[(&str, &str)]>,
 ) -> Result<()>;
 ```

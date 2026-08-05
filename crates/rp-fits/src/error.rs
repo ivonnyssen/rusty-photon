@@ -13,8 +13,8 @@ pub enum FitsError {
     #[error("dimension mismatch: pixel count {got} does not match {width}x{height} (expected {expected})")]
     DimensionMismatch {
         got: usize,
-        width: u32,
-        height: u32,
+        width: usize,
+        height: usize,
         expected: usize,
     },
 

@@ -46,11 +46,17 @@ fn doc_id_keyword(doc_id: &str) -> Result<Keyword> {
 pub async fn write_fits_u16<P: AsRef<Path>>(
     path: P,
     pixels: &[u16],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     doc_id: &str,
 ) -> Result<()> {
-    let expected = (width as usize) * (height as usize);
+    // Rejected here rather than in `rp_fits` so a bad call costs
+    // neither a buffer clone nor a staging directory.
+    let Some(expected) = width.checked_mul(height) else {
+        return Err(RpError::Imaging(format!(
+            "dimensions {width}x{height} overflow a pixel count"
+        )));
+    };
     if pixels.len() != expected {
         return Err(RpError::Imaging(format!(
             "pixel count {} does not match dimensions {}x{} (expected {})",
@@ -87,11 +93,17 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
 pub async fn write_fits_i32<P: AsRef<Path>>(
     path: P,
     pixels: &[i32],
-    width: u32,
-    height: u32,
+    width: usize,
+    height: usize,
     doc_id: &str,
 ) -> Result<()> {
-    let expected = (width as usize) * (height as usize);
+    // Rejected here rather than in `rp_fits` so a bad call costs
+    // neither a buffer clone nor a staging directory.
+    let Some(expected) = width.checked_mul(height) else {
+        return Err(RpError::Imaging(format!(
+            "dimensions {width}x{height} overflow a pixel count"
+        )));
+    };
     if pixels.len() != expected {
         return Err(RpError::Imaging(format!(
             "pixel count {} does not match dimensions {}x{} (expected {})",
@@ -130,8 +142,9 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
 /// is `NAXIS2`. Both are `usize`: every caller uses them to index or
 /// shape `pixels`, and the fixed-width `NAXIS` values they came from
 /// belong to the header, not to the buffer. The `write_fits_*` pair
-/// above takes `u32` for the mirror-image reason — those dimensions
-/// are on their way *into* a header card.
+/// above takes `usize` for the same reason — a caller holds the
+/// geometry of a buffer it already has, and `rp_fits` narrows it to a
+/// `NAXIS` card at the point it becomes one.
 /// `rp_fits::reader` applies BSCALE/BZERO so the caller
 /// sees physical ADU values regardless of on-disk encoding. `BLANK`
 /// sentinel pixels are *not* remapped at this layer — they pass
@@ -249,6 +262,32 @@ mod tests {
             err.to_string().contains("does not match dimensions"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Dimensions whose product no buffer could hold are rejected
+    /// before anything is staged, rather than wrapped into a
+    /// plausible pixel count.
+    #[tokio::test]
+    async fn write_fits_rejects_overflowing_dimensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.fits");
+
+        let err = write_fits_u16(&path, &[], usize::MAX, usize::MAX, "test-doc")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("overflow a pixel count"),
+            "unexpected error: {err}"
+        );
+
+        let err = write_fits_i32(&path, &[], usize::MAX, usize::MAX, "test-doc")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("overflow a pixel count"),
+            "unexpected error: {err}"
+        );
+        assert!(!path.exists(), "nothing should have been staged");
     }
 
     #[test]

@@ -856,8 +856,8 @@ mod tests {
         dir: &Path,
         doc_uuid: &str,
         pixels: &[u16],
-        width: u32,
-        height: u32,
+        width: usize,
+        height: usize,
     ) -> String {
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.join(format!("{uuid8}.fits"));
@@ -867,8 +867,8 @@ mod tests {
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
         doc.file_path = fits_path.to_string_lossy().into_owned();
-        doc.width = width;
-        doc.height = height;
+        doc.width = u32::try_from(width).unwrap();
+        doc.height = u32::try_from(height).unwrap();
         doc.max_adu = Some(65535);
         let body = serde_json::to_vec(&doc).unwrap();
         std::fs::write(&sidecar_path, body).unwrap();
