@@ -17,10 +17,12 @@ Feature: Sensor geometry, type, and signal
   electrons-per-ADU field, so ElectronsPerADU is a NOT_IMPLEMENTED
   placeholder (ST2) rather than a native value -- confirmed against real
   hardware: no gain-dependent conversion factor is exposed anywhere in the
-  SDK. MaxADU is 65535, the Raw16 full scale (ST3): the driver always
-  downloads Raw16 and the SDK rescales sub-16-bit ADC data to the full
-  16-bit range -- hardware-verified on the 14-bit SV605CC, whose saturated
-  Raw16 pixels read 65535, not (2^MaxBitDepth) - 1 = 16383. The simulated
+  SDK. MaxADU is the selected readout format's full scale, not
+  (2^MaxBitDepth) - 1 = 16383 (ST3): in the default Raw16 mode it is
+  65535, because the SDK rescales sub-16-bit ADC data to the full 16-bit
+  range -- hardware-verified on the 14-bit SV605CC, whose saturated Raw16
+  pixels read 65535. MaxADU in the Raw8 mode is covered by the readout-mode
+  feature, which owns format selection. The simulated
   SV605CC-Simulated camera is a 3008x3008 colour (Bayer RG) 14-bit sensor
   with a 3.76 micron pixel size.
 
@@ -39,7 +41,7 @@ Feature: Sensor geometry, type, and signal
   Scenario: A colour sensor reports SensorType RGGB
     Then camera device 0 reports SensorType as RGGB
 
-  Scenario: A 14-bit sensor reports the Raw16 full-scale MaxADU
+  Scenario: A 14-bit sensor reports the Raw16 full-scale MaxADU in the default mode
     Then camera device 0 reports MaxADU as 65535
 
   Scenario: SensorName is reported and non-empty
