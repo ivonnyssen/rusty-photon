@@ -186,6 +186,13 @@ struct DeviceState {
     /// format". Without it either order of the two unsynchronised halves can
     /// interleave into a frame captured in one format while `ReadoutMode` and
     /// `MaxADU` report the other (RM1).
+    ///
+    /// **Lock order:** a path that needs *both* this lock and [`Self::sensor`]
+    /// takes this one first — `start_exposure` holds it across
+    /// `selected_format`'s `sensor` read, and `set_readout_mode` matches. Most
+    /// `sensor` reads need no lock at all and take none. Nothing ever holds
+    /// `sensor` while waiting (its accessor clones and releases), so this order
+    /// is discipline for future edits rather than a live hazard.
     readout_mode_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
@@ -1136,20 +1143,27 @@ impl Camera for SvbonyCamera {
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
         self.ensure_connected()?;
+        // The mode selects the download format *and* the MaxADU describing
+        // it (RM2), and the in-flight capture already carries the format it
+        // was started with — so switching mid-exposure could only produce a
+        // frame and a MaxADU that disagree. Validating and storing under
+        // `readout_mode_lock` makes that exclusion hold against a
+        // concurrently-starting exposure too, not just an already-running
+        // one — see `start_exposure`'s matching critical section.
+        //
+        // `readout_mode_lock` is the OUTER lock wherever it and `sensor` are
+        // both needed (`start_exposure` holds it across `selected_format`'s
+        // `sensor` read), so it is taken before `sensor()` here even though
+        // the bounds check alone would not need it. `sensor()` clones and
+        // releases, so no path holds `sensor` while waiting on anything —
+        // the fixed order is to keep that true as this code changes.
+        let _guard = self.state.readout_mode_lock.lock();
         let available = self.sensor()?.readout_formats.len();
         if readout_mode >= available {
             return Err(ASCOMError::invalid_value(format!(
                 "readout mode {readout_mode} out of range (0..{available})"
             )));
         }
-        // The mode selects the download format *and* the MaxADU describing
-        // it (RM2), and the in-flight capture already carries the format it
-        // was started with — so switching mid-exposure could only produce a
-        // frame and a MaxADU that disagree. Checking and storing under
-        // `readout_mode_lock` makes that exclusion hold against a
-        // concurrently-starting exposure too, not just an already-running
-        // one — see `start_exposure`'s matching critical section.
-        let _guard = self.state.readout_mode_lock.lock();
         if self.state.exposure_in_flight.load(Ordering::Acquire) {
             return Err(ASCOMError::invalid_operation(
                 "cannot change the readout mode while an exposure is in flight",
