@@ -64,6 +64,59 @@ fn load_rejects_truncated_blob() {
     ));
 }
 
+/// Valid magic followed by six section counts of `u32::MAX`. The layout
+/// that describes is far larger than any blob, so validation has to
+/// reach its length comparison and report `Truncated` — not overflow on
+/// the way there.
+static ABSURD_HEADER_BLOB: [u8; HEADER_LEN] = {
+    let mut blob = [0xFFu8; HEADER_LEN];
+    let mut i = 0;
+    while i < 8 {
+        blob[i] = MAGIC[i];
+        i += 1;
+    }
+    blob
+};
+
+#[test]
+fn load_rejects_a_header_describing_more_bytes_than_can_exist() {
+    assert!(matches!(
+        Catalog::load(&ABSURD_HEADER_BLOB),
+        Err(CatalogError::Truncated { .. })
+    ));
+}
+
+/// `materialize_dso` passes `usize::MAX` for a DSO whose type index is
+/// out of range, and `position` saturates to it for a field too large
+/// for the target's `usize`. Both land in `pool_str`, which adds the
+/// offset to the pool base — so an unchecked add panics in debug and
+/// wraps onto an unrelated byte in release. It has to read as absent.
+#[test]
+fn pool_str_reads_an_unaddressable_offset_as_absent() {
+    let c = cat();
+    // The addition itself overflows.
+    assert_eq!(c.pool_str(usize::MAX), "");
+    // The exact boundary: `pool + off` lands one past the blob's last
+    // byte, so the addition is in range and only the lookup misses.
+    assert_eq!(c.pool_str(c.bytes.len() - c.pool), "");
+}
+
+/// A row reference past the end of its section must read as a miss.
+/// The sections are contiguous, so an unbounded index reads the next
+/// section's bytes as this section's fields rather than reading zeros,
+/// and produces a fully-formed target — believable enough to act on.
+#[test]
+fn materialize_reads_an_out_of_range_row_reference_as_a_miss() {
+    let c = cat();
+    let past_dso = u32::try_from(c.dso_count).unwrap();
+    let past_star = u32::try_from(c.star_count).unwrap();
+    assert_eq!(c.materialize(past_dso), None);
+    assert_eq!(c.materialize(STAR_BIT | past_star), None);
+    // The last valid row of each section still materializes.
+    assert!(c.materialize(past_dso - 1).is_some());
+    assert!(c.materialize(STAR_BIT | (past_star - 1)).is_some());
+}
+
 // --- name resolution ---------------------------------------------------
 
 #[test]
