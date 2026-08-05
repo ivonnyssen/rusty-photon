@@ -258,11 +258,36 @@ WaitFor $flagProbe "a second handshake attempt (SCM restart-on-error proof)" {
 } 90
 Write-Host "== ${flagProbe}: OK (restarted after a clean error exit — failure-actions flag works)"
 
-# ---- qhy-camera: delay-load preflight (no All-in-One pack on a verify box) --
-WaitFor 'qhy-camera' "the preflight's distinctive missing-DLL log line" {
-    (ServiceLogContent 'qhy-camera') -match 'qhyccd\.dll not found'
-} 30
-Write-Host "== qhy-camera: OK (preflight reported the missing DLL — no loader crash)"
+# ---- qhy-camera: delay-load preflight ---------------------------------------
+# The preflight has two correct outcomes, and which one is correct depends on
+# whether qhyccd.dll is resolvable on THIS box. Both cases ship:
+#
+#   * A plain verify box has no All-in-One pack, so the delay-load must report
+#     the missing DLL rather than dying in the loader (the original assertion).
+#   * The Proxmox pool template stages the SDK onto the machine PATH so the
+#     Bazel suites can link and run against it. There the DLL resolves, the
+#     service enumerates zero cameras and starts cleanly — and never emits the
+#     missing-DLL line.
+#
+# Asserting only the first outcome made this fail wherever the SDK happened to
+# be installed, reporting an environment coupling as a product defect. Decide
+# the expected branch from the MACHINE PATH, which is what a Windows service
+# inherits, then hold that branch to its specific contract.
+$qhyDllDir = @(
+    [Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';' |
+        Where-Object { $_ -and (Test-Path (Join-Path $_ 'qhyccd.dll') -ErrorAction SilentlyContinue) }
+) | Select-Object -First 1
+if ($qhyDllDir) {
+    WaitFor 'qhy-camera' "a clean start with qhyccd.dll resolvable on PATH" {
+        (ServiceLogContent 'qhy-camera') -match 'Service started successfully'
+    } 30
+    Write-Host "== qhy-camera: OK (delay-load resolved from $qhyDllDir — service started)"
+} else {
+    WaitFor 'qhy-camera' "the preflight's distinctive missing-DLL log line" {
+        (ServiceLogContent 'qhy-camera') -match 'qhyccd\.dll not found'
+    } 30
+    Write-Host "== qhy-camera: OK (preflight reported the missing DLL — no loader crash)"
+}
 
 # ---- log files for everything that ran -------------------------------------
 foreach ($svc in ($active + $serial + @('qhy-camera'))) {
