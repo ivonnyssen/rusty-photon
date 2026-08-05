@@ -8,7 +8,7 @@
 # (the runner has no .env on Windows; see docs/skills/proxmox-runner-pool.md).
 $ProgressPreference = 'SilentlyContinue'
 # Fail fast: a broken step (failed download, dotnet install, or wix install)
-# must abort the rebuild rather than print its summary lines and exit clean —
+# must abort the rebuild rather than print its summary lines and exit clean -
 # a half-provisioned toolchain silently baked into a template image is the
 # worst outcome, since every pool job then inherits it.
 $ErrorActionPreference = 'Stop'
@@ -23,7 +23,12 @@ $toolsDir   = 'C:\ci\dotnet-tools'
 if (-not (Test-Path "$dotnetDir\dotnet.exe")) {
   Write-Output "installing .NET SDK 8 -> $dotnetDir"
   Invoke-WebRequest -UseBasicParsing 'https://dot.net/v1/dotnet-install.ps1' -OutFile 'C:\ci\dotnet-install.ps1'
+  # ErrorActionPreference = 'Stop' does NOT throw on a native/script non-zero
+  # exit -- it only catches cmdlet errors -- so every external invocation here
+  # checks $LASTEXITCODE explicitly, or a failed install would be baked into
+  # the template silently.
   & 'C:\ci\dotnet-install.ps1' -Channel 8.0 -InstallDir $dotnetDir -NoPath
+  if ($LASTEXITCODE -ne 0) { throw "dotnet-install.ps1 failed (exit $LASTEXITCODE)" }
 }
 
 # 2. DOTNET_ROOT is REQUIRED, not a convenience. wix.exe is a
@@ -51,6 +56,7 @@ if (Get-Command wix -ErrorAction SilentlyContinue) { $have = "$(wix --version 2>
 if (-not $have.StartsWith($WixVersion)) {
   Write-Output "installing wix $WixVersion -> $toolsDir"
   & "$dotnetDir\dotnet.exe" tool install wix --version $WixVersion --tool-path $toolsDir
+  if ($LASTEXITCODE -ne 0) { throw "dotnet tool install wix failed (exit $LASTEXITCODE)" }
 }
 
 Write-Output "dotnet     : $(& "$dotnetDir\dotnet.exe" --version 2>&1)"

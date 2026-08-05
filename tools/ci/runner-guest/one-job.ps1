@@ -3,7 +3,7 @@
 #
 # Installed in the Windows runner template at C:\actions-runner\one-job.ps1 and
 # started by the `gha-runner` scheduled task, which MUST run as an interactive
-# desktop session rather than as SYSTEM — see docs/skills/proxmox-runner-pool.md.
+# desktop session rather than as SYSTEM - see docs/skills/proxmox-runner-pool.md.
 # The pool orchestrator on the hypervisor (tools/ci/rp-runner-pool.sh) injects
 # .jitconfig through the QEMU guest agent.
 #
@@ -15,7 +15,7 @@ $cfg = Join-Path $dir '.jitconfig'
 Start-Transcript -Path 'C:\actions-runner\one-job.log' -Append
 
 # A linked clone inherits the template's RTC, so the clock can be badly wrong
-# at boot — wrong enough to break TLS to GitHub. Sync before anything talks to
+# at boot - wrong enough to break TLS to GitHub. Sync before anything talks to
 # the network, and log the correction so a bad clock is visible in triage.
 Write-Output "clock before resync: $(Get-Date -Format o)"
 Start-Service w32time -ErrorAction SilentlyContinue

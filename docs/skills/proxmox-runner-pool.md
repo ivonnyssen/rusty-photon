@@ -284,10 +284,11 @@ dangerous combination. The rule bifurcates by runner kind
       `build-msi.ps1`) on a machine-wide tool path — `--tool-path`, not
       `--global`, so the job's user sees it.
 
-    Provision alongside the other `C:\ci` toolchain, machine-scoped. Note the
-    verify step must run under `pwsh` (PowerShell 7): Windows PowerShell 5.1
-    reads `.ps1` in the ANSI codepage and mangles the scripts' UTF-8 dashes
-    into parse errors. `msi.yml` already uses `shell: pwsh`.
+    Provision alongside the other `C:\ci` toolchain, machine-scoped. `msi.yml`
+    runs these scripts under `pwsh` (PowerShell 7); the scripts are kept pure
+    ASCII so they also parse under Windows PowerShell 5.1, whose ANSI codepage
+    would otherwise mangle any non-ASCII punctuation into parse errors — keep
+    them that way.
   * **Do not `sysprep /generalize`.** It looks like the analogue of the Linux
     template's `machine-id` wipe, but its specialize pass runs on every clone
     boot and would add minutes to a pool whose whole value is fast pickup —
