@@ -289,7 +289,7 @@ async fn run_exposure_inner(
         return Ok(ExposureOutcome {
             width: out_w,
             height: out_h,
-            data: vec![0i32; out_w * out_h],
+            data: vec![0i32; out_w.saturating_mul(out_h)],
         });
     }
 

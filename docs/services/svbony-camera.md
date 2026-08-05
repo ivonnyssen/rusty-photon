@@ -35,6 +35,31 @@
 > CI provisioning ([#720](https://github.com/ivonnyssen/rusty-photon/issues/720)
 > Part 2) remains open.
 >
+> **Follow-up landed (issue #882): the download format is negotiated from
+> `SupportedVideoFormat`, and `ReadoutModes` is that list.** The driver
+> used to set `Raw16` unconditionally on every exposure while
+> `svbony-rs` read the camera's supported formats and nobody consulted
+> them — a camera without `Raw16` would have failed at configuration on
+> every exposure. `ReadoutModes` now *is* the negotiated list: at connect
+> the driver intersects `SVB_CAMERA_PROPERTY.SupportedVideoFormat` with
+> the formats it can deliver (`Raw16`, then `Raw8`) and publishes the
+> survivors as the ASCOM readout-mode list, defaulting to index 0 (the
+> highest precision the camera offers). The selection drives the
+> per-exposure `SVBSetOutputImageType`, the download buffer size, the
+> `ImageArray` unpack, and `MaxADU` (65535 for `Raw16`, 255 for `Raw8`).
+> A camera offering neither raw format fails connect with a logged
+> reason rather than downloading a debayered frame. **This replaces the
+> old cosmetic `["SoftTrigger", "FreeRunning"]` readout list** — a
+> breaking change to a published list, taken because the acquisition
+> mode it named is not operator-selectable (it follows `IsTriggerCam`),
+> whereas the download format is exactly what ASCOM's `ReadoutModes` is
+> for. See "Gain / offset / readout" (RM1-RM4) for the contract and why
+> `RGB24`/`RGB32` and `Y8`-`Y16` are deliberately excluded. The 8-bit
+> download path is exercised by BDD (the simulation honours the selected
+> format) and unit tests, but has **not** run against physical hardware —
+> the SV605CC advertises `Raw16`, so the rig only exercises it if an
+> operator selects the `Raw8` readout mode explicitly.
+>
 > **Follow-up landed (issue #679, 2026-07-22): `scripts/build-packages.sh`
 > now has the `needs_svbony` SDK-staging leg this Status section's Phase G
 > entry (below) originally deferred.** `nightly-packages` was failing on
@@ -514,11 +539,11 @@ responsive during an in-flight exposure.
 - **Gain / Offset** — `SVB_GAIN` / `SVB_BLACK_LEVEL` (SVBony's ASCOM
   *Offset*-equivalent control); current value + `Min`/`Max` from
   `SVBGetControlCaps`; `NOT_IMPLEMENTED` if the control is absent.
-- **Readout modes** — driver-named list: `["SoftTrigger", "FreeRunning"]`,
-  a cosmetic label mirroring the two acquisition modes the exposure state
-  machine already uses internally (`SVB_MODE_TRIG_SOFT` vs
-  `SVB_MODE_NORMAL`); switching it only updates cached driver state (RM1),
-  it does not itself change `SVB_CAMERA_MODE`.
+- **Readout modes = the negotiated download formats** — the camera's
+  `SupportedVideoFormat` intersected with the formats this driver can
+  deliver (`Raw16` first, then `Raw8`), published as `ReadoutModes` and
+  defaulting to index 0. The selection drives `SVBSetOutputImageType`,
+  the download buffer, the `ImageArray` unpack, and `MaxADU` (RM1-RM4).
 - **Cooling** — `CoolerOn`, `SetCCDTemperature`, `CoolerPower`,
   `CanSetCCDTemperature`, `CanGetCoolerPower` gated on
   `SVB_CAMERA_PROPERTY_EX.bSupportControlTemp`. Cooler set-point / current
@@ -531,15 +556,15 @@ responsive during an in-flight exposure.
   to `set_control_value(CoolerEnable, …)`/`set_control_value(TargetTemperature, …)`
   anywhere in the file.
 - **Sensor type** — `Monochrome` vs `RGGB` from `IsColorCam` / `BayerPattern`.
-- **`MaxADU`** = **65535, the Raw16 full scale** — NOT
-  `(2^MaxBitDepth) - 1`: hardware-verified on the 14-bit SV605CC that the
-  SDK rescales sub-16-bit ADC data to the full 16-bit range in Raw16
-  output (saturated pixels read 65535, with the low two bits populated —
-  a genuine rescale, not a bare left shift), so the delivered data's
-  ceiling is the format's, not the ADC's. (`zwo-camera` computes MaxADU
-  from the ADC bit depth; whether ASI's Raw16 output has the same
-  rescaling behaviour on a sub-16-bit model is untested there and out of
-  scope here.)
+- **`MaxADU`** = **the selected readout format's full scale** — 65535 in
+  `Raw16`, 255 in `Raw8` — NOT `(2^MaxBitDepth) - 1`: hardware-verified on
+  the 14-bit SV605CC that the SDK rescales sub-16-bit ADC data to the full
+  16-bit range in Raw16 output (saturated pixels read 65535, with the low
+  two bits populated — a genuine rescale, not a bare left shift), so the
+  delivered data's ceiling is the format's, not the ADC's. (`zwo-camera`
+  computes MaxADU from the ADC bit depth; whether ASI's Raw16 output has
+  the same rescaling behaviour on a sub-16-bit model is untested there and
+  out of scope here.)
 - **`ElectronsPerADU`** — **`NOT_IMPLEMENTED`, confirmed permanent**:
   `SVB_CAMERA_PROPERTY` carries no native electrons-per-ADU field (unlike
   ZWO's `ElecPerADU`), and real-hardware validation confirmed the SDK
@@ -748,13 +773,17 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    post-Phase-E, per PR #658 review: an earlier revision started video
    capture unconditionally at connect regardless of `IsTriggerCam`.)
 2. **Each ASCOM `StartExposure`:**
-   a. Sets `SVB_EXPOSURE` to the requested duration in **microseconds
+   a. Sets the ROI and pushes the selected readout format to
+      `SVBSetOutputImageType` (RM1/RM2) — the format is negotiated once at
+      connect but re-applied per exposure, so a mode change between
+      exposures needs no separate SDK call and no cached-state trust.
+   b. Sets `SVB_EXPOSURE` to the requested duration in **microseconds
       (µs) — hardware-confirmed** (was an assumption by analogy with ZWO's
       `ASI_EXPOSURE`): a 3 s request integrates for ~3.2 s wall-clock, and
       the SDK's own value quantization reads back at µs scale (200 000 →
       199 997).
-   b. Calls `SVBSendSoftTrigger` to request one frame.
-   c. Polls/awaits `SVBGetVideoData` with a timeout of
+   c. Calls `SVBSendSoftTrigger` to request one frame.
+   d. Polls/awaits `SVBGetVideoData` with a timeout of
       **`exposure_us * 2 + 500ms`** — the SDK's own documented
       recommendation (captured in `docs/plans/archive/svbony-camera.md`'s
       "Verified SDK facts"). Exceeding the deadline is a failure (see E9
@@ -832,8 +861,39 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **GO2.** Setters validate against cached `[min, max]`; out-of-range →
   `INVALID_VALUE`.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
-- **RM1.** `ReadoutModes` is the driver's named list; `set_readout_mode`
-  validates the index; invalid → `INVALID_VALUE`.
+- **RM1.** `ReadoutModes` is the camera's **download-format** list: at
+  connect the driver intersects `SVB_CAMERA_PROPERTY.SupportedVideoFormat`
+  with the formats it can deliver, in preference order `Raw16` then
+  `Raw8`, and publishes the survivors (`["Raw16", "Raw8"]` on the
+  SV605CC). `ReadoutMode` defaults to index 0 — the highest precision the
+  camera offers — and resets to it on every connect. `set_readout_mode`
+  validates the index; out of range → `INVALID_VALUE`. Changing it while
+  an exposure is in flight → `INVALID_OPERATION`, so the delivered frame
+  and the `MaxADU` describing it can never disagree.
+- **RM2.** The selected mode is the driver's whole format story: it is
+  what `SVBSetOutputImageType` receives before each soft trigger, what
+  sizes the `SVBGetVideoData` buffer (`w × h × bytes_per_pixel`), which
+  unpack `ImageArray` uses (1 or 2 bytes per pixel), and what `MaxADU`
+  reports (255 for `Raw8`, 65535 for `Raw16`, per ST3).
+- **RM3.** A camera advertising **neither** `Raw16` nor `Raw8` fails
+  connect with `NOT_CONNECTED`, the advertised format list logged at
+  `warn!`. No such SVBony model is known — `RAW8` is the SDK's universal
+  baseline — but failing loudly beats silently downloading something the
+  rest of the driver does not describe.
+- **RM4 (deliberate exclusions).** `RGB24`/`RGB32` and `Y8`-`Y16` are
+  **not** eligible readout modes, and this is a contract, not an
+  oversight. The RGB formats are SDK-debayered 8-bit-per-channel output:
+  selecting one would discard the raw sensor data an imaging pipeline
+  exists to capture, and would change the *device* contract rather than
+  just the buffer arithmetic — `SensorType` would have to become `Color`,
+  `BayerOffsetX/Y` `NOT_IMPLEMENTED`, and `ImageArray` rank 3. `RGB32`'s
+  4-bytes-per-pixel layout is additionally an unverified assumption (see
+  `svbony_rs::ImageType::bytes_per_pixel`'s doc comment). The `Y*`
+  luminance formats are safe byte-wise but redundant: on a mono camera
+  `Y16` is `Raw16`, and no known SVBony model omits the raw formats, so
+  admitting them would add a colour guard (`Y*` on an OSC camera would
+  deliver debayered luminance while we report `RGGB`) around a branch
+  nothing reaches.
 
 ### Cooling
 
@@ -872,10 +932,13 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   ZWO's `ElecPerADU`), and real-hardware validation confirmed no control
   type or exported function anywhere in SDK 1.13.4 exposes a conversion
   factor either.
-- **ST3.** `MaxADU` = **65535, the Raw16 full scale** — hardware-verified:
-  the SDK rescales the SV605CC's 14-bit ADC data to the full 16-bit range
-  in Raw16 output (saturated pixels read 65535), so `MaxBitDepth`-derived
-  16383 would understate the delivered data's ceiling.
+- **ST3.** `MaxADU` = **the selected readout format's full scale**, not
+  `(2^MaxBitDepth) - 1`: 65535 in `Raw16` — hardware-verified, since the
+  SDK rescales the SV605CC's 14-bit ADC data to the full 16-bit range in
+  Raw16 output (saturated pixels read 65535), so `MaxBitDepth`-derived
+  16383 would understate the delivered data's ceiling — and 255 in
+  `Raw8`. It tracks `ReadoutMode` (RM2), because the ceiling belongs to
+  the delivered format, not to the sensor.
 
 ### Pulse guiding (capability-driven)
 
@@ -909,12 +972,12 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | **Real** |
 | `CanAsymmetricBin` | `false` | **Real** |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | **Real** |
-| `MaxADU` | 65535 — Raw16 full scale (hardware-verified; NOT `2^MaxBitDepth - 1`) | **Real** |
+| `MaxADU` | The selected readout format's full scale — 65535 (Raw16, hardware-verified) / 255 (Raw8); NOT `2^MaxBitDepth - 1` | **Real** |
 | `ElectronsPerADU` | `NOT_IMPLEMENTED` (no SDK surface, hardware-confirmed) | **Permanent stub (ST2)** |
 | `ExposureMin` / `Max` / `Resolution` | From `SVBGetControlCaps(SVB_EXPOSURE)` (µs, hardware-confirmed) | **Real** |
 | `Gain` / `GainMin` / `GainMax` | `SVB_GAIN` control | **Real** |
 | `Offset` / `OffsetMin` / `OffsetMax` | `SVB_BLACK_LEVEL` control | **Real** |
-| `ReadoutMode` / `ReadoutModes` | Driver-named list (`SoftTrigger`/`FreeRunning`) | **Real** |
+| `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` | **Real** |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` | **Real** |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | **Real** |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `bSupportControlTemp` | **Real** |
@@ -979,12 +1042,16 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 74 no-features / 80 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 85 no-features / 92 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
   the `exposure_timeout_ms` protocol-encoding pure function
-  (`backend.rs::pure_fn_tests`), and the full `Camera`/`Device` behaviour
+  (`backend.rs::pure_fn_tests`), the readout-format negotiation's
+  no-usable-format connect failure (RM3) and its `to_image_array`
+  unsupported-format arm — neither reachable through the simulation,
+  which always advertises `[Raw8, Raw16]` — and the full `Camera`/`Device`
+  behaviour
   (connection lifecycle incl. connect-time property caching, sensor
   geometry/type, gain/offset, binning/ROI validation, cooling incl. K5's
   no-actuation-on-connect assertion, the exposure state machine incl. E9's
@@ -995,8 +1062,8 @@ Layered per [`testing.md`](../skills/testing.md).
   an SDK error, and never runs a non-trigger camera). The production
   `SvbonyCameraHandle` itself is also unit-tested against the real
   `svbony-rs` simulation backend (`backend::handle_tests`).
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 64 scenarios /
-  262 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 68 scenarios /
+  286 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
@@ -1221,6 +1288,14 @@ What ran, and what each open item resolved to:
 
 Still open (not hardware-blockable on this camera):
 
+- **A `Raw8` capture on the physical SV605CC** (issue #882) — the 8-bit
+  download path is covered by BDD (the `svbony-rs` simulation honours the
+  selected output format, so a `Raw8` exposure is downloaded and unpacked
+  end-to-end) and by unit tests, but no real frame has come off the
+  hardware in 8-bit: the camera advertises `Raw16`, so the negotiated
+  default never selects `Raw8`. Selecting the `Raw8` readout mode on the
+  rig and confirming a full frame arrives at `w × h` bytes with
+  `MaxADU = 255` closes it.
 - **Dark-frame banding revision check and a gain/offset sweep against
   advertised e-/ADU curves** (plan checklist) — needs a dark, temperature-
   controlled optical setup, deferred to field use; nothing in the driver
