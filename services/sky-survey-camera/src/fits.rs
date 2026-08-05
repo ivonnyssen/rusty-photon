@@ -15,10 +15,12 @@ use rp_fits::reader::read_primary_as_i32;
 
 pub use rp_fits::FitsError;
 
+/// `width` and `height` are `usize`: they describe `data`, and every
+/// consumer uses them to slice or shape it.
 #[derive(Debug, Clone)]
 pub struct FitsImage {
-    pub width: u32,
-    pub height: u32,
+    pub width: usize,
+    pub height: usize,
     pub data: Vec<i32>,
 }
 

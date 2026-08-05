@@ -610,9 +610,21 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
                 continue;
             }
         };
-        let shape = (width as usize, height as usize);
-        let cp = CachedPixels::from_i32_pixels(pixels, shape, max_adu)?;
-        return Some(CachedImage::new(cp, width, height, fits_path, max_adu, doc));
+        // `CachedImage` reports these dimensions in the Alpaca
+        // `ImageBytes` header, so they stop being buffer lengths here.
+        // Checked before the narrowing pass below, which would otherwise
+        // walk a frame this candidate is about to be dropped for.
+        let (Ok(wire_w), Ok(wire_h)) = (u32::try_from(width), u32::try_from(height)) else {
+            debug!(
+                ?fits_path,
+                width, height, "disk_resolve: frame too large for the ImageBytes header"
+            );
+            continue;
+        };
+        let cp = CachedPixels::from_i32_pixels(pixels, (width, height), max_adu)?;
+        return Some(CachedImage::new(
+            cp, wire_w, wire_h, fits_path, max_adu, doc,
+        ));
     }
     None
 }

@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862 and this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b started in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -331,7 +331,7 @@ answer rather than 229:
 
 | n | shape | answer |
 |---:|---|---|
-| 101 | `x as usize` | no `From<u32> for usize` — needs a policy |
+| 101 | `x as usize` | no `From<u32> for usize` — a boundary question, L5b below |
 | 62 | `i32 as usize` from a cucumber `{int}` parameter | change the step signature; `{int}` parses via `FromStr`, so `usize` works and 37 steps already do it |
 | 32 | trait-object coercion | not a value conversion — L5a below |
 | 12 | `x as u64` | as with `usize` |
@@ -406,6 +406,41 @@ let emitter = sink.as_ref().map(ProgressSink::as_emitter);
 An explicit closure return type (`|s| -> &dyn ProgressEmitter { s }`) and a
 turbofish on `map` both compile too, but each repeats the trait object at all
 seven sites.
+
+### L5b — `x as usize` is a boundary question
+
+`usize` has no `From<u32>` (it may be 16 bits), so these have no total named
+spelling and the lint cannot be satisfied by picking a better one. Two answers
+were measured and rejected before the third:
+
+- **`usize::try_from` per site.** `usize` is at least 32 bits on every target
+  the workspace builds for, so the error arm cannot fire on anything we ship —
+  76 unreachable arms, uncoverable by construction, against a repo that does
+  not allow production coverage exclusions. Red `codecov/patch` by design.
+- **`#[expect]` per site.** Honest and cheap, but it annotates the confusion
+  instead of removing it, permanently.
+
+What the sites actually say is that a value is being used as a length while
+typed as something else. So the rule is about *where* the conversion belongs,
+not how to spell it:
+
+> **`usize` must never appear in a serialized format**, because it is
+> platform-dependent. Anything bound for disk or a wire carries a fixed width.
+> Anything that indexes a buffer is a `usize`. Convert once, where those meet.
+
+That resolves each site without judgment. `rp-fits`' reader hands back a buffer
+and its shape, so it yields `usize` — which also deletes a step, since it had
+been parsing `NAXIS` from `i64` into a `u32` that every caller immediately
+widened again. Its writer takes dimensions bound for a header card, so those
+stay `u32`. Alpaca `NumX`/`StartX`, the `ImageBytes` header, the sidecar
+JSON's `width`, and a PNG's dimensions are all fixed-width for the same reason;
+`crop_subframe`, `Array2::from_shape_vec`, and a preview's subsampling are all
+`usize`.
+
+Boundary conversions that survive get folded into an error the function already
+returns — an ASCOM subframe too large for a `usize` cannot fit the source
+buffer either, so it lands in the existing bounds check rather than earning a
+variant of its own.
 
 ## L6a — split the CI channels
 

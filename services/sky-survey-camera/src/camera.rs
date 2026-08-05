@@ -340,28 +340,51 @@ async fn run_exposure_inner(
     })
 }
 
+/// `src_w`/`src_h` describe the decoded buffer, so they are lengths.
+/// The subframe is ASCOM device state (`StartX`/`NumX`) and arrives
+/// fixed-width; it becomes a buffer offset here.
 pub(crate) fn crop_subframe(
     src: &[i32],
-    src_w: u32,
-    src_h: u32,
+    src_w: usize,
+    src_h: usize,
     sx: u32,
     sy: u32,
     nx: u32,
     ny: u32,
 ) -> Result<Vec<i32>, String> {
-    if sx + nx > src_w || sy + ny > src_h {
+    // This walks `src` a row at a time, so the geometry has to describe
+    // it. `rp_fits` establishes that on decode, but a survey response is
+    // remote input and this function must not slice on a guarantee made
+    // somewhere else.
+    if src_w.checked_mul(src_h) != Some(src.len()) {
         return Err(format!(
-            "subframe ({sx}+{nx},{sy}+{ny}) exceeds source ({src_w},{src_h})"
+            "source geometry ({src_w},{src_h}) does not match {} pixels",
+            src.len()
         ));
+    }
+    let out_of_bounds =
+        || format!("subframe ({sx}+{nx},{sy}+{ny}) exceeds source ({src_w},{src_h})");
+    // A subframe too large to be a `usize` cannot fit the source
+    // either, so it belongs in the bounds error rather than one of
+    // its own.
+    let (Ok(sx), Ok(sy), Ok(nx), Ok(ny)) = (
+        usize::try_from(sx),
+        usize::try_from(sy),
+        usize::try_from(nx),
+        usize::try_from(ny),
+    ) else {
+        return Err(out_of_bounds());
+    };
+    if sx + nx > src_w || sy + ny > src_h {
+        return Err(out_of_bounds());
     }
     if sx == 0 && sy == 0 && nx == src_w && ny == src_h {
         return Ok(src.to_vec());
     }
-    let mut out = Vec::with_capacity((nx as usize) * (ny as usize));
+    let mut out = Vec::with_capacity(nx * ny);
     for row in sy..sy + ny {
-        let start = (row as usize) * (src_w as usize) + sx as usize;
-        let end = start + nx as usize;
-        out.extend_from_slice(&src[start..end]);
+        let start = row * src_w + sx;
+        out.extend_from_slice(&src[start..start + nx]);
     }
     Ok(out)
 }
@@ -903,6 +926,21 @@ mod tests {
         let src: Vec<i32> = vec![0; 12];
         crop_subframe(&src, 4, 3, 3, 0, 2, 1).unwrap_err();
         crop_subframe(&src, 4, 3, 0, 2, 1, 2).unwrap_err();
+    }
+
+    /// A survey response short of the geometry its header declares must
+    /// not be sliced by row — the subframe bounds check alone compares
+    /// against the declared size, not the buffer.
+    #[test]
+    fn crop_subframe_rejects_geometry_that_does_not_describe_the_buffer() {
+        let short: Vec<i32> = vec![0; 8]; // 4×3 declared, 8 pixels present
+        let err = crop_subframe(&short, 4, 3, 0, 0, 4, 3).unwrap_err();
+        assert!(
+            err.contains("does not match 8 pixels"),
+            "unexpected error: {err}"
+        );
+        // The full-frame passthrough shortcut must not slip past it either.
+        crop_subframe(&short, 4, 3, 1, 1, 2, 2).unwrap_err();
     }
 
     /// Trait stub usable from `cfg(test)` without enabling the

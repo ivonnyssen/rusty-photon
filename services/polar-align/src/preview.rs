@@ -18,8 +18,9 @@ use std::path::Path;
 pub const DEFAULT_PREVIEW_WIDTH: u32 = 1024;
 
 /// Requests below this width render at it (a smaller preview has no
-/// UI value and invites accidental `width=1` requests).
-const MIN_PREVIEW_WIDTH: u32 = 64;
+/// UI value and invites accidental `width=1` requests). Typed as the
+/// frame geometry it is compared against, not as the request.
+const MIN_PREVIEW_WIDTH: usize = 64;
 
 /// The linear stretch spans these percentiles of the preview pixels:
 /// the low cut swallows outlier-dark pixels, the high cut keeps star
@@ -55,29 +56,36 @@ pub fn render_png(path: &Path, width: u32) -> Result<Vec<u8>, PreviewError> {
 }
 
 /// The pure half of [`render_png`], unit-testable without a file.
+///
+/// The native geometry indexes `pixels`, so it is `usize`; the request
+/// and the rendered size are PNG header fields, so they are `u32`. The
+/// subsampling in between is buffer arithmetic and stays in `usize`.
 fn render_pixels_png(
     pixels: &[i32],
-    native_w: u32,
-    native_h: u32,
+    native_w: usize,
+    native_h: usize,
     width: u32,
 ) -> Result<Vec<u8>, PreviewError> {
-    if native_w == 0 || native_h == 0 || pixels.len() != (native_w as usize) * (native_h as usize) {
+    if native_w == 0 || native_h == 0 || pixels.len() != native_w * native_h {
         return Err(PreviewError::Unreadable(format!(
             "frame geometry {native_w}×{native_h} does not match {} pixels",
             pixels.len()
         )));
     }
 
-    let width = width.min(native_w).max(MIN_PREVIEW_WIDTH.min(native_w));
+    // A request wider than `usize` can hold clamps to the frame width
+    // on the next line anyway, so saturating here is the exact answer
+    // rather than a fallback.
+    let requested = usize::try_from(width).unwrap_or(usize::MAX);
+    let width = requested.min(native_w).max(MIN_PREVIEW_WIDTH.min(native_w));
     let stride = native_w.div_ceil(width);
     let out_w = native_w.div_ceil(stride);
     let out_h = native_h.div_ceil(stride);
-    let stride = stride as usize;
 
-    let mut sampled = Vec::with_capacity((out_w as usize) * (out_h as usize));
-    for y in (0..native_h as usize).step_by(stride) {
-        for x in (0..native_w as usize).step_by(stride) {
-            sampled.push(pixels[y * native_w as usize + x]);
+    let mut sampled = Vec::with_capacity(out_w * out_h);
+    for y in (0..native_h).step_by(stride) {
+        for x in (0..native_w).step_by(stride) {
+            sampled.push(pixels[y * native_w + x]);
         }
     }
 
@@ -105,7 +113,19 @@ fn render_pixels_png(
 
     let mut out = Vec::new();
     {
-        let mut encoder = png::Encoder::new(&mut out, out_w, out_h);
+        // The PNG header carries fixed-width dimensions, so this is
+        // where the buffer geometry stops being a length. Subsampling
+        // only ever shrinks the frame, so a frame that fit in memory
+        // encodes — but the size is the format's to bound, not ours.
+        let (png_w, png_h) = match (u32::try_from(out_w), u32::try_from(out_h)) {
+            (Ok(w), Ok(h)) => (w, h),
+            _ => {
+                return Err(PreviewError::Unreadable(format!(
+                    "rendered size {out_w}×{out_h} exceeds what a PNG header can hold"
+                )))
+            }
+        };
+        let mut encoder = png::Encoder::new(&mut out, png_w, png_h);
         encoder.set_color(png::ColorType::Grayscale);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder
