@@ -55,6 +55,11 @@ pub struct CaptureRequest {
     pub start_y: u32,
     /// Exposure time in microseconds (the ASI `ASI_EXPOSURE` control unit).
     pub exposure_us: i64,
+    /// The download format to configure for this frame — the readout mode the
+    /// device negotiated from the camera's `SupportedVideoFormat` (RM1/RM2).
+    /// Sizes the download buffer and tells `camera.rs` which unpack the bytes
+    /// need.
+    pub image_type: ImageType,
     /// Wall-clock integration time the capture honours so an in-flight exposure
     /// is observable (the `zwo-rs` simulation completes after one poll regardless).
     pub duration: Duration,
@@ -233,7 +238,15 @@ impl CameraHandle for ZwoCameraHandle {
         {
             let guard = self.camera.lock();
             let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-            camera.set_roi_format(request.width, request.height, request.bin, ImageType::Raw16)?;
+            // The device negotiated this format against the camera's
+            // `SupportedVideoFormat` and publishes it as the ASCOM readout mode
+            // (RM1) — never assume 16-bit here.
+            camera.set_roi_format(
+                request.width,
+                request.height,
+                request.bin,
+                request.image_type,
+            )?;
             camera.set_start_pos(request.start_x, request.start_y)?;
             // `ASI_EXPOSURE` is a writable control on every ASI camera, and the
             // `zwo-rs` simulation models it too, so a failure here is a genuine
@@ -324,10 +337,10 @@ impl CameraHandle for ZwoCameraHandle {
         }
 
         // Size the buffer from the SDK's own view of the ROI, which is
-        // exactly what `download_exposure` checks it against. Deriving it
-        // from `request` instead duplicated the bytes-per-pixel constant,
-        // so a future non-Raw16 path would have had to remember to
-        // change it here too.
+        // exactly what `download_exposure` checks it against. That view now
+        // includes the format set above, so the non-Raw16 path this guarded
+        // against — an 8-bit readout mode (RM1/RM2) — needs no second
+        // bytes-per-pixel constant here.
         let frame_len = camera.roi_format()?.buffer_len().ok_or_else(|| {
             BackendError("frame is too large to address on this target".to_string())
         })?;
@@ -407,6 +420,7 @@ mod handle_tests {
             start_x: 0,
             start_y: 0,
             exposure_us: 1_000,
+            image_type: ImageType::Raw16,
             duration: Duration::from_millis(10),
             is_dark: false,
         };
@@ -470,6 +484,7 @@ pub(crate) mod mock {
             is_color: false,
             bayer_pattern: zwo_rs::BayerPattern::Rg,
             supported_bins: vec![1, 2, 3, 4],
+            supported_video_formats: vec![zwo_rs::ImageType::Raw8, zwo_rs::ImageType::Raw16],
             pixel_size_um: 3.76,
             has_mechanical_shutter: false,
             has_st4_port: true,
@@ -495,6 +510,10 @@ pub(crate) mod mock {
         pub fail_capture: AtomicBool,
         /// Optional artificial integration time (for in-flight tests).
         capture_delay: Mutex<Duration>,
+        /// The most recent [`CaptureRequest`] passed to `capture`, so a test can
+        /// assert what the device configured — e.g. the negotiated download
+        /// format (RM2).
+        last_capture_request: Mutex<Option<CaptureRequest>>,
     }
 
     impl Default for MockCameraHandle {
@@ -510,6 +529,7 @@ pub(crate) mod mock {
                 stop: AtomicU8::new(STOP_NONE),
                 fail_capture: AtomicBool::new(false),
                 capture_delay: Mutex::new(Duration::ZERO),
+                last_capture_request: Mutex::new(None),
             }
         }
     }
@@ -520,6 +540,21 @@ pub(crate) mod mock {
         pub fn without_control(mut self, control: ControlType) -> Self {
             self.caps.retain(|c| c.control_type != control);
             self
+        }
+
+        /// Present a model advertising exactly `formats` as its
+        /// `SupportedVideoFormat` — the default mirrors a camera offering both
+        /// raw formats. Drives the readout-mode negotiation (RM1) and its
+        /// no-usable-format connect failure (RM3), neither of which the `zwo-rs`
+        /// simulation can present.
+        pub fn with_video_formats(mut self, formats: Vec<ImageType>) -> Self {
+            self.info.supported_video_formats = formats;
+            self
+        }
+
+        /// The most recent request `capture` received, if any.
+        pub fn last_capture_request(&self) -> Option<CaptureRequest> {
+            *self.last_capture_request.lock()
         }
 
         /// Present a model with no ST4 port (PG2's `NOT_IMPLEMENTED` branch).
@@ -635,6 +670,7 @@ pub(crate) mod mock {
         }
 
         fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
+            *self.last_capture_request.lock() = Some(request);
             self.stop.store(STOP_NONE, Ordering::SeqCst);
             let delay = *self.capture_delay.lock();
             // Mirror the production handle: sleep against a real-clock DEADLINE,
@@ -664,7 +700,7 @@ pub(crate) mod mock {
                 0u8;
                 request.width as usize
                     * request.height as usize
-                    * 2
+                    * request.image_type.bytes_per_pixel()
             ]))
         }
 

@@ -28,7 +28,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
 use tracing::{debug, warn};
-use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType};
+use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 
 use crate::backend::{CameraHandle, CaptureRequest};
 use crate::config::DeviceOverride;
@@ -42,10 +42,53 @@ const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 /// ASI exposure control is in microseconds, so the smallest step is 1 µs.
 const EXPOSURE_RESOLUTION: Duration = Duration::from_micros(1);
 
-/// The driver's named readout-mode list. ASI exposes a single 16-bit RAW snap
-/// path in v0, so the mode is a cached label (RM1: switching validates the index
-/// and updates cached state); the SDK's high-speed control is Future Work.
-const READOUT_MODES: [&str; 2] = ["Normal", "High Speed"];
+/// One selectable download format: what `ASISetROIFormat` is told to produce
+/// and the name it is published under in ASCOM's `ReadoutModes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadoutFormat {
+    image_type: ImageType,
+    name: &'static str,
+}
+
+/// Every download format this driver can deliver, **in preference order**.
+/// These are intersected with the camera's advertised
+/// `ASI_CAMERA_INFO.SupportedVideoFormat` and the survivors become
+/// `ReadoutModes`, so index 0 is the highest precision the camera offers (RM1).
+///
+/// Only the raw formats are eligible. `RGB24` is SDK-debayered 8-bit-per-channel
+/// output: selecting it would discard the raw sensor data and change this
+/// device's *contract* (`SensorType::Color`, no `BayerOffset`, a rank-3
+/// `ImageArray`) rather than just its buffer arithmetic. `Y8` is a mono
+/// luminance format, redundant with `Raw8` on a mono sensor and wrong on a
+/// Bayer one while we report `RGGB`.
+const READOUT_FORMATS: [ReadoutFormat; 2] = [
+    ReadoutFormat {
+        image_type: ImageType::Raw16,
+        name: "Raw16",
+    },
+    ReadoutFormat {
+        image_type: ImageType::Raw8,
+        name: "Raw8",
+    },
+];
+
+/// The download formats this camera can actually deliver — [`READOUT_FORMATS`]
+/// filtered by what it advertises. Empty means the camera offers no raw format
+/// at all, which this driver's single-plane `ImageArray` contract cannot
+/// describe; connect refuses rather than downloading something else (RM3).
+///
+/// The advertised list is the camera's claim, not proof. It was measured on a
+/// physical ASI120MC-S — the model INDI singles out for unreliable 16-bit —
+/// which advertises `[Raw8, Rgb24, Y8, Raw16]` *and* delivers `Raw16` correctly
+/// at 320×240, full-frame 1280×960, and bin 2. INDI's blanket
+/// `strstr(name, "ASI120")` guard would force that working camera to 8-bit, so
+/// it is deliberately not ported: enumeration is the whole selection rule here.
+fn negotiated_formats(info: &CameraInfo) -> Vec<ReadoutFormat> {
+    READOUT_FORMATS
+        .into_iter()
+        .filter(|f| info.supported_video_formats.contains(&f.image_type))
+        .collect()
+}
 
 /// A region of interest in *binned* pixel coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -64,7 +107,8 @@ struct Roi {
 struct DeviceState {
     /// Current symmetric bin (init 1).
     bin: AtomicU8,
-    /// Current readout-mode index into [`READOUT_MODES`].
+    /// Current readout-mode index into [`ZwoCamera::readout_formats`], reset to
+    /// 0 (the camera's highest-precision format) on every connect.
     readout_mode: AtomicU8,
     /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
     intended_roi: Mutex<Option<Roi>>,
@@ -93,6 +137,14 @@ struct DeviceState {
     /// Serializes the capture task's "check generation + commit result" against
     /// `cancel_exposure`'s "bump generation + clear `image_ready`".
     result_lock: Mutex<()>,
+    /// Serializes `set_readout_mode`'s "reject if exposing, else store" against
+    /// `start_exposure`'s "claim the in-flight slot, then pin the download
+    /// format", so a frame is never captured in one format while `ReadoutMode`
+    /// and `MaxADU` report another (RM1).
+    ///
+    /// **Lock order:** a path needing both this and another of this struct's
+    /// locks takes this one first.
+    readout_mode_lock: Mutex<()>,
     /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
     /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
     pulse_guide_until: Mutex<Option<SystemTime>>,
@@ -117,6 +169,7 @@ impl DeviceState {
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
+            readout_mode_lock: Mutex::new(()),
             pulse_guide_until: Mutex::new(None),
         }
     }
@@ -143,6 +196,10 @@ pub struct ZwoCamera {
     #[debug(skip)]
     handle: Arc<dyn CameraHandle>,
     info: CameraInfo,
+    /// The camera's usable download formats, negotiated once at construction —
+    /// unlike `svbony-camera`, ASI hands back the full `CameraInfo` (formats
+    /// included) at enumeration, so this needs no open camera.
+    readout_formats: Vec<ReadoutFormat>,
     unique_id: String,
     name: String,
     description: String,
@@ -164,9 +221,11 @@ impl ZwoCamera {
         let description = overrides
             .and_then(|o| o.description.clone())
             .unwrap_or_else(|| format!("ZWO ASI camera ({})", info.name));
+        let readout_formats = negotiated_formats(&info);
         Self {
             handle,
             info,
+            readout_formats,
             unique_id,
             name,
             description,
@@ -188,6 +247,17 @@ impl ZwoCamera {
         } else {
             Err(ASCOMError::NOT_CONNECTED)
         }
+    }
+
+    /// The download format the current `ReadoutMode` selects (RM2). The index is
+    /// validated on every write and reset at connect, so the out-of-range arm is
+    /// defensive only.
+    fn selected_format(&self) -> ASCOMResult<ReadoutFormat> {
+        let index = usize::from(self.state.readout_mode.load(Ordering::Acquire));
+        self.readout_formats
+            .get(index)
+            .copied()
+            .ok_or_else(|| ASCOMError::invalid_value("readout mode index out of range"))
     }
 
     fn connect(&self) -> ASCOMResult<()> {
@@ -219,6 +289,17 @@ impl ZwoCamera {
     /// control is required; gain/offset are cached only when present (GO1). Also
     /// resets the ROI to the full frame at bin 1.
     fn open_handshake(&self) -> ASCOMResult<()> {
+        // RM3: a camera advertising no raw format has nothing this driver's
+        // single-plane ImageArray contract can describe. Fail loudly rather
+        // than download a debayered RGB24 frame we would then misreport.
+        if self.readout_formats.is_empty() {
+            warn!(
+                advertised = ?self.info.supported_video_formats,
+                "camera advertises no downloadable raw format (Raw16 or Raw8)"
+            );
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+
         let caps = self
             .handle
             .control_caps()
@@ -408,9 +489,27 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
     }
 }
 
-/// `MaxADU = 2^bit_depth - 1` (e.g. 65535 for a 16-bit sensor), saturating.
-fn max_adu_from_bit_depth(bit_depth: u32) -> u32 {
-    1u32.checked_shl(bit_depth).map_or(u32::MAX, |v| v - 1)
+/// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
+///
+/// **Not `2^BitDepth - 1`.** ASI packs sub-16-bit ADC data into the Raw16
+/// container by *left-shifting* it, so the delivered ceiling belongs to the
+/// container, not the ADC. Measured on a physical 12-bit ASI120MC-S: every
+/// pixel's low 4 bits are zero and a saturated full frame tops out at exactly
+/// `4095 << 4 = 65520` — sixteen times the 4095 this driver used to report, so
+/// a client normalising by `MaxADU` mis-scaled everything above 1/16 of range.
+/// (`svbony-camera` reached the same conclusion on its SV605CC, by rescale
+/// rather than shift; ST3 there.)
+///
+/// Raw8 delivers 8-bit data whatever the ADC is, so its ceiling is 255 —
+/// confirmed on the same camera, which saturates a full frame at exactly 255.
+fn max_adu_for(image_type: ImageType, bit_depth: u32) -> u32 {
+    match image_type {
+        ImageType::Raw8 | ImageType::Y8 => u32::from(u8::MAX),
+        // An unknown (0) or already-full depth leaves the container's own
+        // ceiling as the only honest answer.
+        _ if bit_depth == 0 || bit_depth >= 16 => u32::from(u16::MAX),
+        _ => ((1u32 << bit_depth) - 1) << (16 - bit_depth),
+    }
 }
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y`.
@@ -433,28 +532,57 @@ const fn guide_direction(direction: GuideDirection) -> zwo_rs::GuideDirection {
     }
 }
 
-/// Convert a single-plane Raw16 frame into an ASCOM `ImageArray` with `[x][y]`
-/// axis order (ASCOM stores width-major).
-fn to_image_array(bytes: &[u8], width: u32, height: u32) -> Result<ImageArray, String> {
+/// Convert a single-plane frame into an ASCOM `ImageArray` with `[x][y]` axis
+/// order (ASCOM stores width-major), unpacking per the format the frame was
+/// downloaded in (RM2). Only the raw formats [`READOUT_FORMATS`] can select are
+/// convertible; anything else is a caller error, reported rather than
+/// mis-unpacked.
+///
+/// Takes the download buffer **by value** so the `Raw8` arm can hand it
+/// straight to `Array2` instead of copying a full frame the capture path
+/// already owns. `Raw16` still pays one copy — its bytes have to be re-read as
+/// `u16` — and `ImageArray` widens whichever array it gets to `i32`
+/// internally, so this saves an intermediate, not the dominant allocation.
+fn to_image_array(
+    mut bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+    image_type: ImageType,
+) -> Result<ImageArray, String> {
     // The ASCOM subframe arrives fixed-width; here it becomes the length
     // of `bytes` and the shape of the array, so convert once. A frame too
     // large to address saturates, which lands it in the same "buffer too
     // small" answer as any other short read rather than wrapping into a
-    // length the buffer appears to satisfy.
+    // length the buffer appears to satisfy. (Saturate what you compare —
+    // this length is only ever compared, never allocated from.)
     let w = usize::try_from(width).unwrap_or(usize::MAX);
     let h = usize::try_from(height).unwrap_or(usize::MAX);
-    let needed = w.saturating_mul(h).saturating_mul(2);
+    let needed = w
+        .saturating_mul(h)
+        .saturating_mul(image_type.bytes_per_pixel());
     if bytes.len() < needed {
-        return Err("16-bit buffer too small for frame".to_string());
+        return Err(format!("{image_type:?} buffer too small for frame"));
     }
-    let pixels: Vec<u16> = bytes[..needed]
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| u16::from_ne_bytes(*c))
-        .collect();
-    let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
-    Ok(ImageArray::from(arr.reversed_axes()))
+    // Each arm builds the frame row-major in its own element type, then
+    // reverses the axes for ASCOM's width-major order.
+    match image_type {
+        ImageType::Raw8 => {
+            bytes.truncate(needed);
+            let arr = Array2::from_shape_vec((h, w), bytes).map_err(|e| e.to_string())?;
+            Ok(ImageArray::from(arr.reversed_axes()))
+        }
+        ImageType::Raw16 => {
+            let pixels: Vec<u16> = bytes[..needed]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_ne_bytes(*c))
+                .collect();
+            let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
+            Ok(ImageArray::from(arr.reversed_axes()))
+        }
+        other => Err(format!("unsupported download format {other:?}")),
+    }
 }
 
 /// The detached capture task: runs the blocking single-frame SDK chain *and* the
@@ -477,11 +605,11 @@ async fn run_exposure(
     request: CaptureRequest,
 ) {
     let blocking_handle = Arc::clone(&handle);
-    let (width, height) = (request.width, request.height);
+    let (width, height, image_type) = (request.width, request.height, request.image_type);
     let result = tokio::task::spawn_blocking(move || {
         blocking_handle
             .capture(request)
-            .map(|frame| frame.map(|bytes| to_image_array(&bytes, width, height)))
+            .map(|frame| frame.map(|bytes| to_image_array(bytes, width, height, image_type)))
     })
     .await;
 
@@ -598,8 +726,13 @@ impl Camera for ZwoCamera {
     }
 
     async fn max_adu(&self) -> ASCOMResult<u32> {
+        // ST3/RM2: the ceiling belongs to the delivered format, so it tracks
+        // the selected readout mode as well as the ADC depth.
         self.ensure_connected()?;
-        Ok(max_adu_from_bit_depth(self.info.bit_depth))
+        Ok(max_adu_for(
+            self.selected_format()?.image_type,
+            self.info.bit_depth,
+        ))
     }
 
     async fn electrons_per_adu(&self) -> ASCOMResult<f64> {
@@ -873,17 +1006,34 @@ impl Camera for ZwoCamera {
     }
 
     async fn readout_modes(&self) -> ASCOMResult<Vec<String>> {
+        // RM1: the camera's own download formats, negotiated at construction.
         self.ensure_connected()?;
-        Ok(READOUT_MODES.iter().map(|s| (*s).to_string()).collect())
+        Ok(self
+            .readout_formats
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect())
     }
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if readout_mode >= READOUT_MODES.len() {
+        // The mode selects the download format *and* the MaxADU describing it
+        // (RM2), and an in-flight capture already carries the format it was
+        // started with — so switching mid-exposure could only produce a frame
+        // and a MaxADU that disagree. Validating and storing under
+        // `readout_mode_lock` makes that exclusion hold against a
+        // concurrently-starting exposure too, not just an already-running one.
+        let _guard = self.state.readout_mode_lock.lock();
+        let available = self.readout_formats.len();
+        if readout_mode >= available {
             return Err(ASCOMError::invalid_value(format!(
-                "readout mode {readout_mode} out of range (0..{})",
-                READOUT_MODES.len()
+                "readout mode {readout_mode} out of range (0..{available})"
             )));
+        }
+        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+            return Err(ASCOMError::invalid_operation(
+                "cannot change the readout mode while an exposure is in flight",
+            ));
         }
         self.state
             .readout_mode
@@ -1139,17 +1289,35 @@ impl Camera for ZwoCamera {
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
         let roi = self.validated_geometry(bin)?;
 
-        // Claim the in-flight slot; lose the race → already exposing (E2).
-        if self
-            .state
-            .exposure_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(ASCOMError::invalid_operation(
-                "an exposure is already in flight",
-            ));
-        }
+        // Claim the in-flight slot (lose the race → already exposing, E2) and
+        // pin this frame's download format in ONE critical section against
+        // `set_readout_mode` (RM1/RM2): reading the format outside the lock lets
+        // a mode change land either side of the claim, leaving a frame in one
+        // format while `ReadoutMode`/`MaxADU` describe the other.
+        let format = {
+            let _guard = self.state.readout_mode_lock.lock();
+            if self
+                .state
+                .exposure_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(ASCOMError::invalid_operation(
+                    "an exposure is already in flight",
+                ));
+            }
+            // Release the claim rather than wedging the device if the (already
+            // validated, so defensive-only) format lookup fails.
+            match self.selected_format() {
+                Ok(format) => format,
+                Err(e) => {
+                    self.state
+                        .exposure_in_flight
+                        .store(false, Ordering::Release);
+                    return Err(e);
+                }
+            }
+        };
         let generation = self
             .state
             .exposure_generation
@@ -1168,6 +1336,7 @@ impl Camera for ZwoCamera {
             start_x: roi.start_x,
             start_y: roi.start_y,
             exposure_us,
+            image_type: format.image_type,
             duration,
             is_dark: !light,
         };
@@ -1277,12 +1446,43 @@ mod tests {
 
     // --- pure helpers -----------------------------------------------------------
 
+    /// The ceiling belongs to the delivered format, not the ADC. Pinned by the
+    /// ASI120MC-S measurement: a 12-bit ADC left-shifted into Raw16 saturates a
+    /// full frame at exactly 65520, not at the 4095 this used to report.
     #[test]
-    fn max_adu_is_two_pow_bits_minus_one() {
-        assert_eq!(max_adu_from_bit_depth(16), 65_535);
-        assert_eq!(max_adu_from_bit_depth(14), 16_383);
-        assert_eq!(max_adu_from_bit_depth(12), 4_095);
-        assert_eq!(max_adu_from_bit_depth(0), 0);
+    fn max_adu_follows_the_delivered_format_not_the_adc_depth() {
+        assert_eq!(max_adu_for(ImageType::Raw16, 12), 65_520);
+        assert_eq!(max_adu_for(ImageType::Raw16, 14), 65_532);
+        assert_eq!(max_adu_for(ImageType::Raw16, 16), 65_535);
+        // Raw8 delivers 8-bit data whatever the ADC is.
+        assert_eq!(max_adu_for(ImageType::Raw8, 12), 255);
+        assert_eq!(max_adu_for(ImageType::Raw8, 16), 255);
+        // An unknown depth falls back to the container's own ceiling rather
+        // than the 0 the old `2^bit_depth - 1` produced.
+        assert_eq!(max_adu_for(ImageType::Raw16, 0), 65_535);
+    }
+
+    /// RM1: the published list is the camera's advertised formats, best first,
+    /// with the debayered/luminance formats filtered out (RM4).
+    #[test]
+    fn negotiated_formats_keep_only_the_raw_ones_best_first() {
+        let mut info = crate::backend::mock::MockCameraHandle::default().info();
+        // What the physical ASI120MC-S advertises.
+        info.supported_video_formats = vec![
+            ImageType::Raw8,
+            ImageType::Rgb24,
+            ImageType::Y8,
+            ImageType::Raw16,
+        ];
+        let names: Vec<&str> = negotiated_formats(&info).iter().map(|f| f.name).collect();
+        assert_eq!(names, vec!["Raw16", "Raw8"]);
+
+        info.supported_video_formats = vec![ImageType::Raw8];
+        let names: Vec<&str> = negotiated_formats(&info).iter().map(|f| f.name).collect();
+        assert_eq!(names, vec!["Raw8"]);
+
+        info.supported_video_formats = vec![ImageType::Rgb24, ImageType::Y8];
+        assert!(negotiated_formats(&info).is_empty());
     }
 
     #[tokio::test]
@@ -1371,15 +1571,37 @@ mod tests {
     #[test]
     fn to_image_array_16bit_has_width_major_axes() {
         let bytes = vec![0u8; 64 * 48 * 2];
-        let array = to_image_array(&bytes, 64, 48).unwrap();
+        let array = to_image_array(bytes, 64, 48, ImageType::Raw16).unwrap();
         // ASCOM [x][y]: first axis = width.
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
     }
 
+    /// The Raw8 unpack reads one byte per pixel — before this, an 8-bit frame
+    /// was rejected as "buffer too small" because the transform assumed 16-bit.
+    #[test]
+    fn to_image_array_8bit_has_width_major_axes_from_one_byte_per_pixel() {
+        let bytes: Vec<u8> = (0..64 * 48).map(|i| (i % 251) as u8).collect();
+        let expected = bytes[2 * 64 + 3];
+        let array = to_image_array(bytes, 64, 48, ImageType::Raw8).unwrap();
+        assert_eq!(array.dim().0, 64);
+        assert_eq!(array.dim().1, 48);
+        // Width-major: [x][y] reads back the row-major byte at (y, x).
+        assert_eq!(array[(3, 2, 0)], i32::from(expected));
+    }
+
     #[test]
     fn to_image_array_rejects_short_buffer() {
-        assert!(to_image_array(&[0u8; 10], 64, 48).is_err());
+        assert!(to_image_array(vec![0u8; 10], 64, 48, ImageType::Raw16).is_err());
+        assert!(to_image_array(vec![0u8; 10], 64, 48, ImageType::Raw8).is_err());
+    }
+
+    /// The device only ever selects a raw format (RM1/RM4), but the transform
+    /// stays total: a format it cannot unpack is reported, not mis-read.
+    #[test]
+    fn to_image_array_rejects_a_format_the_driver_never_selects() {
+        let err = to_image_array(vec![0u8; 64 * 48 * 3], 64, 48, ImageType::Rgb24).unwrap_err();
+        assert!(err.contains("unsupported download format"), "{err}");
     }
 
     // --- device behaviour via the mock seam -------------------------------------
@@ -1570,14 +1792,75 @@ mod tests {
     #[tokio::test]
     async fn readout_modes_are_listed_and_out_of_range_is_rejected() {
         let device = connected_device(MockCameraHandle::default());
-        assert!(!device.readout_modes().await.unwrap().is_empty());
-        assert!(device.readout_mode().await.unwrap() < READOUT_MODES.len());
+        let modes = device.readout_modes().await.unwrap();
+        // RM1: the camera's advertised download formats, best precision first.
+        assert_eq!(modes, ["Raw16", "Raw8"]);
+        assert!(device.readout_mode().await.unwrap() < modes.len());
         device.set_readout_mode(1).await.unwrap();
         assert_eq!(device.readout_mode().await.unwrap(), 1);
         assert_eq!(
             device.set_readout_mode(9999).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
         );
+    }
+
+    /// The gap issue #881 filed: a camera without Raw16 must not be handed
+    /// Raw16 anyway. It offers only the 8-bit mode, and `MaxADU` follows the
+    /// format actually delivered (RM2).
+    #[tokio::test]
+    async fn a_camera_without_raw16_offers_only_the_8_bit_mode() {
+        let device =
+            connected_device(MockCameraHandle::default().with_video_formats(vec![ImageType::Raw8]));
+        assert_eq!(device.readout_modes().await.unwrap(), ["Raw8"]);
+        assert_eq!(device.max_adu().await.unwrap(), 255);
+        assert_eq!(
+            device.set_readout_mode(1).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    /// RM3: a camera offering neither raw format has nothing this driver's
+    /// single-plane contract can describe, so connect fails.
+    #[tokio::test]
+    async fn connecting_fails_when_no_raw_download_format_is_advertised() {
+        let device = ZwoCamera::new(
+            Arc::new(
+                MockCameraHandle::default()
+                    .with_video_formats(vec![ImageType::Rgb24, ImageType::Y8]),
+            ),
+            None,
+        );
+        assert_eq!(
+            device.set_connected(true).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// RM2: selecting the 8-bit mode is what the exposure downloads and what
+    /// `MaxADU` describes — the two can never disagree.
+    #[tokio::test]
+    async fn selecting_the_8_bit_mode_drives_the_download_and_max_adu() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = ZwoCamera::new(handle.clone(), None);
+        device.set_connected(true).await.unwrap();
+        device.set_readout_mode(1).await.unwrap();
+        assert_eq!(device.max_adu().await.unwrap(), 255);
+
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_image_ready(&device).await;
+        assert_eq!(
+            handle.last_capture_request().unwrap().image_type,
+            ImageType::Raw8
+        );
+        let image = device.image_array().await.unwrap();
+        assert_eq!(image.dim().0, 64);
+        assert_eq!(image.dim().1, 48);
     }
 
     #[tokio::test]
