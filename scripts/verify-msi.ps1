@@ -276,10 +276,15 @@ Write-Host "== ${flagProbe}: OK (restarted after a clean error exit - failure-ac
 # order (executable dir, system dirs, then PATH), so a check that inspected any
 # single one of those - e.g. PATH alone - could disagree with the very service
 # it is verifying.
+# Capture the log content that satisfies the wait and branch on THAT snapshot,
+# rather than re-reading afterwards: a second read could see later writes or a
+# rotated tail and report a different outcome than the one that actually passed.
+$qhyLog = ''
 WaitFor 'qhy-camera' "the delay-load to resolve either way (started, or reported the missing DLL - not a loader crash)" {
-    (ServiceLogContent 'qhy-camera') -match 'Service started successfully|qhyccd\.dll not found'
+    $script:qhyLog = ServiceLogContent 'qhy-camera'
+    $script:qhyLog -match 'Service started successfully|qhyccd\.dll not found'
 } 30
-if ((ServiceLogContent 'qhy-camera') -match 'qhyccd\.dll not found') {
+if ($qhyLog -match 'qhyccd\.dll not found') {
     Write-Host "== qhy-camera: OK (preflight reported the missing DLL - no loader crash)"
 } else {
     Write-Host "== qhy-camera: OK (delay-load resolved - service started)"
