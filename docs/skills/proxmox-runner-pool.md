@@ -331,8 +331,11 @@ dangerous combination. The rule bifurcates by runner kind
     do occur** once more than one clone runs at a time (both come up as
     `RUNNER-TPL` on the same segment) — measured to be benign here (no
     NetBT/Tcpip name-conflict events, registration unaffected), but that is
-    "harmless", not "cannot happen". If a second concurrent Windows slot is
-    ever added, see #872 for the name-collision and shared-credential review.
+    "harmless", not "cannot happen". Two Windows slots now run concurrently,
+    so this collision is live rather than hypothetical — both come up as
+    `RUNNER-TPL` and it stays benign — and the shared-credential exposure the
+    second slot introduced (#872) is contained by the per-clone inbound-DROP
+    firewall described above, not by name uniqueness.
   * **A linked clone inherits the template's RTC** and boots badly out of
     date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
     means an in-guest script must never use a wall-clock deadline: the first

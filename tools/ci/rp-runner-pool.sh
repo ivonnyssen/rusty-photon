@@ -219,7 +219,13 @@ FW
 destroy_clone() {
   qm stop "$1" >/dev/null 2>&1
   qm destroy "$1" --purge >/dev/null 2>&1
-  rm -f "$STATE_DIR/$1.injected" "$FW_DIR/$1.fw"
+  rm -f "$STATE_DIR/$1.injected"
+  # Only drop the isolation policy once the VM is actually gone. If the destroy
+  # did not take (a transient Proxmox lock), the clone still exists and must
+  # keep its inbound DROP; the caller retries the destroy, which clears the
+  # file on a later successful pass. A recreated VMID rewrites its .fw before
+  # boot, so a briefly-orphaned file is harmless.
+  qm status "$1" >/dev/null 2>&1 || rm -f "$FW_DIR/$1.fw"
 }
 
 slot_loop() {
