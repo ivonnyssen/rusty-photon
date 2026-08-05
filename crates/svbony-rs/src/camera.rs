@@ -869,7 +869,16 @@ impl Camera {
     pub fn frame_buffer_len(&self) -> Result<usize> {
         let roi = self.roi_format()?;
         let image_type = self.output_image_type()?;
-        Ok(roi.width as usize * roi.height as usize * image_type.bytes_per_pixel())
+        // The ROI is device state and arrives fixed-width; the length it
+        // describes is a `usize`, so the conversion belongs here. A frame
+        // too large to address saturates rather than wrapping, so
+        // `get_video_data`'s length check rejects every buffer instead of
+        // accepting one sized from a wrapped product.
+        let width = usize::try_from(roi.width).unwrap_or(usize::MAX);
+        let height = usize::try_from(roi.height).unwrap_or(usize::MAX);
+        Ok(width
+            .saturating_mul(height)
+            .saturating_mul(image_type.bytes_per_pixel()))
     }
 
     /// Read the current [`CameraMode`].

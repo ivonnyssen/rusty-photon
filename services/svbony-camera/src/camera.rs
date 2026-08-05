@@ -590,8 +590,14 @@ const fn guide_direction(direction: GuideDirection) -> svbony_rs::GuideDirection
 /// Convert a single-plane Raw16 frame into an ASCOM `ImageArray` with `[x][y]`
 /// axis order (ASCOM stores width-major).
 fn to_image_array(bytes: &[u8], width: u32, height: u32) -> Result<ImageArray, String> {
-    let (w, h) = (width as usize, height as usize);
-    let needed = w * h * 2;
+    // The ASCOM subframe arrives fixed-width; here it becomes the length
+    // of `bytes` and the shape of the array, so convert once. A frame too
+    // large to address saturates, which lands it in the same "buffer too
+    // small" answer as any other short read rather than wrapping into a
+    // length the buffer appears to satisfy.
+    let w = usize::try_from(width).unwrap_or(usize::MAX);
+    let h = usize::try_from(height).unwrap_or(usize::MAX);
+    let needed = w.saturating_mul(h).saturating_mul(2);
     if bytes.len() < needed {
         return Err("16-bit buffer too small for frame".to_string());
     }

@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871 and the capture/write path in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -463,6 +463,36 @@ the first function that touches one. Two consequences worth carrying forward:
   `sky-survey-camera` BDD harness holds dimensions that are simultaneously a
   `vec![0u16; n]` length and `f64` WCS header cards, and `f64::from(usize)`
   does not exist. It converts explicitly instead.
+
+### L5b — SDK frame buffers
+
+The camera backends size a download buffer from an ROI, which is the same
+boundary in a different costume: the ROI is device state and arrives
+fixed-width, the buffer length is a `usize`. Two things made this slice
+cheaper than the FITS one.
+
+Each vendor crate already had a function computing that length —
+`zwo_rs::RoiFormat::buffer_len`, `svbony_rs::Camera::frame_buffer_len` — and
+each vendor crate's download call already compares the caller's buffer against
+it before handing the pointer to the SDK. So the conversion has exactly one
+home per crate, and the drivers stopped recomputing the length from the ASCOM
+request. `zwo-camera` had been restating the bytes-per-pixel as a literal `2`
+while `zwo_rs` carried a real `bytes_per_pixel()` covering 1, 2 and 3.
+
+Where the length cannot fail into a `Result` — `buffer_len` returns a plain
+`usize` — saturation is the exact answer rather than a fallback: `usize::MAX`
+makes every buffer too small, so the caller's existing `BufferTooSmall` arm
+reports it, and no arm has to be invented. Same for `to_image_array`, where
+a saturated `needed` lands in the "buffer too small for frame" answer the
+function already returns.
+
+Reading the drivers this closely surfaced two defects that have nothing to do
+with the lint — both filed rather than fixed here, since they need hardware:
+#881 (`zwo-camera` sets `Raw16` unconditionally and never reads the SDK's
+`SupportedVideoFormat`, so an ASI120/ASI130-class camera cannot expose at all)
+and #882 (`svbony-camera` reads the format list into `CameraProperty` and then
+ignores it). `qhy-camera` is the one that gets this right, via
+`set_if_available(TransferBit, 16.0)` and `GetQHYCCDMemLength`.
 
 ## L6a — split the CI channels
 

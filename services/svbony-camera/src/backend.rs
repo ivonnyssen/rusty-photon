@@ -374,7 +374,12 @@ impl CameraHandle for SvbonyCameraHandle {
         // re-acquired below for the trigger + `SVBGetVideoData` call, which
         // — on real hardware — is unavoidably the long-held SDK operation
         // (see the module docs on why `capture` has no interrupt path).
-        {
+        // Read the frame length while the lock is still held, from the SDK's
+        // own view of the ROI and output type — exactly what
+        // `get_video_data` checks the buffer against. Deriving it from
+        // `request` instead restated the output type at the allocation,
+        // where it could drift from what `set_output_image_type` selected.
+        let frame_len = {
             let guard = self.camera.lock();
             let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
             camera.set_roi_format(
@@ -390,7 +395,8 @@ impl CameraHandle for SvbonyCameraHandle {
             // posture).
             camera.set_output_image_type(ImageType::Raw16)?;
             camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
-        }
+            camera.frame_buffer_len()?
+        };
 
         // See `CaptureRequest::duration`'s doc comment: only the simulation
         // needs an artificial wait, since its `get_video_data` never really
@@ -432,12 +438,7 @@ impl CameraHandle for SvbonyCameraHandle {
             }
         }
 
-        let mut buf = vec![
-            0u8;
-            request.width as usize
-                * request.height as usize
-                * ImageType::Raw16.bytes_per_pixel()
-        ];
+        let mut buf = vec![0u8; frame_len];
 
         // Poll `SVBGetVideoData` in short slices instead of one blocking call
         // for the whole `exposure_us*2+500ms` deadline, releasing the SDK

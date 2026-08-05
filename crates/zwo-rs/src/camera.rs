@@ -235,9 +235,20 @@ pub struct RoiFormat {
 impl RoiFormat {
     /// Byte length of one full frame in this format
     /// (`width × height × bytes/pixel`).
+    ///
+    /// The ROI is device state and arrives fixed-width; the length it
+    /// describes is a `usize`, so the conversion belongs here. A frame
+    /// too large to address saturates rather than wrapping: the callers
+    /// that matter compare a buffer against this value before handing
+    /// it to the SDK, and `usize::MAX` makes every buffer too small
+    /// instead of one sized from a wrapped product.
     #[must_use]
     pub fn buffer_len(&self) -> usize {
-        self.width as usize * self.height as usize * self.image_type.bytes_per_pixel()
+        let width = usize::try_from(self.width).unwrap_or(usize::MAX);
+        let height = usize::try_from(self.height).unwrap_or(usize::MAX);
+        width
+            .saturating_mul(height)
+            .saturating_mul(self.image_type.bytes_per_pixel())
     }
 }
 
