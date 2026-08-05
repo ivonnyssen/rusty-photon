@@ -65,6 +65,15 @@ pub struct CameraInfo {
     pub bayer_pattern: BayerPattern,
     /// Supported symmetric binning factors (e.g. `[1, 2, 3, 4]`).
     pub supported_bins: Vec<u32>,
+    /// Output formats the camera advertises (`SupportedVideoFormat`, read up
+    /// to the `ASI_IMG_END` sentinel).
+    ///
+    /// This is the camera's own claim, not a guarantee: some models are known
+    /// to list a format they do not deliver reliably, so a driver choosing a
+    /// format may need more than this list. It is nonetheless the only
+    /// enumeration the SDK offers — [`bit_depth`](Self::bit_depth) is the
+    /// **ADC** depth and cannot stand in for it.
+    pub supported_video_formats: Vec<ImageType>,
     /// Pixel size in micrometres.
     pub pixel_size_um: f64,
     /// Whether the camera has a mechanical shutter.
@@ -902,6 +911,14 @@ fn camera_info_from_raw(raw: &sys::ASI_CAMERA_INFO) -> CameraInfo {
             .take_while(|&&b| b != 0)
             .map(|&b| u32::try_from(b).unwrap_or(0))
             .collect(),
+        // `ASI_IMG_END` (-1) terminates the array; anything the wrapper does
+        // not model is skipped rather than ending the scan early.
+        supported_video_formats: raw
+            .SupportedVideoFormat
+            .iter()
+            .take_while(|&&f| f != -1)
+            .filter_map(|&f| ImageType::from_raw(f))
+            .collect(),
         pixel_size_um: raw.PixelSize,
         has_mechanical_shutter: raw.MechanicalShutter != 0,
         has_st4_port: raw.ST4Port != 0,
@@ -948,6 +965,7 @@ fn sim_camera_info() -> CameraInfo {
         is_color: false,
         bayer_pattern: BayerPattern::Rg,
         supported_bins: vec![1, 2, 3, 4],
+        supported_video_formats: vec![ImageType::Raw8, ImageType::Raw16],
         pixel_size_um: 3.76,
         has_mechanical_shutter: false,
         has_st4_port: true,

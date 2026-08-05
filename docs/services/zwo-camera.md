@@ -312,9 +312,11 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **Gain / Offset** — current value + `Min`/`Max` from `ASIGetControlCaps`
   (`ASI_GAIN`, `ASI_OFFSET`/brightness); `NOT_IMPLEMENTED` if the control is
   absent on the model.
-- **Readout modes** — `ReadoutMode(s)` from the ASI speed/bit-depth combinations
-  the driver exposes (e.g. "Normal", "High Speed"); switching updates cached
-  state.
+- **Readout modes = the negotiated download formats** — the camera's
+  `SupportedVideoFormat` intersected with the formats this driver can deliver
+  (`Raw16` first, then `Raw8`), published as `ReadoutModes` and defaulting to
+  index 0. The selection drives `ASISetROIFormat`, the download buffer, the
+  `ImageArray` unpack, and `MaxADU` (RM1-RM4).
 - **Cooling** — `CoolerOn`, `SetCCDTemperature`, `CoolerPower`,
   `CanSetCCDTemperature`, `CanGetCoolerPower` are gated on
   `ASI_CAMERA_INFO.IsCoolerCam` (these need an actual TEC).
@@ -326,8 +328,11 @@ ASI C API exposes and what `zwo-rs` will wrap.
   A camera without the control reports `NOT_IMPLEMENTED`.
 - **Sensor type** — `Monochrome` vs `RGGB` (+ `BayerOffsetX/Y`) from
   `IsColorCam` / `BayerPattern`.
-- **`MaxADU`** = `(2^BitDepth) - 1` from `ASI_CAMERA_INFO.BitDepth` (e.g. 65535
-  for a 16-bit ADC, 4095 for 12-bit); `SensorName` from the device name.
+- **`MaxADU`** = **the selected readout format's delivered ceiling**, NOT
+  `(2^BitDepth) - 1`: 255 in `Raw8`, and in `Raw16` the ADC's full scale
+  *shifted into the 16-bit container* (`((2^BitDepth) - 1) << (16 - BitDepth)`
+  — 65535 for a 16-bit ADC, **65520** for a 12-bit one). Hardware-measured, see
+  ST3. `SensorName` comes from the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
@@ -569,9 +574,36 @@ EAF; those belong to the other zwo services.)
 - **GO2.** `set_gain`/`set_offset` validate against cached `[min, max]` and apply
   via the SDK; out-of-range returns `INVALID_VALUE`.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
-- **RM1.** `ReadoutModes` is the driver's named speed/bit-depth list;
-  `set_readout_mode` validates the index and updates cached state; an invalid
-  index returns `INVALID_VALUE`.
+- **RM1.** `ReadoutModes` is the camera's **download-format** list: at
+  enumeration the driver intersects `ASI_CAMERA_INFO.SupportedVideoFormat` with
+  the formats it can deliver, in preference order `Raw16` then `Raw8`, and
+  publishes the survivors (`["Raw16", "Raw8"]` on every model measured so far).
+  `ReadoutMode` defaults to index 0 — the highest precision the camera offers —
+  and resets to it on every connect. `set_readout_mode` validates the index;
+  out of range → `INVALID_VALUE`. Changing it while an exposure is in flight →
+  `INVALID_OPERATION`, so the delivered frame and the `MaxADU` describing it
+  can never disagree.
+- **RM2.** The selected mode is the driver's whole format story: it is what
+  `ASISetROIFormat` receives, what sizes the download buffer
+  (`w × h × bytes_per_pixel`), which unpack `ImageArray` uses (1 or 2 bytes per
+  pixel), and what `MaxADU` reports (ST3).
+- **RM3.** A camera advertising **neither** `Raw16` nor `Raw8` fails connect
+  with `NOT_CONNECTED`, the advertised list logged at `warn!`. No such ASI model
+  is known — `RAW8` is the SDK's universal baseline — but failing loudly beats
+  silently downloading something the rest of the driver does not describe.
+- **RM4 (deliberate exclusions, and why INDI's model guard is not ported).**
+  `RGB24` and `Y8` are not eligible: `RGB24` is SDK-debayered
+  8-bit-per-channel output that would change the *device* contract
+  (`SensorType::Color`, no `BayerOffset`, a rank-3 `ImageArray`) rather than
+  just the buffer arithmetic, and `Y8` is a luminance format — redundant with
+  `Raw8` on a mono sensor and wrong on a Bayer one while we report `RGGB`.
+  **`indi-asi` additionally refuses `RAW16` on any device whose name contains
+  `ASI120`/`ASI130`, and that guard is deliberately not ported**: measured on a
+  physical **ASI120MC-S**, which advertises `[Raw8, Rgb24, Y8, Raw16]` *and*
+  delivers `Raw16` correctly at 320×240, full-frame 1280×960 and bin 2 (see
+  "Real-hardware validation"). A name match would force that working camera to
+  8 bits. If a USB2 ASI120/ASI130 is ever shown to misbehave, the guard can be
+  added then — scoped by `is_usb3`, and with evidence.
 
 ### Cooling
 
@@ -598,7 +630,20 @@ EAF; those belong to the other zwo services.)
   enumerated it and would not move when a client changes `Gain` — which is
   precisely what a client reading `ElectronsPerADU` for SNR or exposure math
   needs it to do.
-- **ST3.** `MaxADU` = `(2^BitDepth) - 1` from `ASI_CAMERA_INFO.BitDepth`.
+- **ST3.** `MaxADU` = **the ceiling of the data actually delivered in the
+  selected readout mode** (RM2), not `(2^BitDepth) - 1`:
+  - `Raw8` → **255**, whatever the ADC depth is.
+  - `Raw16` → `((2^BitDepth) - 1) << (16 - BitDepth)`: **65535** for a 16-bit
+    ADC, **65520** for a 12-bit one.
+
+  ASI packs sub-16-bit ADC data into the Raw16 container by *left-shifting* it,
+  so the ceiling belongs to the container, not the ADC. Hardware-measured on a
+  12-bit ASI120MC-S: every pixel's low 4 bits are zero and a saturated full
+  frame tops out at exactly `4095 << 4 = 65520` — sixteen times the 4095 this
+  driver used to report, so any client normalising by `MaxADU` mis-scaled
+  everything above 1/16 of range. (`svbony-camera` reached the same conclusion
+  on its SV605CC, there by rescale rather than shift.) An unknown (0) depth
+  falls back to the container's own 65535.
 
 ### Pulse guiding
 
@@ -635,13 +680,13 @@ scenarios.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
-| `MaxADU` | `(2^BitDepth) - 1` (65535 for 16-bit, 4095 for 12-bit) |
+| `MaxADU` | The selected format's delivered ceiling (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container — 65535 for 16-bit, 65520 for 12-bit |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
 | `Gain` / `GainMin` / `GainMax` | `ASI_GAIN` control; `NOT_IMPLEMENTED` if absent |
 | `Offset` / `OffsetMin` / `OffsetMax` | `ASI_OFFSET`/brightness control; `NOT_IMPLEMENTED` if absent |
-| `ReadoutMode` / `ReadoutModes` | Driver speed/bit-depth list |
+| `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `IsCoolerCam` |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `IsCoolerCam` |
@@ -704,16 +749,19 @@ else is `debug!` (CLAUDE.md Rule 9).
 ## Testing
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
-and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
+and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
+now stands at **69 unit tests** and **65 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
   state machine (Idle/Exposing/Error, `ImageReady`, percent-completed), gain/
-  offset range checks, cooling gating, Bayer-offset mapping, `MaxADU`-from-
-  `BitDepth`, the gain scaling of `ElectronsPerADU` (ST2), and the paths the
-  `zwo-rs` simulation can't force (mid-exposure SDK error E9; a model without an
-  ST4 port PG2; an uncooled model K1) — against the in-crate `backend.rs` mock
-  seam over the SDK.
+  offset range checks, cooling gating, Bayer-offset mapping, the format-aware
+  `MaxADU` (ST3, incl. the 12-bit → 65520 shift), the readout-format
+  negotiation and its `to_image_array` unpacks, the gain scaling of
+  `ElectronsPerADU` (ST2), and the paths the `zwo-rs` simulation can't force
+  (mid-exposure SDK error E9; a model without an ST4 port PG2; an uncooled
+  model K1; a camera advertising no raw format at all, RM3) — against the
+  in-crate `backend.rs` mock seam over the SDK.
 - **BDD** (`bdd-infra::ServiceHandle`, the six live camera feature files) —
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
@@ -744,6 +792,15 @@ binary so the genuine FFI path — `zwo-camera → zwo-rs → libzwo-sys → lib
 cameras were validated, each *"no errors, warnings or issues found"* with all
 members within their response targets:
 
+> **The `MaxADU` figures recorded below are the values the driver *reported* at
+> the time, and ST3 has since corrected the formula behind them.** Neither run
+> compared the reported ceiling against the pixel values actually delivered; the
+> later ASI120MC-S measurement (below) shows ASI left-shifts sub-16-bit data into
+> the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. Both
+> cameras below are therefore expected to report 65520 (ASI1600MM-Cool) and 65532
+> (ASI178MM) now. Confirming that against the delivered data needs those cameras
+> back on the bench — tracked as a follow-up issue.
+
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
   0.00496 *(the camera was at gain 600; `ElecPerADU` is gain-scaled — see*
   `ElecPerADU` is gain-scaled *below — so this is 4.96 e⁻/ADU at gain 0)*,
@@ -768,6 +825,38 @@ members within their response targets:
 > (`camera.rs` `ccd_temperature`), so this is the ASI SDK's `ASI_TEMPERATURE`
 > register not yet populated until its first internal measurement cycle (~1 s) —
 > an SDK warm-up artifact, not a driver caching defect or a conformance failure.
+
+**ASI120MC-S — readout-format negotiation (RM1-RM4, ST3).** A third physical
+camera, measured on the Linux dev box against the real SDK while implementing
+the format negotiation. It matters because it is the model family
+`indi-asi` singles out as unable to do reliable 16-bit, so it is the camera
+whose behaviour decides whether enumeration is a sufficient selection rule:
+
+- **12-bit, 1280×960, colour (Bayer), USB3** (`is_usb3 = true` — the "-S"
+  refresh of the USB2 original), bins `[1, 2]`.
+- **It advertises `SupportedVideoFormat = [Raw8, Rgb24, Y8, Raw16]`** —
+  including `Raw16`. So enumerating the array alone would *not* have excluded
+  16-bit, exactly as INDI's name-based guard implies.
+- **But `Raw16` works.** `ASISetROIFormat` accepted it (no
+  `ASI_ERROR_INVALID_IMGTYPE`) and a frame downloaded correctly at 320×240,
+  full-frame 1280×960, and 640×480 bin 2. **This contradicts the premise that
+  the camera is unusable in 16-bit**, and is why INDI's blanket
+  `strstr(name, "ASI120")` guard is not ported (RM4) — it would force a working
+  camera to 8 bits.
+- **`Raw16` is a bare left shift, not a rescale**: every pixel's low 4 bits are
+  zero at bin 1, and a saturated full frame reaches exactly `4095 << 4 = 65520`
+  — the measurement behind ST3's corrected `MaxADU`.
+- **End-to-end through the driver** (production non-`simulation` binary, real
+  camera, over Alpaca): `ReadoutModes` reports `["Raw16", "Raw8"]`,
+  `ReadoutMode` defaults to 0, and switching mode changes both the delivered
+  frame and `MaxADU` consistently — mode 0 gives `MaxADU` 65520 with a 64×48
+  frame ranging 16-17872, mode 1 gives `MaxADU` 255 with the same geometry
+  ranging 0-48. **The 8-bit download path is hardware-proven**, not just
+  simulated.
+
+`crates/zwo-rs/examples/probe_formats.rs` is the probe that produced these
+numbers; re-run it against any new ZWO model rather than assuming this one
+generalises.
 
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their

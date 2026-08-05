@@ -64,17 +64,20 @@ async fn try_offset_below_min(world: &mut CameraWorld, _device: u32) {
     world.last_error_code = camera.set_offset(min - 1).await.err().map(|e| e.code.raw());
 }
 
-#[then(regex = r"^camera device (\d+) reports at least one ReadoutMode$")]
-async fn at_least_one_readout_mode(world: &mut CameraWorld, _device: u32) {
-    assert!(!world.camera().readout_modes().await.unwrap().is_empty());
+#[then(regex = r#"^camera device (\d+) reports ReadoutModes as "([^"]*)"$"#)]
+async fn readout_modes_are(world: &mut CameraWorld, _device: u32, expected: String) {
+    let modes = world.camera().readout_modes().await.unwrap();
+    assert_eq!(modes.join(", "), expected);
 }
 
-#[then(regex = r"^camera device (\d+) reports a ReadoutMode index within the modes list$")]
-async fn readout_mode_within_list(world: &mut CameraWorld, _device: u32) {
-    let camera = world.camera();
-    let current = camera.readout_mode().await.unwrap();
-    let count = camera.readout_modes().await.unwrap().len();
-    assert!(current < count, "current mode {current} not in 0..{count}");
+#[then(regex = r"^camera device (\d+) reports ReadoutMode as (\d+)$")]
+async fn readout_mode_is(world: &mut CameraWorld, _device: u32, expected: usize) {
+    assert_eq!(world.camera().readout_mode().await.unwrap(), expected);
+}
+
+#[when(regex = r"^I set ReadoutMode to (\d+) on camera device (\d+)$")]
+async fn set_readout_mode(world: &mut CameraWorld, mode: usize, _device: u32) {
+    world.camera().set_readout_mode(mode).await.unwrap();
 }
 
 #[when(regex = r"^I try to set ReadoutMode to (\d+) on camera device (\d+)$")]
