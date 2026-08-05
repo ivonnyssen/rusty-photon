@@ -5,7 +5,7 @@
 #   linked-clone the template -> boot -> mint a single-use JIT runner config
 #   via the GitHub API -> inject it through the QEMU guest agent -> the
 #   in-guest one-job runner runs exactly one job and powers off -> the
-#   clone is destroyed -> repeat.
+#   clone is destroyed and its runner registration deleted -> repeat.
 #
 # Each slot runs that loop independently and concurrently, so the pool can
 # serve several queued jobs at once. Slots are declared in SLOTS below; two
@@ -166,6 +166,32 @@ runner_state() {
   rm -f "$body"
 }
 
+# Delete a JIT runner's org registration once its clone is torn down. A
+# single-use JIT runner is meant to deregister itself when its job ends, and
+# the Linux guest's `systemctl poweroff` gives it the SIGTERM to do so — but
+# the Windows guest ends with `Stop-Computer -Force`, which cuts it off first,
+# and a clone reclaimed as wedged cannot deregister at all. Either way the
+# entry lingers `offline` in the org's single runner list forever, cluttering
+# the one list an operator reads to ask "is the pool alive?".
+#
+# Doing it host-side from the id in the injection marker is authoritative and
+# stateless: it does not depend on the guest managing a clean exit and covers a
+# wedge reclaim exactly as well as a clean finish. Bounded and best-effort like
+# every other call here — a lingering registration is inert and teardown must
+# proceed regardless — but it returns the HTTP code so the caller can tell a
+# real failure, worth a log line since a systematic one would let the leak
+# creep back unnoticed, from the benign 404 of a runner that already
+# deregistered itself, which is the Linux happy path every time. -sS not -f so
+# that 404 stays readable as a code rather than collapsing into a transport
+# error, the same discipline runner_state uses.
+deregister_runner() {
+  local id=$1
+  curl -sS --connect-timeout 5 --max-time 15 -X DELETE -o /dev/null -w '%{http_code}' \
+    -H @<(printf 'Authorization: Bearer %s' "$(cat "$TOKEN_FILE")") \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/orgs/$ORG/actions/runners/$id" 2>/dev/null
+}
+
 # Write the JIT config into the guest. Both variants write a temp file and
 # rename it, because the in-guest runner polls for a NON-EMPTY .jitconfig and
 # must never read a partial write. A JIT config is base64, so single-quoting
@@ -221,15 +247,47 @@ FW
     && grep -q '^policy_in: DROP$' "$f"
 }
 
+# Tear a clone down: stop it, drop its marker, deregister its runner, destroy
+# the VM. Takes the runner id explicitly when the caller has just minted it but
+# the marker was not written yet (a mint that succeeded then failed to inject);
+# otherwise the id comes from the injection marker, which is where every other
+# teardown path — clean finish, wedge reclaim — carries it. An orphan the
+# reconcile destroys has neither, because it never received a config and so no
+# runner was ever registered for it.
 destroy_clone() {
-  qm stop "$1" >/dev/null 2>&1
-  rm -f "$STATE_DIR/$1.injected"
+  local vmid=$1 rid=${2:-} code
+  qm stop "$vmid" >/dev/null 2>&1
+  [ -z "$rid" ] && rid=$(cat "$STATE_DIR/$vmid.injected" 2>/dev/null)
+  rm -f "$STATE_DIR/$vmid.injected"
+  # Deregister before destroying the VM so the org runner list does not
+  # accumulate one offline entry per Windows job (see deregister_runner). An
+  # empty id means nothing was ever minted for this clone.
+  if [ -n "$rid" ]; then
+    case "$rid" in
+      *[!0-9]*)
+        # The id comes from a marker file; a non-numeric value means that file
+        # is corrupt. Surface it rather than build a malformed URL from it.
+        log "$vmid" "injection marker for $vmid holds a non-numeric runner id ('$rid'); skipping deregistration" ;;
+      *)
+        # 204 (deleted) and 404 (already gone — the Linux happy path) are
+        # success. 000 is curl's "no HTTP status": a transport failure, so it
+        # is reported as unreachable rather than as a status code. Any other
+        # code is a real HTTP problem. Either failure is worth a line so a
+        # systematic one shows up rather than the leak quietly returning.
+        code=$(deregister_runner "$rid")
+        case "$code" in
+          204 | 404) : ;;
+          000) log "$vmid" "runner $rid deregistration could not reach the API" ;;
+          *) log "$vmid" "runner $rid deregistration returned HTTP $code" ;;
+        esac ;;
+    esac
+  fi
   # Drop the isolation policy only when the destroy actually removed the VM.
   # Keying cleanup off `qm destroy` succeeding — not a `qm status` probe, which
   # can fail transiently while the clone still exists — keeps a still-present
   # clone's inbound DROP in place; the caller retries the destroy. A recreated
   # VMID rewrites its .fw before boot, so a briefly-orphaned file is harmless.
-  qm destroy "$1" --purge >/dev/null 2>&1 && rm -f "$FW_DIR/$1.fw"
+  qm destroy "$vmid" --purge >/dev/null 2>&1 && rm -f "$FW_DIR/$vmid.fw"
 }
 
 slot_loop() {
@@ -325,7 +383,10 @@ slot_loop() {
       if ! inject_jitconfig "$vmid" "$os" "$JIT" \
           | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("exitcode") == 0 else 1)'; then
         log "$name" "jitconfig injection into $vmid failed; destroying"
-        destroy_clone "$vmid"
+        # RUNNER_ID is minted but the marker is not written until injection
+        # succeeds, so pass it explicitly — otherwise this teardown would leak
+        # the registration, with no marker left to recover its id.
+        destroy_clone "$vmid" "$RUNNER_ID"
         sleep 30
         continue
       fi

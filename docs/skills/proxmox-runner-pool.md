@@ -170,8 +170,12 @@ dangerous combination. The rule bifurcates by runner kind
   a fork can only reach this pool by editing `runs-on`.**
 * Runners are **JIT-registered and single-use**: the config injected into a
   clone registers one runner for one job; a compromised job cannot mint
-  further registrations, and the GitHub-side runner entry disappears after
-  the job.
+  further registrations. The orchestrator deletes the runner's org
+  registration when it tears the clone down, so the GitHub-side entry does not
+  outlive the clone — done host-side rather than trusting the guest's exit,
+  because a Windows clone's forced power-off (and a wedge reclaim) would
+  otherwise leave the entry lingering `offline` and the org's single runner
+  list would grow without bound.
 * The GitHub PAT (fine-grained, resource owner: the `rusty-photon`
   organization, sole permission "Self-hosted runners: Read and write") lives
   root-only on the hypervisor at `/etc/rp-runner/github-token`. It is never
