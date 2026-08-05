@@ -111,28 +111,30 @@ impl QhyFilterWheelDevice {
             .handle
             .get_position()
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        // Both arrive as SDK `u32`s and are cached as the `usize` slots ASCOM
-        // indexes with. A wheel reporting either beyond that has not handshaken.
-        let (Ok(count), Ok(position)) = (usize::try_from(count), usize::try_from(position)) else {
+        // The slot count sizes `Names` and `FocusOffsets`, so a wheel reporting
+        // one this target cannot address has not handshaken.
+        let Ok(count) = usize::try_from(count) else {
             return Err(ASCOMError::NOT_CONNECTED);
         };
-        // `cfw_ascii_to_slot` degrades a nonstandard CFW status byte into
-        // `byte - 0x30` rather than failing, so from here an unreadable status
-        // is indistinguishable from a slot past the wheel's own count. Caching
-        // one would make `Position` report a slot `Names` has no entry for, so
-        // treat it as a handshake that did not establish the wheel's state.
-        if position >= count {
+        // The slot is different: `cfw_ascii_to_slot` degrades a nonstandard CFW
+        // status byte into `byte - 0x30` rather than failing, so a value outside
+        // the wheel's own count is what a wheel that is not reporting a slot —
+        // one still moving, most likely — looks like from here. ASCOM's answer
+        // for that is the moving sentinel (`Position` = -1), not a refused
+        // connect, so cache no slot and let `position` adopt one as soon as the
+        // wheel reports a real one.
+        let settled = usize::try_from(position).ok().filter(|slot| *slot < count);
+        if settled.is_none() {
             debug!(
                 filter_wheel = %self.unique_id,
                 slots = count,
                 reported = position,
-                "CFW reported a slot outside its own slot count; refusing the handshake"
+                "CFW reported no readable slot at connect; Position stays the moving sentinel until it does"
             );
-            return Err(ASCOMError::NOT_CONNECTED);
         }
         *self.state.number_of_filters.lock() = Some(count);
-        *self.state.target_position.lock() = Some(position);
-        *self.state.settled_position.lock() = Some(position);
+        *self.state.target_position.lock() = settled;
+        *self.state.settled_position.lock() = settled;
         debug!(filter_wheel = %self.unique_id, slots = count, "filter wheel connected");
         Ok(())
     }
@@ -227,7 +229,8 @@ impl FilterWheel for QhyFilterWheelDevice {
 
     async fn position(&self) -> ASCOMResult<Option<usize>> {
         self.ensure_connected()?;
-        let target = (*self.state.target_position.lock()).ok_or(ASCOMError::NOT_CONNECTED)?;
+        let count = self.filter_count()?;
+        let target = *self.state.target_position.lock();
 
         // A settled wheel answers from cache. The SDK's CFW status query is a
         // serial round-trip through the camera (~260 ms on a QHY178M + CFW3),
@@ -236,23 +239,35 @@ impl FilterWheel for QhyFilterWheelDevice {
         // there is nothing to re-read until a move is outstanding. INDI's
         // `indi-qhy` takes the same approach: `QueryFilter()` returns a cached
         // member and `GetQHYCCDCFWStatus` runs only while a move is in flight.
-        if *self.state.settled_position.lock() == Some(target) {
-            return Ok(Some(target));
+        if target.is_some() && *self.state.settled_position.lock() == target {
+            return Ok(target);
         }
 
         let actual = self
             .handle
             .get_position()
             .map_err(|_| ASCOMError::INVALID_OPERATION)?;
-        // The SDK answers in `u32`; compare against the cached slot as the
-        // `usize` ASCOM reports.
-        let actual = usize::try_from(actual).map_err(|_| ASCOMError::INVALID_OPERATION)?;
-        // `None` is the ASCOM "moving" sentinel: target not yet reached.
-        if actual == target {
-            *self.state.settled_position.lock() = Some(actual);
-            Ok(Some(actual))
-        } else {
-            Ok(None)
+        // The SDK answers in `u32` and decodes any nonstandard status byte to
+        // `byte - 0x30`, so a slot outside the wheel's own count is a status
+        // that does not name a slot rather than a slot to report.
+        let actual = usize::try_from(actual).ok().filter(|slot| *slot < count);
+
+        // `None` is the ASCOM "moving" sentinel (`Position` = -1).
+        match (actual, target) {
+            // Reached the commanded slot.
+            (Some(actual), Some(target)) if actual == target => {
+                *self.state.settled_position.lock() = Some(actual);
+                Ok(Some(actual))
+            }
+            // Connect could not read a slot, so there is nothing commanded to
+            // reach — adopt the first real one the wheel reports.
+            (Some(actual), None) => {
+                *self.state.target_position.lock() = Some(actual);
+                *self.state.settled_position.lock() = Some(actual);
+                Ok(Some(actual))
+            }
+            // Still travelling, or still not naming a slot.
+            _ => Ok(None),
         }
     }
 
@@ -458,23 +473,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_handshake_slot_outside_the_wheel_is_refused() {
+    async fn a_wheel_naming_no_slot_at_connect_reports_moving_then_adopts_one() {
         // `cfw_ascii_to_slot` decodes any nonstandard CFW status byte as
-        // `byte - 0x30`, which for anything past 'F' lands well outside the
-        // wheel's slot count — 'N' (0x4E) decodes to 30 on a 7-slot wheel.
-        // Caching that would make `Position` report a slot `Names` has no
-        // entry for.
+        // `byte - 0x30`, which for anything past 'F' lands outside the wheel's
+        // slot count — 'N' (0x4E) decodes to 30 on a 7-slot wheel. That is a
+        // status which does not name a slot, most likely a wheel still moving.
+        // ASCOM's answer is the moving sentinel (`Position` = -1), not a
+        // refused connect and not a slot `Names` has no entry for.
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         handle.set_reported_position(30);
         let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
 
-        let err = device.connect().unwrap_err();
+        device.connect().unwrap();
+        assert_eq!(device.position().await.unwrap(), None);
+        // `Names` is still sized from the slot count, which did read cleanly.
+        assert_eq!(device.names().await.unwrap().len(), 7);
 
-        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
-        assert!(
-            !handle.is_open().unwrap(),
-            "a refused handshake must close the handle"
-        );
+        // Once the wheel names a real slot, the driver adopts it...
+        handle.set_reported_position(4);
+        assert_eq!(device.position().await.unwrap(), Some(4));
+
+        // ...and it is settled, so further reads stop touching the SDK.
+        let settled = handle.get_position_calls.load(Ordering::SeqCst);
+        assert_eq!(device.position().await.unwrap(), Some(4));
+        assert_eq!(handle.get_position_calls.load(Ordering::SeqCst), settled);
     }
 
     #[tokio::test]

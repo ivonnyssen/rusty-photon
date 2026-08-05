@@ -489,14 +489,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   out-of-range returns `INVALID_VALUE`. The check runs on the slot as ASCOM
   sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
   past 2^32 is rejected rather than wrapped onto a real slot.
-- **FW2a.** The connect handshake refuses a wheel whose reported slot is outside
-  its own reported slot count (`NOT_CONNECTED`, handle closed). The CFW status
-  decode degrades any nonstandard status byte to `byte - 0x30` rather than
-  failing, so from the driver's side an unreadable status is indistinguishable
-  from an impossible slot — caching one would make `Position` report a slot
-  `Names` has no entry for. A wheel caught mid-move at connect is refused and
-  the connect retried, rather than seeding the cache from a slot that is not
-  where it settles.
+- **FW2a.** A reported slot outside the wheel's own slot count is treated as a
+  status that does not name a slot, not as a slot. `cfw_ascii_to_slot` degrades
+  any nonstandard `CONTROL_CFWPORT` status byte to `byte - 0x30` rather than
+  failing, so anything past `'F'` decodes above slot 15 — `'N'` (0x4E) becomes
+  30 on a 7-slot wheel, which is what a wheel that is still moving looks like
+  from here. Per the ASCOM spec that is the moving sentinel (`Position` = -1 →
+  `None`), so the connect succeeds, caches no slot, and `Position` reports
+  moving until the wheel names a real one; the first that reads cleanly is
+  adopted as the settled slot and the cache resumes serving it. Reporting the
+  decoded number instead would have given `Names` an index it has no entry for.
 - **FW3.** `FocusOffsets` returns zeros per filter in v0.
 
 ---
