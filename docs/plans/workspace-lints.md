@@ -487,12 +487,19 @@ a saturated `needed` lands in the "buffer too small for frame" answer the
 function already returns.
 
 Reading the drivers this closely surfaced two defects that have nothing to do
-with the lint — both filed rather than fixed here, since they need hardware:
-#881 (`zwo-camera` sets `Raw16` unconditionally and never reads the SDK's
-`SupportedVideoFormat`, so an ASI120/ASI130-class camera cannot expose at all)
-and #882 (`svbony-camera` reads the format list into `CameraProperty` and then
-ignores it). `qhy-camera` is the one that gets this right, via
-`set_if_available(TransferBit, 16.0)` and `GetQHYCCDMemLength`.
+with the lint, both filed rather than fixed here: #881 (`zwo-camera` sets
+`Raw16` unconditionally and never reads the SDK's `SupportedVideoFormat`, so
+an ASI120/ASI130-class camera cannot expose at all) and #882
+(`svbony-camera` read the format list into `CameraProperty` and then ignored
+it). #882 was closed by #884 while this slice was in review, which changed the
+answer here: the negotiated format now rides in `CaptureRequest::image_type`,
+so the buffer length follows the format actually selected instead of a
+restated constant. That is a better shape than reading it back from the SDK,
+and this slice adopted it.
+
+`qhy-camera` was already the one getting this right, via
+`set_if_available(TransferBit, 16.0)` and `GetQHYCCDMemLength`; #881 remains
+open, so `zwo-camera` is now the only driver that assumes its download format.
 
 ## L6a — split the CI channels
 
