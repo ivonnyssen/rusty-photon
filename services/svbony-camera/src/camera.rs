@@ -181,6 +181,12 @@ struct DeviceState {
     /// Serializes the capture task's "check generation + commit result"
     /// against `cancel_exposure`'s "bump generation + clear `image_ready`".
     result_lock: Mutex<()>,
+    /// Serializes `set_readout_mode`'s "reject if exposing, else store" against
+    /// `start_exposure`'s "claim the in-flight slot, then pin the download
+    /// format". Without it either order of the two unsynchronised halves can
+    /// interleave into a frame captured in one format while `ReadoutMode` and
+    /// `MaxADU` report the other (RM1).
+    readout_mode_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
     /// keeps `PulseGuide` synchronous — see `pulse_guide`'s doc comment).
@@ -208,6 +214,7 @@ impl DeviceState {
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
+            readout_mode_lock: Mutex::new(()),
             pulse_guiding: AtomicBool::new(false),
         }
     }
@@ -654,8 +661,15 @@ const fn guide_direction(direction: GuideDirection) -> svbony_rs::GuideDirection
 /// frame was downloaded in (RM2). Only the raw formats [`READOUT_FORMATS`]
 /// can select are convertible; anything else is a caller error, reported
 /// rather than mis-unpacked.
+///
+/// Takes the download buffer **by value** so the `Raw8` arm can hand it
+/// straight to `Array2` instead of copying a full frame the capture path
+/// already owns (18 MB at the SV605CC's full frame). `Raw16` still pays one
+/// copy — its bytes have to be re-read as `u16` — and `ImageArray` widens
+/// whichever array it gets to `i32` internally regardless, so this saves an
+/// intermediate, not the dominant allocation.
 fn to_image_array(
-    bytes: &[u8],
+    mut bytes: Vec<u8>,
     width: u32,
     height: u32,
     image_type: ImageType,
@@ -669,8 +683,10 @@ fn to_image_array(
     // reverses the axes for ASCOM's width-major order.
     match image_type {
         ImageType::Raw8 => {
-            let arr = Array2::from_shape_vec((h, w), bytes[..needed].to_vec())
-                .map_err(|e| e.to_string())?;
+            // `from_shape_vec` demands an exact length; the capture buffer is
+            // sized to the frame, so this only trims a caller's slack.
+            bytes.truncate(needed);
+            let arr = Array2::from_shape_vec((h, w), bytes).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
         }
         ImageType::Raw16 => {
@@ -708,7 +724,7 @@ async fn run_exposure(
     let result = tokio::task::spawn_blocking(move || {
         blocking_handle
             .capture(request)
-            .map(|bytes| to_image_array(&bytes, width, height, image_type))
+            .map(|bytes| to_image_array(bytes, width, height, image_type))
     })
     .await;
 
@@ -1121,7 +1137,11 @@ impl Camera for SvbonyCamera {
         // The mode selects the download format *and* the MaxADU describing
         // it (RM2), and the in-flight capture already carries the format it
         // was started with — so switching mid-exposure could only produce a
-        // frame and a MaxADU that disagree.
+        // frame and a MaxADU that disagree. Checking and storing under
+        // `readout_mode_lock` makes that exclusion hold against a
+        // concurrently-starting exposure too, not just an already-running
+        // one — see `start_exposure`'s matching critical section.
+        let _guard = self.state.readout_mode_lock.lock();
         if self.state.exposure_in_flight.load(Ordering::Acquire) {
             return Err(ASCOMError::invalid_operation(
                 "cannot change the readout mode while an exposure is in flight",
@@ -1418,21 +1438,40 @@ impl Camera for SvbonyCamera {
 
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
         let roi = self.validated_geometry(&sensor, bin)?;
-        // Pin the download format for this frame up front (RM2) so a mode
-        // change after the capture task starts cannot re-interpret its bytes.
-        let format = self.selected_format()?;
 
-        // Claim the in-flight slot; lose the race → already exposing (E2).
-        if self
-            .state
-            .exposure_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(ASCOMError::invalid_operation(
-                "an exposure is already in flight",
-            ));
-        }
+        // Claim the in-flight slot (lose the race → already exposing, E2) and
+        // pin this frame's download format in ONE critical section against
+        // `set_readout_mode` (RM1/RM2). Both halves must be atomic together:
+        // reading the format outside the lock lets a mode change land between
+        // the pin and the claim — or between the claim and the pin — leaving
+        // a frame in one format while `ReadoutMode`/`MaxADU` describe the
+        // other. Under the lock, a mode change either completes wholly before
+        // the claim (and this exposure uses it) or observes the claim and is
+        // rejected.
+        let format = {
+            let _guard = self.state.readout_mode_lock.lock();
+            if self
+                .state
+                .exposure_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(ASCOMError::invalid_operation(
+                    "an exposure is already in flight",
+                ));
+            }
+            // Release the claim rather than wedging the device if the (already
+            // validated, so defensive-only) format lookup fails.
+            match self.selected_format() {
+                Ok(format) => format,
+                Err(e) => {
+                    self.state
+                        .exposure_in_flight
+                        .store(false, Ordering::Release);
+                    return Err(e);
+                }
+            }
+        };
         let generation = self
             .state
             .exposure_generation
@@ -1657,7 +1696,7 @@ mod tests {
     #[test]
     fn to_image_array_16bit_has_width_major_axes() {
         let bytes = vec![0u8; 64 * 48 * 2];
-        let array = to_image_array(&bytes, 64, 48, ImageType::Raw16).unwrap();
+        let array = to_image_array(bytes, 64, 48, ImageType::Raw16).unwrap();
         // ASCOM [x][y]: first axis = width.
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
@@ -1668,18 +1707,19 @@ mod tests {
     #[test]
     fn to_image_array_8bit_has_width_major_axes_from_one_byte_per_pixel() {
         let bytes: Vec<u8> = (0..64 * 48).map(|i| (i % 251) as u8).collect();
-        let array = to_image_array(&bytes, 64, 48, ImageType::Raw8).unwrap();
+        let expected = bytes[2 * 64 + 3];
+        let array = to_image_array(bytes, 64, 48, ImageType::Raw8).unwrap();
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
         // Width-major: [x][y] reads back the row-major byte at (y, x).
-        assert_eq!(array[(3, 2, 0)], i32::from(bytes[2 * 64 + 3]));
+        assert_eq!(array[(3, 2, 0)], i32::from(expected));
     }
 
     #[test]
     fn to_image_array_rejects_a_short_buffer_for_either_format() {
         let bytes = vec![0u8; 10];
-        assert!(to_image_array(&bytes, 64, 48, ImageType::Raw16).is_err());
-        assert!(to_image_array(&bytes, 64, 48, ImageType::Raw8).is_err());
+        assert!(to_image_array(bytes.clone(), 64, 48, ImageType::Raw16).is_err());
+        assert!(to_image_array(bytes, 64, 48, ImageType::Raw8).is_err());
     }
 
     /// The device only ever selects a raw format (RM1/RM4), but the
@@ -1688,7 +1728,7 @@ mod tests {
     #[test]
     fn to_image_array_rejects_a_format_the_driver_never_selects() {
         let bytes = vec![0u8; 64 * 48 * 3];
-        let err = to_image_array(&bytes, 64, 48, ImageType::Rgb24).unwrap_err();
+        let err = to_image_array(bytes, 64, 48, ImageType::Rgb24).unwrap_err();
         assert!(err.contains("unsupported download format"), "{err}");
     }
 
