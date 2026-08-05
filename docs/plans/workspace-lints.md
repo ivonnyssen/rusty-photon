@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -479,12 +479,28 @@ home per crate, and the drivers stopped recomputing the length from the ASCOM
 request. `zwo-camera` had been restating the bytes-per-pixel as a literal `2`
 while `zwo_rs` carried a real `bytes_per_pixel()` covering 1, 2 and 3.
 
-Where the length cannot fail into a `Result` — `buffer_len` returns a plain
-`usize` — saturation is the exact answer rather than a fallback: `usize::MAX`
-makes every buffer too small, so the caller's existing `BufferTooSmall` arm
-reports it, and no arm has to be invented. Same for `to_image_array`, where
-a saturated `needed` lands in the "buffer too small for frame" answer the
-function already returns.
+Saturation was the first answer for a length that cannot fail into a `Result`:
+`usize::MAX` makes every buffer too small, so the caller's existing
+`BufferTooSmall` arm reports it and no arm has to be invented. Review caught
+that this is only half true, and the half it gets wrong is the dangerous one.
+
+> **Saturate what you compare, fail what you allocate.**
+
+A saturated length is exact for a caller comparing a buffer against it and
+catastrophic for one that *allocates* it — `vec![0u8; usize::MAX]` aborts the
+process instead of reporting anything. The same slice that added the saturating
+`buffer_len` also added the first callers that allocate from it, in three
+places. Both vendor crates' length functions are therefore fallible
+(`RoiFormat::buffer_len -> Option<usize>`,
+`Camera::frame_buffer_len -> Result<usize>`), and a second saturating entry
+point was deliberately *not* kept beside them: leaving one available leaves the
+trap set for the next allocating caller. Saturation survives only where the
+result is compared and never allocated — `to_image_array`, where a saturated
+`needed` lands in the "buffer too small for frame" answer the function already
+returns.
+
+Unlike the `NAXIS` arm above, these arms are reachable and tested: `RoiFormat`
+and `CaptureRequest` are plain structs a test builds with `u32::MAX`.
 
 Reading the drivers this closely surfaced two defects that have nothing to do
 with the lint, both filed rather than fixed here: #881 (`zwo-camera` sets
@@ -498,8 +514,40 @@ restated constant. That is a better shape than reading it back from the SDK,
 and this slice adopted it.
 
 `qhy-camera` was already the one getting this right, via
-`set_if_available(TransferBit, 16.0)` and `GetQHYCCDMemLength`; #881 remains
-open, so `zwo-camera` is now the only driver that assumes its download format.
+`set_if_available(TransferBit, 16.0)` and `GetQHYCCDMemLength`. #881 was then
+closed by #887, which negotiates `SupportedVideoFormat` and carries the choice
+in `CaptureRequest::image_type` — the shape #884 established for svbony — so no
+driver assumes its download format any more. #887 consumed the fallible
+`buffer_len` unchanged, which is the check that the rule above survives contact
+with a caller that did not write it.
+
+### L5b — QHY index casts
+
+14 production sites across `qhyccd-rs` and `qhy-camera`, and unlike the frame
+buffers none of them is a length. Three shapes, each with one answer:
+
+- **An SDK `u32` indexing a `Vec`** (readout-mode tables, 5 sites). Every one
+  already had an out-of-range answer — `ok_or(QHYError::Sdk)`, or a fall back to
+  the full chip — so the conversion folds into it:
+  `usize::try_from(i).ok().and_then(|i| modes.get(i))`. No arm is invented and
+  none becomes unreachable, because a failed conversion and an out-of-range
+  index are the same event.
+- **`Vec::with_capacity` from a device-reported count** (3 sites). Capacity is a
+  hint, so `unwrap_or(0)` is total and honest: a count too large to address just
+  means no preallocation, and each loop is bounded by that same count. This is
+  *not* the allocating case the rule above covers — nothing is sized by it.
+- **ASCOM's `usize` surface** (6 sites). `FilterWheel` is `usize` throughout
+  (`Position`, `set_position`, and the `Names` / `FocusOffsets` lengths that must
+  match it), so the wheel's cached slot state was retyped to `usize` and the
+  conversion moved to the SDK seam it actually belongs at.
+
+That retype was worth more than the lint. `set_position` had been narrowing the
+client's slot to the SDK's `u32` *before* range-checking it, so every value past
+2^32 wrapped onto a real slot — an Alpaca client sending `Position=4294967299`
+moved the wheel to slot 3 and got no error. Checking in the type ASCOM sends
+makes the wrap impossible rather than merely detected, and the arm is reachable,
+so it has a test. `GetQHYCCDMemLength` is the one genuinely allocating site here
+and takes the fallible form per the rule above.
 
 ## L6a — split the CI channels
 

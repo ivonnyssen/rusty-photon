@@ -516,10 +516,16 @@ fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
     if image.channels != 1 {
         return Err(format!("unsupported channel count {}", image.channels));
     }
-    let (w, h) = (image.width as usize, image.height as usize);
+    // The SDK reports the geometry as `u32`; here it is the length of
+    // `image.data` and the shape of the array, so convert once. A frame too
+    // large to address saturates, which lands it in the same "buffer too small"
+    // answer as any other short read rather than wrapping into a length the
+    // buffer appears to satisfy.
+    let w = usize::try_from(image.width).unwrap_or(usize::MAX);
+    let h = usize::try_from(image.height).unwrap_or(usize::MAX);
     match image.bits_per_pixel {
         8 => {
-            let needed = w * h;
+            let needed = w.saturating_mul(h);
             if image.data.len() < needed {
                 return Err("8-bit buffer too small for frame".to_string());
             }
@@ -528,7 +534,7 @@ fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
             Ok(ImageArray::from(arr.reversed_axes()))
         }
         16 => {
-            let needed = w * h * 2;
+            let needed = w.saturating_mul(h).saturating_mul(2);
             if image.data.len() < needed {
                 return Err("16-bit buffer too small for frame".to_string());
             }
@@ -1089,10 +1095,13 @@ impl Camera for QhyCameraDevice {
 
     async fn readout_mode(&self) -> ASCOMResult<usize> {
         self.ensure_connected()?;
-        self.handle
+        let mode = self
+            .handle
             .get_readout_mode()
-            .map(|m| m as usize)
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        // The SDK numbers modes in `u32`; ASCOM indexes `ReadoutModes` with a
+        // `usize`.
+        usize::try_from(mode).map_err(|_| ASCOMError::INVALID_OPERATION)
     }
 
     async fn readout_modes(&self) -> ASCOMResult<Vec<String>> {
@@ -1101,7 +1110,9 @@ impl Camera for QhyCameraDevice {
             .handle
             .get_number_of_readout_modes()
             .map_err(|_| ASCOMError::INVALID_OPERATION)?;
-        let mut modes = Vec::with_capacity(count as usize);
+        // Capacity is only a hint, so a count too large to address just means no
+        // preallocation — the loop below is bounded by that same count.
+        let mut modes = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
         for index in 0..count {
             modes.push(
                 self.handle

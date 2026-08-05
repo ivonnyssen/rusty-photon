@@ -669,10 +669,12 @@ impl Camera {
             }
             state.is_initialized = true;
             // Reset ROI to full frame based on current readout mode
-            let (width, height) = state
-                .config
-                .readout_modes
-                .get(state.readout_mode as usize)
+            // The mode index is an SDK `u32` and the mode table is a `Vec`. One
+            // this target cannot address falls back to the full chip, exactly as
+            // an out-of-range index already does.
+            let mode_index = usize::try_from(state.readout_mode).ok();
+            let (width, height) = mode_index
+                .and_then(|i| state.config.readout_modes.get(i))
                 .map(|(_, res)| *res)
                 .unwrap_or((
                     state.config.chip_info.image_width,
@@ -768,7 +770,8 @@ impl Camera {
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
-            if mode as usize >= state.config.readout_modes.len() {
+            // An index this target cannot address is out of range by definition.
+            if !usize::try_from(mode).is_ok_and(|i| i < state.config.readout_modes.len()) {
                 return Err(QHYError::Sdk {
                     op: "set_readout_mode",
                 });
@@ -1280,7 +1283,12 @@ impl Camera {
                     tracing::error!(error = ?error);
                     Err(error)
                 }
-                size => Ok(size as usize),
+                // Callers allocate this many bytes, so a length this target
+                // cannot address is an SDK error rather than a saturated
+                // allocation.
+                size => usize::try_from(size).map_err(|_| QHYError::Sdk {
+                    op: "get_image_size",
+                }),
             }
         }
         #[cfg(feature = "simulation")]
@@ -2179,10 +2187,9 @@ impl Camera {
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
-            state
-                .config
-                .readout_modes
-                .get(index as usize)
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| state.config.readout_modes.get(i))
                 .map(|(name, _)| name.clone())
                 .ok_or(QHYError::Sdk {
                     op: "get_readout_mode_name",
@@ -2231,10 +2238,9 @@ impl Camera {
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
-            state
-                .config
-                .readout_modes
-                .get(index as usize)
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| state.config.readout_modes.get(i))
                 .map(|(_, res)| *res)
                 .ok_or(QHYError::Sdk {
                     op: "get_readout_mode_resolution",

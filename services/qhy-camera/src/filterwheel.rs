@@ -16,14 +16,18 @@ use tracing::debug;
 
 use crate::backend::FilterWheelHandle;
 
+/// Slots are `usize` throughout because that is what every consumer is: the
+/// ASCOM `Position`, and the `Names` / `FocusOffsets` lengths that must match
+/// it. The SDK speaks `u32`, so the conversion sits at that seam — the
+/// handshake below, and the two calls that read or command a slot.
 #[derive(Debug)]
 struct FilterWheelState {
-    number_of_filters: Mutex<Option<u32>>,
-    target_position: Mutex<Option<u32>>,
+    number_of_filters: Mutex<Option<usize>>,
+    target_position: Mutex<Option<usize>>,
     /// Last slot read back from the SDK. Seeded at connect and refreshed only
     /// while a move is in flight, so a settled `Position` costs no SDK call —
     /// see [`QhyFilterWheelDevice::position`].
-    settled_position: Mutex<Option<u32>>,
+    settled_position: Mutex<Option<usize>>,
 }
 
 /// One ASCOM `FilterWheel` device per discovered CFW.
@@ -71,7 +75,7 @@ impl QhyFilterWheelDevice {
         }
     }
 
-    fn filter_count(&self) -> ASCOMResult<u32> {
+    fn filter_count(&self) -> ASCOMResult<usize> {
         (*self.state.number_of_filters.lock()).ok_or(ASCOMError::NOT_CONNECTED)
     }
 
@@ -99,7 +103,6 @@ impl QhyFilterWheelDevice {
             .handle
             .get_number_of_filters()
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        *self.state.number_of_filters.lock() = Some(count);
         // Initial target = the current physical slot. This is also the one place
         // an idle wheel reads the SDK: from here on the slot only changes when
         // this driver commands it, so `position` serves the settled value from
@@ -108,6 +111,12 @@ impl QhyFilterWheelDevice {
             .handle
             .get_position()
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+        // Both arrive as SDK `u32`s and are cached as the `usize` slots ASCOM
+        // indexes with. A wheel reporting either beyond that has not handshaken.
+        let (Ok(count), Ok(position)) = (usize::try_from(count), usize::try_from(position)) else {
+            return Err(ASCOMError::NOT_CONNECTED);
+        };
+        *self.state.number_of_filters.lock() = Some(count);
         *self.state.target_position.lock() = Some(position);
         *self.state.settled_position.lock() = Some(position);
         debug!(filter_wheel = %self.unique_id, slots = count, "filter wheel connected");
@@ -180,7 +189,7 @@ impl Device for QhyFilterWheelDevice {
 impl FilterWheel for QhyFilterWheelDevice {
     async fn names(&self) -> ASCOMResult<Vec<String>> {
         self.ensure_connected()?;
-        let count = self.filter_count()? as usize;
+        let count = self.filter_count()?;
         // ASCOM requires the `Names` array to have exactly one entry per slot
         // (matching `FocusOffsets` and the `Position` range). The hardware slot
         // count is unknown until connect, so configured `filter_names` cannot be
@@ -199,7 +208,7 @@ impl FilterWheel for QhyFilterWheelDevice {
     async fn focus_offsets(&self) -> ASCOMResult<Vec<i32>> {
         self.ensure_connected()?;
         let count = self.filter_count()?;
-        Ok(vec![0; count as usize])
+        Ok(vec![0; count])
     }
 
     async fn position(&self) -> ASCOMResult<Option<usize>> {
@@ -214,17 +223,20 @@ impl FilterWheel for QhyFilterWheelDevice {
         // `indi-qhy` takes the same approach: `QueryFilter()` returns a cached
         // member and `GetQHYCCDCFWStatus` runs only while a move is in flight.
         if *self.state.settled_position.lock() == Some(target) {
-            return Ok(Some(target as usize));
+            return Ok(Some(target));
         }
 
         let actual = self
             .handle
             .get_position()
             .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        // The SDK answers in `u32`; compare against the cached slot as the
+        // `usize` ASCOM reports.
+        let actual = usize::try_from(actual).map_err(|_| ASCOMError::INVALID_OPERATION)?;
         // `None` is the ASCOM "moving" sentinel: target not yet reached.
         if actual == target {
             *self.state.settled_position.lock() = Some(actual);
-            Ok(Some(actual as usize))
+            Ok(Some(actual))
         } else {
             Ok(None)
         }
@@ -233,19 +245,22 @@ impl FilterWheel for QhyFilterWheelDevice {
     async fn set_position(&self, position: usize) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let count = self.filter_count()?;
-        let target = position as u32;
-        if target >= count {
+        // Range-check the slot as ASCOM sent it. Narrowing to the SDK's `u32`
+        // first would have wrapped `2^32` onto slot 0 and passed this check.
+        if position >= count {
             return Err(ASCOMError::invalid_value(format!(
                 "filter position {position} out of range (0..{count})"
             )));
         }
-        if *self.state.target_position.lock() == Some(target) {
+        if *self.state.target_position.lock() == Some(position) {
             return Ok(());
         }
+        // `position < count`, and the count itself came from an SDK `u32`.
+        let target = u32::try_from(position).map_err(|_| ASCOMError::INVALID_OPERATION)?;
         self.handle
             .set_position(target)
             .map_err(|_| ASCOMError::INVALID_OPERATION)?;
-        *self.state.target_position.lock() = Some(target);
+        *self.state.target_position.lock() = Some(position);
         Ok(())
     }
 }
@@ -425,6 +440,24 @@ mod tests {
         assert_eq!(
             device.set_position(99).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slot_past_the_sdk_word_is_rejected_not_wrapped() {
+        // The slot arrives from the client as a `usize`. Narrowing it to the
+        // SDK's `u32` before the range check turned every value past 2^32 into
+        // one the wheel would happily move to: 4_294_967_299 is 2^32 + 3, which
+        // used to truncate to slot 3 and pass a `0..7` range check.
+        let device = connected(None);
+
+        let err = device.set_position(4_294_967_299).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(
+            device.position().await.unwrap(),
+            Some(0),
+            "a rejected slot must leave the wheel where it was"
         );
     }
 
