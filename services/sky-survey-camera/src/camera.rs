@@ -62,8 +62,11 @@ pub fn build_full_sensor_request(
 /// so subsequent ASCOM calls can map it to `ImageArray` vs ASCOM error.
 #[derive(Debug)]
 pub struct ExposureOutcome {
-    pub width: u32,
-    pub height: u32,
+    /// `usize` because they describe `data`: the only things done with
+    /// them are shaping that buffer and sizing it. The ASCOM `NumX`/
+    /// `NumY` they came from stay fixed-width on the request side.
+    pub width: usize,
+    pub height: usize,
     pub data: Vec<i32>,
 }
 
@@ -261,6 +264,20 @@ async fn run_exposure_inner(
     let ny = state.num_y.load(Ordering::Acquire);
     let sx = state.start_x.load(Ordering::Acquire);
     let sy = state.start_y.load(Ordering::Acquire);
+    // `nx`/`ny` stay fixed-width for `crop_subframe`, which takes the
+    // subframe as the ASCOM device state it is. The outcome carries the
+    // same numbers as the geometry of the buffer it holds, so convert
+    // once here. Fallible rather than saturating because the dark-frame
+    // path below *allocates* `out_w * out_h` elements — a saturated
+    // length would abort the process instead of reporting anything.
+    // `StartExposure` has already bounded both against the binned sensor,
+    // so this reports a configuration no camera could have.
+    let (Ok(out_w), Ok(out_h)) = (usize::try_from(nx), usize::try_from(ny)) else {
+        return Err(format!("subframe {nx}x{ny} is too large to address"));
+    };
+    let Some(out_pixels) = out_w.checked_mul(out_h) else {
+        return Err(format!("subframe {nx}x{ny} is too large to address"));
+    };
 
     // Hold `Exposing` state for the requested duration so clients
     // (incl. ConformU) can observe the camera mid-exposure. Capped at
@@ -277,9 +294,9 @@ async fn run_exposure_inner(
     if !light {
         // S2: zero-filled NumX × NumY frame, no fetch.
         return Ok(ExposureOutcome {
-            width: nx,
-            height: ny,
-            data: vec![0i32; (nx as usize) * (ny as usize)],
+            width: out_w,
+            height: out_h,
+            data: vec![0i32; out_pixels],
         });
     }
 
@@ -334,8 +351,8 @@ async fn run_exposure_inner(
         try_cache_store(cache_dir, cache_key, bytes).await;
     }
     Ok(ExposureOutcome {
-        width: nx,
-        height: ny,
+        width: out_w,
+        height: out_h,
         data: cropped,
     })
 }
@@ -762,12 +779,9 @@ impl Camera for SkySurveyCamera {
         // width columns), so we build a row-major (height, width)
         // array first and then `.reversed_axes()` swaps the strides
         // in-place — no element copy.
-        let array = Array2::from_shape_vec(
-            (outcome.height as usize, outcome.width as usize),
-            outcome.data.clone(),
-        )
-        .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?
-        .reversed_axes();
+        let array = Array2::from_shape_vec((outcome.height, outcome.width), outcome.data.clone())
+            .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?
+            .reversed_axes();
         Ok(ImageArray::from(array))
     }
 

@@ -674,8 +674,16 @@ fn to_image_array(
     height: u32,
     image_type: ImageType,
 ) -> Result<ImageArray, String> {
-    let (w, h) = (width as usize, height as usize);
-    let needed = w * h * image_type.bytes_per_pixel();
+    // The ASCOM subframe arrives fixed-width; here it becomes the length of
+    // `bytes` and the shape of the array, so convert once. A frame too large
+    // to address saturates, which lands it in the same "buffer too small"
+    // answer as any other short read rather than wrapping into a length the
+    // buffer appears to satisfy.
+    let w = usize::try_from(width).unwrap_or(usize::MAX);
+    let h = usize::try_from(height).unwrap_or(usize::MAX);
+    let needed = w
+        .saturating_mul(h)
+        .saturating_mul(image_type.bytes_per_pixel());
     if bytes.len() < needed {
         return Err(format!("{image_type:?} buffer too small for frame"));
     }
