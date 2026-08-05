@@ -260,15 +260,26 @@ destroy_clone() {
   [ -z "$rid" ] && rid=$(cat "$STATE_DIR/$vmid.injected" 2>/dev/null)
   rm -f "$STATE_DIR/$vmid.injected"
   # Deregister before destroying the VM so the org runner list does not
-  # accumulate one offline entry per Windows job (see deregister_runner). A
-  # code that is neither 204 (deleted) nor 404 (already gone) is a real API
-  # problem worth surfacing, so a systematic failure shows up rather than the
-  # leak quietly returning; an empty id means nothing was ever minted here.
+  # accumulate one offline entry per Windows job (see deregister_runner). An
+  # empty id means nothing was ever minted for this clone.
   if [ -n "$rid" ]; then
-    code=$(deregister_runner "$rid")
-    case "$code" in
-      204 | 404) : ;;
-      *) log "$vmid" "runner $rid deregistration returned HTTP $code" ;;
+    case "$rid" in
+      *[!0-9]*)
+        # The id comes from a marker file; a non-numeric value means that file
+        # is corrupt. Surface it rather than build a malformed URL from it.
+        log "$vmid" "injection marker for $vmid holds a non-numeric runner id ('$rid'); skipping deregistration" ;;
+      *)
+        # 204 (deleted) and 404 (already gone — the Linux happy path) are
+        # success. 000 is curl's "no HTTP status": a transport failure, so it
+        # is reported as unreachable rather than as a status code. Any other
+        # code is a real HTTP problem. Either failure is worth a line so a
+        # systematic one shows up rather than the leak quietly returning.
+        code=$(deregister_runner "$rid")
+        case "$code" in
+          204 | 404) : ;;
+          000) log "$vmid" "runner $rid deregistration could not reach the API" ;;
+          *) log "$vmid" "runner $rid deregistration returned HTTP $code" ;;
+        esac ;;
     esac
   fi
   # Drop the isolation policy only when the destroy actually removed the VM.
