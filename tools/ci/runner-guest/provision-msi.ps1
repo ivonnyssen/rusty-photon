@@ -7,7 +7,11 @@
 # environment variables, matching how the rest of the template is provisioned
 # (the runner has no .env on Windows; see docs/skills/proxmox-runner-pool.md).
 $ProgressPreference = 'SilentlyContinue'
-$ErrorActionPreference = 'Continue'
+# Fail fast: a broken step (failed download, dotnet install, or wix install)
+# must abort the rebuild rather than print its summary lines and exit clean —
+# a half-provisioned toolchain silently baked into a template image is the
+# worst outcome, since every pool job then inherits it.
+$ErrorActionPreference = 'Stop'
 
 $WixVersion = '5.0.2'   # must match $WixVersion in scripts/build-msi.ps1
 $dotnetDir  = 'C:\ci\dotnet'

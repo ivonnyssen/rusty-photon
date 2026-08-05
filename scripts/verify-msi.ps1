@@ -259,34 +259,30 @@ WaitFor $flagProbe "a second handshake attempt (SCM restart-on-error proof)" {
 Write-Host "== ${flagProbe}: OK (restarted after a clean error exit — failure-actions flag works)"
 
 # ---- qhy-camera: delay-load preflight ---------------------------------------
-# The preflight has two correct outcomes, and which one is correct depends on
-# whether qhyccd.dll is resolvable on THIS box. Both cases ship:
+# The preflight has exactly two correct outcomes, and this check's job is to
+# prove the loader did NOT crash — not to predict which outcome this box should
+# produce:
 #
-#   * A plain verify box has no All-in-One pack, so the delay-load must report
-#     the missing DLL rather than dying in the loader (the original assertion).
-#   * The Proxmox pool template stages the SDK onto the machine PATH so the
-#     Bazel suites can link and run against it. There the DLL resolves, the
-#     service enumerates zero cameras and starts cleanly — and never emits the
-#     missing-DLL line.
+#   * Where qhyccd.dll cannot be resolved (a plain verify box, no All-in-One
+#     pack), the delay-load must REPORT the missing DLL rather than dying in
+#     the loader.
+#   * Where it resolves (e.g. the Proxmox pool template stages the SDK so the
+#     Bazel suites can link and run against it), the service enumerates zero
+#     cameras and starts cleanly, never emitting the missing-DLL line.
 #
-# Asserting only the first outcome made this fail wherever the SDK happened to
-# be installed, reporting an environment coupling as a product defect. Decide
-# the expected branch from the MACHINE PATH, which is what a Windows service
-# inherits, then hold that branch to its specific contract.
-$qhyDllDir = @(
-    [Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';' |
-        Where-Object { $_ -and (Test-Path (Join-Path $_ 'qhyccd.dll') -ErrorAction SilentlyContinue) }
-) | Select-Object -First 1
-if ($qhyDllDir) {
-    WaitFor 'qhy-camera' "a clean start with qhyccd.dll resolvable on PATH" {
-        (ServiceLogContent 'qhy-camera') -match 'Service started successfully'
-    } 30
-    Write-Host "== qhy-camera: OK (delay-load resolved from $qhyDllDir — service started)"
-} else {
-    WaitFor 'qhy-camera' "the preflight's distinctive missing-DLL log line" {
-        (ServiceLogContent 'qhy-camera') -match 'qhyccd\.dll not found'
-    } 30
+# Accept either; fail only if NEITHER line appears within the timeout, which is
+# the loader crash this check exists to catch. Deliberately not decided from
+# the environment: the service resolves the DLL through the full Windows search
+# order (executable dir, system dirs, then PATH), so a check that inspected any
+# single one of those — e.g. PATH alone — could disagree with the very service
+# it is verifying.
+WaitFor 'qhy-camera' "the delay-load to resolve either way (started, or reported the missing DLL — not a loader crash)" {
+    (ServiceLogContent 'qhy-camera') -match 'Service started successfully|qhyccd\.dll not found'
+} 30
+if ((ServiceLogContent 'qhy-camera') -match 'qhyccd\.dll not found') {
     Write-Host "== qhy-camera: OK (preflight reported the missing DLL — no loader crash)"
+} else {
+    Write-Host "== qhy-camera: OK (delay-load resolved — service started)"
 }
 
 # ---- log files for everything that ran -------------------------------------
