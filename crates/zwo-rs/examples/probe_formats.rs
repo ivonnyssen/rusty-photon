@@ -177,18 +177,32 @@ fn trial(camera: &Camera, image_type: ImageType, width: u32, height: u32, bin: u
 /// Sanity-check the delivered frame: an all-zero or all-saturated frame, or a
 /// 16-bit frame whose high bytes are all zero, is the shape a format that is
 /// advertised but not honoured would produce.
+///
+/// `image_type` is whatever the SDK **read back**, not what was requested, so
+/// every format the enum can hold has to be handled: a mismatch that lands on
+/// `Y8` (1 byte/pixel) or `Rgb24` (3) is exactly the case this probe exists to
+/// surface, and decoding those as `u16` would answer it with nonsense.
 fn report_pixels(buf: &[u8], image_type: ImageType) {
     match image_type {
-        ImageType::Raw8 => {
+        ImageType::Rgb24 => {
+            // Interleaved BGR, not a single plane — per-pixel statistics would
+            // mix channels, so report only what is unambiguous.
+            println!(
+                "    pixels               : {} bytes of interleaved {:?}; not decoded (3 bytes/pixel, channel-interleaved)",
+                buf.len(),
+                image_type
+            );
+        }
+        ImageType::Raw8 | ImageType::Y8 => {
             let (min, max, sum) = buf.iter().fold((u8::MAX, 0u8, 0u64), |(lo, hi, sum), &b| {
                 (lo.min(b), hi.max(b), sum + u64::from(b))
             });
             println!(
-                "    pixels (8-bit)       : min {min} max {max} mean {:.1}",
+                "    pixels ({image_type:?})      : min {min} max {max} mean {:.1}",
                 sum as f64 / buf.len() as f64
             );
         }
-        _ => {
+        ImageType::Raw16 => {
             let pixels: Vec<u16> = buf
                 .chunks_exact(2)
                 .map(|c| u16::from_ne_bytes([c[0], c[1]]))
