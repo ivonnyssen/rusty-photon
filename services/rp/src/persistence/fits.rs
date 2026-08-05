@@ -50,23 +50,6 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
     height: usize,
     doc_id: &str,
 ) -> Result<()> {
-    // Rejected here rather than in `rp_fits` so a bad call costs
-    // neither a buffer clone nor a staging directory.
-    let Some(expected) = width.checked_mul(height) else {
-        return Err(RpError::Imaging(format!(
-            "dimensions {width}x{height} overflow a pixel count"
-        )));
-    };
-    if pixels.len() != expected {
-        return Err(RpError::Imaging(format!(
-            "pixel count {} does not match dimensions {}x{} (expected {})",
-            pixels.len(),
-            width,
-            height,
-            expected
-        )));
-    }
-
     let path = path.as_ref().to_path_buf();
     let pixels = pixels.to_vec();
     let doc_id = doc_id.to_string();
@@ -97,23 +80,6 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
     height: usize,
     doc_id: &str,
 ) -> Result<()> {
-    // Rejected here rather than in `rp_fits` so a bad call costs
-    // neither a buffer clone nor a staging directory.
-    let Some(expected) = width.checked_mul(height) else {
-        return Err(RpError::Imaging(format!(
-            "dimensions {width}x{height} overflow a pixel count"
-        )));
-    };
-    if pixels.len() != expected {
-        return Err(RpError::Imaging(format!(
-            "pixel count {} does not match dimensions {}x{} (expected {})",
-            pixels.len(),
-            width,
-            height,
-            expected
-        )));
-    }
-
     let path = path.as_ref().to_path_buf();
     let pixels = pixels.to_vec();
     let doc_id = doc_id.to_string();
@@ -259,7 +225,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("does not match dimensions"),
+            err.to_string().contains("does not match"),
             "unexpected error: {err}"
         );
     }
@@ -276,7 +242,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("overflow a pixel count"),
+            err.to_string().contains("dimensions overflow"),
             "unexpected error: {err}"
         );
 
@@ -284,7 +250,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("overflow a pixel count"),
+            err.to_string().contains("dimensions overflow"),
             "unexpected error: {err}"
         );
         assert!(!path.exists(), "nothing should have been staged");
@@ -427,7 +393,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("does not match dimensions"),
+            err.to_string().contains("does not match"),
             "unexpected error: {err}"
         );
     }

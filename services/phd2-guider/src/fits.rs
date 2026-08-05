@@ -60,21 +60,6 @@ pub async fn write_grayscale_u16_fits<P: AsRef<Path>>(
     height: usize,
     headers: Option<&[(&str, &str)]>,
 ) -> Result<()> {
-    let Some(expected_size) = width.checked_mul(height) else {
-        return Err(Phd2Error::InvalidState(format!(
-            "Dimensions {width}x{height} overflow a pixel count"
-        )));
-    };
-    if pixels.len() != expected_size {
-        return Err(Phd2Error::InvalidState(format!(
-            "Pixel count {} does not match dimensions {}x{} (expected {})",
-            pixels.len(),
-            width,
-            height,
-            expected_size
-        )));
-    }
-
     let path = path.as_ref().to_path_buf();
     let pixels = pixels.to_vec();
     let owned_headers: Option<Vec<(String, String)>> = headers.map(|h| {
@@ -171,8 +156,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_grayscale_u16_fits_dimension_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
         let pixels = vec![1u16, 2, 3, 4];
-        let result = write_grayscale_u16_fits("/tmp/test.fits", &pixels, 2, 3, None).await;
+        let result =
+            write_grayscale_u16_fits(dir.path().join("test.fits"), &pixels, 2, 3, None).await;
         assert!(result.is_err());
     }
 
@@ -180,13 +167,16 @@ mod tests {
     /// rather than wrapped into a plausible pixel count.
     #[tokio::test]
     async fn write_grayscale_u16_fits_rejects_overflowing_dimensions() {
-        let err = write_grayscale_u16_fits("/tmp/test.fits", &[], usize::MAX, usize::MAX, None)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.fits");
+        let err = write_grayscale_u16_fits(&path, &[], usize::MAX, usize::MAX, None)
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("overflow a pixel count"),
+            err.to_string().contains("dimensions overflow"),
             "expected an overflow error, got: {err}"
         );
+        assert!(!path.exists(), "a rejected write must leave no file behind");
     }
 
     #[tokio::test]

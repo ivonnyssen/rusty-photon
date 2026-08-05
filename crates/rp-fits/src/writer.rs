@@ -217,6 +217,11 @@ where
         });
     }
 
+    // `bitpix` is paired with `T` by the three public entry points, so
+    // this is `size_of::<T>()`, and the check above established
+    // `expected == pixels.len()`. The product is therefore the byte
+    // length of a live slice, which Rust caps at `isize::MAX` — the
+    // capacity arithmetic cannot overflow a `usize`.
     let bytes_per_pixel = usize::from(bitpix.unsigned_abs()) / 8;
     let mut out = Vec::with_capacity(BLOCK_SIZE + expected * bytes_per_pixel + BLOCK_SIZE);
 
