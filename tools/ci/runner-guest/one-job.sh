@@ -13,7 +13,7 @@ cd /home/ci/actions-runner || exit 1
 
 # Monotonic seconds since boot. Deliberately NOT wall clock: a linked clone
 # inherits the template's RTC and boots badly out of date, so time sync steps
-# the clock a long way forward shortly after boot — straight past any end time
+# the clock a long way forward shortly after boot - straight past any end time
 # computed from `date`. /proc/uptime is immune to that correction.
 uptime_secs() {
   local up _
@@ -26,7 +26,7 @@ uptime_secs() {
 # This is the guest's own backstop, not the primary defence: the orchestrator
 # reclaims a slot whose runner never connects, and destroys a clone that has no
 # injection marker. Both of those need the orchestrator to be running, which is
-# exactly what this covers — if it is stopped, or the host is mid-upgrade, a
+# exactly what this covers - if it is stopped, or the host is mid-upgrade, a
 # clone that never receives a config would otherwise sit powered on forever,
 # holding host memory with nothing able to notice.
 deadline=$(($(uptime_secs) + 30 * 60))

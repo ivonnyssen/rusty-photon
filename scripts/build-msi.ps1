@@ -1,4 +1,4 @@
-# build-msi.ps1 — build the rusty-photon Windows suite MSI on a Windows box
+# build-msi.ps1 - build the rusty-photon Windows suite MSI on a Windows box
 # (dev machine or windows-latest CI). The Windows analogue of
 # scripts/build-packages.sh; operator guide: docs/packaging.md (Windows guide
 # lands in W5); design: docs/plans/windows-packaging.md + ADR-015.
@@ -6,12 +6,12 @@
 # Steps:
 #   1. stage the pinned native SDKs into %LOCALAPPDATA%\rusty-photon-pkg\:
 #      QHYCCD's qhyccd.lib import library for the delay-load link (exported as
-#      QHYCCD_SDK_DIR — the DLL itself is operator-provided, ADR-013), and the
+#      QHYCCD_SDK_DIR - the DLL itself is operator-provided, ADR-013), and the
 #      ZWO MIT blobs (ADR-014 per-device: zwo-camera -> ASICamera2,
 #      zwo-focuser -> EAF_focuser). The cache dir doubles as the link path
 #      (ZWO_SDK_LIB_DIR) and as the wix bindpath for the bundled DLLs,
 #   2. release-build all 18 services CRT-static (the analogue of the Linux
-#      RUNPATH injection — uniform, build-script-free). The two zwo services
+#      RUNPATH injection - uniform, build-script-free). The two zwo services
 #      each build in their OWN cargo invocation: cargo unifies features per
 #      invocation, so batching them would re-union the per-device libzwo-sys
 #      links and both binaries would need every blob again,
@@ -31,7 +31,7 @@
 #                    0.1.0+nightly.202607120507.gabc1234 (base must equal the
 #                    workspace version). Names the MSI + dist dir and rides
 #                    in ARP comments; ProductVersion is rendered from it as
-#                    <base>.<YYDDD> — Windows Installer compares only the
+#                    <base>.<YYDDD> - Windows Installer compares only the
 #                    first three fields, so the date field is display-only
 #                    and upgrade logic sees <base> (the nightly-channel
 #                    dialect, docs/plans/nightly-releases.md).
@@ -63,7 +63,7 @@ $QhyUrlBase = "https://www.qhyccd.com/file/repository/publish/SDK/$($QhySdkVersi
 
 # Must match the windows_*_sdk_url defaults in
 # .github/actions/install-zwo-sdk/action.yml (checker-enforced). ZWO only
-# publishes a rolling "latest" CDN download for Windows — no versioned URL to
+# publishes a rolling "latest" CDN download for Windows - no versioned URL to
 # checksum (unlike the Linux blobs, which pin an indi-3rdparty commit).
 $ZwoCameraSdkUrl = "https://dl.zwoastro.com/software?app=DeveloperCameraSdk&platform=windows86&region=Overseas"
 $ZwoEafSdkUrl = "https://dl.zwoastro.com/software?app=DeveloperEafSdk&platform=windows86&region=Overseas"
@@ -163,7 +163,7 @@ if (-not (Test-Path $qhyExtract)) {
     Move-Item (Join-Path $tmp "sdk_win64_$QhySdkVersion") $qhyExtract
     Remove-Item -Recurse -Force $tmp
 }
-# Locate the import lib rather than hardcoding the archive layout (x64 only —
+# Locate the import lib rather than hardcoding the archive layout (x64 only -
 # never the Win32/x86 build).
 $qhyLib = Get-ChildItem -Path $qhyExtract -Recurse -Filter "qhyccd.lib" |
     Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\' } |
@@ -197,7 +197,7 @@ if (($staged | Where-Object { -not (Test-Path $_) }).Count -gt 0) {
     }
 
     # Stage the x64 lib/DLL, picking the x64 build (not Win32/x86, not the
-    # static lib, not demo/opencv payloads) — same selection rule as
+    # static lib, not demo/opencv payloads) - same selection rule as
     # .github/actions/install-zwo-sdk.
     function Stage([string]$pattern, [string]$target) {
         $hit = Get-ChildItem -Path $extract -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
@@ -230,7 +230,7 @@ $env:RUSTFLAGS = "-C target-feature=+crt-static"
 
 # "doctor" is not a Windows service: its exe ships inside Core with
 # sentinel (as rusty-photon-doctor.exe) and backs the renewal scheduled
-# task, so it builds — and must exist — like the service binaries.
+# task, so it builds - and must exist - like the service binaries.
 $allServices = @(
     "sentinel", "ui-htmx", "filemonitor", "ppba-driver", "qhy-focuser",
     "sky-survey-camera", "star-adventurer-gti", "pa-falcon-rotator",
@@ -243,7 +243,7 @@ if (-not $SkipBuild) {
     # The zwo services build in their own cargo invocations: cargo unifies
     # features per invocation, so batching zwo-camera (zwo-rs/camera) with
     # zwo-focuser (zwo-rs/focuser) would union the per-device libzwo-sys link
-    # features (ADR-014) and both binaries would link — and need at runtime —
+    # features (ADR-014) and both binaries would link - and need at runtime -
     # every SDK blob again. Everything else batches into one invocation.
     $batchArgs = $allServices | ForEach-Object { "-p", $_ }
     Write-Host "Building release binaries: $($allServices -join ', ')"
@@ -324,7 +324,7 @@ if (Test-Path $sums) {
 $lines += "$hash  $msiName"
 # Explicit encoding: the file must be sha256sum-compatible plain ASCII on
 # every host (Windows PowerShell 5.1's Set-Content default is ANSI, pwsh 7's
-# is UTF-8 — pin it instead of depending on the invoking shell).
+# is UTF-8 - pin it instead of depending on the invoking shell).
 Set-Content -Path $sums -Value $lines -Encoding ascii
 
 Write-Host ""

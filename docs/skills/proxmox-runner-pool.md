@@ -97,6 +97,36 @@ Components:
   only on push-to-main events, mirroring the cloud cache's poisoning
   defense (ADR-020 layer 4).
 
+* **Storage layout: clone disks and the cache belong on `cipool`, never the
+  root mirror.** `rpool` is a mirror of two 500 GB QLC drives; `cipool` is a
+  single 4 TB NVMe with `compression=lz4`. Three reasons this split is
+  load-bearing, all measured:
+
+  * **The root mirror collapses under concurrency.** fio, mixed 70/30 16k,
+    one job per simulated slot: rpool goes 2,595 → 3,336 → **3,259** IOPS at
+    1/2/3 jobs — it saturates between one and two and *declines* at three,
+    with p99.9 latency hitting 3.5s. `cipool` goes 6,733 → 9,846 → **11,258**
+    and is still scaling. Sustained sequential write is 119 MiB/s on rpool
+    (in 510 MiB/s bursts separated by 2–5s stalls, which is QLC past its SLC
+    cache) against 2,180 MiB/s on cipool.
+  * **Mirroring disposable data doubles writes for nothing.** A clone's disk
+    is destroyed with the clone; if it were lost mid-job the job simply
+    reruns. `cipool` is deliberately non-redundant.
+  * **The cache does not fit on rpool.** `bazel-remote` is configured with a
+    230 GiB ceiling and grows steadily (the cloud R2 cache reaches ~150 GB
+    within its 7-day retention window). rpool has well under that free, and
+    it also holds the host OS and every template — so an unconstrained cache
+    there is a host-outage risk, not merely a slow one.
+
+  Clones inherit their template's storage, so moving the pool to `cipool`
+  means rebuilding the templates there (`qm clone --full --storage cipool`,
+  then `qm template`), not moving live clones.
+
+* **ZFS ARC is capped well below what this host can afford.** With a 1 GiB
+  cap the demand-data hit rate sits near 73%, so a quarter of data reads go
+  to the platter unnecessarily. Right-sizing the slots frees RAM that is
+  better spent here than on slot allocation nobody touches.
+
 ## Security Model — DO NOT WEAKEN
 
 This repo is public, and on `pull_request` events Actions executes the
@@ -216,6 +246,20 @@ dangerous combination. The rule bifurcates by runner kind
   injected config and power the VM off if it never arrives; that is the
   guest's own backstop for the orchestrator being stopped, which is the one
   case the slot health check above cannot cover.
+* **The whole Windows action cache hangs off `GITHUB_WORKSPACE`.**
+  `.bazelrc` sets `build:windows --action_env=GITHUB_WORKSPACE`, so that path
+  string is baked into every Windows action key. Consequences worth knowing
+  before they surprise someone:
+  * Change the runner's work-directory layout — a different `_work` root, a
+    renamed runner — and **every Windows job goes cold at once**, with no
+    error to explain it.
+  * Reproducing a Windows build by hand outside the Actions runner gets a
+    100% cache miss unless `GITHUB_WORKSPACE` is exported to exactly the
+    path CI used. That is a useful property when deliberately measuring an
+    uncached build, and a baffling one when not.
+
+  Linux does **not** carry this variable in its action env, so the two
+  venues behave differently here.
 * To update the runner toolchain (new SDK pin, new runner release), boot a
   fresh clone of the template, apply the change, copy in the guest one-job
   script from `tools/ci/runner-guest/` if it has changed, wipe
@@ -224,14 +268,38 @@ dangerous combination. The rule bifurcates by runner kind
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.
-* **Windows template rebuilds, two things that will bite:**
+* **Windows template rebuilds, things that will bite:**
+  * **The template must provision the MSI packaging toolchain**, or the msi
+    job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
+    cannot run on the pool even though `bazel build` is green. Three parts,
+    all measured the hard way:
+    * **.NET SDK** — the wix CLI is a dotnet global tool; `build-msi.ps1`
+      fails its own `dotnet not found` precondition without it.
+    * **`DOTNET_ROOT` set machine-wide** — not optional. `wix.exe` is a
+      framework-dependent apphost and resolves the runtime through this
+      variable, never through PATH, so `dotnet --version` can succeed while
+      every global tool dies with "You must install .NET to run this
+      application / .NET location: Not found".
+    * **wix at the pinned version** (matching `$WixVersion` in
+      `build-msi.ps1`) on a machine-wide tool path — `--tool-path`, not
+      `--global`, so the job's user sees it.
+
+    Provision alongside the other `C:\ci` toolchain, machine-scoped. `msi.yml`
+    runs these scripts under `pwsh` (PowerShell 7); the scripts are kept pure
+    ASCII so they also parse under Windows PowerShell 5.1, whose ANSI codepage
+    would otherwise mangle any non-ASCII punctuation into parse errors — keep
+    them that way.
   * **Do not `sysprep /generalize`.** It looks like the analogue of the Linux
     template's `machine-id` wipe, but its specialize pass runs on every clone
     boot and would add minutes to a pool whose whole value is fast pickup —
-    and nothing it buys applies here: Proxmox gives each clone a fresh MAC,
-    only one Windows clone exists at a time so a duplicate computer name
-    cannot collide, the guests are not domain-joined, and the runner's
-    identity comes from the injected JIT config rather than the host name.
+    and little it buys applies here: Proxmox gives each clone a fresh MAC, the
+    guests are not domain-joined, and the runner's identity comes from the
+    injected JIT config rather than the host name. **Duplicate computer names
+    do occur** once more than one clone runs at a time (both come up as
+    `RUNNER-TPL` on the same segment) — measured to be benign here (no
+    NetBT/Tcpip name-conflict events, registration unaffected), but that is
+    "harmless", not "cannot happen". If a second concurrent Windows slot is
+    ever added, see #872 for the name-collision and shared-credential review.
   * **A linked clone inherits the template's RTC** and boots badly out of
     date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
     means an in-guest script must never use a wall-clock deadline: the first

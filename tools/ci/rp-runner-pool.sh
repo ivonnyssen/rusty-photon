@@ -82,10 +82,16 @@ HEALTH_STRIKES=10
 # file — so a rename takes effect as each slot next recreates its clone,
 # leaving no stale state behind. What must NOT change casually are the labels,
 # which workflows select on.
+# Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
+# are the write-heavy, disposable part of the workload and the mirror collapses
+# under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
+# 907 = Linux, 908 = Windows, both 16 GB / 12 vCPU — measured sizing, not the
+# old 32/28 GB estimates. The previous templates (903 Linux, 906 Windows) are
+# retained on the root mirror as a one-line rollback.
 SLOTS=(
-  "runner-linux1|903|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|903|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-win|906|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-linux1|907|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|907|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-win|908|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id

@@ -1,7 +1,7 @@
-# verify-msi.ps1 — lifecycle-verify the built suite MSI on a Windows box
+# verify-msi.ps1 - lifecycle-verify the built suite MSI on a Windows box
 # (windows-latest CI or a dev VM; requires elevation, which both provide).
-# The Windows analogue of scripts/verify-packages.sh: silent full install →
-# per-service class checks → failure-actions proofs → feature remove → full
+# The Windows analogue of scripts/verify-packages.sh: silent full install ->
+# per-service class checks -> failure-actions proofs -> feature remove -> full
 # uninstall (configs and logs survive, deb-`remove` parity).
 #
 # Service classes mirror verify-packages.sh:
@@ -24,7 +24,7 @@
 # suspended pre-1.0: config schemas break freely with fail-loudly semantics,
 # so the proof needed a hand-written migration shim per breaking change for
 # no product signal. Re-enable with doctor --fix in the loop once D7 ships
-# doctor in the packages — issue #582.
+# doctor in the packages - issue #582.
 
 [CmdletBinding()]
 param(
@@ -46,7 +46,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 if (-not [Environment]::Is64BitProcess) {
     # Under 32-bit PowerShell, WOW64 redirection points the registry
     # provider (the ARP checks) and %ProgramFiles% (the install-dir
-    # checks) at the 32-bit views — wrong for this x64-only product
+    # checks) at the 32-bit views - wrong for this x64-only product
     # (ADR-015).
     Die "must run from 64-bit PowerShell"
 }
@@ -57,7 +57,7 @@ if (-not $Msi) {
         Select-Object -First 1).Matches[0].Groups[1].Value
     $Msi = "dist\$version\rusty-photon-$version-x64.msi"
 }
-if (-not (Test-Path $Msi)) { Die "$Msi not found — run scripts\build-msi.ps1 first" }
+if (-not (Test-Path $Msi)) { Die "$Msi not found - run scripts\build-msi.ps1 first" }
 $Msi = (Resolve-Path $Msi).Path
 
 # ---- service classification (mirrors verify-packages.sh) ------------------
@@ -83,7 +83,7 @@ $active = @('sentinel', 'ui-htmx', 'filemonitor', 'rp',
 # Plain-HTTP services expose /health; Alpaca services answer the management
 # API. The cameras, zwo-focuser, phd2-guider and session-runner never
 # self-create a config (SDK-derived identity / built-in defaults); ui-htmx
-# self-creates its default (the required rp target — no drivers map, #569).
+# self-creates its default (the required rp target - no drivers map, #569).
 $healthProbe = @('sentinel', 'rp', 'ui-htmx', 'phd2-guider')
 $selfCreatesConfig = @('sentinel', 'rp', 'filemonitor', 'ui-htmx', 'planetarium-bridge') + $serial
 
@@ -95,15 +95,15 @@ $uninstallLog = Join-Path $env:TEMP 'rusty-photon-msi-uninstall.log'
 
 # Fresh-box preflight: the run asserts fresh-install invariants (gated
 # services have no config, ui-htmx self-creates its rp-target default,
-# configs self-create), which leftovers from a prior install would corrupt —
+# configs self-create), which leftovers from a prior install would corrupt -
 # fail fast with a pointer instead of failing (or passing) for the wrong
 # reason mid-run. CI runners are always fresh; on a dev box, uninstall and
 # delete %ProgramData%\rusty-photon (the documented manual purge) first.
 if (Get-Service -Name 'rusty-photon-*' -ErrorAction SilentlyContinue) {
-    Die "rusty-photon-* services already installed — msiexec /x the previous install first"
+    Die "rusty-photon-* services already installed - msiexec /x the previous install first"
 }
 if (Test-Path $dataDir) {
-    Die "$dataDir already exists — delete it (manual purge) so fresh-install checks are meaningful"
+    Die "$dataDir already exists - delete it (manual purge) so fresh-install checks are meaningful"
 }
 
 function Fail([string]$svc, [string]$msg) {
@@ -230,7 +230,7 @@ foreach ($svc in $active) {
             # No PHD2 on a verify box: phd2-guider's /health legitimately
             # answers 503 (listener up, guider not connected). Non-HTTP
             # failures (connection refused while the service is coming up)
-            # carry no Response — treat those as "not yet" and keep polling.
+            # carry no Response - treat those as "not yet" and keep polling.
             $resp = $_.Exception.PSObject.Properties['Response']
             $status = if ($resp -and $resp.Value) { [int]$resp.Value.StatusCode } else { 0 }
             $svc -eq 'phd2-guider' -and $status -eq 503
@@ -256,13 +256,42 @@ $flagProbe = $serial[0]
 WaitFor $flagProbe "a second handshake attempt (SCM restart-on-error proof)" {
     ([regex]::Matches((ServiceLogContent $flagProbe), 'eager startup handshake')).Count -ge 2
 } 90
-Write-Host "== ${flagProbe}: OK (restarted after a clean error exit — failure-actions flag works)"
+Write-Host "== ${flagProbe}: OK (restarted after a clean error exit - failure-actions flag works)"
 
-# ---- qhy-camera: delay-load preflight (no All-in-One pack on a verify box) --
-WaitFor 'qhy-camera' "the preflight's distinctive missing-DLL log line" {
-    (ServiceLogContent 'qhy-camera') -match 'qhyccd\.dll not found'
+# ---- qhy-camera: delay-load preflight ---------------------------------------
+# The preflight has exactly two correct outcomes, and this check's job is to
+# prove the loader did NOT crash - not to predict which outcome this box should
+# produce:
+#
+#   * Where qhyccd.dll cannot be resolved (a plain verify box, no All-in-One
+#     pack), the delay-load must REPORT the missing DLL rather than dying in
+#     the loader.
+#   * Where it resolves (e.g. the Proxmox pool template stages the SDK so the
+#     Bazel suites can link and run against it), the service enumerates zero
+#     cameras and starts cleanly, never emitting the missing-DLL line.
+#
+# Accept either; fail only if NEITHER line appears within the timeout, which is
+# the loader crash this check exists to catch. Deliberately not decided from
+# the environment: the service resolves the DLL through the full Windows search
+# order (executable dir, system dirs, then PATH), so a check that inspected any
+# single one of those - e.g. PATH alone - could disagree with the very service
+# it is verifying.
+# Capture the log content that satisfies the wait and branch on THAT snapshot,
+# rather than re-reading afterwards: a second read could see later writes or a
+# rotated tail and report a different outcome than the one that actually passed.
+# The probe runs in a child scope (WaitFor's `& $probe`), so the capture must
+# be script-scoped to survive back to the branch below; every reference here is
+# spelled `$script:qhyLog` so the single-variable intent is unambiguous.
+$script:qhyLog = ''
+WaitFor 'qhy-camera' "the delay-load to resolve either way (started, or reported the missing DLL - not a loader crash)" {
+    $script:qhyLog = ServiceLogContent 'qhy-camera'
+    $script:qhyLog -match 'Service started successfully|qhyccd\.dll not found'
 } 30
-Write-Host "== qhy-camera: OK (preflight reported the missing DLL — no loader crash)"
+if ($script:qhyLog -match 'qhyccd\.dll not found') {
+    Write-Host "== qhy-camera: OK (preflight reported the missing DLL - no loader crash)"
+} else {
+    Write-Host "== qhy-camera: OK (delay-load resolved - service started)"
+}
 
 # ---- log files for everything that ran -------------------------------------
 foreach ($svc in ($active + $serial + @('qhy-camera'))) {
