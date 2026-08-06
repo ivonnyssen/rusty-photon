@@ -513,13 +513,18 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// undetectable, which is the whole point of the property for autofocus star
 /// selection and flat-panel exposure targeting.
 ///
-/// So the shifted branch reports one quantization step below full scale. Both
-/// cameras blown out this way clip one count short and the margin lands on
-/// their real ceilings — the 12-bit ASI1600MM-Cool tops out at
-/// `4094 << 4 = 65504`, with every pixel of a fully saturated frame at that
-/// value. Where a sensor *does* reach its top code the cost is one ADC LSB of
-/// false positives — an error *below the sensor's own resolution*, since a
-/// shifted container cannot represent anything finer. The asymmetry is the
+/// So the shifted branch reports one quantization step below full scale. The
+/// shortfall is per-model — of three cameras driven to saturation, the
+/// ASI178MM stops at `16382 << 2` and the ASI1600MM-Cool at `4094 << 4`, while
+/// the ASI120MC-S does reach `4095 << 4`, so two identical-depth sensors
+/// disagree and no formula over `BitDepth` is exact on all of them.
+///
+/// The margin is the measured ceiling on the two that clip. On the one that
+/// does not, it calls pixels one ADC LSB early saturated: measured at 3 pixels
+/// in a 1,228,800-pixel frame, against 6,095 correctly flagged. Either error
+/// is *below the sensor's own resolution*, since a shifted container cannot
+/// represent anything finer — but without the margin the other two report zero
+/// saturated pixels on a fully saturated frame. That asymmetry is the
 /// justification: understating costs a fraction of one code, overstating costs
 /// the entire capability.
 ///

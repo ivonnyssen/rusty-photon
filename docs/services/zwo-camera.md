@@ -671,26 +671,36 @@ EAF; those belong to the other zwo services.)
   pixels sat at the sensor's real ceiling; with it, the same frame reports
   6 709 saturated pixels.
 
-  **Both cameras measured this way clip one count short, and the margin lands
-  exactly on their real ceilings.** The 12-bit ASI1600MM-Cool tops out at
-  `4094 << 4` = **65504** — not the `4095 << 4 = 65520` the shift predicts —
-  on a frame where *every one* of its 16 146 432 pixels sits at that value at
-  gain 600, at all four bins. So `((2^BitDepth) - 2) << (16 - BitDepth)` is
-  not a conservative fudge on either camera we have blown out; it is the
-  measured answer on both.
+  **The shortfall is genuinely per-model — all three cameras were blown out
+  and they do not agree:**
 
-  The cost is therefore bounded, asymmetric, and so far theoretical. Where a
-  sensor *does* reach its top code, the margin misreports pixels at that
-  single code as saturated — an error of one ADC LSB, *below the sensor's own
-  resolution*, since a shifted container cannot represent anything finer.
-  Understating costs a fraction of one code; overstating costs the entire
-  capability. The one camera on record as reaching full scale is the
-  ASI120MC-S at `4095 << 4`, but that figure predates the deliberate-
-  overexposure method, and the two cameras measured with it both clip short —
-  so it is worth re-checking rather than treating as a counterexample. Either
-  way the shortfall is per-sensor and not derivable from anything the SDK
-  reports, so no formula can be exact on every model; this one can only ever
-  err in the harmless direction.
+  | camera | ADC | shift predicts | **delivered ceiling** | margin |
+  |---|---|---|---|---|
+  | ASI178MM | 14-bit | 65532 | **65528** = `16382 << 2` | exact |
+  | ASI1600MM-Cool | 12-bit | 65520 | **65504** = `4094 << 4` | exact |
+  | ASI120MC-S | 12-bit | 65520 | **65520** = `4095 << 4` | costs one code |
+
+  Two of the three clip one ADC count short, and on those the margin *is* the
+  measured ceiling rather than a conservative approximation. The ASI120MC-S
+  really does reach full scale — confirmed at every gain across its 0-100
+  range — so identical 12-bit sensors disagree, and no formula derived from
+  `BitDepth` can be exact on all of them.
+
+  **The cost of being wrong in the safe direction is measured, and it is
+  tiny.** On the ASI120MC-S, a blown-out full frame through the driver:
+
+  ```
+  delivered max : 65520  (6095 px)      advertised MaxADU : 65504
+  pixels >= MaxADU : 6098   of which at the ceiling: 6095   false positives: 3
+  ```
+
+  Three pixels out of 1 228 800 — 0.0002% — are called saturated one ADC LSB
+  early, while all 6 095 genuinely saturated pixels are flagged. Against that,
+  without the margin the other two cameras report **zero** saturated pixels on
+  a comprehensively saturated frame. The error is *below the sensor's own
+  resolution* either way, since a shifted container cannot represent anything
+  finer; the asymmetry is that understating costs a fraction of one code while
+  overstating costs the entire capability.
 
   The margin is spent only where the shift creates it (see the ST3 bullets
   above): a 16-bit ADC fills the container and has no shift to step down from,
@@ -910,7 +920,12 @@ whose behaviour decides whether enumeration is a sufficient selection rule:
   camera to 8 bits.
 - **`Raw16` is a bare left shift, not a rescale**: every pixel's low 4 bits are
   zero at bin 1, and a saturated full frame reaches exactly `4095 << 4 = 65520`
-  — the measurement behind ST3's corrected `MaxADU`.
+  — the measurement behind ST3's corrected `MaxADU`. **Re-confirmed 2026-08-05**
+  with the deliberate-overexposure method: 65520 is reached at every gain
+  across the camera's 0-100 range, so unlike the ASI178MM and ASI1600MM-Cool
+  this sensor really does deliver its top ADC code. It is therefore the one
+  camera that pays for ST3's margin — measured at **3 pixels in 1 228 800**
+  called saturated one LSB early, against 6 095 correctly flagged (see ST3).
 - **End-to-end through the driver** (production non-`simulation` binary, real
   camera, over Alpaca): `ReadoutModes` reports `["Raw16", "Raw8"]`,
   `ReadoutMode` defaults to 0, and switching mode changes both the delivered
@@ -970,7 +985,9 @@ a real clip from the brightest thing in the room.
   **16 146 432**, i.e. all of them.
 - **The margin is exact here too.** `((2^12) - 2) << 4 = 65504` is the measured
   value, not an approximation — as `((2^14) - 2) << 2 = 65528` was on the
-  ASI178MM. Two of two cameras blown out this way clip one count short.
+  ASI178MM. Note this is a *different* answer from the ASI120MC-S, which shares
+  its 12-bit depth but does reach `4095 << 4`: the shortfall is a property of
+  the sensor, not of the bit depth.
 - **Binning walks the shift down** rather than destroying it: 4 zero bits at
   bin 1, 2 at bin 2, none at bins 3-4 — consistent with the SDK averaging the
   binned pixels. The ceiling is unchanged at every bin.

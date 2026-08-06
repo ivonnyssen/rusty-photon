@@ -98,8 +98,15 @@ fn main() {
         );
     }
 
+    // Quarters of the camera's *own* range. Hard-coded gains would silently
+    // exceed it — the ASI120MC-S maxes at 100, where a requested 300 is
+    // clamped by the SDK and the probe would print a gain the camera never
+    // held, reported as if it were a separate data point.
+    let span = gain.max - gain.min;
+    let gains = [gain.min, gain.min + span / 4, gain.min + span / 2, gain.max];
+
     println!("\n--- ceiling vs gain, blown out (is the clip fixed?) ---");
-    for g in [gain.min, 100, 300, gain.max] {
+    for g in gains {
         let (width, height) = full(1);
         report(
             &camera,
