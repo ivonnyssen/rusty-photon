@@ -54,11 +54,11 @@
 > mode it named is not operator-selectable (it follows `IsTriggerCam`),
 > whereas the download format is exactly what ASCOM's `ReadoutModes` is
 > for. See "Gain / offset / readout" (RM1-RM4) for the contract and why
-> `RGB24`/`RGB32` and `Y8`-`Y16` are deliberately excluded. The 8-bit
-> download path is exercised by BDD (the simulation honours the selected
-> format) and unit tests, but has **not** run against physical hardware —
-> the SV605CC advertises `Raw16`, so the rig only exercises it if an
-> operator selects the `Raw8` readout mode explicitly.
+> `RGB24`/`RGB32` and `Y8`-`Y16` are deliberately excluded. **Validated on
+> the physical SV605CC on the field rig 2026-08-05**, including a full
+> 2976 × 3000 frame downloaded in `Raw8` at exactly `w × h` bytes with
+> `MaxADU` 255, and ConformU 4.4.0 clean on both suites against the new
+> readout list — see "Field rig — readout formats (2026-08-05)" below.
 >
 > **Follow-up landed (issue #679, 2026-07-22): `scripts/build-packages.sh`
 > now has the `needs_svbony` SDK-staging leg this Status section's Phase G
@@ -406,6 +406,34 @@ and silently keep dev-user ownership after a later `apt install`. Under
 its own name it sorts *before* the packaged rule (`-` < `.`), so where
 both exist the service group's ownership is applied last and wins.
 `--no-udev` skips the whole step.
+
+### Working directory (SDK-persisted camera config)
+
+The SDK writes a per-model camera-configuration blob (`<model>_Cfg_SAVE.bin`,
+e.g. `U3SM900C-AST_Cfg_SAVE.bin` for the SV605CC) into the process's
+**current working directory**, and treats failing to write it as a failed
+control set: `SVBSetControlValue(SVB_GAIN)` returns
+`SVB_ERROR_GENERAL_ERROR` — surfaced as ASCOM `InvalidOperationException`,
+*"failed to set gain: … general error (e.g. value out of valid range)"* —
+for every call between a connect and that connection's first exposure when
+the working directory is not writable by the user running the service.
+After one captured frame, gain sets succeed for the rest of the connection.
+`Offset` (`SVB_BLACK_LEVEL`), exposures and cooling are unaffected, which
+makes the failure look like a gain-specific driver bug rather than an
+environment problem.
+
+Every packaged systemd unit sets `WorkingDirectory=/var/lib/rusty-photon`,
+owned by the service user, so **the shipped Linux service is unaffected** —
+but that line is load-bearing, not decoration. Launch paths that do not pin
+a writable directory (a binary run by hand from a directory the running
+user cannot write, `systemd-run` without `--working-directory`, and a
+future Windows service, whose default cwd is `C:\Windows\System32`) hit it.
+Measured on the rig 2026-08-05 by toggling only the working directory on an
+otherwise identical unit; see the
+[validation record](../validation/2026-08-05-svbony-camera-sv605cc-rig-readout/README.md)
+for the A/B and
+[#891](https://github.com/ivonnyssen/rusty-photon/issues/891) for whether
+the service should pin its own cwd rather than trusting its launcher.
 
 ---
 
@@ -1284,18 +1312,13 @@ What ran, and what each open item resolved to:
   Alpaca requests incl. two full ConformU runs. The seam previously
   discarded the SDK error detail, making it undiagnosable; error mapping
   now carries the SDK error text through every control/handshake path so
-  any recurrence is attributable.
+  any recurrence is attributable. **Explained 2026-08-05**: the SDK
+  rejects gain writes between a connect and that connection's first
+  exposure when the process's working directory is not writable — see
+  "Working directory (SDK-persisted camera config)".
 
 Still open (not hardware-blockable on this camera):
 
-- **A `Raw8` capture on the physical SV605CC** (issue #882) — the 8-bit
-  download path is covered by BDD (the `svbony-rs` simulation honours the
-  selected output format, so a `Raw8` exposure is downloaded and unpacked
-  end-to-end) and by unit tests, but no real frame has come off the
-  hardware in 8-bit: the camera advertises `Raw16`, so the negotiated
-  default never selects `Raw8`. Selecting the `Raw8` readout mode on the
-  rig and confirming a full frame arrives at `w × h` bytes with
-  `MaxADU = 255` closes it.
 - **Dark-frame banding revision check and a gain/offset sweep against
   advertised e-/ADU curves** (plan checklist) — needs a dark, temperature-
   controlled optical setup, deferred to field use; nothing in the driver
@@ -1351,6 +1374,29 @@ as every prior platform, full-frame transfers at bins 1–4, and identical
 `UniqueID` minting. Full environment details and the unmodified ConformU
 output:
 [docs/validation/2026-07-30-svbony-camera-sv605cc-rig/](../validation/2026-07-30-svbony-camera-sv605cc-rig/README.md).
+
+### Field rig — readout formats (2026-08-05)
+
+The readout-format ladder (issue #882) ran against the same physical
+SV605CC on the rig at commit `4b8b8179`, closing the "no real frame has
+come off the hardware in 8-bit" item this section carried when the
+feature merged. The camera advertises **both** formats, so
+`ReadoutModes` is `["Raw16", "Raw8"]` and the ladder is real on this
+model rather than a one-entry list. Measured: `MaxADU` 65535 / 255 per
+mode; a **full 2976 × 3000 frame downloaded in `Raw8`** as ImageBytes
+transmission element type 6 (`Byte`) at exactly 8 928 000 bytes = `w × h`;
+the same scene in both formats consistent to within 8-bit truncation
+(`Raw16` mean 3274.3 → predicted `Raw8` 12.8, observed 11.5); a
+mid-exposure `ReadoutMode` change rejected with the mode left unchanged;
+and the mode reset to `Raw16` on reconnect. ConformU 4.4.0 clean on both
+suites — and `alpacaprotocol` with **zero information alerts**, where
+every prior SV605CC record carries four informational `PUT Gain` items;
+those turned out to be the working-directory behaviour described under
+"Working directory (SDK-persisted camera config)", not the camera. A dark
+frame proves nothing here (at unity gain this sensor's dark peak
+truncates to an all-zero `Raw8` frame, correctly), so the frames were
+taken at gain 600. Record:
+[docs/validation/2026-08-05-svbony-camera-sv605cc-rig-readout/](../validation/2026-08-05-svbony-camera-sv605cc-rig-readout/README.md).
 
 ## Packaging
 

@@ -1,0 +1,19 @@
+17:47:42.203 Check Alpaca Protocol - Conform Universal 4.4.0 (Build 52526.0ad7f21) 
+17:47:42.204                                     
+17:47:42.204 Test Camera device:  - 127.0.0.1:11125 through URL: http://127.0.0.1:11125 
+17:47:42.204                                     
+17:47:42.208 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+17:47:42.208                                     
+17:47:42.208 Connecting to device...             
+17:47:43.969                                     
+17:47:43.969 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+17:47:43.991                                     
+17:47:43.991 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+17:47:43.991                                     
+17:47:45.726 Successfully connected to device using re-ordered PUT parameters, testing device... 
+17:47:45.726                                     
+17:47:45.731 Device exposes interface version 4  
+17:48:12.890                                     
+17:48:12.891 Successfully disconnected from device. 
+17:48:12.891                                     
+17:48:12.891 Congratulations there were no errors, issues or information alerts - Your device passes ASCOM Alpaca protocol validation!! 
