@@ -10,6 +10,8 @@ device, and the unmodified ConformU output.
 
 | Date | Service | Device | Platform | Commit | ConformU | Result | Record |
 |------|---------|--------|----------|--------|----------|--------|--------|
+| 2026-08-05 | svbony-camera | SVBONY SV605CC | Raspberry Pi OS (Debian 13) aarch64 — field rig | [`4b8b8179`](https://github.com/ivonnyssen/rusty-photon/commit/4b8b8179) | 4.4.0 | `alpacaprotocol` (**0 information alerts**) + `conformance` clean, on the negotiated readout-format list | [record](2026-08-05-svbony-camera-sv605cc-rig-readout/README.md) |
+| 2026-07-30 | svbony-camera | SVBONY SV605CC | Raspberry Pi OS (Debian 13) aarch64 — field rig | [`05d74aab`](https://github.com/ivonnyssen/rusty-photon/commit/05d74aab) | 4.4.0 | `alpacaprotocol` + `conformance` clean, against the **packaged** arm64 deb | [record](2026-07-30-svbony-camera-sv605cc-rig/README.md) |
 | 2026-07-28 | qhy-camera | QHY178M + CFW | Fedora Linux 44 x86_64 | [`e7ce4a0e`](https://github.com/ivonnyssen/rusty-photon/commit/e7ce4a0e) | 4.4.0 | `alpacaprotocol` + `conformance` clean, **both** Camera and FilterWheel | [record](2026-07-28-qhy-camera-qhy178m-cfw-linux-4.4.0/README.md) |
 | 2026-07-28 | qhy-camera | QHY178M + CFW | Windows 11 Pro 25H2 x64 | [`7d9d93c9`](https://github.com/ivonnyssen/rusty-photon/commit/7d9d93c9) | 4.4.0 | `alpacaprotocol` + `conformance` clean, **both** Camera and FilterWheel | [record](2026-07-28-qhy-camera-qhy178m-cfw-windows/README.md) |
 | 2026-07-28 | qhy-camera | QHY178M + CFW | Fedora Linux 44 x86_64 | [`7d9d93c9`](https://github.com/ivonnyssen/rusty-photon/commit/7d9d93c9) | 4.3.0 | `alpacaprotocol` + `conformance` clean, **both** Camera and FilterWheel | [record](2026-07-28-qhy-camera-qhy178m-cfw-linux/README.md) |
