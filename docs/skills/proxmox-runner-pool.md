@@ -326,8 +326,11 @@ dangerous combination. The rule bifurcates by runner kind
     is path-sensitive, and that is what the nightly coverage toolchain is.)
     Run it as the `ci` user with the runner's own CI flags —
     `bazel coverage --config=ci --config=coverage --config=remote-cache //...`
-    — plus the LAN-cache override, so the warmup doubles as a full-job
-    validation, then re-wipe `/etc/machine-id` as above.
+    plus the LAN-cache override the pool jobs apply
+    (`--remote_cache="$RP_LAN_CACHE_URL"` after `--config=remote-cache`, the
+    URL sourced from the runner's `.env`, never the repo) — so the warmup
+    exercises the same cache routing a real job does, then re-wipe
+    `/etc/machine-id` as above.
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
