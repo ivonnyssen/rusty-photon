@@ -619,6 +619,42 @@ is bucket F's value math (`(base as i16 + noise).clamp(0, 255) as u8`) and the
 star geometry's signed detour, both of which want the rounding policy rather
 than this shape.
 
+#### What chunked iteration costs
+
+Worth measuring before applying this shape to the remaining `indexing_slicing`
+sites, several of which are in genuinely hot loops (`imaging/analysis/stars.rs`,
+`ppba-driver/src/protocol.rs`). Full-frame 3072×2048, mean of 20:
+
+| pattern | release old → new | debug old → new |
+|---|---|---|
+| gradient 16-bit *(the only pattern production generates)* | 1.65 → 1.67 ms | 6.4 → 18.4 ms |
+| gradient 8-bit | 17.5 → 17.2 ms | 181 → 273 ms |
+| flat 16-bit | 22.6 → **10.4** ms | 183 → 528 ms |
+| test pattern 16-bit | 35.0 → **19.6** ms | 238 → 641 ms |
+| flat, 3-channel 16-bit | 41.7 → **24.2** ms | 290 → 931 ms |
+| flat 8-bit | 13.7 → **35.4** ms | 188 → 229 ms |
+
+Two effects, pulling opposite ways:
+
+- **In release the shape usually wins**, because it replaces a multiply-and-add
+  per pixel plus a bounds check per sample with a pointer bump. It loses only
+  where the loop body is trivial enough for iterator setup to dominate — flat
+  8-bit is one noise draw and one byte, and pays ~3.4 ns/pixel for
+  `chunks_exact_mut` with a runtime chunk size of 1.
+- **In debug nothing is inlined**, so every pixel pays real calls into std's
+  iterator machinery and the shape loses across the board, ~3× on the 16-bit
+  paths. `#[inline(always)]` on the crate's own helpers does not recover it; the
+  cost is std's, not ours.
+
+Neither is worth acting on *here*: both production call sites use
+`ImageGenerator::default()`, so the only pattern ever generated is the gradient,
+whose release timing is unchanged; and the debug cost lands on at most 14 BDD
+captures, ~0.2 s against a 2.8 s suite. But the debug figure is the one to carry
+forward — CI builds fastbuild, so a hot loop converted this way pays there every
+run, and a site that matters wants the measurement first. Where a fast path is
+needed, walking samples directly (`data.iter_mut()` when a pixel is one byte)
+measured *faster* than the indexed original, 7.9 ms against 9.6.
+
 ## L6a — split the CI channels
 
 Being strict on stable and getting early warning from beta are two goals, and
