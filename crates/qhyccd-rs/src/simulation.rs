@@ -887,9 +887,19 @@ impl ImageGenerator {
         let noise_range = quantize::to_i32(255.0 * self.noise_level * 0.5); // Less noise for starfield
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for pixel in data.iter_mut() {
-            let noise = noise_source.next_signed(noise_range);
-            *pixel = sample_u8(i32::from(base).saturating_add(noise));
+        // One draw per pixel, replicated across its channels — the model the
+        // 16-bit starfield and every other generator here uses. A mono frame's
+        // pixel is a single byte, where chunking costs more than this body does.
+        if frame.pixel_bytes == 1 {
+            for sample in data.iter_mut() {
+                let noise = noise_source.next_signed(noise_range);
+                *sample = sample_u8(i32::from(base).saturating_add(noise));
+            }
+        } else {
+            for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
+                let noise = noise_source.next_signed(noise_range);
+                pixel.fill(sample_u8(i32::from(base).saturating_add(noise)));
+            }
         }
 
         // Add stars. A centre needs a pixel either side of it, so a frame
@@ -1303,6 +1313,32 @@ mod image_generator_tests {
         for px in data16.chunks_exact(6) {
             assert_eq!(px[0..2], px[2..4]);
             assert_eq!(px[2..4], px[4..6]);
+        }
+    }
+
+    #[test]
+    fn every_pattern_replicates_a_pixel_across_its_channels() {
+        // One noise draw per pixel, not per byte: a colour frame whose channels
+        // diverge is speckle, and the 16-bit generators have always drawn per
+        // pixel. The 8-bit starfield background was the one that did not.
+        for pattern in [
+            ImagePattern::Gradient,
+            ImagePattern::StarField,
+            ImagePattern::Flat,
+            ImagePattern::TestPattern,
+        ] {
+            let data = ImageGenerator::new(pattern).generate_8bit(64, 64, 3);
+            assert!(
+                data.chunks_exact(3)
+                    .all(|px| px[0] == px[1] && px[1] == px[2]),
+                "{pattern:?} 8-bit channels diverge within a pixel"
+            );
+            let data = ImageGenerator::new(pattern).generate_16bit(64, 64, 3);
+            assert!(
+                data.chunks_exact(6)
+                    .all(|px| px[0..2] == px[2..4] && px[2..4] == px[4..6]),
+                "{pattern:?} 16-bit channels diverge within a pixel"
+            );
         }
     }
 
