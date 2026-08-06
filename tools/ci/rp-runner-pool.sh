@@ -85,10 +85,14 @@ HEALTH_STRIKES=10
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 917 = Linux, 908 = Windows, both 16 GB / 12 vCPU — measured sizing, not the
-# old 32/28 GB estimates. 917 replaces the first cipool Linux template (907),
-# which was templated with a populated /etc/machine-id and so handed every
-# clone the same DHCP identity and IP; 917 is built with machine-id wiped.
+# 918 = Linux, 908 = Windows, both 16 GB / 12 vCPU — measured sizing, not the
+# old 32/28 GB estimates. 918 replaces 917: same build, machine-id wiped, plus a
+# one-time `bazel coverage //...` warmup so its Bazel output base already holds
+# the nightly toolchain + instrumented externals — that keeps the pooled
+# `bazel coverage` leg zero-WAN instead of re-fetching the nightly toolchain on
+# every ephemeral clone. (917 in turn replaced the first cipool Linux template
+# 907, which shipped a populated /etc/machine-id and so handed every clone the
+# same DHCP identity and IP; both are built with machine-id wiped.)
 # Both templates carry firewall=1 on their NIC, so clones inherit it and the
 # per-clone policy written in slot_loop takes effect (clone-to-clone isolation).
 #
@@ -98,8 +102,8 @@ HEALTH_STRIKES=10
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|917|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|917|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|918|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|918|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|908|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
   "runner-win2|908|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
