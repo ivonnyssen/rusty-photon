@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c (simulator pixel loops) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -548,6 +548,124 @@ moved the wheel to slot 3 and got no error. Checking in the type ASCOM sends
 makes the wrap impossible rather than merely detected, and the arm is reachable,
 so it has a test. `GetQHYCCDMemLength` is the one genuinely allocating site here
 and takes the fallible form per the rule above.
+
+### L5c — the simulator's pixel loops
+
+Re-measuring after the QHY index casts put one file at the top of all three
+lints at once: `crates/qhyccd-rs/src/simulation.rs` held 218 of the 1,120
+production sites left — 136 `as_conversions`, 65 `arithmetic_side_effects`, 17
+`indexing_slicing`, where the next-biggest `as_conversions` file has 26. It is
+also the only file where all three land on the *same lines*, which is the tell
+for what they were pointing at: ten generator functions each walking a frame by
+hand.
+
+```rust
+let idx = ((y * width + x) * channels) as usize;
+for c in 0..channels as usize {
+    data[idx + c] = value;
+}
+```
+
+The cast, the index arithmetic and the indexing are one decision — to compute an
+offset — and none of the three lints can be answered on its own. Iterating the
+buffer instead deletes all three, because there is no offset to compute:
+
+```rust
+for row in data.chunks_exact_mut(frame.row_bytes) {
+    for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
+        pixel.fill(value);
+    }
+}
+```
+
+Three things this settles that a per-site conversion would not have:
+
+- **Coordinates stay `u32`, lengths become `usize`.** The same width is a
+  coordinate the gradient ramp divides by and a stride that walks the buffer, so
+  `Frame` names both and converts once. Zipping `(0u32..)` onto the chunk
+  iterator is what keeps the coordinate in the type that *has* `f64::From` —
+  `enumerate()` would have handed back a `usize` and relocated the cast rather
+  than removing it, the trap the FITS writer hit above.
+- **The bounds check moves into the conversion.** `Frame::pixel_mut` returns
+  `None` for a pixel outside the frame, which replaced a four-way `x < 0 || x >=
+  width || y < 0 || y >= height` guard in both star drawers: a negative
+  coordinate is the `u32::try_from` error arm and an overhanging one is the
+  `None`. Every arm is reachable and tested; none was invented.
+- **The geometry is refused whole, or not at all.** `Frame::new` is the crate's
+  one place that multiplies width by height by channels, and it does so with
+  `checked_mul` in `usize`, so an unaddressable frame yields `None` instead of a
+  wrapped length. `vec![0u8; frame.len]` is an allocating caller, so this is the
+  fallible form the rule above requires — and the old `(width * height *
+  bytes_per_pixel * channels) as usize` genuinely panicked (`attempt to multiply
+  with overflow`) in any debug build rather than merely wrapping. It was not
+  reachable in the field, because the only caller — `qhy-camera` — runs
+  `check_geometry` against the chip first; `simulation`'s own `set_roi` stores
+  whatever it is handed, so the contract was the caller's rather than the
+  library's. Now it is the library's.
+
+That last point has a consequence worth stating separately, because it is the
+part that is easy to get wrong: **an entry-point guard is only as good as what
+it promises downstream.** Two multiplies further in still took the old shape,
+and one of them was a live panic — a starfield asks `random_range` for a centre
+one pixel inside each edge, which is an empty range on a frame under three
+pixels across. Reaching it needs a frame that is *both* narrow and large, since
+the star count is 0.1% of the pixel count and rounds to zero below a thousand
+pixels; 2 × 600 does it. The first test written for that guard passed without
+the guard for exactly that reason, and only checking that it failed without the
+fix caught it.
+
+218 sites → 135, and `indexing_slicing` leaves the file entirely. What remains
+is bucket F's value math (`(base as i16 + noise).clamp(0, 255) as u8`) and the
+star geometry's signed detour, both of which want the rounding policy rather
+than this shape.
+
+#### What chunked iteration costs, and what actually pays for it
+
+Worth reading before applying this shape to the remaining `indexing_slicing`
+sites, several of which are in genuinely hot loops (`imaging/analysis/stars.rs`,
+`ppba-driver/src/protocol.rs`). Full-frame 3072×2048, mean of 20, old → new:
+
+| pattern | release | debug |
+|---|---|---|
+| gradient 16-bit *(the only pattern production generates)* | 1.66 → 1.74 ms | 6.2 → 18.4 ms |
+| gradient 8-bit | 17.8 → 17.4 ms | 180 → 276 ms |
+| starfield 16-bit | 23.6 → **12.1** ms | 181 → 555 ms |
+| starfield 8-bit | 23.1 → **11.9** ms | 109 → 110 ms |
+| flat 16-bit | 22.5 → **11.0** ms | 181 → 527 ms |
+| flat 8-bit | 13.5 → **11.1** ms | 185 → **97** ms |
+| test pattern 16-bit | 35.3 → **19.1** ms | 240 → 666 ms |
+| flat, 3-channel 16-bit | 40.7 → **25.2** ms | 292 → 932 ms |
+
+Release is uniformly faster or level. Getting there took two corrections, and
+both are the transferable part:
+
+- **Chunking by a runtime `1` is not free.** A mono 8-bit frame's pixel *is* its
+  sample, and `chunks_exact_mut(1)` cost ~3.4 ns/pixel more than an indexed
+  write — enough to make the cheapest loop in the file 2.6× slower than the code
+  it replaced. Walking samples directly (`data.iter_mut()`) is both the faster
+  and the more honest spelling for that case, so `generate_flat_8bit` branches
+  on it. Passing the per-pixel value through a closure instead, to share one
+  helper between the mono and colour arms, made it *worse* again (16-bit went
+  10.4 → 23.8 ms): the noise state ends up behind a `&mut` capture and stops
+  living in a register.
+- **The loop shape was not the real cost — a divide was.** `PixelNoise` drew
+  each sample with `next_u32() % span`, one hardware division per pixel, and the
+  indexed loop happened to schedule around it better than any iterator spelling
+  did (12.8 ms against ~25 ms, and every iterator form measured the same ~25 —
+  `iter_mut`, `for_each`, `fill_with`, nested rows). Replacing the modulo with a
+  high-word multiply by the span — same range, same negligible bias, one
+  multiply — dropped the *iterator* form to 11.1 ms, below the indexed original.
+  The indexed form gained nothing from it, which is the tell: it was never
+  paying full price for the divide.
+
+So the shape is worth having, but "remove the indexing" and "keep it fast" are
+two separate pieces of work, and a cheap-looking loop body can be the thing that
+decides. Debug is the other half of the trade: nothing is inlined there, so the
+chunked 16-bit paths run ~3× slower and `#[inline(always)]` on the crate's own
+helpers does not recover it — the cost is std's. That is accepted here because
+production only ever generates the gradient and the debug cost lands on at most
+14 BDD captures (~0.2 s against a 2.8 s suite), but CI builds fastbuild, so a
+hot loop converted this way pays it on every run. Measure the site first.
 
 ## L6a — split the CI channels
 
