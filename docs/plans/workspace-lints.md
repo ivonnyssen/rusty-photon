@@ -728,6 +728,84 @@ production only ever generates the gradient and the debug cost lands on at most
 14 BDD captures (~0.2 s against a 2.8 s suite), but CI builds fastbuild, so a
 hot loop converted this way pays it on every run. Measure the site first.
 
+### L5c — the star geometry's signed detour
+
+The file's last structural shape, and 50 of the 60 sites it had left. Every one
+of them dropped into `i32` to subtract two coordinates, and then threw the sign
+away:
+
+```rust
+let x = cx as i32 + dx as i32 - size as i32;
+let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else { continue };
+let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2)) as f64).sqrt();
+```
+
+`dx - size` is computed twice — once to place a pixel, once to measure it — and
+what each use wants is not a signed number. The distance wants a **magnitude**;
+the coordinate wants a **direction**. `abs_diff` yields the first without
+leaving `u32`, and a comparison picks the arm for the second:
+
+```rust
+let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
+let (Some(x), Some(y)) = (
+    if dx >= radius { cx.checked_add(ox) } else { cx.checked_sub(ox) },
+    if dy >= radius { cy.checked_add(oy) } else { cy.checked_sub(oy) },
+) else { continue };
+let (fx, fy) = (f64::from(ox), f64::from(oy));
+let dist = (fx * fx + fy * fy).sqrt();
+```
+
+Three things worth carrying to the other `as_conversions` clusters:
+
+- **Clippy exempts float arithmetic**, because a float operation cannot panic or
+  wrap. So moving a computation *into* `f64` through a total magnitude removes
+  the whole cluster at once — no `checked_*`, no `#[expect]`, nothing to justify
+  per site. It only works when the result was going to be a float anyway, which
+  a distance is.
+- **`u8` is a bound the compiler can see.** `draw_star_*` took `size: u32` and
+  wrote `0..=size * 2`, which lints. Retyping the parameter to `u8` makes the
+  doubling provably total — 2 × 255 cannot leave `u32` — with no invented cap
+  and no arm that never fires. The callers pass `random_range(1..=3)`, so the
+  type merely records what was already true.
+- **A guard clippy cannot see still needs the saturating spelling.**
+  `random_range(1..frame.width - 1)` sits under an early `frame.width < 3`
+  return; `saturating_sub(1)` says so without adding a second guard.
+
+**The old form was wrong at the seam, and the rewrite fixes it silently.** An
+exhaustive sweep of both forms over 168,611 (centre, size, offset) combinations
+— every centre from 0 to 40, plus 1000, 3071 and the `i32`/`u32` boundaries, at
+every size the generators draw — agrees **bit-for-bit on coordinate and
+distance for every centre below `i32::MAX`**, and diverges only above it, where
+`cx as i32` goes negative and the old code dropped a pixel that was inside the
+frame. With debug assertions the old form additionally *panicked* on 10,970 of
+those cases. Neither is reachable through `qhy-camera`, but both are gone.
+
+60 sites → 10, and the file's only remaining shapes are the four in the tail
+(a filter-wheel decrement, a `BayerPattern` discriminant, a row seed, and
+`PixelNoise::next_signed`).
+
+#### What the total spelling cost, measured properly
+
+The cross-binary comparison used for the pixel loops could not resolve this
+change: over seven passes, `generate_gradient_8bit` moved −6.5% and the colour
+flat path +8.6%, and **neither function was touched**. At that noise floor a
+real ±3% is invisible. Building both forms into one binary and interleaving them
+— same process, same allocator, same cache state — resolves it to ±0.2%:
+
+| ring-distance form | full 3072×2048 frame |
+|---|---|
+| old, `i32` square then one convert | 12.3 ms |
+| **new, magnitude then float square** | **12.7 ms (+3%)** |
+| rejected: `f64::from(ox.saturating_mul(ox))` | 18.2 ms (+50%) |
+
+The integer variant looks closest to the original and is by far the worst: the
+`saturating_mul` cmov defeats vectorization of the inner loop. The float form's
+3% buys ten sites and the seam fix, on the one pattern production never
+generates — `ImagePattern::TestPattern` is a test and BDD fixture. Two lessons
+generalize: **a same-process A/B is the only comparison that survives layout
+noise**, and **a saturating spelling in a vectorizable loop can cost far more
+than the widening it avoids.**
+
 ## L6a — split the CI channels
 
 Being strict on stable and getting early warning from beta are two goals, and

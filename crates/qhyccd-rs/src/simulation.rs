@@ -910,10 +910,12 @@ impl ImageGenerator {
         let num_stars =
             quantize::to_usize(f64::from(frame.width) * f64::from(frame.height) * 0.001); // ~0.1% coverage
         for _ in 0..num_stars {
-            let x = rng.random_range(1..frame.width - 1);
-            let y = rng.random_range(1..frame.height - 1);
+            // The guard above is what keeps these ranges non-empty; the
+            // saturating spelling is only what says so to the compiler.
+            let x = rng.random_range(1..frame.width.saturating_sub(1));
+            let y = rng.random_range(1..frame.height.saturating_sub(1));
             let brightness: u8 = rng.random_range(150..255);
-            let size = rng.random_range(1..=3);
+            let size: u8 = rng.random_range(1..=3);
 
             self.draw_star_8bit(data, frame, x, y, brightness, size);
         }
@@ -945,10 +947,10 @@ impl ImageGenerator {
         let num_stars =
             quantize::to_usize(f64::from(frame.width) * f64::from(frame.height) * 0.001);
         for _ in 0..num_stars {
-            let x = rng.random_range(2..frame.width - 2);
-            let y = rng.random_range(2..frame.height - 2);
+            let x = rng.random_range(2..frame.width.saturating_sub(2));
+            let y = rng.random_range(2..frame.height.saturating_sub(2));
             let brightness: u16 = rng.random_range(40000..65535);
-            let size = rng.random_range(1..=3);
+            let size: u8 = rng.random_range(1..=3);
 
             self.draw_star_16bit(data, frame, x, y, brightness, size);
         }
@@ -961,23 +963,37 @@ impl ImageGenerator {
         cx: u32,
         cy: u32,
         brightness: u8,
-        size: u32,
+        size: u8,
     ) {
-        for dy in 0..=size * 2 {
-            for dx in 0..=size * 2 {
-                let x = cx as i32 + dx as i32 - size as i32;
-                let y = cy as i32 + dy as i32 - size as i32;
+        let radius = u32::from(size);
+        // `size` is a `u8`, so the widest box a caller can ask for is 511
+        // across and the doubling cannot leave `u32`.
+        let diameter = radius.saturating_mul(2);
 
-                // A star near an edge runs off the frame: the conversion
-                // rejects a coordinate past the near side, `pixel_mut` one past
-                // the far side.
-                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+        for dy in 0..=diameter {
+            for dx in 0..=diameter {
+                // The offset from the centre is a magnitude and a direction,
+                // and the two halves are wanted separately: the distance needs
+                // the magnitude, the coordinate needs the direction. A star
+                // near an edge overhangs it, which is the `None` arm.
+                let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
+                let (Some(x), Some(y)) = (
+                    if dx >= radius {
+                        cx.checked_add(ox)
+                    } else {
+                        cx.checked_sub(ox)
+                    },
+                    if dy >= radius {
+                        cy.checked_add(oy)
+                    } else {
+                        cy.checked_sub(oy)
+                    },
+                ) else {
                     continue;
                 };
 
-                let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2))
-                    as f64)
-                    .sqrt();
+                let (fx, fy) = (f64::from(ox), f64::from(oy));
+                let dist = (fx * fx + fy * fy).sqrt();
                 if dist <= f64::from(size) {
                     let falloff = 1.0 - (dist / (f64::from(size) + 1.0));
                     let value = quantize::to_u8(f64::from(brightness) * falloff);
@@ -1000,20 +1016,31 @@ impl ImageGenerator {
         cx: u32,
         cy: u32,
         brightness: u16,
-        size: u32,
+        size: u8,
     ) {
-        for dy in 0..=size * 2 {
-            for dx in 0..=size * 2 {
-                let x = cx as i32 + dx as i32 - size as i32;
-                let y = cy as i32 + dy as i32 - size as i32;
+        let radius = u32::from(size);
+        let diameter = radius.saturating_mul(2);
 
-                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+        for dy in 0..=diameter {
+            for dx in 0..=diameter {
+                let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
+                let (Some(x), Some(y)) = (
+                    if dx >= radius {
+                        cx.checked_add(ox)
+                    } else {
+                        cx.checked_sub(ox)
+                    },
+                    if dy >= radius {
+                        cy.checked_add(oy)
+                    } else {
+                        cy.checked_sub(oy)
+                    },
+                ) else {
                     continue;
                 };
 
-                let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2))
-                    as f64)
-                    .sqrt();
+                let (fx, fy) = (f64::from(ox), f64::from(oy));
+                let dist = (fx * fx + fy * fy).sqrt();
                 if dist <= f64::from(size) {
                     let falloff = 1.0 - (dist / (f64::from(size) + 1.0));
                     let value = quantize::to_u16(f64::from(brightness) * falloff);
@@ -1065,21 +1092,27 @@ impl ImageGenerator {
         let noise_range = quantize::to_i32(255.0 * self.noise_level * 0.5);
         let mut noise_source = PixelNoise::new(frame_seed);
 
+        // The frame's centre, and the vertical leg of the distance to it: both
+        // are invariant across the row, so only the horizontal leg is per-pixel.
+        let (cx, cy) = (frame.width / 2, frame.height / 2);
+
         for (y, row) in (0u32..).zip(data.chunks_exact_mut(frame.row_bytes)) {
+            let dy = f64::from(y.abs_diff(cy));
+            let dy2 = dy * dy;
+
             for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 // Create a checkerboard with varying intensities
                 let block_size = 64;
                 let block_x = x / block_size;
                 let block_y = y / block_size;
-                let is_light = (block_x + block_y) % 2 == 0;
+                // Only the parity of the sum matters, and wrapping preserves it.
+                let is_light = block_x.wrapping_add(block_y) % 2 == 0;
 
                 let base = if is_light { 200u8 } else { 50u8 };
 
                 // Add concentric circles in center
-                let cx = frame.width / 2;
-                let cy = frame.height / 2;
-                let dist =
-                    (((x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2)) as f64).sqrt();
+                let dx = f64::from(x.abs_diff(cx));
+                let dist = (dx * dx + dy2).sqrt();
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod = if ring == 0 { 20 } else { -20 };
 
@@ -1099,21 +1132,24 @@ impl ImageGenerator {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level * 0.5);
         let mut noise_source = PixelNoise::new(frame_seed);
 
+        let (cx, cy) = (frame.width / 2, frame.height / 2);
+
         for (y, row) in (0u32..).zip(data.chunks_exact_mut(frame.row_bytes)) {
+            let dy = f64::from(y.abs_diff(cy));
+            let dy2 = dy * dy;
+
             for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 // Create a checkerboard with varying intensities
                 let block_size = 64;
                 let block_x = x / block_size;
                 let block_y = y / block_size;
-                let is_light = (block_x + block_y) % 2 == 0;
+                let is_light = block_x.wrapping_add(block_y) % 2 == 0;
 
                 let base: u16 = if is_light { 50000 } else { 10000 };
 
                 // Add concentric circles in center
-                let cx = frame.width / 2;
-                let cy = frame.height / 2;
-                let dist =
-                    (((x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2)) as f64).sqrt();
+                let dx = f64::from(x.abs_diff(cx));
+                let dist = (dx * dx + dy2).sqrt();
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod: i32 = if ring == 0 { 5000 } else { -5000 };
 
@@ -1385,6 +1421,23 @@ mod image_generator_tests {
         assert!(data[7] > 0, "the star's centre must be lit");
         assert_eq!(
             data[8], 0,
+            "the next row's first pixel is not the star's overhang"
+        );
+    }
+
+    #[test]
+    fn a_16bit_star_overhanging_the_frame_draws_only_the_part_inside_it() {
+        // The 16-bit drawer clips the same way, and its own placement only
+        // reaches an edge at random, so pin it here rather than leave it to
+        // whichever centres the generator happens to draw.
+        let frame = Frame::new(8, 8, 1, 2).unwrap();
+        let mut data = vec![0u8; frame.len];
+        ImageGenerator::default().draw_star_16bit(&mut data, frame, 7, 0, 40000, 2);
+
+        assert!(px16(&data, 8, 7, 0) > 0, "the star's centre must be lit");
+        assert_eq!(
+            px16(&data, 8, 0, 1),
+            0,
             "the next row's first pixel is not the star's overhang"
         );
     }
