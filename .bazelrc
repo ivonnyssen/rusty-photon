@@ -391,20 +391,21 @@ test:ci --spawn_strategy=local
 # `bazel build`.
 build:windows --spawn_strategy=local
 
-# DIAGNOSTIC (PR #474/#473), round 3: neither the sandbox bypass above nor
-# forcing full remote downloads fixed the windows-latest E0463 failures --
-# same signature, still varies which of ppba-driver's two largest rust_test
-# targets (bdd, conformu_integration; by far the most --extern deps of any
-# targets in the repo) loses the race. The failure tracks dependency COUNT,
-# not any specific crate, which smells like a low-probability per-file race
-# that just compounds across a large deps list rather than a deterministic
-# bug against one crate. `build:ci --jobs=64` allows up to 64 actions
-# in flight at once -- input staging/file writes for that many concurrent
-# actions is plausibly enough contention to trigger Windows-specific
-# file-visibility flakiness (antivirus scanning, NTFS metadata lag) even
-# though actual CPU-bound compilation is separately capped by the
-# auto-detected core count. Cut concurrency hard on Windows to test.
-build:windows --jobs=8
+# --jobs on Windows: the E0463 "can't find crate" race above is a
+# low-probability per-file contention that compounds with the number of
+# actions staged concurrently (input file writes racing NTFS metadata lag
+# and antivirus scanning), not a bug against any one crate -- so Windows
+# wants a lower action ceiling than the `build:ci --jobs=64` that Linux and
+# macOS run. A fixed 8 was tuned against the 4-vCPU GitHub-hosted runner and
+# is now a fossil: the self-hosted pool clones are 12-core, and their remote
+# cache is a LAN host co-located with the runners, so the cache-I/O overlap
+# that justifies over-subscribing --jobs past the core count (see build:ci
+# above) applies here even more strongly. HOST_CPUS*2 scales with the box:
+# 8 on the 4-vCPU hosted fallback (reproducing the value tuned there) and 24
+# on the 12-core pool clones. If the E0463 signature returns on Windows,
+# dial the multiplier down (HOST_CPUS*1.5, or plain HOST_CPUS) rather than
+# back to a fixed host-specific number.
+build:windows --jobs=HOST_CPUS*2
 
 # issue #676: the `test:ci --local_test_jobs=HOST_CPUS*1.25` cores+1
 # overcommit above was tuned against ubuntu timing data only (see that
@@ -423,7 +424,7 @@ build:windows --jobs=8
 # in ~14s on macOS was still <10% done at the same elapsed time on
 # Windows; a separate scenario's MCP session between session-runner and
 # rp went silently dead ~8.6s into a run, well before any explicit kill
-# step). `test:windows` (like `build:windows --jobs=8` just above)
+# step). `test:windows` (like `build:windows --jobs=HOST_CPUS*2` just above)
 # applies after `test:ci` via --enable_platform_specific_config, so it
 # overrides the cores+1 value on Windows only, leaving the Linux/macOS
 # tuning from #624 untouched. Dropping to plain HOST_CPUS removes
