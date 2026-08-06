@@ -397,12 +397,19 @@ impl SimulatedCameraState {
         }
     }
 
-    /// Calculates the required buffer size for the current settings
+    /// Calculates the required buffer size for the current settings. Zero for
+    /// geometry that names no frame, which is the length the generators produce
+    /// for it — a caller sizing a buffer from this always gets one the frame
+    /// fits in.
     pub fn calculate_buffer_size(&self) -> usize {
         let (width, height) = self.get_current_image_dimensions();
-        let bytes_per_pixel = self.get_bytes_per_pixel();
-        let channels = self.get_channels();
-        (width * height * bytes_per_pixel * channels) as usize
+        Frame::new(
+            width,
+            height,
+            self.get_channels(),
+            self.get_bytes_per_pixel(),
+        )
+        .map_or(0, |frame| frame.len)
     }
 
     /// Returns the remaining exposure time in microseconds
@@ -591,6 +598,71 @@ fn row_seed(frame_seed: u32, row: usize) -> u32 {
     frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
 }
 
+/// Writes a 16-bit sample into every channel of a pixel. The chunk length is
+/// the sample's own byte count, so the copy cannot mismatch it.
+fn write_sample(pixel: &mut [u8], value: u16) {
+    let bytes = value.to_le_bytes();
+    for sample in pixel.chunks_exact_mut(bytes.len()) {
+        sample.copy_from_slice(&bytes);
+    }
+}
+
+/// Adds `value` to every 16-bit channel of a pixel, saturating so an
+/// overlapping star's core stays white rather than wrapping to black.
+fn add_sample(pixel: &mut [u8], value: u16) {
+    for sample in pixel.chunks_exact_mut(2) {
+        if let Some(bytes) = sample.first_chunk::<2>() {
+            let sum = u16::from_le_bytes(*bytes).saturating_add(value);
+            sample.copy_from_slice(&sum.to_le_bytes());
+        }
+    }
+}
+
+/// Frame geometry, in both of the roles the generators need it. `width` and
+/// `height` are the coordinates a pattern computes from; `pixel_bytes`,
+/// `row_bytes` and `len` are the lengths that walk the buffer. The SDK reports
+/// the former as `u32`, so the conversion into the latter happens once, here,
+/// instead of at every index.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    width: u32,
+    height: u32,
+    pixel_bytes: usize,
+    row_bytes: usize,
+    len: usize,
+}
+
+impl Frame {
+    /// `None` for a frame with no bytes in it, and for one too large to address
+    /// on this target — both mean the same thing to every caller here: nothing
+    /// to fill. Excluding the empty frame also keeps every stride below
+    /// non-zero, which is what `chunks_exact_mut` and `par_chunks_mut` require.
+    fn new(width: u32, height: u32, channels: u32, sample_bytes: u32) -> Option<Self> {
+        let sample_bytes = usize::try_from(sample_bytes).ok()?;
+        let pixel_bytes = usize::try_from(channels).ok()?.checked_mul(sample_bytes)?;
+        let row_bytes = usize::try_from(width).ok()?.checked_mul(pixel_bytes)?;
+        let len = row_bytes.checked_mul(usize::try_from(height).ok()?)?;
+        (len > 0).then_some(Self {
+            width,
+            height,
+            pixel_bytes,
+            row_bytes,
+            len,
+        })
+    }
+
+    /// The bytes of one pixel, or `None` if it lies outside the frame — so a
+    /// pattern that computes a coordinate past an edge clips instead of
+    /// panicking. This is the only place a coordinate becomes an offset.
+    fn pixel_mut<'a>(&self, data: &'a mut [u8], x: u32, y: u32) -> Option<&'a mut [u8]> {
+        let row = data
+            .chunks_exact_mut(self.row_bytes)
+            .nth(usize::try_from(y).ok()?)?;
+        row.chunks_exact_mut(self.pixel_bytes)
+            .nth(usize::try_from(x).ok()?)
+    }
+}
+
 /// Generates test images for simulated camera capture
 #[derive(Debug, Clone)]
 pub struct ImageGenerator {
@@ -630,120 +702,102 @@ impl ImageGenerator {
         self
     }
 
-    /// Generates an 8-bit image
+    /// Generates an 8-bit image. An empty vector means the geometry names no
+    /// frame — zero in any dimension, or more bytes than this target can
+    /// address.
     pub fn generate_8bit(&self, width: u32, height: u32, channels: u32) -> Vec<u8> {
-        let pixel_count = (width * height) as usize;
-        let total_size = pixel_count * channels as usize;
-        let mut data = vec![0u8; total_size];
+        let Some(frame) = Frame::new(width, height, channels, 1) else {
+            return Vec::new();
+        };
+        let mut data = vec![0u8; frame.len];
         // One `rand` sample per frame keeps frames distinct; the per-pixel
         // noise itself comes from the cheap `PixelNoise` stream.
         let mut rng = rand::rng();
         let frame_seed: u32 = rng.random();
 
         match self.pattern {
-            ImagePattern::Gradient => {
-                self.generate_gradient_8bit(&mut data, width, height, channels, frame_seed)
+            ImagePattern::Gradient => self.generate_gradient_8bit(&mut data, frame, frame_seed),
+            ImagePattern::StarField => {
+                self.generate_starfield_8bit(&mut data, frame, frame_seed, &mut rng);
             }
-            ImagePattern::StarField => self
-                .generate_starfield_8bit(&mut data, width, height, channels, frame_seed, &mut rng),
-            ImagePattern::Flat => {
-                self.generate_flat_8bit(&mut data, width, height, channels, frame_seed)
-            }
+            ImagePattern::Flat => self.generate_flat_8bit(&mut data, frame, frame_seed),
             ImagePattern::TestPattern => {
-                self.generate_test_pattern_8bit(&mut data, width, height, channels, frame_seed)
+                self.generate_test_pattern_8bit(&mut data, frame, frame_seed);
             }
         }
 
         data
     }
 
-    /// Generates a 16-bit image
+    /// Generates a 16-bit image. Empty means the same as it does for
+    /// [`Self::generate_8bit`].
     pub fn generate_16bit(&self, width: u32, height: u32, channels: u32) -> Vec<u8> {
-        let pixel_count = (width * height) as usize;
-        let total_size = pixel_count * channels as usize * 2; // 2 bytes per sample
-        let mut data = vec![0u8; total_size];
+        let Some(frame) = Frame::new(width, height, channels, 2) else {
+            return Vec::new();
+        };
+        let mut data = vec![0u8; frame.len];
         // One `rand` sample per frame keeps frames distinct; the per-pixel
         // noise itself comes from the cheap `PixelNoise` stream.
         let mut rng = rand::rng();
         let frame_seed: u32 = rng.random();
 
         match self.pattern {
-            ImagePattern::Gradient => {
-                self.generate_gradient_16bit(&mut data, width, channels, frame_seed)
+            ImagePattern::Gradient => self.generate_gradient_16bit(&mut data, frame, frame_seed),
+            ImagePattern::StarField => {
+                self.generate_starfield_16bit(&mut data, frame, frame_seed, &mut rng);
             }
-            ImagePattern::StarField => self
-                .generate_starfield_16bit(&mut data, width, height, channels, frame_seed, &mut rng),
-            ImagePattern::Flat => {
-                self.generate_flat_16bit(&mut data, width, height, channels, frame_seed)
-            }
+            ImagePattern::Flat => self.generate_flat_16bit(&mut data, frame, frame_seed),
             ImagePattern::TestPattern => {
-                self.generate_test_pattern_16bit(&mut data, width, height, channels, frame_seed)
+                self.generate_test_pattern_16bit(&mut data, frame, frame_seed);
             }
         }
 
         data
     }
 
-    fn generate_gradient_8bit(
-        &self,
-        data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
-        frame_seed: u32,
-    ) {
+    fn generate_gradient_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let base = (self.base_level >> 8) as u8;
         let noise_range = (255.0 * self.noise_level) as i16;
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for y in 0..height {
-            for x in 0..width {
-                let gradient = ((x as f64 / width as f64) * 200.0) as u8;
+        // Rows and pixels are chunks of the buffer, so the column index stays a
+        // coordinate the ramp reads and never becomes an offset.
+        for row in data.chunks_exact_mut(frame.row_bytes) {
+            for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
+                let gradient = ((f64::from(x) / f64::from(frame.width)) * 200.0) as u8;
                 let noise = noise_source.next_signed(noise_range as i32) as i16;
                 let value = (base as i16 + gradient as i16 + noise).clamp(0, 255) as u8;
 
-                let idx = ((y * width + x) * channels) as usize;
-                for c in 0..channels as usize {
-                    data[idx + c] = value;
-                }
+                pixel.fill(value);
             }
         }
     }
 
-    fn generate_gradient_16bit(&self, data: &mut [u8], width: u32, channels: u32, frame_seed: u32) {
+    fn generate_gradient_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = (65535.0 * self.noise_level) as i32;
         let base_level = self.base_level;
-        let row_size = (width * channels) as usize * 2;
 
         // Process rows in parallel; each row gets its own noise stream.
-        data.par_chunks_mut(row_size)
+        data.par_chunks_mut(frame.row_bytes)
             .enumerate()
             .for_each(|(y, row)| {
                 let mut noise_source = PixelNoise::new(row_seed(frame_seed, y));
 
-                for x in 0..width {
-                    let gradient = ((x as f64 / width as f64) * 50000.0) as u16;
+                for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
+                    let gradient = ((f64::from(x) / f64::from(frame.width)) * 50000.0) as u16;
                     let noise = noise_source.next_signed(noise_range);
                     let value =
                         (base_level as i32 + gradient as i32 + noise).clamp(0, 65535) as u16;
 
-                    let idx = (x * channels) as usize * 2;
-                    let bytes = value.to_le_bytes();
-                    for c in 0..channels as usize {
-                        row[idx + c * 2] = bytes[0];
-                        row[idx + c * 2 + 1] = bytes[1];
-                    }
+                    write_sample(pixel, value);
                 }
             });
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn generate_starfield_8bit<R: Rng>(
         &self,
         data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
+        frame: Frame,
         frame_seed: u32,
         rng: &mut R,
     ) {
@@ -757,25 +811,26 @@ impl ImageGenerator {
             *pixel = (base as i16 + noise).clamp(0, 255) as u8;
         }
 
-        // Add stars
-        let num_stars = ((width * height) as f64 * 0.001) as usize; // ~0.1% coverage
+        // Add stars. A centre needs a pixel either side of it, so a frame
+        // narrower than three has no interior to place one in.
+        if frame.width < 3 || frame.height < 3 {
+            return;
+        }
+        let num_stars = (f64::from(frame.width) * f64::from(frame.height) * 0.001) as usize; // ~0.1% coverage
         for _ in 0..num_stars {
-            let x = rng.random_range(1..width - 1);
-            let y = rng.random_range(1..height - 1);
+            let x = rng.random_range(1..frame.width - 1);
+            let y = rng.random_range(1..frame.height - 1);
             let brightness = rng.random_range(150..255) as u8;
             let size = rng.random_range(1..=3);
 
-            self.draw_star_8bit(data, width, height, channels, x, y, brightness, size);
+            self.draw_star_8bit(data, frame, x, y, brightness, size);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn generate_starfield_16bit<R: Rng>(
         &self,
         data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
+        frame: Frame,
         frame_seed: u32,
         rng: &mut R,
     ) {
@@ -783,39 +838,33 @@ impl ImageGenerator {
         let noise_range = (65535.0 * self.noise_level * 0.3) as i32;
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for y in 0..height {
-            for x in 0..width {
-                let noise = noise_source.next_signed(noise_range);
-                let value = (self.base_level as i32 + noise).clamp(0, 65535) as u16;
+        for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
+            let noise = noise_source.next_signed(noise_range);
+            let value = (self.base_level as i32 + noise).clamp(0, 65535) as u16;
 
-                let idx = ((y * width + x) * channels) as usize * 2;
-                let bytes = value.to_le_bytes();
-                for c in 0..channels as usize {
-                    data[idx + c * 2] = bytes[0];
-                    data[idx + c * 2 + 1] = bytes[1];
-                }
-            }
+            write_sample(pixel, value);
         }
 
-        // Add stars
-        let num_stars = ((width * height) as f64 * 0.001) as usize;
+        // Add stars. The 16-bit centres sit two pixels in, so this needs a
+        // wider interior than the 8-bit pattern above.
+        if frame.width < 5 || frame.height < 5 {
+            return;
+        }
+        let num_stars = (f64::from(frame.width) * f64::from(frame.height) * 0.001) as usize;
         for _ in 0..num_stars {
-            let x = rng.random_range(2..width - 2);
-            let y = rng.random_range(2..height - 2);
+            let x = rng.random_range(2..frame.width - 2);
+            let y = rng.random_range(2..frame.height - 2);
             let brightness = rng.random_range(40000..65535) as u16;
             let size = rng.random_range(1..=3);
 
-            self.draw_star_16bit(data, width, height, channels, x, y, brightness, size);
+            self.draw_star_16bit(data, frame, x, y, brightness, size);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_star_8bit(
         &self,
         data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
+        frame: Frame,
         cx: u32,
         cy: u32,
         brightness: u8,
@@ -826,9 +875,12 @@ impl ImageGenerator {
                 let x = cx as i32 + dx as i32 - size as i32;
                 let y = cy as i32 + dy as i32 - size as i32;
 
-                if x < 0 || x >= width as i32 || y < 0 || y >= height as i32 {
+                // A star near an edge runs off the frame: the conversion
+                // rejects a coordinate past the near side, `pixel_mut` one past
+                // the far side.
+                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
                     continue;
-                }
+                };
 
                 let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2))
                     as f64)
@@ -837,22 +889,21 @@ impl ImageGenerator {
                     let falloff = 1.0 - (dist / (size as f64 + 1.0));
                     let value = (brightness as f64 * falloff) as u8;
 
-                    let idx = ((y as u32 * width + x as u32) * channels) as usize;
-                    for c in 0..channels as usize {
-                        data[idx + c] = data[idx + c].saturating_add(value);
+                    let Some(pixel) = frame.pixel_mut(data, x, y) else {
+                        continue;
+                    };
+                    for sample in pixel.iter_mut() {
+                        *sample = sample.saturating_add(value);
                     }
                 }
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_star_16bit(
         &self,
         data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
+        frame: Frame,
         cx: u32,
         cy: u32,
         brightness: u16,
@@ -863,9 +914,9 @@ impl ImageGenerator {
                 let x = cx as i32 + dx as i32 - size as i32;
                 let y = cy as i32 + dy as i32 - size as i32;
 
-                if x < 0 || x >= width as i32 || y < 0 || y >= height as i32 {
+                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
                     continue;
-                }
+                };
 
                 let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2))
                     as f64)
@@ -874,84 +925,48 @@ impl ImageGenerator {
                     let falloff = 1.0 - (dist / (size as f64 + 1.0));
                     let value = (brightness as f64 * falloff) as u16;
 
-                    let idx = ((y as u32 * width + x as u32) * channels) as usize * 2;
-                    for c in 0..channels as usize {
-                        let current =
-                            u16::from_le_bytes([data[idx + c * 2], data[idx + c * 2 + 1]]);
-                        let new_value = current.saturating_add(value);
-                        let bytes = new_value.to_le_bytes();
-                        data[idx + c * 2] = bytes[0];
-                        data[idx + c * 2 + 1] = bytes[1];
-                    }
+                    let Some(pixel) = frame.pixel_mut(data, x, y) else {
+                        continue;
+                    };
+                    add_sample(pixel, value);
                 }
             }
         }
     }
 
-    fn generate_flat_8bit(
-        &self,
-        data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
-        frame_seed: u32,
-    ) {
+    fn generate_flat_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let base = (self.base_level >> 8) as u8;
         let noise_range = (255.0 * self.noise_level) as i16;
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for y in 0..height {
-            for x in 0..width {
-                let noise = noise_source.next_signed(noise_range as i32) as i16;
-                let value = (base as i16 + noise).clamp(0, 255) as u8;
+        // A flat is uniform, so the pixel's position never enters the value —
+        // walking pixels is the whole loop.
+        for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
+            let noise = noise_source.next_signed(noise_range as i32) as i16;
+            let value = (base as i16 + noise).clamp(0, 255) as u8;
 
-                let idx = ((y * width + x) * channels) as usize;
-                for c in 0..channels as usize {
-                    data[idx + c] = value;
-                }
-            }
+            pixel.fill(value);
         }
     }
 
-    fn generate_flat_16bit(
-        &self,
-        data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
-        frame_seed: u32,
-    ) {
+    fn generate_flat_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = (65535.0 * self.noise_level) as i32;
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for y in 0..height {
-            for x in 0..width {
-                let noise = noise_source.next_signed(noise_range);
-                let value = (self.base_level as i32 + noise).clamp(0, 65535) as u16;
+        for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
+            let noise = noise_source.next_signed(noise_range);
+            let value = (self.base_level as i32 + noise).clamp(0, 65535) as u16;
 
-                let idx = ((y * width + x) * channels) as usize * 2;
-                let bytes = value.to_le_bytes();
-                for c in 0..channels as usize {
-                    data[idx + c * 2] = bytes[0];
-                    data[idx + c * 2 + 1] = bytes[1];
-                }
-            }
+            write_sample(pixel, value);
         }
     }
 
-    fn generate_test_pattern_8bit(
-        &self,
-        data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
-        frame_seed: u32,
-    ) {
+    fn generate_test_pattern_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = (255.0 * self.noise_level * 0.5) as i16;
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for y in 0..height {
-            for x in 0..width {
+        for (y, row) in (0u32..).zip(data.chunks_exact_mut(frame.row_bytes)) {
+            for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 // Create a checkerboard with varying intensities
                 let block_size = 64;
                 let block_x = x / block_size;
@@ -961,8 +976,8 @@ impl ImageGenerator {
                 let base = if is_light { 200u8 } else { 50u8 };
 
                 // Add concentric circles in center
-                let cx = width / 2;
-                let cy = height / 2;
+                let cx = frame.width / 2;
+                let cy = frame.height / 2;
                 let dist =
                     (((x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2)) as f64).sqrt();
                 let ring = ((dist / 50.0) as u32) % 2;
@@ -971,27 +986,17 @@ impl ImageGenerator {
                 let noise = noise_source.next_signed(noise_range as i32) as i16;
                 let value = (base as i16 + ring_mod + noise).clamp(0, 255) as u8;
 
-                let idx = ((y * width + x) * channels) as usize;
-                for c in 0..channels as usize {
-                    data[idx + c] = value;
-                }
+                pixel.fill(value);
             }
         }
     }
 
-    fn generate_test_pattern_16bit(
-        &self,
-        data: &mut [u8],
-        width: u32,
-        height: u32,
-        channels: u32,
-        frame_seed: u32,
-    ) {
+    fn generate_test_pattern_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = (65535.0 * self.noise_level * 0.5) as i32;
         let mut noise_source = PixelNoise::new(frame_seed);
 
-        for y in 0..height {
-            for x in 0..width {
+        for (y, row) in (0u32..).zip(data.chunks_exact_mut(frame.row_bytes)) {
+            for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 // Create a checkerboard with varying intensities
                 let block_size = 64;
                 let block_x = x / block_size;
@@ -1001,8 +1006,8 @@ impl ImageGenerator {
                 let base: u16 = if is_light { 50000 } else { 10000 };
 
                 // Add concentric circles in center
-                let cx = width / 2;
-                let cy = height / 2;
+                let cx = frame.width / 2;
+                let cy = frame.height / 2;
                 let dist =
                     (((x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2)) as f64).sqrt();
                 let ring = ((dist / 50.0) as u32) % 2;
@@ -1011,12 +1016,7 @@ impl ImageGenerator {
                 let noise = noise_source.next_signed(noise_range);
                 let value = (base as i32 + ring_mod + noise).clamp(0, 65535) as u16;
 
-                let idx = ((y * width + x) * channels) as usize * 2;
-                let bytes = value.to_le_bytes();
-                for c in 0..channels as usize {
-                    data[idx + c * 2] = bytes[0];
-                    data[idx + c * 2 + 1] = bytes[1];
-                }
+                write_sample(pixel, value);
             }
         }
     }
@@ -1161,6 +1161,53 @@ mod image_generator_tests {
             assert_eq!(px[0..2], px[2..4]);
             assert_eq!(px[2..4], px[4..6]);
         }
+    }
+
+    #[test]
+    fn geometry_naming_no_frame_produces_no_data() {
+        let generator = ImageGenerator::new(ImagePattern::Gradient);
+        assert!(generator.generate_8bit(0, H, 1).is_empty(), "zero width");
+        assert!(generator.generate_8bit(W, 0, 1).is_empty(), "zero height");
+        assert!(generator.generate_8bit(W, H, 0).is_empty(), "no channels");
+        assert!(generator.generate_16bit(0, H, 1).is_empty(), "zero width");
+    }
+
+    #[test]
+    fn a_frame_too_large_to_address_produces_no_data() {
+        // 2^32 square at three channels of 16-bit colour is ~1.1e20 bytes, past
+        // `usize::MAX` on a 64-bit target. The geometry is refused whole rather
+        // than multiplied out, so nothing is allocated and no loop walks off a
+        // buffer sized from a wrapped length.
+        let generator = ImageGenerator::new(ImagePattern::Flat);
+        assert!(generator.generate_16bit(u32::MAX, u32::MAX, 3).is_empty());
+        assert!(Frame::new(u32::MAX, u32::MAX, 3, 2).is_none());
+    }
+
+    #[test]
+    fn a_frame_too_narrow_for_a_star_still_renders_its_background() {
+        // Star centres come from a range that excludes the outermost pixels, so
+        // a frame under 3 across (5 for the 16-bit pattern) leaves it empty —
+        // which `random_range` rejects. It takes a frame that is *both* narrow
+        // and large to reach: the star count is 0.1% of the pixels, so only at
+        // 1000 pixels does the generator ask for a centre at all.
+        let generator = ImageGenerator::new(ImagePattern::StarField);
+        assert_eq!(generator.generate_8bit(2, 600, 1).len(), 1200);
+        assert_eq!(generator.generate_16bit(4, 300, 1).len(), 2400);
+    }
+
+    #[test]
+    fn a_star_overhanging_the_frame_draws_only_the_part_inside_it() {
+        // Centred on the last column, so half the star's box lies past the
+        // right edge and a quarter above the top. Both must clip.
+        let frame = Frame::new(8, 8, 1, 1).unwrap();
+        let mut data = vec![0u8; frame.len];
+        ImageGenerator::default().draw_star_8bit(&mut data, frame, 7, 0, 200, 2);
+
+        assert!(data[7] > 0, "the star's centre must be lit");
+        assert_eq!(
+            data[8], 0,
+            "the next row's first pixel is not the star's overhang"
+        );
     }
 
     #[test]
