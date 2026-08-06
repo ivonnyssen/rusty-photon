@@ -499,10 +499,13 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
 ///
-/// This is a **saturation threshold the data is guaranteed to reach**, not an
-/// exact upper bound on the pixel values — on a sensor that reaches its top
-/// ADC code the delivered pixels run one quantization step above it. See the
-/// margin discussion below for why that trade is deliberate.
+/// This is a **saturation threshold chosen to be reachable**, not an exact
+/// upper bound on the pixel values — on a sensor that reaches its top ADC code
+/// the delivered pixels run one quantization step above it. "Reachable" is a
+/// design intent, not a guarantee: a sensor clipping *two* or more counts short
+/// would still never satisfy `pixel >= MaxADU`, and no formula over `BitDepth`
+/// can rule that out on a model nobody has measured. See the margin discussion
+/// below for why the trade is deliberate.
 ///
 /// **Not `2^BitDepth - 1`.** ASI packs sub-16-bit ADC data into the Raw16
 /// container by *left-shifting* it, so the ceiling belongs to the container,

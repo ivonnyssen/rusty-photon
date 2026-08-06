@@ -328,8 +328,8 @@ ASI C API exposes and what `zwo-rs` will wrap.
   A camera without the control reports `NOT_IMPLEMENTED`.
 - **Sensor type** — `Monochrome` vs `RGGB` (+ `BayerOffsetX/Y`) from
   `IsColorCam` / `BayerPattern`.
-- **`MaxADU`** = **a saturation threshold the selected readout format is
-  guaranteed to reach**, NOT `(2^BitDepth) - 1` and not an exact upper bound:
+- **`MaxADU`** = **a saturation threshold chosen to be reachable** in the
+  selected readout format, NOT `(2^BitDepth) - 1` and not an exact upper bound:
   255 in `Raw8`, and in `Raw16` the ADC's full scale *shifted into the 16-bit
   container*, one quantization step below the top code
   (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
@@ -636,11 +636,11 @@ EAF; those belong to the other zwo services.)
   enumerated it and would not move when a client changes `Gain` — which is
   precisely what a client reading `ElectronsPerADU` for SNR or exposure math
   needs it to do.
-- **ST3.** `MaxADU` = **a saturation threshold the delivered data is
-  guaranteed to reach** in the selected readout mode (RM2) — not
-  `(2^BitDepth) - 1`, and deliberately *not* an exact upper bound on the
-  pixel values (see *the margin*, which explains why a client may see values
-  slightly above it):
+- **ST3.** `MaxADU` = **a saturation threshold chosen to be reachable** by the
+  delivered data in the selected readout mode (RM2) — not `(2^BitDepth) - 1`,
+  and deliberately *not* an exact upper bound on the pixel values (see *the
+  margin*, which explains why a client may see values slightly above it, and
+  why "reachable" is a design intent rather than a guarantee):
   - `Raw8` → **255**, whatever the ADC depth is.
   - `Raw16` → `((2^BitDepth) - 2) << (16 - BitDepth)`: **65528** for a 14-bit
     ADC, **65504** for a 12-bit one — one quantization step below the shifted
@@ -691,6 +691,17 @@ EAF; those belong to the other zwo services.)
   really does reach full scale — confirmed at every gain across its 0-100
   range — so identical 12-bit sensors disagree, and no formula derived from
   `BitDepth` can be exact on all of them.
+
+  **One step is what the measurements support, not a proof.** Every sensor seen
+  so far clips by at most one ADC count, so one step of margin is enough to
+  make `pixel >= MaxADU` satisfiable on all of them. A model that clipped
+  *two* or more counts short would defeat it again, and nothing in the SDK
+  would reveal that in advance — so on an unmeasured camera, reachability is
+  the design intent rather than a guarantee. Widening the margin further is not
+  free: each extra step raises the false-positive band on every sensor that
+  does reach its top code, which is why it is one and not two. Any new model
+  worth trusting for saturation detection should be run through
+  `probe_ceiling` (or `probe_gain_sweep` for the whole register).
 
   **The cost of being wrong in the safe direction is measured, and it is
   tiny.** On the ASI120MC-S, a blown-out full frame through the driver:
@@ -784,7 +795,7 @@ scenarios.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
-| `MaxADU` | A saturation threshold the format is guaranteed to reach, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. A sensor that reaches its top code delivers one step above this |
+| `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. A sensor that reaches its top code delivers one step above this |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
