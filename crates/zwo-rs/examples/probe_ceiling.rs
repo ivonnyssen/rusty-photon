@@ -64,18 +64,22 @@ fn main() {
         gain.min, gain.max, gain.default
     );
 
-    // What ST3 would predict from the advertised depth alone, for comparison
-    // against what the sensor actually delivers. This has to mirror the
-    // driver's `max_adu_for` exactly, fallback included — `bit_depth` is
-    // `unwrap_or(0)` at the FFI boundary, and a probe that printed 0 (or
-    // shifted past the container) would be reporting a prediction the driver
-    // never makes.
-    let predicted = if info.bit_depth == 0 || info.bit_depth >= 16 {
-        u32::from(u16::MAX)
+    // Two different numbers, and conflating them is what this probe exists to
+    // avoid. `reported` is what the driver publishes as MaxADU (ST3, including
+    // its one-step margin and its `bit_depth <= 1` guard — the depth arrives as
+    // `unwrap_or(0)` at the FFI boundary). `shifted_full_scale` is what a bare
+    // `16 - BitDepth` shift would predict, which is the value the measurement
+    // below asks whether the sensor actually reaches.
+    let depth = info.bit_depth;
+    let (reported, shifted_full_scale) = if depth <= 1 || depth >= 16 {
+        (u32::from(u16::MAX), u32::from(u16::MAX))
     } else {
-        ((1u32 << info.bit_depth) - 1) << (16 - info.bit_depth)
+        (
+            ((1u32 << depth) - 2) << (16 - depth),
+            ((1u32 << depth) - 1) << (16 - depth),
+        )
     };
-    println!("ST3 predicts Raw16 MaxADU = {predicted}");
+    println!("driver reports MaxADU {reported}; a bare shift would give {shifted_full_scale}");
 
     // Every geometry must satisfy the SDK's width%8 / height%2 rule *after*
     // binning, so align each binned extent independently.

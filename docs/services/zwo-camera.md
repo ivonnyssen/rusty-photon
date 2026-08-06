@@ -702,6 +702,34 @@ EAF; those belong to the other zwo services.)
   finer; the asymmetry is that understating costs a fraction of one code while
   overstating costs the entire capability.
 
+  **The margin's other consequence: on a sensor that reaches full scale,
+  delivered pixels exceed the advertised `MaxADU`.** The ASI120MC-S delivers
+  65520 while reporting 65504, so a client normalising `pixel / MaxADU` sees
+  **1.00024** at the top codes rather than 1.0. Measured across that camera's
+  whole gain register, this happens at **101 of 101 gains** — it is the normal
+  case on such a sensor, not an edge case. Clients that clamp are unaffected;
+  one that asserts `≤ 1.0` would trip. That is the price of choosing a
+  reachable saturation threshold over an exact upper bound, and ASCOM's single
+  `MaxADU` cannot express both.
+
+  **Verified exhaustively, at every gain each camera advertises** — 601, 511
+  and 101 values respectively, 1 213 frames, exposure scaled by `10^(gain/200)`
+  so low gains are not left dark (an unsaturated frame cannot falsify a
+  ceiling):
+
+  | camera | gains | ceiling delivered | exceeded it | reached it | packing |
+  |---|---|---|---|---|---|
+  | ASI1600MM-Cool | 601 | 65504 | never | 586/601 | shift 4 at every gain |
+  | ASI178MM | 511 | 65528 | never | 511/511 | shift 2 at every gain |
+  | ASI120MC-S | 101 | 65520 | never | 101/101 | shift 4 at every gain |
+
+  No frame at any gain on any camera exceeded its ceiling, and the shift
+  signature never moved. The 15 ASI1600MM-Cool gains that did not *reach* the
+  ceiling are exactly gains 0-14, where the brightest pixel climbs 55696 →
+  65008 and then pins from gain 15 up — an under-exposed scene at the bottom of
+  the register, not a second ceiling. `crates/zwo-rs/examples/probe_gain_sweep.rs`
+  is the probe; it runs for about an hour across three cameras.
+
   The margin is spent only where the shift creates it (see the ST3 bullets
   above): a 16-bit ADC fills the container and has no shift to step down from,
   while an unknown depth says nothing about the packing at all. `Raw8` was
@@ -998,6 +1026,27 @@ a real clip from the brightest thing in the room.
 - **ConformU 4.4.0 clean on both suites** (0/0/0/0, 87 timed members) with
   `MaxADU OK 65504`, run with the cooler powered.
 
+**Three cameras on one service (2026-08-05).** With the ASI1600MM-Cool,
+ASI178MM and ASI120MC-S all attached, the enumeration contracts were exercised
+on hardware for the first time with more than one body — the BDD suite
+presents a single simulated camera, so C0/C4 had only ever been simulated.
+
+- **C0** — all three registered with distinct UniqueIDs, exercising *both*
+  identity paths side by side: real `ASIGetSerialNumber` on the ASI178MM and
+  ASI120MC-S, and the `noserial-0` fallback on the ASI1600MM-Cool, which
+  exposes neither a serial nor a flash id.
+- **C4** — connect is per-device (`[T,F,F] → [T,T,F] → [T,T,T]`), and a
+  2 s exposure on one camera left the other two at `CameraState` `Idle` with
+  `ImageReady` false.
+- **RM1/RM4 against a camera that really offers the excluded formats** — the
+  ASI120MC-S advertises `[Raw8, Rgb24, Y8, Raw16]` and the driver publishes
+  `["Raw16", "Raw8"]`, so the `Rgb24`/`Y8` exclusion is confirmed on hardware
+  rather than only in the simulator.
+- **K1 both ways at once** — the cooled body reports
+  `CanSetCCDTemperature`/`CanGetCoolerPower` `true` while the two uncooled ones
+  return `NOT_IMPLEMENTED` for the cooler getters, in the same service.
+- **Tenet 3** — `CoolerOn` read `false` after every connect, on every run.
+
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their
 ConformU output was not preserved. Recorded re-runs against the same physical
@@ -1067,6 +1116,22 @@ register. Measured across three bodies:
 The modern bodies follow ASI's 0.1 dB gain convention exactly. The legacy
 ASI120MC-S does not: its gain scale is 0–100 and the mapping is something else
 entirely (the 0.1 dB law would predict ÷1.33, ÷1.78, ÷3.16 at those gains).
+
+**Checked at every gain each camera advertises** (601 / 511 / 101 values, read
+through the driver over Alpaca):
+
+| Camera | vs `10^(gain/200)` | monotonic | distinct values |
+|---|---|---|---|
+| ASI1600MM-Cool | worst error **0.000 %** across 601 gains | yes | — |
+| ASI178MM | worst error **0.000 %** across 511 gains | yes | — |
+| ASI120MC-S | worst error **95.06 %** (at gain 100) | yes | 101 of 101 |
+
+The two modern bodies match the 0.1 dB law to the float's precision at *every*
+gain, not merely at sampled points. The ASI120MC-S misses it by 95 % at the top
+of its range — exactly the ÷64-versus-÷3.16 gap above — and its divisor ladder
+walks 1, 1.3125, 1.625, 1.9375, 2.5, 3.125 … 32, 40, 48, 56, 64 in segments
+that fit no single expression. It returns a **distinct value at all 101 gains**,
+so the property really does track every step of the register.
 
 **That is the case for reading the value rather than computing it.** Any
 driver-side formula would have to be right for every model ZWO has ever shipped,
