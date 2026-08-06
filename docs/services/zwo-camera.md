@@ -332,9 +332,10 @@ ASI C API exposes and what `zwo-rs` will wrap.
   `(2^BitDepth) - 1`: 255 in `Raw8`, and in `Raw16` the ADC's full scale
   *shifted into the 16-bit container*, one quantization step below the top
   code (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
-  **65504** for a 12-bit one; 65535 for a 16-bit or unknown depth, where the
-  shift leaves no slack). Hardware-measured, see ST3. `SensorName` comes from
-  the device name.
+  **65504** for a 12-bit one). A 16-bit depth reports 65535 because it fills
+  the container and there is no shift to step down from; an unknown depth
+  reports 65535 because it says nothing about the packing at all.
+  Hardware-measured, see ST3. `SensorName` comes from the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
@@ -638,8 +639,11 @@ EAF; those belong to the other zwo services.)
   - `Raw16` → `((2^BitDepth) - 2) << (16 - BitDepth)`: **65528** for a 14-bit
     ADC, **65504** for a 12-bit one — one quantization step below the shifted
     full scale, see *the margin* below.
-  - `Raw16` from a 16-bit ADC, or an unknown depth → the container's own
-    **65535**. No shift means no slack to spend.
+  - `Raw16` from a 16-bit ADC → the container's own **65535**: it fills the
+    container, so there is no shift to step down from.
+  - `Raw16` from an unknown (0) or degenerate (1) depth → **65535** as well,
+    but for a different reason: the depth says nothing about the packing, so
+    there is no step size to step down by.
 
   ASI packs sub-16-bit ADC data into the Raw16 container by *left-shifting* it,
   so the ceiling belongs to the container, not the ADC. Hardware-measured on a
@@ -667,20 +671,32 @@ EAF; those belong to the other zwo services.)
   pixels sat at the sensor's real ceiling; with it, the same frame reports
   6 709 saturated pixels.
 
-  The cost is bounded and asymmetric. Where a sensor *does* reach its top code
-  — as the ASI120MC-S does at `4095 << 4` — the margin misreports pixels at
-  that single code as saturated. That error is one ADC LSB, *below the
-  sensor's own resolution*, since a shifted container cannot represent
-  anything finer. Understating costs a fraction of one code; overstating costs
-  the entire capability. The shortfall is per-sensor and not derivable from
-  anything the SDK reports, so no formula can be exact on every model — but
-  this one can only ever err in the harmless direction.
+  **Both cameras measured this way clip one count short, and the margin lands
+  exactly on their real ceilings.** The 12-bit ASI1600MM-Cool tops out at
+  `4094 << 4` = **65504** — not the `4095 << 4 = 65520` the shift predicts —
+  on a frame where *every one* of its 16 146 432 pixels sits at that value at
+  gain 600, at all four bins. So `((2^BitDepth) - 2) << (16 - BitDepth)` is
+  not a conservative fudge on either camera we have blown out; it is the
+  measured answer on both.
+
+  The cost is therefore bounded, asymmetric, and so far theoretical. Where a
+  sensor *does* reach its top code, the margin misreports pixels at that
+  single code as saturated — an error of one ADC LSB, *below the sensor's own
+  resolution*, since a shifted container cannot represent anything finer.
+  Understating costs a fraction of one code; overstating costs the entire
+  capability. The one camera on record as reaching full scale is the
+  ASI120MC-S at `4095 << 4`, but that figure predates the deliberate-
+  overexposure method, and the two cameras measured with it both clip short —
+  so it is worth re-checking rather than treating as a counterexample. Either
+  way the shortfall is per-sensor and not derivable from anything the SDK
+  reports, so no formula can be exact on every model; this one can only ever
+  err in the harmless direction.
 
   The margin is spent only where the shift creates it (see the ST3 bullets
-  above): a 16-bit ADC fills the container with a step of 1, leaving no slack
-  that would not simply be a lie, and an unknown depth gives nothing to reason
-  from. `Raw8` was measured reaching exactly 255 on both cameras, so it takes
-  no margin either.
+  above): a 16-bit ADC fills the container and has no shift to step down from,
+  while an unknown depth says nothing about the packing at all. `Raw8` was
+  measured reaching exactly 255 on every camera tried, so it takes no margin
+  either.
 
   One further measured caveat, which the formula does not express:
 
@@ -844,9 +860,10 @@ members within their response targets:
 > the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. The
 > **ASI178MM has since been re-measured** on the bench (2026-08-05) and now
 > reports **65528** — see *ASI178MM — the delivered ceiling* below, the run
-> that established ST3's one-step margin. The **ASI1600MM-Cool has not**; it
-> should now report 65504 instead of the 4095 below, but nobody has compared
-> that against its delivered pixels. Tracked as
+> that established ST3's one-step margin. The **ASI1600MM-Cool has since been
+> re-measured too** (same evening) and reports **65504**, which its hardware
+> was confirmed to deliver exactly. Both cameras named here are now measured
+> against their delivered pixels, closing
 > [#888](https://github.com/rusty-photon/rusty-photon/issues/888).
 
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
@@ -939,6 +956,30 @@ from a model that delivers 14-bit data unshifted (which would have needed
 `crates/zwo-rs/examples/probe_ceiling.rs` is the probe behind this one: it
 deliberately overexposes and prints the histogram tail, which is what separates
 a real clip from the brightest thing in the room.
+
+**ASI1600MM-Cool — the delivered ceiling (2026-08-05).** The 12-bit half of
+#888, measured the same evening. Full record:
+[docs/validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md).
+
+- **It clips one ADC count short as well.** Driven to complete saturation
+  (gain 600, 15 s), **every** pixel of the frame — all 16 389 120 at bin 1,
+  and the whole frame at bins 2-4 — sits at exactly `4094 << 4` = **65504**,
+  with nothing above. The same ceiling shows as a clip at lower gains
+  (`65504×28` at gain 100), so it is fixed, not an over-driven-gain artifact.
+  End-to-end through the driver a saturated frame reports `pixels >= MaxADU` =
+  **16 146 432**, i.e. all of them.
+- **The margin is exact here too.** `((2^12) - 2) << 4 = 65504` is the measured
+  value, not an approximation — as `((2^14) - 2) << 2 = 65528` was on the
+  ASI178MM. Two of two cameras blown out this way clip one count short.
+- **Binning walks the shift down** rather than destroying it: 4 zero bits at
+  bin 1, 2 at bin 2, none at bins 3-4 — consistent with the SDK averaging the
+  binned pixels. The ceiling is unchanged at every bin.
+- **Cooling (K1-K4) re-confirmed with the TEC powered**: `CoolerPower` ramps
+  0 → 24 % while the sensor falls 17.7 °C → 6.2 °C in 120 s, and returns to
+  0 % when switched off. `CoolerOn` reads `false` after every connect — tenet
+  3 holding on hardware.
+- **ConformU 4.4.0 clean on both suites** (0/0/0/0, 87 timed members) with
+  `MaxADU OK 65504`, run with the cooler powered.
 
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their

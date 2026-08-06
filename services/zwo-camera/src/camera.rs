@@ -513,23 +513,29 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// undetectable, which is the whole point of the property for autofocus star
 /// selection and flat-panel exposure targeting.
 ///
-/// So the shifted branch reports one quantization step below full scale. Where
-/// a sensor does reach its top code the cost is one ADC LSB of false
-/// positives — an error *below the sensor's own resolution*, since a shifted
-/// container cannot represent anything finer. Where it does not, the property
-/// works. The asymmetry is the justification: understating costs a fraction of
-/// one code, overstating costs the entire capability.
+/// So the shifted branch reports one quantization step below full scale. Both
+/// cameras blown out this way clip one count short and the margin lands on
+/// their real ceilings — the 12-bit ASI1600MM-Cool tops out at
+/// `4094 << 4 = 65504`, with every pixel of a fully saturated frame at that
+/// value. Where a sensor *does* reach its top code the cost is one ADC LSB of
+/// false positives — an error *below the sensor's own resolution*, since a
+/// shifted container cannot represent anything finer. The asymmetry is the
+/// justification: understating costs a fraction of one code, overstating costs
+/// the entire capability.
 ///
-/// The margin is spent only where the shift creates it. A 16-bit ADC fills the
-/// container with a step of 1, leaving no slack that is not simply a lie, and
-/// an unknown depth gives nothing to reason from — both report the container's
-/// own ceiling. Raw8 delivers 8-bit data whatever the ADC is and was measured
-/// reaching exactly 255 on both cameras, so it takes no margin either.
+/// The margin is spent only where the shift creates it, for two distinct
+/// reasons. A 16-bit ADC fills the container, so there is no shift to step
+/// down from. An unknown depth says nothing about the packing at all, so there
+/// is no step size to step down by. Both report the container's own ceiling.
+/// Raw8 delivers 8-bit data whatever the ADC is and was measured reaching
+/// exactly 255 on every camera tried, so it takes no margin either.
 fn max_adu_for(image_type: ImageType, bit_depth: u32) -> u32 {
     match image_type {
         ImageType::Raw8 | ImageType::Y8 => u32::from(u8::MAX),
-        // No shift, so no quantization slack to spend: an unknown (0) or
-        // degenerate (1) depth, or one that already fills the container.
+        // No margin, for two different reasons: a depth that already fills the
+        // container has no shift and so no slack to spend, while an unknown (0)
+        // or degenerate (1) depth says nothing about the packing at all — there
+        // is no step size to step down by.
         _ if bit_depth <= 1 || bit_depth >= 16 => u32::from(u16::MAX),
         _ => ((1u32 << bit_depth) - 2) << (16 - bit_depth),
     }
