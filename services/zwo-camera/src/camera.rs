@@ -501,9 +501,11 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 ///
 /// This is a **saturation threshold chosen to be reachable**, not an exact
 /// upper bound on the pixel values. *In the shifted branch* — a sub-16-bit
-/// depth, where the margin applies — a sensor that reaches its top ADC code
-/// delivers pixels one quantization step above it. The other branches return
-/// the container's own `u16::MAX`, which nothing can exceed.
+/// depth in Raw16, where the margin applies — a sensor that reaches its top
+/// ADC code delivers pixels one quantization step above it. Every other branch
+/// returns its own container's maximum, which nothing delivered in that
+/// container can exceed: `u16::MAX` for the remaining Raw16 depths, and
+/// `u8::MAX` for Raw8.
 ///
 /// "Reachable" is a design intent, not a guarantee: a sensor clipping *two* or
 /// more counts short would still never satisfy `pixel >= MaxADU`, and no
