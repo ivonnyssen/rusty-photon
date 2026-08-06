@@ -520,9 +520,6 @@ pub(crate) mod mock {
         /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
         /// exercise the setters' SDK-failure → `INVALID_OPERATION` mapping.
         pub fail_set_controls: AtomicBool,
-        /// Optional artificial blocking of `get_single_frame`, i.e. how long the
-        /// *readout* takes. The exposure itself is timed by the driver, not here.
-        single_frame_delay: Mutex<Duration>,
         /// Latches once `abort_exposure_and_readout` has been issued, so a test
         /// can assert the SDK cancel *did* reach the device (just not too early).
         pub aborted: AtomicBool,
@@ -531,6 +528,11 @@ pub(crate) mod mock {
         /// (`qhyccd.h`: "Host software must not readout the data") this backend
         /// exists to police.
         in_readout: AtomicBool,
+        /// Holds the readout open until a test releases it. A test that needs a
+        /// readout demonstrably in flight cannot get there by sleeping: CI
+        /// deliberately overcommits CPU, so a fixed budget races a readout it
+        /// may have already missed.
+        readout_held: AtomicBool,
         /// Latches if `abort_exposure_and_readout` ever lands while `in_readout`.
         pub aborted_during_readout: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
@@ -609,9 +611,9 @@ pub(crate) mod mock {
                 panic_in_readout: AtomicBool::new(false),
                 fail_handshake: AtomicBool::new(false),
                 fail_set_controls: AtomicBool::new(false),
-                single_frame_delay: Mutex::new(Duration::ZERO),
                 aborted: AtomicBool::new(false),
                 in_readout: AtomicBool::new(false),
+                readout_held: AtomicBool::new(false),
                 aborted_during_readout: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
@@ -647,9 +649,20 @@ pub(crate) mod mock {
         pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
-        /// How long the *readout* (`get_single_frame`) blocks for.
-        pub fn set_single_frame_delay(&self, delay: Duration) {
-            *self.single_frame_delay.lock() = delay;
+        /// Hold the readout open once it starts, until
+        /// [`release_readout`](Self::release_readout). Pair it with
+        /// [`is_in_readout`](Self::is_in_readout) to put a test *inside* the
+        /// uninterruptible window rather than timing a guess at it.
+        pub fn hold_readout(&self) {
+            self.readout_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held readout finish.
+        pub fn release_readout(&self) {
+            self.readout_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `get_single_frame` is executing right now.
+        pub fn is_in_readout(&self) -> bool {
+            self.in_readout.load(Ordering::SeqCst)
         }
         /// Report `us` microseconds still to integrate, holding the driver in the
         /// cancellable wait until [`finish_exposure`](Self::finish_exposure).
@@ -792,7 +805,13 @@ pub(crate) mod mock {
             // window the hardware has.
             self.single_frame_calls.fetch_add(1, Ordering::SeqCst);
             self.in_readout.store(true, Ordering::SeqCst);
-            std::thread::sleep(*self.single_frame_delay.lock());
+            // Held readouts wait here. The deadline is a backstop against a test
+            // that forgets to release: a hung readout would otherwise wedge the
+            // whole suite rather than fail one case.
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            while self.readout_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             if self.panic_in_readout.load(Ordering::SeqCst) {
                 self.in_readout.store(false, Ordering::SeqCst);
                 panic!("simulated SDK panic during readout");
