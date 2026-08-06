@@ -50,13 +50,17 @@ fn main() {
 
         // What the driver publishes (ST3, with the one-step margin) and what a
         // bare shift would predict. The gap between them is the margin itself.
+        // `expected_shift` is `None` outside the shifted range: there is no
+        // packing to disagree with, and `16 - depth` would underflow if the SDK
+        // ever reported a depth above the container's own 16.
         let depth = info.bit_depth;
-        let (reported, shifted_full_scale) = if depth <= 1 || depth >= 16 {
-            (u32::from(u16::MAX), u32::from(u16::MAX))
+        let (reported, shifted_full_scale, expected_shift) = if depth <= 1 || depth >= 16 {
+            (u32::from(u16::MAX), u32::from(u16::MAX), None)
         } else {
             (
                 ((1u32 << depth) - 2) << (16 - depth),
                 ((1u32 << depth) - 1) << (16 - depth),
+                Some(16 - depth),
             )
         };
 
@@ -97,7 +101,7 @@ fn main() {
             // The shift signature must not move with gain. A fully flat frame
             // reports more zero bits than the packing has, so only a *smaller*
             // count is a real disagreement.
-            if shift < 16 - depth {
+            if expected_shift.is_some_and(|expected| shift < expected) {
                 wrong_shift.push((g, shift));
             }
 

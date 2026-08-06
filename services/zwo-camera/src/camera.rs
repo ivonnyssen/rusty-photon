@@ -530,8 +530,10 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 ///
 /// The margin is spent only where the shift creates it, for two distinct
 /// reasons. A 16-bit ADC fills the container, so there is no shift to step
-/// down from. An unknown depth says nothing about the packing at all, so there
-/// is no step size to step down by. Both report the container's own ceiling.
+/// down from. An unknown (0) or degenerate (1) depth says nothing about the
+/// packing at all, so there is no step size to step down by — and at depth 1
+/// the formula would yield 0, which would make any client normalising by
+/// `MaxADU` divide by zero. All of them report the container's own ceiling.
 /// Raw8 delivers 8-bit data whatever the ADC is and was measured reaching
 /// exactly 255 on every camera tried, so it takes no margin either.
 fn max_adu_for(image_type: ImageType, bit_depth: u32) -> u32 {
