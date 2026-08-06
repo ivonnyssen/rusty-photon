@@ -100,7 +100,16 @@ The 12-bit ASI120MC-S *does* reach its full-scale `4095 << 4 = 65520`, so the
 shortfall is a per-sensor property and is not derivable from `BitDepth` or
 anything else `ASI_CAMERA_INFO` reports. Tracked as
 [#898](https://github.com/rusty-photon/rusty-photon/issues/898); no code was
-changed here, because the fix is a design decision rather than a bug fix.
+changed *in this run*, because the fix was a design decision rather than a bug
+fix.
+
+> **Resolved 2026-08-05.** ST3 now reports one quantization step below the
+> shifted full scale — `((2^BitDepth) - 2) << (16 - BitDepth)` — so this
+> camera advertises **65528**, exactly the ceiling measured above. Re-verified
+> on the same hardware: the same blown-out frame that gave
+> `pixels >= MaxADU` = 0 now gives **6 709**, and ConformU 4.4.0 stays clean
+> on both suites with `MaxADU OK 65528`. The figures in this record are the
+> pre-change measurements that motivated it, and are left as they were taken.
 
 ### Binning changes the packing, not the ceiling
 

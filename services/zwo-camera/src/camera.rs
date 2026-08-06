@@ -504,15 +504,34 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// (`svbony-camera` reached the same conclusion on its SV605CC, by rescale
 /// rather than shift; ST3 there.)
 ///
-/// Raw8 delivers 8-bit data whatever the ADC is, so its ceiling is 255 —
-/// confirmed on the same camera, which saturates a full frame at exactly 255.
+/// **Nor is it the shifted full scale.** A sensor need not reach its top ADC
+/// code: a physical 14-bit ASI178MM clips at `16382 << 2 = 65528`, one count
+/// short of the `16383 << 2 = 65532` the shift alone predicts, at every gain
+/// and bin. ASCOM defines this property as the maximum value the camera *can
+/// produce*, and clients test saturation as `pixel >= MaxADU`, so reporting an
+/// unreachable ceiling does not merely round badly — it makes saturation
+/// undetectable, which is the whole point of the property for autofocus star
+/// selection and flat-panel exposure targeting.
+///
+/// So the shifted branch reports one quantization step below full scale. Where
+/// a sensor does reach its top code the cost is one ADC LSB of false
+/// positives — an error *below the sensor's own resolution*, since a shifted
+/// container cannot represent anything finer. Where it does not, the property
+/// works. The asymmetry is the justification: understating costs a fraction of
+/// one code, overstating costs the entire capability.
+///
+/// The margin is spent only where the shift creates it. A 16-bit ADC fills the
+/// container with a step of 1, leaving no slack that is not simply a lie, and
+/// an unknown depth gives nothing to reason from — both report the container's
+/// own ceiling. Raw8 delivers 8-bit data whatever the ADC is and was measured
+/// reaching exactly 255 on both cameras, so it takes no margin either.
 fn max_adu_for(image_type: ImageType, bit_depth: u32) -> u32 {
     match image_type {
         ImageType::Raw8 | ImageType::Y8 => u32::from(u8::MAX),
-        // An unknown (0) or already-full depth leaves the container's own
-        // ceiling as the only honest answer.
-        _ if bit_depth == 0 || bit_depth >= 16 => u32::from(u16::MAX),
-        _ => ((1u32 << bit_depth) - 1) << (16 - bit_depth),
+        // No shift, so no quantization slack to spend: an unknown (0) or
+        // degenerate (1) depth, or one that already fills the container.
+        _ if bit_depth <= 1 || bit_depth >= 16 => u32::from(u16::MAX),
+        _ => ((1u32 << bit_depth) - 2) << (16 - bit_depth),
     }
 }
 
@@ -1455,15 +1474,42 @@ mod tests {
     /// full frame at exactly 65520, not at the 4095 this used to report.
     #[test]
     fn max_adu_follows_the_delivered_format_not_the_adc_depth() {
-        assert_eq!(max_adu_for(ImageType::Raw16, 12), 65_520);
-        assert_eq!(max_adu_for(ImageType::Raw16, 14), 65_532);
-        assert_eq!(max_adu_for(ImageType::Raw16, 16), 65_535);
-        // Raw8 delivers 8-bit data whatever the ADC is.
+        // One quantization step below the shifted full scale, so a sensor that
+        // clips short of its top ADC code still trips `pixel >= MaxADU`.
+        assert_eq!(max_adu_for(ImageType::Raw16, 12), 65_504);
+        assert_eq!(max_adu_for(ImageType::Raw16, 14), 65_528);
+        // Raw8 delivers 8-bit data whatever the ADC is, and was measured
+        // reaching 255, so it takes no margin.
         assert_eq!(max_adu_for(ImageType::Raw8, 12), 255);
         assert_eq!(max_adu_for(ImageType::Raw8, 16), 255);
-        // An unknown depth falls back to the container's own ceiling rather
-        // than the 0 the old `2^bit_depth - 1` produced.
+    }
+
+    /// The margin exists only because the shift creates it. Without a shift
+    /// there is no slack to spend, so these report the container's ceiling
+    /// rather than a value one count below it.
+    #[test]
+    fn max_adu_spends_no_margin_where_the_container_is_already_full() {
+        // A 16-bit ADC fills the container: step 1, nothing to give back.
+        assert_eq!(max_adu_for(ImageType::Raw16, 16), 65_535);
+        // Unknown (0) and degenerate (1) depths give nothing to reason from;
+        // 1 in particular would leave `(2 - 2) << 15` = 0 and make every
+        // client normalising by MaxADU divide by zero.
         assert_eq!(max_adu_for(ImageType::Raw16, 0), 65_535);
+        assert_eq!(max_adu_for(ImageType::Raw16, 1), 65_535);
+    }
+
+    /// The measured ASI178MM ceiling, stated as the hardware reported it: a
+    /// blown-out frame clips at 16382 << 2, and that value must satisfy the
+    /// saturation test clients actually write.
+    #[test]
+    fn measured_asi178mm_ceiling_registers_as_saturated() {
+        let max_adu = max_adu_for(ImageType::Raw16, 14);
+        let delivered_ceiling = 16_382u32 << 2;
+        assert_eq!(delivered_ceiling, 65_528);
+        assert!(
+            delivered_ceiling >= max_adu,
+            "a pixel at the sensor's real ceiling must read as saturated"
+        );
     }
 
     /// RM1: the published list is the camera's advertised formats, best first,

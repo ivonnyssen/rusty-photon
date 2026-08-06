@@ -330,9 +330,11 @@ ASI C API exposes and what `zwo-rs` will wrap.
   `IsColorCam` / `BayerPattern`.
 - **`MaxADU`** = **the selected readout format's delivered ceiling**, NOT
   `(2^BitDepth) - 1`: 255 in `Raw8`, and in `Raw16` the ADC's full scale
-  *shifted into the 16-bit container* (`((2^BitDepth) - 1) << (16 - BitDepth)`
-  — 65535 for a 16-bit ADC, **65520** for a 12-bit one). Hardware-measured, see
-  ST3. `SensorName` comes from the device name.
+  *shifted into the 16-bit container*, one quantization step below the top
+  code (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
+  **65504** for a 12-bit one; 65535 for a 16-bit or unknown depth, where the
+  shift leaves no slack). Hardware-measured, see ST3. `SensorName` comes from
+  the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
@@ -633,8 +635,11 @@ EAF; those belong to the other zwo services.)
 - **ST3.** `MaxADU` = **the ceiling of the data actually delivered in the
   selected readout mode** (RM2), not `(2^BitDepth) - 1`:
   - `Raw8` → **255**, whatever the ADC depth is.
-  - `Raw16` → `((2^BitDepth) - 1) << (16 - BitDepth)`: **65535** for a 16-bit
-    ADC, **65532** for a 14-bit one, **65520** for a 12-bit one.
+  - `Raw16` → `((2^BitDepth) - 2) << (16 - BitDepth)`: **65528** for a 14-bit
+    ADC, **65504** for a 12-bit one — one quantization step below the shifted
+    full scale, see *the margin* below.
+  - `Raw16` from a 16-bit ADC, or an unknown depth → the container's own
+    **65535**. No shift means no slack to spend.
 
   ASI packs sub-16-bit ADC data into the Raw16 container by *left-shifting* it,
   so the ceiling belongs to the container, not the ADC. Hardware-measured on a
@@ -649,22 +654,40 @@ EAF; those belong to the other zwo services.)
   rescale, low bits populated.) An unknown (0) depth falls back to the
   container's own 65535.
 
-  Two measured caveats, neither of which the formula expresses:
+  **The margin: why the shifted branch reports one step below full scale.**
+  A sensor need not reach its top ADC code. The physical ASI178MM clips at
+  `16382 << 2` = **65528**, one count short of the `16383 << 2 = 65532` the
+  shift alone predicts — measured at every gain from 0 to 510, at bins 1-3,
+  and at exposures from 1 s to 15 s, with ~98 000 pixels piled on 65528 and
+  nothing above it. ASCOM defines this property as *"the maximum ADU value the
+  camera can produce"*, and clients test saturation as `pixel >= MaxADU`, so an
+  unreachable ceiling does not merely round badly: it makes saturation
+  **undetectable**. Measured through the driver before the margin existed, a
+  comprehensively blown-out frame gave `pixels >= MaxADU` = 0 while 13 655
+  pixels sat at the sensor's real ceiling; with it, the same frame reports
+  6 709 saturated pixels.
+
+  The cost is bounded and asymmetric. Where a sensor *does* reach its top code
+  — as the ASI120MC-S does at `4095 << 4` — the margin misreports pixels at
+  that single code as saturated. That error is one ADC LSB, *below the
+  sensor's own resolution*, since a shifted container cannot represent
+  anything finer. Understating costs a fraction of one code; overstating costs
+  the entire capability. The shortfall is per-sensor and not derivable from
+  anything the SDK reports, so no formula can be exact on every model — but
+  this one can only ever err in the harmless direction.
+
+  The margin is spent only where the shift creates it (see the ST3 bullets
+  above): a 16-bit ADC fills the container with a step of 1, leaving no slack
+  that would not simply be a lie, and an unknown depth gives nothing to reason
+  from. `Raw8` was measured reaching exactly 255 on both cameras, so it takes
+  no margin either.
+
+  One further measured caveat, which the formula does not express:
 
   - **The shift signature is a bin-1 property.** At bin ≥ 2 the SDK combines
     neighbouring ADC counts, which populates the low bits — an ASI178MM frame
     at bin 2 looks "rescaled" by the low-bit test. The *ceiling* is unchanged,
     so the single published `MaxADU` still describes every bin.
-  - **The formula is the container's ceiling, not necessarily the sensor's.**
-    The ASI178MM clips one ADC count short of full scale: comprehensively
-    blown-out frames top out at exactly `16382 << 2` = **65528** and never
-    reach the 65532 the driver reports — at every gain from 0 to 510 and at
-    bins 1-3. The practical cost is that `pixel >= MaxADU` never fires on that
-    model, so a client cannot detect clipped stars, which is the same class of
-    defect the 4095 → 65520 correction fixed. The ASI120MC-S, by contrast,
-    does reach its full-scale `4095 << 4`, so the shortfall is per-sensor and
-    not derivable from anything the SDK reports. Tracked as
-    [#898](https://github.com/rusty-photon/rusty-photon/issues/898).
 
 ### Pulse guiding
 
@@ -701,7 +724,7 @@ scenarios.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
-| `MaxADU` | The selected format's delivered ceiling (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container — 65535 for 16-bit, 65520 for 12-bit |
+| `MaxADU` | The selected format's delivered ceiling (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
@@ -777,7 +800,8 @@ now stands at **69 unit tests** and **65 BDD scenarios**.
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
   state machine (Idle/Exposing/Error, `ImageReady`, percent-completed), gain/
   offset range checks, cooling gating, Bayer-offset mapping, the format-aware
-  `MaxADU` (ST3, incl. the 12-bit → 65520 shift), the readout-format
+  `MaxADU` (ST3, incl. the shift, the one-step margin, and the no-shift
+  depths that take none), the readout-format
   negotiation and its `to_image_array` unpacks, the gain scaling of
   `ElectronsPerADU` (ST2), and the paths the `zwo-rs` simulation can't force
   (mid-exposure SDK error E9; a model without an ST4 port PG2; an uncooled
@@ -819,10 +843,10 @@ members within their response targets:
 > later ASI120MC-S measurement (below) shows ASI left-shifts sub-16-bit data into
 > the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. The
 > **ASI178MM has since been re-measured** on the bench (2026-08-05) and now
-> reports 65532 — see *ASI178MM — the delivered ceiling* below, which also
-> records the one respect in which the hardware disagrees with that figure. The
-> **ASI1600MM-Cool has not**; it should now report 65520 instead of the 4095
-> below, but nobody has compared that against its delivered pixels. Tracked as
+> reports **65528** — see *ASI178MM — the delivered ceiling* below, the run
+> that established ST3's one-step margin. The **ASI1600MM-Cool has not**; it
+> should now report 65504 instead of the 4095 below, but nobody has compared
+> that against its delivered pixels. Tracked as
 > [#888](https://github.com/rusty-photon/rusty-photon/issues/888).
 
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
@@ -873,10 +897,12 @@ whose behaviour decides whether enumeration is a sufficient selection rule:
 - **End-to-end through the driver** (production non-`simulation` binary, real
   camera, over Alpaca): `ReadoutModes` reports `["Raw16", "Raw8"]`,
   `ReadoutMode` defaults to 0, and switching mode changes both the delivered
-  frame and `MaxADU` consistently — mode 0 gives `MaxADU` 65520 with a 64×48
+  frame and `MaxADU` consistently — mode 0 gave `MaxADU` 65520 with a 64×48
   frame ranging 16-17872, mode 1 gives `MaxADU` 255 with the same geometry
   ranging 0-48. **The 8-bit download path is hardware-proven**, not just
-  simulated.
+  simulated. *(The 65520 is what this run recorded; ST3 has since added the
+  one-step margin, so this camera now reports 65504 — one ADC LSB below the
+  ceiling it was measured reaching. See the ASI178MM run below for why.)*
 
 `crates/zwo-rs/examples/probe_formats.rs` is the probe that produced these
 numbers; re-run it against any new ZWO model rather than assuming this one
@@ -892,20 +918,23 @@ from a model that delivers 14-bit data unshifted (which would have needed
 - **The shift model holds.** The camera advertises `[Raw8, Raw16]`, and its
   `Raw16` pixels carry **two always-zero low bits** at bin 1 — a left shift by
   `16 - 14`, exactly as on the 12-bit camera. The 16383 this doc recorded in
-  2026-06-20 was wrong by a factor of four; 65532 is the right order.
+  2026-06-20 was wrong by a factor of four.
 - **But the sensor clips one ADC count short.** Comprehensively blown-out
   frames top out at exactly `16382 << 2 = 65528`, never 65532 — measured at
   gains 0/100/300/510, bins 1-3, and exposures 1 s/5 s/15 s, with ~98 000
-  pixels piled on 65528 and nothing above it. Through the driver over Alpaca,
-  a saturated full frame gives `pixels >= MaxADU` = **0**. See ST3 and
-  [#898](https://github.com/rusty-photon/rusty-photon/issues/898).
+  pixels piled on 65528 and nothing above it. **This is the measurement behind
+  ST3's one-step margin.** Before it, the driver reported the shifted full
+  scale and a saturated full frame over Alpaca gave `pixels >= MaxADU` = **0**
+  while 13 655 pixels sat at the sensor's ceiling; with the margin the same
+  frame reports **6 709** saturated pixels.
 - **Binning changes the packing but not the ceiling.** At bin ≥ 2 the SDK
   combines neighbouring counts and the low bits populate, so the shift
   signature is only visible at bin 1. The ceiling stays 65528, so one published
   `MaxADU` still describes every bin.
 - **ConformU 4.4.0 clean on both suites** against the negotiated list —
-  `ReadoutModes Read OK Raw16` / `OK Raw8`, `MaxADU OK 65532` — with zero
-  errors, issues, configuration alerts or timing issues.
+  `ReadoutModes Read OK Raw16` / `OK Raw8` — with zero errors, issues,
+  configuration alerts or timing issues, both before the margin
+  (`MaxADU OK 65532`) and after it (`MaxADU OK 65528`).
 
 `crates/zwo-rs/examples/probe_ceiling.rs` is the probe behind this one: it
 deliberately overexposes and prints the histogram tail, which is what separates
