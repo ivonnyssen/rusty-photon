@@ -48,20 +48,59 @@ async fn schema_describes_sections(world: &mut CameraWorld) {
 async fn schema_offers_max_adu_modes(world: &mut CameraWorld) {
     let response = world.last_response.as_ref().expect("no response stashed");
     let schema = &response["schema"];
+    let field = &schema["properties"]["max_adu_reporting"];
     assert!(
-        schema["properties"]
-            .as_object()
-            .expect("schema.properties is an object")
-            .contains_key("max_adu_reporting"),
-        "schema missing max_adu_reporting"
+        !field.is_null(),
+        "schema missing max_adu_reporting: {schema}"
     );
-    // The enum is what an operator picks from, so the wire names must be
-    // discoverable through the schema rather than only in the docs. schemars
-    // renders a fieldless enum as a $ref, so resolve it before asserting.
-    let text = serde_json::to_string(schema).expect("schema serializes");
-    for mode in ["saturation_threshold", "container_full_scale"] {
-        assert!(text.contains(mode), "schema does not offer {mode}: {text}");
+
+    // The default belongs in the schema too: an operator needs to know which
+    // contract they get by leaving the key out.
+    assert_eq!(
+        field["default"].as_str(),
+        Some("saturation_threshold"),
+        "schema must advertise the accurate default"
+    );
+
+    // Resolve the $ref and read the *selectable values*. Substring-searching
+    // the serialized schema would also match a mode named only in some
+    // description, and so could pass while the field offered nothing.
+    let target = field["$ref"].as_str().expect("max_adu_reporting is a $ref");
+    let name = target.rsplit('/').next().expect("$ref has a final segment");
+    let def = schema["$defs"]
+        .get(name)
+        .or_else(|| schema["definitions"].get(name))
+        .unwrap_or_else(|| panic!("schema has no definition for {name}: {schema}"));
+
+    // schemars renders a *documented* fieldless enum as `oneOf[].const`, and an
+    // undocumented one as a flat `enum` array. Accept either, so that editing a
+    // doc comment cannot quietly gut this assertion.
+    let mut modes: Vec<&str> = def["oneOf"]
+        .as_array()
+        .map(|variants| {
+            variants
+                .iter()
+                .filter_map(|v| v["const"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    if modes.is_empty() {
+        modes = def["enum"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect()
+            })
+            .unwrap_or_default();
     }
+    modes.sort_unstable();
+    assert_eq!(
+        modes,
+        ["container_full_scale", "saturation_threshold"],
+        "schema must offer exactly the two documented modes, got {modes:?}"
+    );
 }
 
 #[then(regex = r"^the schema should mark (\S+) as a read-only field$")]
