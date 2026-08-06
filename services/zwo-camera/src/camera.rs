@@ -495,9 +495,14 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
 ///
+/// This is a **saturation threshold the data is guaranteed to reach**, not an
+/// exact upper bound on the pixel values — on a sensor that reaches its top
+/// ADC code the delivered pixels run one quantization step above it. See the
+/// margin discussion below for why that trade is deliberate.
+///
 /// **Not `2^BitDepth - 1`.** ASI packs sub-16-bit ADC data into the Raw16
-/// container by *left-shifting* it, so the delivered ceiling belongs to the
-/// container, not the ADC. Measured on a physical 12-bit ASI120MC-S: every
+/// container by *left-shifting* it, so the ceiling belongs to the container,
+/// not the ADC. Measured on a physical 12-bit ASI120MC-S: every
 /// pixel's low 4 bits are zero and a saturated full frame tops out at exactly
 /// `4095 << 4 = 65520` — sixteen times the 4095 this driver used to report, so
 /// a client normalising by `MaxADU` mis-scaled everything above 1/16 of range.

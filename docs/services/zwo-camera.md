@@ -328,14 +328,17 @@ ASI C API exposes and what `zwo-rs` will wrap.
   A camera without the control reports `NOT_IMPLEMENTED`.
 - **Sensor type** — `Monochrome` vs `RGGB` (+ `BayerOffsetX/Y`) from
   `IsColorCam` / `BayerPattern`.
-- **`MaxADU`** = **the selected readout format's delivered ceiling**, NOT
-  `(2^BitDepth) - 1`: 255 in `Raw8`, and in `Raw16` the ADC's full scale
-  *shifted into the 16-bit container*, one quantization step below the top
-  code (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
-  **65504** for a 12-bit one). A 16-bit depth reports 65535 because it fills
-  the container and there is no shift to step down from; an unknown depth
-  reports 65535 because it says nothing about the packing at all.
-  Hardware-measured, see ST3. `SensorName` comes from the device name.
+- **`MaxADU`** = **a saturation threshold the selected readout format is
+  guaranteed to reach**, NOT `(2^BitDepth) - 1` and not an exact upper bound:
+  255 in `Raw8`, and in `Raw16` the ADC's full scale *shifted into the 16-bit
+  container*, one quantization step below the top code
+  (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
+  **65504** for a 12-bit one). On a sensor that reaches its top code the
+  delivered pixels therefore run one step *above* `MaxADU`; ST3 explains the
+  trade. A 16-bit depth reports 65535 because it fills the container and there
+  is no shift to step down from; an unknown depth reports 65535 because it says
+  nothing about the packing at all. Hardware-measured, see ST3. `SensorName`
+  comes from the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
@@ -633,8 +636,11 @@ EAF; those belong to the other zwo services.)
   enumerated it and would not move when a client changes `Gain` — which is
   precisely what a client reading `ElectronsPerADU` for SNR or exposure math
   needs it to do.
-- **ST3.** `MaxADU` = **the ceiling of the data actually delivered in the
-  selected readout mode** (RM2), not `(2^BitDepth) - 1`:
+- **ST3.** `MaxADU` = **a saturation threshold the delivered data is
+  guaranteed to reach** in the selected readout mode (RM2) — not
+  `(2^BitDepth) - 1`, and deliberately *not* an exact upper bound on the
+  pixel values (see *the margin*, which explains why a client may see values
+  slightly above it):
   - `Raw8` → **255**, whatever the ADC depth is.
   - `Raw16` → `((2^BitDepth) - 2) << (16 - BitDepth)`: **65528** for a 14-bit
     ADC, **65504** for a 12-bit one — one quantization step below the shifted
@@ -778,7 +784,7 @@ scenarios.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
-| `MaxADU` | The selected format's delivered ceiling (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown |
+| `MaxADU` | A saturation threshold the format is guaranteed to reach, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. A sensor that reaches its top code delivers one step above this |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
