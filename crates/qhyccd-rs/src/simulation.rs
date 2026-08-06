@@ -581,14 +581,22 @@ impl PixelNoise {
         x
     }
 
-    /// Roughly uniform value in `[-range, +range]`. The modulo bias is
-    /// negligible at the spans used here (a few thousand out of 2^32).
+    /// Roughly uniform value in `[-range, +range]`. Scaling by the span and
+    /// keeping the high word is the same distribution a modulo gives, to within
+    /// the same negligible bias at the spans used here (a few thousand out of
+    /// 2^32) — for one multiply instead of a divide. That is worth naming: at a
+    /// megapixel per frame the divide was most of the cost of generating one,
+    /// and it dominated the loop badly enough to make an indexed write look
+    /// faster than walking the buffer.
     fn next_signed(&mut self, range: i32) -> i32 {
         if range <= 0 {
             return 0;
         }
-        let span = range as u32 * 2 + 1;
-        (self.next_u32() % span) as i32 - range
+        let span = u64::from(range.unsigned_abs()) * 2 + 1;
+        // `scaled < span`, so the difference lands in `-range..=range` and
+        // therefore fits `i32` whenever `range` does.
+        let scaled = (u64::from(self.next_u32()) * span) >> 32;
+        (scaled as i64 - i64::from(range)) as i32
     }
 }
 
@@ -940,12 +948,19 @@ impl ImageGenerator {
         let mut noise_source = PixelNoise::new(frame_seed);
 
         // A flat is uniform, so the pixel's position never enters the value —
-        // walking pixels is the whole loop.
-        for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-            let noise = noise_source.next_signed(noise_range as i32) as i16;
-            let value = (base as i16 + noise).clamp(0, 255) as u8;
-
-            pixel.fill(value);
+        // walking pixels is the whole loop. A mono frame's pixel *is* its
+        // sample, and chunking a buffer by one costs more per pixel than this
+        // body does, so that case walks samples directly.
+        if frame.pixel_bytes == 1 {
+            for sample in data.iter_mut() {
+                let noise = noise_source.next_signed(noise_range as i32) as i16;
+                *sample = (base as i16 + noise).clamp(0, 255) as u8;
+            }
+        } else {
+            for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
+                let noise = noise_source.next_signed(noise_range as i32) as i16;
+                pixel.fill((base as i16 + noise).clamp(0, 255) as u8);
+            }
         }
     }
 
@@ -1055,6 +1070,18 @@ mod image_generator_tests {
             samples.iter().any(|v| *v != samples[0]),
             "noise stream must not be constant"
         );
+    }
+
+    #[test]
+    fn pixel_noise_reaches_both_ends_of_its_range() {
+        // Scaling by the span has to reach both extremes: a high-word multiply
+        // that lost the top value would bias every frame dark, and one that
+        // overshot would push samples outside the envelope the generators
+        // clamp against. 20k draws over a 21-wide span settle it.
+        let mut noise = PixelNoise::new(3);
+        let samples: Vec<i32> = (0..20_000).map(|_| noise.next_signed(10)).collect();
+        assert_eq!(*samples.iter().min().unwrap(), -10);
+        assert_eq!(*samples.iter().max().unwrap(), 10);
     }
 
     #[test]
