@@ -1561,6 +1561,25 @@ mod tests {
         (device, handle)
     }
 
+    /// Blocks until the mock is actually executing its readout.
+    ///
+    /// Sleeping a fixed budget instead does not establish this: CI overcommits
+    /// CPU deliberately (`.bazelrc`: `--local_resources=cpu=HOST_CPUS*2`), so a
+    /// starved test can wake past the whole readout and assert against a window
+    /// that has already closed. Pair with
+    /// [`MockCameraHandle::hold_readout`](crate::backend::mock::MockCameraHandle::hold_readout)
+    /// so the window cannot close while the test is inside it.
+    async fn await_readout(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_readout() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the readout never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     // --- pure helpers -----------------------------------------------------------
 
     #[test]
@@ -2235,26 +2254,34 @@ mod tests {
     #[tokio::test]
     async fn abort_during_the_readout_waits_for_it_to_finish() {
         let handle = MockCameraHandle::default();
-        handle.set_single_frame_delay(Duration::from_millis(400));
+        handle.hold_readout();
         let (device, handle) = connected_device_with_handle(handle);
+        let device = Arc::new(device);
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        // Let the (short) exposure elapse so the task is inside the readout.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        await_readout(&handle).await;
 
-        let started = std::time::Instant::now();
-        device.abort_exposure().await.unwrap();
-        let waited = started.elapsed();
+        // The readout is held open, so the abort cannot complete until it is
+        // released — no clock is involved in establishing that.
+        let abort = {
+            let device = Arc::clone(&device);
+            tokio::spawn(async move { device.abort_exposure().await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !handle.aborted.load(Ordering::SeqCst),
+            "the SDK cancel must not be issued while the readout is still running"
+        );
+        assert!(!abort.is_finished(), "abort returned without waiting");
+
+        handle.release_readout();
+        abort.await.unwrap().unwrap();
 
         assert!(
             !handle.aborted_during_readout.load(Ordering::SeqCst),
             "the SDK cancel was issued while a readout was in flight"
-        );
-        assert!(
-            waited >= Duration::from_millis(150),
-            "abort returned in {waited:?}, so it cannot have waited out the readout"
         );
         assert!(handle.aborted.load(Ordering::SeqCst));
     }
@@ -2265,7 +2292,7 @@ mod tests {
     #[tokio::test]
     async fn disconnect_refuses_to_close_while_a_readout_is_stuck() {
         let handle = MockCameraHandle::default();
-        handle.set_single_frame_delay(Duration::from_millis(600));
+        handle.hold_readout();
         let handle = Arc::new(handle);
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
@@ -2274,7 +2301,7 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        await_readout(&handle).await;
 
         let err = device.disconnect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
@@ -2288,6 +2315,7 @@ mod tests {
         );
 
         // Let the readout finish so the task does not outlive the test.
+        handle.release_readout();
         assert!(device.wait_until_drained(Duration::from_secs(30)).await);
     }
 
@@ -2378,7 +2406,7 @@ mod tests {
     #[tokio::test]
     async fn abort_reports_failure_when_the_sdk_will_not_return() {
         let handle = MockCameraHandle::default();
-        handle.set_single_frame_delay(Duration::from_millis(600));
+        handle.hold_readout();
         let handle = Arc::new(handle);
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
@@ -2387,7 +2415,7 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        await_readout(&handle).await;
 
         let err = device.abort_exposure().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
@@ -2396,6 +2424,7 @@ mod tests {
             "no SDK cancel may be issued while the readout is still running"
         );
 
+        handle.release_readout();
         assert!(device.wait_until_drained(Duration::from_secs(30)).await);
     }
 
