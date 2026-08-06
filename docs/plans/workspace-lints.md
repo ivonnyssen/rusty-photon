@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c (simulator pixel loops) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math) and #908 (star geometry, noise source, tail) — `simulation.rs` and `types.rs` now at zero |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -880,6 +880,68 @@ design, so two runs of the *same binary* disagree. Only the zero-noise cases
 matched, which looked exactly like a real regression. The check that works is
 the noise stream itself — `next_signed` for a fixed seed — which is identical
 before and after across ranges 0, 10, 100, 65535 and `i32::MAX`.
+
+### L5c — the tail, and the file at zero
+
+Five sites, four decisions, and one of them paid for itself twice over.
+
+**Two guarded decrements** — `f64::from(slots - 1)` under an `if slots > 0`, and
+`settle_polls -= 1` under an `if settle_polls > 0`. Neither runs in a loop, so
+`saturating_sub(1)` is free and the guard above it is what makes the arm
+unreachable. This is now the third distinct place in the rung where the answer
+was "the guard is real, clippy just cannot see it".
+
+**A discriminant enum with no `From`.** The simulator read `BayerPattern`'s SDK
+code with a double cast, written twice:
+
+```rust
+(bayer_pattern as u32 as f64, bayer_pattern as u32 as f64, 0.0)
+```
+
+and `types.rs` open-coded the same conversion four more times inside its own
+`TryFrom<u32>`, as guard clauses comparing against `Variant as u32`. Writing the
+conversion once turns all of it into ordinary code:
+
+```rust
+impl From<BayerPattern> for u32 {
+    fn from(pattern: BayerPattern) -> Self {
+        match pattern { GBRG => 1, GRBG => 2, BGGR => 3, RGGB => 4 }
+    }
+}
+```
+
+`TryFrom` becomes a plain `match value { 1 => Ok(GBRG), ... }`, the simulator
+becomes `f64::from(u32::from(bayer_pattern))`, and `camera.rs`'s
+`.map(|m| m as u32)` becomes `.map(u32::from)`. **Seven sites across three files
+for one impl** — the best ratio in the rung, and the pattern to look for
+wherever a `repr`-style enum is read back with a cast. The discriminants stay on
+the enum because the doc comment promises the SDK's numbering, and a test now
+pins `u32::from` to those four values so the two cannot drift.
+
+**One `#[expect]`, for a conversion that has no total spelling.** `row_seed`
+takes a `usize` row index and folds it into a `u32` seed. `usize → u32` has no
+`From`, and every fallible spelling is worse than the cast: the arm cannot be
+taken (the row index is bounded by `Frame::height`, a `u32`), and a
+`unwrap_or(0)` fallback would alias row 0's seed. A seed needs only to differ
+between rows.
+
+5 sites → 0. **`simulation.rs` is at zero production sites, from 218**, and
+`types.rs` with it. What remains in the crate is `camera.rs` (21) and the test
+scope.
+
+| L5c pass | sites |
+|---|---:|
+| starting point | 218 |
+| pixel loops (chunked iteration) | 135 |
+| value math (`quantize`, saturating samples) | 60 |
+| star geometry (`abs_diff`, float distance) | 10 |
+| noise source (span hoisted, one `#[expect]`) | 5 |
+| **tail (`From` impl, guarded decrements)** | **0** |
+
+Three exemptions in the whole file, each at a named boundary with a bound
+proof: `quantize` for float→int, `next_signed` for the per-pixel draw, and
+`row_seed`. That ratio — 218 sites to three annotations — is what the rung was
+testing, and it holds.
 
 ## L6a — split the CI channels
 

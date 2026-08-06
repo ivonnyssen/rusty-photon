@@ -158,8 +158,11 @@ impl SimulatedCameraConfig {
     pub fn with_filter_wheel(mut self, slots: u32) -> Self {
         self.filter_wheel_slots = slots;
         if slots > 0 {
-            self.supported_controls
-                .insert(ControlType::CfwPort, (0.0, f64::from(slots - 1), 1.0));
+            // The guard above is what keeps the decrement total.
+            self.supported_controls.insert(
+                ControlType::CfwPort,
+                (0.0, f64::from(slots.saturating_sub(1)), 1.0),
+            );
             self.supported_controls.insert(
                 ControlType::CfwSlotsNum,
                 (f64::from(slots), f64::from(slots), 0.0),
@@ -171,14 +174,10 @@ impl SimulatedCameraConfig {
     /// Makes this a color camera with the specified Bayer pattern
     pub fn with_color(mut self, bayer_pattern: BayerPattern) -> Self {
         self.bayer_pattern = Some(bayer_pattern);
-        self.supported_controls.insert(
-            ControlType::CamColor,
-            (
-                bayer_pattern as u32 as f64,
-                bayer_pattern as u32 as f64,
-                0.0,
-            ),
-        );
+        // A fixed control: the pattern is both ends of its range.
+        let code = f64::from(u32::from(bayer_pattern));
+        self.supported_controls
+            .insert(ControlType::CamColor, (code, code, 0.0));
         self.supported_controls
             .insert(ControlType::Wbr, (0.0, 255.0, 1.0));
         self.supported_controls
@@ -537,7 +536,7 @@ impl SimulatedCameraState {
     /// exercised instead of an unrealistic instantaneous move.
     pub fn poll_filter_wheel(&mut self) -> u32 {
         if self.filter_wheel_settle_polls > 0 {
-            self.filter_wheel_settle_polls -= 1;
+            self.filter_wheel_settle_polls = self.filter_wheel_settle_polls.saturating_sub(1);
             if self.filter_wheel_settle_polls == 0 {
                 self.filter_wheel_position = self.filter_wheel_target;
             }
@@ -632,6 +631,10 @@ impl PixelNoise {
 
 /// Row-distinct seed so rayon rows (and serial frames reusing a seed)
 /// don't repeat the same noise sequence.
+#[expect(
+    clippy::as_conversions,
+    reason = "`row` indexes the rows of a frame whose height is a `u32`, so the truncation is unreachable; `usize` has no total conversion to `u32`, and every fallible spelling would add an arm that cannot be taken and whose fallback would alias row 0's seed. A seed needs only to differ between rows, which folding preserves either way"
+)]
 fn row_seed(frame_seed: u32, row: usize) -> u32 {
     frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
 }
