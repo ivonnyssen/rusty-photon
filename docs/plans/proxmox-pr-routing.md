@@ -12,6 +12,12 @@ runners and every layer of the security contract in
 holds. Measured baseline: the pool completes the Linux Bazel steps in ~16 s
 on an unchanged tree with a warm LAN cache versus 4–10 minutes hosted.
 
+R8 extends the same contract past Proxmox to the one leg it cannot host:
+`bazel / macos-latest` needs Apple hardware, so it gets a second hypervisor
+rather than another node. Everything else — JIT single-use runners, the
+fork-excluding `runs-on` expression, a per-OS kill switch, the LAN cache's
+read-anonymous/token-write split — is meant to be shared, not reimplemented.
+
 This deliberately supersedes the blanket "dispatch/schedule triggers only"
 rule for the **ephemeral pool only**. Persistent self-hosted runners (the
 Raspberry Pi nightly runner) keep the old rule unchanged — see ADR-020 for
@@ -27,6 +33,7 @@ the full layered contract and its rationale.
 | R4 | Route Windows: `bazel / windows-latest` with the `RP_POOL_WINDOWS` kill switch | Done |
 | R4b | Route msi.yml `build-verify` | Blocked on a timing measurement |
 | R5 | Route `bazel coverage` | Planned |
+| R8 | Route `bazel / macos-latest` to a Mac mini (#893) | Planned, gated on a purchase |
 
 Current state: `bazel / ubuntu-latest` and `bazel / windows-latest` run on
 the pool for push-to-main and same-repo PRs; `bazel coverage` and the macOS
@@ -37,13 +44,14 @@ runs — check there, not this document.
 R5 is ready to start: it needs the routing expression and a second Linux
 slot (a PR event fires both Linux legs at once, so routing coverage without
 one would queue one behind the other on every PR), and both are in place.
-R4b needs a measurement first.
+R4b needs a measurement first. R8 needs hardware this project does not own;
+it is scoped here because the measurements below make it, not more x86
+capacity, the next thing worth buying.
 
-Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
-the strongest motivation — the remote-cache wedge ladder — is tracked in
-#765).
+### Host capacity — the Proxmox host (14 cores / 20 threads, 94 GB)
 
-### Host capacity (14 cores / 20 threads, 94 GB)
+R8's Mac is a second host with its own, much simpler envelope (two slots,
+fixed by Apple's licence); this section is about the x86 pool only.
 
 Slot RAM is **16 GB on both OSes**, measured rather than estimated. Method:
 `bazel clean` then the full `build` + `test` + `bdd` sequence on a real slot,
@@ -98,6 +106,22 @@ A PR event fires at most three pool jobs (ubuntu, coverage, windows); msi — if
 routed — queues briefly behind the Windows bazel leg. A second Windows slot is
 gated on #872, not on capacity.
 
+**This host has headroom, and that is the argument against buying another
+one.** Over a day at 2-minute resolution the host's CPU sits at p50 2.8% /
+p90 18.2%, and above 80% for 12 of 1440 samples — 0.8% of the day. Over four
+days the Linux slot pair was **completely idle 93% of the time** and both
+slots busy 1.0%; the Windows pair, 91% and 0.7%. Pool queue time is 2s at the
+median. The one number near a wall is RAM: 78.5 GiB peak of 94 GiB, which is
+four 16 GiB slots plus a 16 GiB ARC — so a *fifth* slot does not fit without
+cutting ARC, and nothing measured here asks for one. R5 adds roughly one
+Linux-slot job per PR, which the 93% idle absorbs.
+
+Re-run this before concluding the host is short of anything: `pvesh get
+/nodes/<node>/rrddata --timeframe day` for utilization, and per-job
+`created_at`/`started_at` from the Actions API for queue time. Slot occupancy
+is the honest capacity metric — CPU averages hide bursts, and a busy *slot*
+is what actually makes the next job wait.
+
 ## Venue and cache matrix
 
 The single behavioral contract everything below implements:
@@ -112,12 +136,13 @@ colliding with the phase identifiers.
 | `pull_request`, fork (after approval) | GitHub-hosted | cloud | no |
 | `push` to main | pool | LAN | yes (repo secret) |
 | nightly `schedule` | GitHub-hosted | cloud | yes (as today) |
-| macOS leg (always) | GitHub-hosted | cloud | as today |
+| macOS leg (until R8) | GitHub-hosted | cloud | as today |
 
-Each OS carries its own kill switch — `RP_POOL_LINUX` and `RP_POOL_WINDOWS`
-— because the two venues fail independently: a wedged Windows slot or a
-stale Windows template should not cost Linux its speed, and vice versa.
-Flipping one moves only that OS back to GitHub-hosted runners.
+Each OS carries its own kill switch — `RP_POOL_LINUX` and `RP_POOL_WINDOWS`,
+joined by `RP_POOL_MACOS` at R8 — because the venues fail independently: a
+wedged Windows slot or a stale Windows template should not cost Linux its
+speed, and vice versa. Flipping one moves only that OS back to GitHub-hosted
+runners.
 
 The nightly schedule staying **hosted** is deliberate: it is what keeps the
 cloud cache's Linux entries warm, so a fork PR (which always runs hosted)
@@ -216,6 +241,117 @@ Linux leg above with three coverage-specific points:
    on every job. The codecov CLI download (~small, rolling `latest`) stays
    per-run; the Codecov upload runs from the pool over the WAN like any
    other egress.
+
+### R8 — Route `bazel / macos-latest` to a Mac mini
+
+The last hosted required check, and — now that Linux and Windows are on the
+pool — the one that decides when a PR goes green.
+
+**Why this and not another x86 box.** Across 27 `bazel.yml` runs after the
+four-slot cutover, **macOS was the long pole in 25 of them (93%)**:
+
+| leg | venue | queue p50 | run p50 | worst seen | long pole in |
+|---|---|---|---|---|---|
+| `bazel / ubuntu-latest` | pool | 2s | 190s | 721s | 1/27 |
+| `bazel / windows-latest` | pool | 2s | 104s | 743s | 1/27 |
+| `bazel / macos-latest` | hosted | 3s | **334s** | **1888s run, 1056s queue** | **25/27** |
+
+The pool legs finish in a third of the macOS leg's median and queue for two
+seconds. Spending on x86 buys idle slots (see the host-capacity section);
+spending on a Mac attacks the leg that is actually holding PRs open, and it
+is the only remaining lever on #765 — see the wedge note below.
+
+Four phases, mirroring R1–R4. The security contract is unchanged: every
+ADR-020 layer must hold on the new host before the leg is routed.
+
+**R8a — measure before buying.** GitHub's hosted `macos-latest` gives public
+repos a 3-core M1; a base M4 mini is 10 cores. That should be decisive, but
+"should" is not a measurement and this project's rule is to measure first.
+Borrow or rent an Apple Silicon machine for an afternoon, run the three
+Bazel steps against the LAN cache, and compare with the 334s median above.
+Acceptance: the whole job beats hosted by enough to matter after a
+cold-cache first run — the same bar R2 and R4 cleared. If it does not, stop
+here; the rest of this phase is wasted money.
+
+**R8b — host and template.** macOS guests may only be virtualized on Apple
+hardware, so the Mac is a second hypervisor rather than another Proxmox
+node. [Tart](https://tart.run/) (Virtualization.framework) is the analogue
+of `qm`: it clones, boots, and destroys macOS VMs, and it is what the
+ephemeral-macOS-runner projects are built on.
+
+* **Two slots, hard ceiling.** Apple's licence permits two macOS VMs per
+  host and the framework enforces it. That matches the measured peak — the
+  Linux and Windows pairs hit both-busy 1% of the time — so one mini is
+  enough, and a third concurrent macOS job is not a tuning decision but a
+  second machine.
+* **The template supplies what the hosted image supplies.** Same rule that
+  broke this venue's Windows sibling on its first real job: bazelisk at the
+  pinned version, OmniSim, Pebble, `libusb` (currently `brew install`ed
+  *ungated* on every macOS run — R8 must add the
+  `runner.environment == 'github-hosted'` guard the other install steps
+  carry), the QHYCCD SDK, and the ZWO SDK with `LIBCLANG_PATH` and
+  `ZWO_SDK_LIB_DIR`. Extend `proxmox-runner-test.yml` with a macOS
+  template-parity job and dispatch it after every template rebuild.
+* **The QHY SDK needs the Windows treatment.** On macOS `build.rs` resolves
+  `QHYCCD_SDK_DIR` before falling back to `$GITHUB_WORKSPACE/sdk_mac_arm_*`,
+  exactly as on Windows — but `.bazelrc` forwards that variable only under
+  `build:windows`. A machine-wide SDK on the template is therefore invisible
+  to build actions until `build:macos --action_env=QHYCCD_SDK_DIR` is added
+  alongside it. Unset on hosted runners, so their action keys do not move.
+* **`GITHUB_WORKSPACE` is in the macOS action env too** (`build:macos
+  --action_env=GITHUB_WORKSPACE`), so macOS inherits the Windows cache-key
+  coupling: change the runner's `_work` layout and every macOS action goes
+  cold at once, with no error to explain it. Pin the layout at template
+  build time and treat it as load-bearing.
+
+**R8c — orchestrator.** `rp-runner-pool.sh` calls `qm` directly throughout,
+so it does not merely need new `SLOTS` entries — it needs a seam. Factor the
+five hypervisor operations the slot loop performs (clone, start, wait-for-
+agent, inject `.jitconfig`, destroy, plus the `qm status` probe) behind a
+per-slot driver, keep the existing calls as the `qm` implementation, and add
+a `tart` one. Everything above that seam — JIT minting, the runner-liveness
+reclaim, the marker lifecycle, the registration DELETE on teardown — is
+hypervisor-agnostic and must stay shared; those are the parts that took
+eleven review rounds to get right, and a forked second script would rot.
+
+Two decisions this phase must make explicitly, because both touch ADR-020:
+
+* **Where the orchestrator runs.** On the Mac, as a second instance of the
+  same script. The alternative — pve driving `tart` over SSH — reintroduces
+  exactly what the Proxmox design avoided by using the guest agent: a
+  network path in the pool's control plane, which the guest VLAN fencing
+  could then break. The cost is that the PAT now lives on two hosts. That
+  generalizes layer 4 from "the hypervisor" to "each pool hypervisor,
+  root-only, never inside a guest" rather than weakening it, but it is an
+  **ADR-020 amendment and must be written as one**, not assumed.
+* **How the guests are fenced (layer 5).** The Mac has one NIC and is itself
+  the control plane, so the Proxmox arrangement — tagged vNIC onto VLAN 67,
+  control over a network-free guest agent — does not port directly. Two
+  candidates: a VLAN sub-interface with bridged guests, or
+  [softnet](https://github.com/cirruslabs/softnet), Tart's userspace packet
+  filter. Whichever is chosen, the acceptance test is the one R1 used —
+  probe from inside a clone and confirm GitHub and the cache answer while
+  every other RFC1918 address does not, expecting timeouts rather than
+  refusals if the policy drops.
+
+**R8d — route it.** A third `runs-on` branch and a third kill switch,
+`RP_POOL_MACOS`. The trusted-event test is duplicated again, verbatim: it
+cannot be factored out (`runs-on` is evaluated before the job exists) and
+the copies are a security boundary. Fork PRs and the nightly schedule stay
+hosted, as on the other two venues.
+
+**What this does and does not do for #765.** The `build:macos` remote-cache
+settings in `.bazelrc` — `--remote_max_connections=0`,
+`--remote_download_outputs=minimal`, `--nobuild_runfile_links` — are
+mitigations for a wedge whose connection axis is exhausted. They must stay:
+fork PRs and the schedule keep running hosted against the cloud cache over
+the WAN, which is where the wedge lives. But a LAN cache is a different
+failure surface, so re-measure them on the pool venue and split a
+`build:macos-pool` config if they prove to be pure WAN workarounds there.
+Be honest about the claim: **R8 does not fix #765.** What it changes is that
+a wedged macOS build becomes a machine on the operator's desk that can be
+inspected while it is wedged, which a hosted runner never allows — and that
+is the diagnostic the issue says it has run out of.
 
 ## References
 
