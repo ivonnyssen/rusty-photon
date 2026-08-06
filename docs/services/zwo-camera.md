@@ -333,12 +333,13 @@ ASI C API exposes and what `zwo-rs` will wrap.
   255 in `Raw8`, and in `Raw16` the ADC's full scale *shifted into the 16-bit
   container*, one quantization step below the top code
   (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
-  **65504** for a 12-bit one). On a sensor that reaches its top code the
-  delivered pixels therefore run one step *above* `MaxADU`; ST3 explains the
-  trade. A 16-bit depth reports 65535 because it fills the container and there
-  is no shift to step down from; an unknown depth reports 65535 because it says
-  nothing about the packing at all. Hardware-measured, see ST3. `SensorName`
-  comes from the device name.
+  **65504** for a 12-bit one). Where that margin applies, a sensor reaching its
+  top code delivers pixels one step *above* `MaxADU`; ST3 explains the trade. A
+  16-bit depth reports 65535 because it fills the container and there is no
+  shift to step down from; an unknown depth reports 65535 because it says
+  nothing about the packing at all — in both cases the value is the container's
+  own maximum, so nothing can exceed it. Hardware-measured, see ST3.
+  `SensorName` comes from the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
@@ -795,7 +796,7 @@ scenarios.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
-| `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. A sensor that reaches its top code delivers one step above this |
+| `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. Where the margin applies, a sensor reaching its top code delivers one step above this; the 65535 cases are the container maximum and cannot be exceeded |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
