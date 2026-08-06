@@ -26,24 +26,26 @@ the full layered contract and its rationale.
 | R3 | Windows runner template + orchestrator pool slots (Windows slot, second Linux slot) | Done |
 | R4 | Route Windows: `bazel / windows-latest` with the `RP_POOL_WINDOWS` kill switch | Done |
 | R4b | Route msi.yml `build-verify` | Blocked on a timing measurement |
-| R5a | Route `bazel coverage`: workflow routing in bazel-coverage.yml | Done (workflow); **blocked on R5b before it takes effect** |
-| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Not started — prerequisite for R5a |
+| R5a | Route `bazel coverage`: workflow routing in bazel-coverage.yml | Done |
+| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903 |
 
-Current state: `bazel / ubuntu-latest` and `bazel / windows-latest` run on
-the pool for push-to-main and same-repo PRs; `bazel coverage` and the macOS
-leg do not. Templates and clone VMIDs live in the `SLOTS` array in
+Current state: `bazel / ubuntu-latest`, `bazel / windows-latest`, and
+`bazel coverage` run on the pool for push-to-main and same-repo PRs; only the
+macOS leg does not. Templates and clone VMIDs live in the `SLOTS` array in
 `tools/ci/rp-runner-pool.sh`, which is the source of truth for what the pool
 runs — check there, not this document.
 
-R5 splits into a workflow change (R5a) and a template change (R5b), and the
-ordering is load-bearing: `RP_POOL_LINUX` is already `on` for the build/test
-leg, and R5a's routing gates on that same switch, so R5a takes effect the
-moment it merges. **R5b must land first** — without the nightly toolchain and
-instrumented externals pre-fetched into the Linux template's output base,
-every ephemeral coverage clone would re-fetch the nightly toolchain over the
-WAN on every job, defeating the pool's zero-WAN property. The second Linux
-slot R5 needs (a PR event fires both Linux legs at once) is already in place.
-R4b needs a measurement first.
+R5 split into a workflow change (R5a, this file + `bazel-coverage.yml`) and a
+template change (R5b), with a load-bearing ordering: `RP_POOL_LINUX` is already
+`on` for the build/test leg, and R5a's routing gates on that same switch, so
+R5a takes effect the moment it merges. R5b was therefore completed first — the
+Linux template was rebuilt as **918** with a one-time `bazel coverage //...`
+warmup so the nightly toolchain and instrumented externals live in its output
+base (rolled in via #903); without it every ephemeral coverage clone would
+re-fetch the nightly toolchain over the WAN, defeating the pool's zero-WAN
+property. Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
+clone versus ~12 min cold. The second Linux slot R5 needs (a PR event fires
+both Linux legs at once) is in place. R4b still needs a measurement.
 
 Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
 the strongest motivation — the remote-cache wedge ladder — is tracked in
@@ -192,13 +194,12 @@ Windows template first and route it only if it beats hosted. It is
 `pull_request` path-triggered, so the same fork exclusion applies, and it is
 not a required check, so a pool hiccup has a smaller blast radius.
 
-### R5 — Route `bazel coverage`
+### R5 — Route `bazel coverage` (Done — implementation record)
 
-The third required Bazel check (bazel-coverage.yml), same recipe as the
-Linux leg above with three coverage-specific points. Points 1 and 2 (the
-routing expression and the cache split, plus the provisioning guards) are
-implemented in bazel-coverage.yml (R5a); point 3 (the template warmup, R5b)
-is the remaining prerequisite and must land before R5a takes effect:
+The third required Bazel check (bazel-coverage.yml), routed the same way as
+the Linux leg above, with three coverage-specific points — all implemented
+(R5a = the routing/cache/guards in bazel-coverage.yml; R5b = template 918's
+coverage warmup, rolled in via #903):
 
 1. **Expression.** Not a matrix job, so the routing expression above with a
    literal fallback: `… && fromJSON('["self-hosted", "proxmox-ephemeral"]') ||
@@ -218,13 +219,14 @@ is the remaining prerequisite and must land before R5a takes effect:
 3. **Template warmup.** Coverage builds the whole graph **instrumented on
    the nightly toolchain** — a distinct action + external-repo namespace
    from the stable build/test the template was benched with. Before routing,
-   the Linux template gets a one-time warmup (`bazel coverage` run to
-   completion during template rebuild) so the nightly toolchain and the
-   instrumented externals live in the template's output base; without it,
-   every ephemeral clone would re-fetch the nightly toolchain over the WAN
-   on every job. The codecov CLI download (~small, rolling `latest`) stays
-   per-run; the Codecov upload runs from the pool over the WAN like any
-   other egress.
+   the Linux template got a one-time warmup (a full `bazel coverage //...` run
+   during the 917→918 rebuild) so the nightly toolchain and the instrumented
+   externals live in the template's output base; without it, every ephemeral
+   clone would re-fetch the nightly toolchain over the WAN on every job. That
+   warmup run also served as the coverage pre-roll validation (110/110 tests
+   green on the template) that `proxmox-runner-test.yml` does not cover. The
+   codecov CLI download (~small, rolling `latest`) stays per-run; the Codecov
+   upload runs from the pool over the WAN like any other egress.
 
 ## References
 
