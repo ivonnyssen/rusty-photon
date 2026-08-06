@@ -619,6 +619,67 @@ is bucket F's value math (`(base as i16 + noise).clamp(0, 255) as u8`) and the
 star geometry's signed detour, both of which want the rounding policy rather
 than this shape.
 
+### L5c — the simulator's value math
+
+The second half of the same file: 51 lines carrying a cast clippy can
+classify. Four groups, and only one of them needed a decision.
+
+**Clamping to a type's own range is a saturating conversion, spelled out.**
+
+```rust
+let value = (base as i16 + gradient as i16 + noise).clamp(0, 255) as u8;
+```
+
+Two widening casts, a clamp whose bounds *are* `u8`'s, and a narrowing cast —
+three lints on one line, nine lines like it. Naming what it does collapses all
+of them, and the arms are live traffic rather than defensive padding, so this is
+not the dead-arm trap `usize::try_from` was:
+
+```rust
+fn sample_u8(v: i32) -> u8 {
+    u8::try_from(v).unwrap_or(if v < 0 { u8::MIN } else { u8::MAX })
+}
+```
+
+**Float → int is already total; what was missing was saying so.** `as` truncates
+toward zero and saturates at the destination's bounds, with NaN landing on zero
+— and no `TryFrom<f64>` exists to spell it another way. So the 16 sites became
+one `quantize` module of six one-line functions carrying a single `#[expect]`,
+which is the file's only exemption. That is the template for bucket F's 98
+sites: **one annotation at a named boundary, not 98 silent casts.** Truncation
+was kept rather than switched to rounding, so no pixel value moves.
+
+**Two total spellings worth carrying forward**, both found by asking whether the
+conversion was needed at all rather than how to spell it:
+
+- `Duration` has no `u64` accessor for whole microseconds — `as_micros` is
+  `u128` — but `as_secs` is `u64` and `subsec_micros` is `u32`, so composing the
+  two needs no conversion and saturates instead of wrapping.
+- `(self.base_level >> 8) as u8` is the high byte of a `u16`, which
+  `let [base, _] = self.base_level.to_be_bytes();` yields with no cast, no index,
+  and no arm.
+
+**And one more defect, with a blast radius worth stating precisely.**
+`get_remaining_exposure_us` narrowed its `u64` remainder to the SDK's `u32`
+microseconds, which run out at ~71 minutes, and nothing clamps the `Exposure`
+parameter to its own control range on the way in. A two-hour exposure wrapped
+round to 2,905,032,704 µs — about 48 minutes — so the value fell, jumped, and
+fell again. Saturating is the honest answer: the SDK's word cannot express more.
+
+What it does **not** do is shorten an exposure through `qhy-camera`, and the
+distinction matters because the first write-up of this claimed otherwise.
+`wait_for_exposure` times the exposure host-side from an `AtomicU64` of
+microseconds and only *then* polls the camera for confirmation, bounded by a 5 s
+`EXPOSURE_CONFIRM_TIMEOUT` it falls through regardless. A bogus remainder
+therefore costs at most five seconds of extra polling. The real-hardware path is
+untouched for a second reason: `GetQHYCCDExposureRemaining` is a `uint32_t` in
+the vendor API, so no narrowing of ours sits on it — the ~71-minute ceiling is
+the SDK's own shape. The defect is this crate's API contract, not the driver's
+behaviour, and the guard belongs here because the next consumer may well poll it
+as authority.
+
+135 sites → 60.
+
 #### What chunked iteration costs, and what actually pays for it
 
 Worth reading before applying this shape to the remaining `indexing_slicing`
