@@ -35,7 +35,7 @@ use tracing::{debug, warn};
 use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 
 use crate::backend::{CameraHandle, CaptureRequest};
-use crate::config::DeviceOverride;
+use crate::config::{DeviceOverride, MaxAduReporting};
 use crate::config_actions::ZwoCameraDriver;
 use rusty_photon_driver::ConfigActionCtx;
 
@@ -212,15 +212,26 @@ pub struct ZwoCamera {
     name: String,
     description: String,
     state: Arc<DeviceState>,
+    /// Which `MaxADU` contract to present (ST3). Service-wide, so it arrives
+    /// here rather than through the per-serial `DeviceOverride`.
+    max_adu_reporting: MaxAduReporting,
     #[debug(skip)]
     config_ctx: Option<ConfigActionCtx<ZwoCameraDriver>>,
 }
 
 impl ZwoCamera {
-    /// Build a device from an SDK handle and an optional per-serial config
-    /// override. The ASCOM `UniqueID` is the handle's serial-derived id;
-    /// `name`/`description` fall back to SDK-derived defaults.
-    pub fn new(handle: Arc<dyn CameraHandle>, overrides: Option<&DeviceOverride>) -> Self {
+    /// Build a device from an SDK handle, an optional per-serial config
+    /// override, and the service-wide `MaxADU` contract. The ASCOM `UniqueID`
+    /// is the handle's serial-derived id; `name`/`description` fall back to
+    /// SDK-derived defaults.
+    ///
+    /// `max_adu_reporting` is a parameter rather than a builder step so the
+    /// compiler, not a test, guarantees the caller wires it from config.
+    pub fn new(
+        handle: Arc<dyn CameraHandle>,
+        overrides: Option<&DeviceOverride>,
+        max_adu_reporting: MaxAduReporting,
+    ) -> Self {
         let info = handle.info();
         let unique_id = handle.unique_id();
         let name = overrides
@@ -238,6 +249,7 @@ impl ZwoCamera {
             name,
             description,
             state: Arc::new(DeviceState::new()),
+            max_adu_reporting,
             config_ctx: None,
         }
     }
@@ -499,13 +511,18 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
 ///
-/// This is a **saturation threshold chosen to be reachable**, not an exact
-/// upper bound on the pixel values. *In the shifted branch* — a sub-16-bit
-/// depth in Raw16, where the margin applies — a sensor that reaches its top
-/// ADC code delivers pixels one quantization step above it. Every other branch
-/// returns its own container's maximum, which nothing delivered in that
-/// container can exceed: `u16::MAX` for the remaining Raw16 depths, and
-/// `u8::MAX` for Raw8.
+/// Under [`MaxAduReporting::SaturationThreshold`] (the default) this is a
+/// **saturation threshold chosen to be reachable**, not an exact upper bound on
+/// the pixel values. *In the shifted branch* — a sub-16-bit depth in Raw16,
+/// where the margin applies — a sensor that reaches its top ADC code delivers
+/// pixels one quantization step above it. Every other branch returns its own
+/// container's maximum, which nothing delivered in that container can exceed:
+/// `u16::MAX` for the remaining Raw16 depths, and `u8::MAX` for Raw8.
+///
+/// [`MaxAduReporting::ContainerFullScale`] reports that container maximum in
+/// every Raw16 branch instead, matching ZWO's own ASCOM driver for clients
+/// written against it — at the cost of the detection described below. The two
+/// modes differ only in the shifted branch; everywhere else they already agree.
 ///
 /// "Reachable" is a design intent, not a guarantee: a sensor clipping *two* or
 /// more counts short would still never satisfy `pixel >= MaxADU`, and no
@@ -553,9 +570,15 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// `MaxADU` divide by zero. All of them report the container's own ceiling.
 /// Raw8 delivers 8-bit data whatever the ADC is and was measured reaching
 /// exactly 255 on every camera tried, so it takes no margin either.
-fn max_adu_for(image_type: ImageType, bit_depth: u32) -> u32 {
+fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting) -> u32 {
     match image_type {
         ImageType::Raw8 | ImageType::Y8 => u32::from(u8::MAX),
+        // The compatibility contract: the container's own maximum, which is
+        // what ZWO's own ASCOM driver reports. Deliberately ahead of the
+        // depth arms below — it is the whole point of the mode that it
+        // overrides the shift, and the arms it does not reach already agree
+        // with it.
+        _ if reporting == MaxAduReporting::ContainerFullScale => u32::from(u16::MAX),
         // No margin, for two different reasons: a depth that already fills the
         // container has no shift and so no slack to spend, while an unknown (0)
         // or degenerate (1) depth says nothing about the packing at all — there
@@ -785,6 +808,7 @@ impl Camera for ZwoCamera {
         Ok(max_adu_for(
             self.selected_format()?.image_type,
             self.info.bit_depth,
+            self.max_adu_reporting,
         ))
     }
 
@@ -1466,7 +1490,7 @@ mod tests {
     }
 
     fn connected_device(handle: MockCameraHandle) -> ZwoCamera {
-        let device = ZwoCamera::new(Arc::new(handle), None);
+        let device = ZwoCamera::new(Arc::new(handle), None, MaxAduReporting::default());
         device.connect().unwrap();
         device
     }
@@ -1511,14 +1535,65 @@ mod tests {
     /// `pixel >= MaxADU` impossible to satisfy on the ones that clip short.
     #[test]
     fn max_adu_is_one_step_below_the_delivered_format_full_scale() {
+        let threshold = MaxAduReporting::SaturationThreshold;
         // One quantization step below the shifted full scale, so a sensor that
         // clips short of its top ADC code still trips `pixel >= MaxADU`.
-        assert_eq!(max_adu_for(ImageType::Raw16, 12), 65_504);
-        assert_eq!(max_adu_for(ImageType::Raw16, 14), 65_528);
+        assert_eq!(max_adu_for(ImageType::Raw16, 12, threshold), 65_504);
+        assert_eq!(max_adu_for(ImageType::Raw16, 14, threshold), 65_528);
         // Raw8 delivers 8-bit data whatever the ADC is, and was measured
         // reaching 255, so it takes no margin.
-        assert_eq!(max_adu_for(ImageType::Raw8, 12), 255);
-        assert_eq!(max_adu_for(ImageType::Raw8, 16), 255);
+        assert_eq!(max_adu_for(ImageType::Raw8, 12, threshold), 255);
+        assert_eq!(max_adu_for(ImageType::Raw8, 16, threshold), 255);
+    }
+
+    /// The compatibility mode reports the container's own maximum in Raw16
+    /// whatever the ADC depth — the flat 65535 measured from ZWO's own ASCOM
+    /// driver on all three cameras.
+    #[test]
+    fn container_full_scale_reports_the_container_maximum_at_every_depth() {
+        let compat = MaxAduReporting::ContainerFullScale;
+        // The depths that carry a margin under the default lose it here: this
+        // is the whole point of the mode, not an oversight.
+        assert_eq!(max_adu_for(ImageType::Raw16, 12, compat), 65_535);
+        assert_eq!(max_adu_for(ImageType::Raw16, 14, compat), 65_535);
+        // Raw8's container is 8 bits wide, so its maximum is still 255 — the
+        // mode reports the *container's* ceiling, not a fixed 65535.
+        assert_eq!(max_adu_for(ImageType::Raw8, 12, compat), 255);
+    }
+
+    /// The two modes differ only where the shift creates a margin. Stated as a
+    /// test so that a future depth arm cannot silently diverge in a branch
+    /// where both readings are supposed to agree.
+    #[test]
+    fn the_modes_agree_wherever_no_margin_is_spent() {
+        for (image_type, depth) in [
+            (ImageType::Raw16, 16), // fills the container
+            (ImageType::Raw16, 0),  // unknown depth
+            (ImageType::Raw16, 1),  // degenerate depth
+            (ImageType::Raw8, 12),  // 8-bit container
+            (ImageType::Y8, 14),    // ditto
+        ] {
+            assert_eq!(
+                max_adu_for(image_type, depth, MaxAduReporting::SaturationThreshold),
+                max_adu_for(image_type, depth, MaxAduReporting::ContainerFullScale),
+                "{image_type:?} at depth {depth} must not depend on the mode"
+            );
+        }
+    }
+
+    /// The compatibility mode reproduces ZWO's defect on purpose: on a sensor
+    /// that clips short, no delivered pixel can satisfy `pixel >= MaxADU`.
+    /// Measured through ZWO's own driver, a blown-out frame reports zero
+    /// saturated pixels on all three cameras.
+    #[test]
+    fn container_full_scale_puts_the_measured_ceilings_out_of_reach() {
+        for (depth, delivered_ceiling) in [(14u32, 16_382u32 << 2), (12, 4_094 << 4)] {
+            let max_adu = max_adu_for(ImageType::Raw16, depth, MaxAduReporting::ContainerFullScale);
+            assert!(
+                delivered_ceiling < max_adu,
+                "compat mode is expected to make saturation undetectable at depth {depth}"
+            );
+        }
     }
 
     /// The margin exists only because the shift creates it. Without a shift
@@ -1526,13 +1601,14 @@ mod tests {
     /// rather than a value one count below it.
     #[test]
     fn max_adu_spends_no_margin_where_the_container_is_already_full() {
+        let threshold = MaxAduReporting::SaturationThreshold;
         // A 16-bit ADC fills the container: step 1, nothing to give back.
-        assert_eq!(max_adu_for(ImageType::Raw16, 16), 65_535);
+        assert_eq!(max_adu_for(ImageType::Raw16, 16, threshold), 65_535);
         // Unknown (0) and degenerate (1) depths give nothing to reason from;
         // 1 in particular would leave `(2 - 2) << 15` = 0 and make every
         // client normalising by MaxADU divide by zero.
-        assert_eq!(max_adu_for(ImageType::Raw16, 0), 65_535);
-        assert_eq!(max_adu_for(ImageType::Raw16, 1), 65_535);
+        assert_eq!(max_adu_for(ImageType::Raw16, 0, threshold), 65_535);
+        assert_eq!(max_adu_for(ImageType::Raw16, 1, threshold), 65_535);
     }
 
     /// The measured ASI178MM ceiling, stated as the hardware reported it: a
@@ -1540,13 +1616,36 @@ mod tests {
     /// saturation test clients actually write.
     #[test]
     fn measured_asi178mm_ceiling_registers_as_saturated() {
-        let max_adu = max_adu_for(ImageType::Raw16, 14);
+        let max_adu = max_adu_for(ImageType::Raw16, 14, MaxAduReporting::SaturationThreshold);
         let delivered_ceiling = 16_382u32 << 2;
         assert_eq!(delivered_ceiling, 65_528);
         assert!(
             delivered_ceiling >= max_adu,
             "a pixel at the sensor's real ceiling must read as saturated"
         );
+    }
+
+    /// The mode is service-wide config, so it has to survive the whole path
+    /// from `Config` into the ASCOM property — testing `max_adu_for` alone
+    /// would not catch a device that ignored what it was constructed with.
+    /// A 14-bit sensor is the case where the two modes genuinely differ.
+    #[tokio::test]
+    async fn the_configured_mode_reaches_the_max_adu_property() {
+        let accurate = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default().with_signal(0.25, 14)),
+            None,
+            MaxAduReporting::SaturationThreshold,
+        );
+        accurate.connect().unwrap();
+        assert_eq!(accurate.max_adu().await.unwrap(), 65_528);
+
+        let compat = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default().with_signal(0.25, 14)),
+            None,
+            MaxAduReporting::ContainerFullScale,
+        );
+        compat.connect().unwrap();
+        assert_eq!(compat.max_adu().await.unwrap(), 65_535);
     }
 
     /// RM1: the published list is the camera's advertised formats, best first,
@@ -1595,7 +1694,11 @@ mod tests {
 
     #[tokio::test]
     async fn electrons_per_adu_requires_a_connection() {
-        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
         let err = device.electrons_per_adu().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
@@ -1720,6 +1823,7 @@ mod tests {
         let device = ZwoCamera::new(
             Arc::new(MockCameraHandle::default().without_control(ControlType::Exposure)),
             None,
+            MaxAduReporting::default(),
         );
         assert_eq!(
             device.set_connected(true).await.unwrap_err().code,
@@ -1820,7 +1924,11 @@ mod tests {
 
     #[tokio::test]
     async fn reads_require_connection() {
-        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
         assert_eq!(
             device.camera_x_size().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
@@ -1829,14 +1937,22 @@ mod tests {
 
     #[tokio::test]
     async fn unique_id_is_serial_derived_and_non_empty() {
-        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
         assert!(!device.unique_id().is_empty());
         assert!(device.unique_id().contains("0a1b2c3d4e5f6071"));
     }
 
     #[tokio::test]
     async fn connection_flag_round_trips() {
-        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
         assert!(!device.connected().await.unwrap());
         device.set_connected(true).await.unwrap();
         assert!(device.connected().await.unwrap());
@@ -1916,6 +2032,7 @@ mod tests {
                     .with_video_formats(vec![ImageType::Rgb24, ImageType::Y8]),
             ),
             None,
+            MaxAduReporting::default(),
         );
         assert_eq!(
             device.set_connected(true).await.unwrap_err().code,
@@ -1929,7 +2046,7 @@ mod tests {
     #[tokio::test]
     async fn selecting_the_8_bit_mode_drives_the_download_and_max_adu() {
         let handle = Arc::new(MockCameraHandle::default());
-        let device = ZwoCamera::new(handle.clone(), None);
+        let device = ZwoCamera::new(handle.clone(), None, MaxAduReporting::default());
         device.set_connected(true).await.unwrap();
         device.set_readout_mode(1).await.unwrap();
         assert_eq!(device.max_adu().await.unwrap(), 255);
@@ -2065,7 +2182,11 @@ mod tests {
 
     #[tokio::test]
     async fn disconnected_start_exposure_is_not_connected() {
-        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
         let err = device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -2144,7 +2265,7 @@ mod tests {
     async fn reconnect_clears_error_state() {
         let handle = Arc::new(MockCameraHandle::default());
         handle.fail_capture.store(true, Ordering::SeqCst);
-        let device = ZwoCamera::new(handle.clone(), None);
+        let device = ZwoCamera::new(handle.clone(), None, MaxAduReporting::default());
         device.set_connected(true).await.unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -2292,7 +2413,11 @@ mod tests {
 
     #[tokio::test]
     async fn pulse_guide_disconnected_is_not_connected() {
-        let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
         assert_eq!(
             device
                 .pulse_guide(GuideDirection::North, Duration::from_millis(1))

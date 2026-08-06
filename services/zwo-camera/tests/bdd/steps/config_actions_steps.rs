@@ -44,6 +44,26 @@ async fn schema_describes_sections(world: &mut CameraWorld) {
     }
 }
 
+#[then("the schema should offer both MaxADU reporting modes")]
+async fn schema_offers_max_adu_modes(world: &mut CameraWorld) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let schema = &response["schema"];
+    assert!(
+        schema["properties"]
+            .as_object()
+            .expect("schema.properties is an object")
+            .contains_key("max_adu_reporting"),
+        "schema missing max_adu_reporting"
+    );
+    // The enum is what an operator picks from, so the wire names must be
+    // discoverable through the schema rather than only in the docs. schemars
+    // renders a fieldless enum as a $ref, so resolve it before asserting.
+    let text = serde_json::to_string(schema).expect("schema serializes");
+    for mode in ["saturation_threshold", "container_full_scale"] {
+        assert!(text.contains(mode), "schema does not offer {mode}: {text}");
+    }
+}
+
 #[then(regex = r"^the schema should mark (\S+) as a read-only field$")]
 async fn schema_marks_read_only(world: &mut CameraWorld, field: String) {
     let response = world.last_response.as_ref().expect("no response stashed");

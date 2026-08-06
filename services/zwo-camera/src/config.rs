@@ -32,6 +32,8 @@ pub const DEFAULT_PORT: u16 = 11122;
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial (Phase E+).
     pub devices: BTreeMap<String, DeviceOverride>,
+    /// Which `MaxADU` contract to present to clients (ST3).
+    pub max_adu_reporting: MaxAduReporting,
     /// HTTP server settings (the shared Alpaca `server` block).
     pub server: AlpacaServerConfig,
 }
@@ -40,9 +42,34 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             devices: BTreeMap::new(),
+            max_adu_reporting: MaxAduReporting::default(),
             server: AlpacaServerConfig::new(DEFAULT_PORT),
         }
     }
+}
+
+/// Which `MaxADU` contract the service presents (ST3).
+///
+/// The two differ **only** where the ADC is packed into a larger container —
+/// sub-16-bit depths in `Raw16`. `Raw8` reports 255 either way, and a 16-bit or
+/// unknown depth reports 65535 either way, because there the container's own
+/// maximum is the answer under both readings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaxAduReporting {
+    /// One quantization step below the delivered format's full scale, so that a
+    /// sensor clipping short of its top ADC code still satisfies
+    /// `pixel >= MaxADU`. The default: saturation detection is the capability
+    /// the property exists for, and it should work unconfigured.
+    #[default]
+    SaturationThreshold,
+    /// The delivered container's own maximum — 65535 in `Raw16`. What ZWO's own
+    /// ASCOM driver reports, for clients written against that value.
+    ///
+    /// This **disables saturation detection** on a sub-16-bit sensor: no pixel
+    /// can reach the value. It is a compatibility mode, not a second correct
+    /// answer.
+    ContainerFullScale,
 }
 
 /// Friendly overrides for a specific device, keyed by its SDK serial.
@@ -141,6 +168,45 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("filterwheel"), "{err}");
+    }
+
+    #[test]
+    fn max_adu_reporting_defaults_to_the_accurate_threshold() {
+        // Saturation detection is the capability MaxADU exists for, so it works
+        // without configuration; the ZWO-compatible value is the opt-out.
+        assert_eq!(
+            Config::default().max_adu_reporting,
+            MaxAduReporting::SaturationThreshold
+        );
+        // An older config predating the key must load and keep that default.
+        let c: Config = serde_json::from_str(r#"{"devices": {}}"#).unwrap();
+        assert_eq!(c.max_adu_reporting, MaxAduReporting::SaturationThreshold);
+    }
+
+    #[test]
+    fn max_adu_reporting_round_trips_through_its_wire_names() {
+        let c: Config =
+            serde_json::from_str(r#"{"max_adu_reporting": "container_full_scale"}"#).unwrap();
+        assert_eq!(c.max_adu_reporting, MaxAduReporting::ContainerFullScale);
+        // The serialized scaffold must parse back through the strict loader.
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains("container_full_scale"), "{text}");
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.max_adu_reporting, MaxAduReporting::ContainerFullScale);
+    }
+
+    #[test]
+    fn an_unknown_max_adu_reporting_value_is_rejected_loudly() {
+        // A typo must not silently fall back to the default and leave the
+        // operator believing they changed the contract. "65535" is the
+        // plausible wrong guess, since that is the value being asked for.
+        let err = serde_json::from_str::<Config>(r#"{"max_adu_reporting": "65535"}"#)
+            .unwrap_err()
+            .to_string();
+        // The message must name the accepted values, or the operator is left
+        // guessing at the spelling of a key they cannot see in the schema.
+        assert!(err.contains("saturation_threshold"), "{err}");
+        assert!(err.contains("container_full_scale"), "{err}");
     }
 
     #[test]

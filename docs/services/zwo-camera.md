@@ -339,6 +339,9 @@ ASI C API exposes and what `zwo-rs` will wrap.
   shift to step down from; an unknown depth reports 65535 because it says
   nothing about the packing at all — in both cases the value is the container's
   own maximum, so nothing can exceed it. Hardware-measured, see ST3.
+  Configurable: `max_adu_reporting` selects this accurate threshold (default) or
+  the flat container maximum that ZWO's own ASCOM driver reports, for clients
+  written against that value — see ST3 *the compatibility switch*.
   `SensorName` comes from the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
@@ -386,6 +389,8 @@ per-serial display overrides plus the port.
       "description": "ASI2600MM-Pro @ 1000mm"
     }
   },
+  // Which MaxADU contract to present (ST3). Omit for the accurate default.
+  "max_adu_reporting": "saturation_threshold",
   "server": {
     "port": 11122,
     "bind_address": "0.0.0.0",
@@ -409,6 +414,13 @@ Sections:
   (gain/offset/target temperature) — with heterogeneous cameras those are
   per-serial concerns and clients set them over ASCOM; per-serial defaults are
   deferred (see *Future Work*).
+- **max_adu_reporting** — Which `MaxADU` contract to present, service-wide:
+  `saturation_threshold` (default, the accurate reachable value) or
+  `container_full_scale` (a flat 65535 in `Raw16`, matching ZWO's own ASCOM
+  driver for clients written against it). Editable, but baked into each device
+  at construction, so it takes effect on the reload `config.apply` fires rather
+  than on the live objects. See ST3 *the compatibility switch* — the compat mode
+  disables saturation detection on sub-16-bit sensors.
 - **server.port** — Listening port (**11122**, next free in the 1112x family;
   11121 is `qhy-camera`). One port hosts all enumerated devices. Hard read-only
   (self-lockout: a port change would make the BFF lose the devices).
@@ -693,6 +705,14 @@ EAF; those belong to the other zwo services.)
   range — so identical 12-bit sensors disagree, and no formula derived from
   `BitDepth` can be exact on all of them.
 
+  **All three ceilings are confirmed through a second, independent driver
+  stack.** Driving the same three cameras through **ZWO's own ASCOM driver**
+  (6.5.36, ASCOM Platform 7.1.3, Windows) to saturation delivers 65528, 65504
+  and 65520 — identical to the values above, measured by different code, in a
+  different language, on a different operating system, against a different build
+  of the SDK. The per-model shortfall is therefore a property of the sensors,
+  not an artefact of this driver's unpacking.
+
   **One step is what the measurements support, not a proof.** Every sensor seen
   so far clips by at most one ADC count, so one step of margin is enough to
   make `pixel >= MaxADU` satisfiable on all of them. A model that clipped
@@ -729,6 +749,33 @@ EAF; those belong to the other zwo services.)
   one that asserts `≤ 1.0` would trip. That is the price of choosing a
   reachable saturation threshold over an exact upper bound, and ASCOM's single
   `MaxADU` cannot express both.
+
+  **The compatibility switch: `max_adu_reporting`.** ZWO ships its own ASCOM
+  driver for these cameras, and it reports a flat **65535** — measured on all
+  three, driver 6.5.36 under ASCOM Platform 7.1.3, constant across every readout
+  mode, five gains spanning each camera's full range, and every supported bin.
+  Clients written against ZWO's driver may therefore carry logic that assumes
+  65535, and for them this driver's accurate value is a behaviour change: pixels
+  never reach `MaxADU` on such a client's arithmetic *by design*, whereas here
+  they do, and on a sensor that reaches full scale they exceed it. A top-level
+  config key chooses which contract to present:
+
+  | `max_adu_reporting` | `Raw16`, sub-16-bit ADC | meaning |
+  |---|---|---|
+  | `saturation_threshold` *(default)* | `((2^BitDepth) - 2) << (16 - BitDepth)` | reachable — `pixel >= MaxADU` detects saturation |
+  | `container_full_scale` | 65535 | matches ZWO's own ASCOM driver; nothing can exceed it |
+
+  The setting is **service-wide** and changes only the shifted branch: `Raw8` is
+  255 either way, and a 16-bit or unknown depth is 65535 either way, because in
+  those branches the container maximum *is* the answer. The default is the
+  accurate value — saturation detection is the capability the property exists
+  for, and it should work without configuration; `container_full_scale` is the
+  deliberate opt-out for an installation whose client needs ZWO's number.
+
+  Choosing `container_full_scale` **disables saturation detection** on any
+  sub-16-bit sensor: that is precisely the state ZWO's driver is in, where a
+  fully blown-out frame reports zero pixels at or above `MaxADU` on all three
+  cameras. It is a compatibility mode, not a second correct answer.
 
   **Verified exhaustively, at every gain each camera advertises** — 601, 511
   and 101 values respectively, 1 213 frames, exposure scaled by `10^(gain/200)`
