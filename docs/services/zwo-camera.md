@@ -634,16 +634,37 @@ EAF; those belong to the other zwo services.)
   selected readout mode** (RM2), not `(2^BitDepth) - 1`:
   - `Raw8` → **255**, whatever the ADC depth is.
   - `Raw16` → `((2^BitDepth) - 1) << (16 - BitDepth)`: **65535** for a 16-bit
-    ADC, **65520** for a 12-bit one.
+    ADC, **65532** for a 14-bit one, **65520** for a 12-bit one.
 
   ASI packs sub-16-bit ADC data into the Raw16 container by *left-shifting* it,
   so the ceiling belongs to the container, not the ADC. Hardware-measured on a
   12-bit ASI120MC-S: every pixel's low 4 bits are zero and a saturated full
   frame tops out at exactly `4095 << 4 = 65520` — sixteen times the 4095 this
   driver used to report, so any client normalising by `MaxADU` mis-scaled
-  everything above 1/16 of range. (`svbony-camera` reached the same conclusion
-  on its SV605CC, there by rescale rather than shift.) An unknown (0) depth
-  falls back to the container's own 65535.
+  everything above 1/16 of range. The shift — rather than a rescale — is
+  **confirmed independently on a 14-bit ASI178MM**, whose pixels carry two
+  always-zero low bits at bin 1, so `16 - BitDepth` is a real packing rule and
+  not an extrapolation from one camera. (`svbony-camera` reached the same
+  *conclusion* on its SV605CC by the opposite mechanism — there a genuine
+  rescale, low bits populated.) An unknown (0) depth falls back to the
+  container's own 65535.
+
+  Two measured caveats, neither of which the formula expresses:
+
+  - **The shift signature is a bin-1 property.** At bin ≥ 2 the SDK combines
+    neighbouring ADC counts, which populates the low bits — an ASI178MM frame
+    at bin 2 looks "rescaled" by the low-bit test. The *ceiling* is unchanged,
+    so the single published `MaxADU` still describes every bin.
+  - **The formula is the container's ceiling, not necessarily the sensor's.**
+    The ASI178MM clips one ADC count short of full scale: comprehensively
+    blown-out frames top out at exactly `16382 << 2 = **65528**` and never
+    reach the 65532 the driver reports — at every gain from 0 to 510 and at
+    bins 1-3. The practical cost is that `pixel >= MaxADU` never fires on that
+    model, so a client cannot detect clipped stars, which is the same class of
+    defect the 4095 → 65520 correction fixed. The ASI120MC-S, by contrast,
+    does reach its full-scale `4095 << 4`, so the shortfall is per-sensor and
+    not derivable from anything the SDK reports. Tracked as
+    [#898](https://github.com/rusty-photon/rusty-photon/issues/898).
 
 ### Pulse guiding
 
@@ -796,10 +817,13 @@ members within their response targets:
 > the time, and ST3 has since corrected the formula behind them.** Neither run
 > compared the reported ceiling against the pixel values actually delivered; the
 > later ASI120MC-S measurement (below) shows ASI left-shifts sub-16-bit data into
-> the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. Both
-> cameras below are therefore expected to report 65520 (ASI1600MM-Cool) and 65532
-> (ASI178MM) now. Confirming that against the delivered data needs those cameras
-> back on the bench — tracked as a follow-up issue.
+> the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. The
+> **ASI178MM has since been re-measured** on the bench (2026-08-05) and now
+> reports 65532 — see *ASI178MM — the delivered ceiling* below, which also
+> records the one respect in which the hardware disagrees with that figure. The
+> **ASI1600MM-Cool has not**; it should now report 65520 instead of the 4095
+> below, but nobody has compared that against its delivered pixels. Tracked as
+> [#888](https://github.com/rusty-photon/rusty-photon/issues/888).
 
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
   0.00496 *(the camera was at gain 600; `ElecPerADU` is gain-scaled — see*
@@ -857,6 +881,35 @@ whose behaviour decides whether enumeration is a sufficient selection rule:
 `crates/zwo-rs/examples/probe_formats.rs` is the probe that produced these
 numbers; re-run it against any new ZWO model rather than assuming this one
 generalises.
+
+**ASI178MM — the delivered ceiling (2026-08-05).** The 14-bit half of the same
+question, re-measured on the bench at commit `269a4cc3` against the real SDK,
+because the ASI120MC-S alone could not distinguish a `16 - BitDepth` left shift
+from a model that delivers 14-bit data unshifted (which would have needed
+`MaxADU` 16383 after all). Full record:
+[docs/validation/2026-08-05-zwo-camera-asi178mm-maxadu/](../validation/2026-08-05-zwo-camera-asi178mm-maxadu/README.md).
+
+- **The shift model holds.** The camera advertises `[Raw8, Raw16]`, and its
+  `Raw16` pixels carry **two always-zero low bits** at bin 1 — a left shift by
+  `16 - 14`, exactly as on the 12-bit camera. The 16383 this doc recorded in
+  2026-06-20 was wrong by a factor of four; 65532 is the right order.
+- **But the sensor clips one ADC count short.** Comprehensively blown-out
+  frames top out at exactly `16382 << 2 = 65528`, never 65532 — measured at
+  gains 0/100/300/510, bins 1-3, and exposures 1 s/5 s/15 s, with ~98 000
+  pixels piled on 65528 and nothing above it. Through the driver over Alpaca,
+  a saturated full frame gives `pixels >= MaxADU` = **0**. See ST3 and
+  [#898](https://github.com/rusty-photon/rusty-photon/issues/898).
+- **Binning changes the packing but not the ceiling.** At bin ≥ 2 the SDK
+  combines neighbouring counts and the low bits populate, so the shift
+  signature is only visible at bin 1. The ceiling stays 65528, so one published
+  `MaxADU` still describes every bin.
+- **ConformU 4.4.0 clean on both suites** against the negotiated list —
+  `ReadoutModes Read OK Raw16` / `OK Raw8`, `MaxADU OK 65532` — with zero
+  errors, issues, configuration alerts or timing issues.
+
+`crates/zwo-rs/examples/probe_ceiling.rs` is the probe behind this one: it
+deliberately overexposes and prints the histogram tail, which is what separates
+a real clip from the brightest thing in the room.
 
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their
