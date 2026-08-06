@@ -13,7 +13,11 @@
 //!   immediately, with `IsPulseGuiding` true until the pulse's deadline (PG1/PG2).
 //! - **`ElectronsPerADU`** is a real native value (`ASI_CAMERA_INFO.ElecPerADU`),
 //!   read live because the SDK scales it by the gain register (ST2).
-//! - **`MaxADU` = 2^BitDepth − 1** (65535 for a 16-bit sensor).
+//! - **`MaxADU` is a saturation threshold, not `2^BitDepth − 1`** — the ADC
+//!   scale shifted into the delivered container, one quantization step below
+//!   full scale so a sensor that clips short still trips `pixel >= MaxADU`
+//!   (ST3). 65535 for a 16-bit sensor, where there is no shift to step down
+//!   from.
 //!
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
@@ -1487,11 +1491,18 @@ mod tests {
 
     // --- pure helpers -----------------------------------------------------------
 
-    /// The ceiling belongs to the delivered format, not the ADC. Pinned by the
-    /// ASI120MC-S measurement: a 12-bit ADC left-shifted into Raw16 saturates a
-    /// full frame at exactly 65520, not at the 4095 this used to report.
+    /// The threshold belongs to the delivered format, not the ADC — and it sits
+    /// one quantization step below that format's full scale.
+    ///
+    /// **These values are deliberately not the shifted full scale**, so do not
+    /// "correct" 65504 to 65520 or 65528 to 65532: that would undo the margin
+    /// and silently restore the defect it exists to prevent. A 12-bit ADC
+    /// left-shifted into Raw16 tops out at 65520 on the ASI120MC-S but at
+    /// 65504 on the ASI1600MM-Cool, and a 14-bit one at 65528 on the ASI178MM —
+    /// so the top code is not reachable on every sensor, and reporting it makes
+    /// `pixel >= MaxADU` impossible to satisfy on the ones that clip short.
     #[test]
-    fn max_adu_follows_the_delivered_format_not_the_adc_depth() {
+    fn max_adu_is_one_step_below_the_delivered_format_full_scale() {
         // One quantization step below the shifted full scale, so a sensor that
         // clips short of its top ADC code still trips `pixel >= MaxADU`.
         assert_eq!(max_adu_for(ImageType::Raw16, 12), 65_504);
