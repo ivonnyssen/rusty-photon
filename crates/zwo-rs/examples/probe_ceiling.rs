@@ -65,8 +65,16 @@ fn main() {
     );
 
     // What ST3 would predict from the advertised depth alone, for comparison
-    // against what the sensor actually delivers.
-    let predicted = ((1u32 << info.bit_depth) - 1) << (16 - info.bit_depth);
+    // against what the sensor actually delivers. This has to mirror the
+    // driver's `max_adu_for` exactly, fallback included — `bit_depth` is
+    // `unwrap_or(0)` at the FFI boundary, and a probe that printed 0 (or
+    // shifted past the container) would be reporting a prediction the driver
+    // never makes.
+    let predicted = if info.bit_depth == 0 || info.bit_depth >= 16 {
+        u32::from(u16::MAX)
+    } else {
+        ((1u32 << info.bit_depth) - 1) << (16 - info.bit_depth)
+    };
     println!("ST3 predicts Raw16 MaxADU = {predicted}");
 
     // Every geometry must satisfy the SDK's width%8 / height%2 rule *after*
@@ -143,9 +151,12 @@ fn report(camera: &Camera, shot: &Shot) {
         "  {:?} bin {} gain {:>3} {:>8}us:",
         shot.image_type, shot.bin, shot.gain, shot.exposure_us
     );
-    let Some(buf) = expose(camera, shot) else {
-        println!("{prefix} exposure FAILED");
-        return;
+    let buf = match expose(camera, shot) {
+        Ok(buf) => buf,
+        Err(reason) => {
+            println!("{prefix} {reason}");
+            return;
+        }
     };
 
     if shot.image_type == ImageType::Raw8 {
@@ -198,9 +209,10 @@ fn histogram_tail(pixels: &[u16]) -> String {
         .join(" ")
 }
 
-/// Apply the settings, expose, and download. `None` if the SDK reported a
-/// failed exposure.
-fn expose(camera: &Camera, shot: &Shot) -> Option<Vec<u8>> {
+/// Apply the settings, expose, and download. `Err` with the reason if the SDK
+/// reported a failed exposure or the frame never arrived — a sweep of a dozen
+/// long exposures should report the bad one and carry on, not die on it.
+fn expose(camera: &Camera, shot: &Shot) -> Result<Vec<u8>, String> {
     camera
         .set_roi_format(shot.width, shot.height, shot.bin, shot.image_type)
         .expect("set_roi_format");
@@ -220,15 +232,20 @@ fn expose(camera: &Camera, shot: &Shot) -> Option<Vec<u8>> {
     loop {
         match camera.exposure_status().expect("exposure_status") {
             ExposureStatus::Success => break,
-            ExposureStatus::Failed => return None,
+            ExposureStatus::Failed => return Err("exposure FAILED (SDK)".to_owned()),
             _ => {}
         }
-        assert!(Instant::now() < deadline, "exposure timed out");
+        if Instant::now() >= deadline {
+            // Leave the camera idle rather than mid-exposure, so the next shot
+            // in the sweep starts from a clean state.
+            let _ = camera.stop_exposure();
+            return Err("exposure TIMED OUT".to_owned());
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
 
     let roi = camera.roi_format().expect("roi_format");
     let mut buf = vec![0u8; roi.buffer_len().expect("addressable frame")];
     camera.download_exposure(&mut buf).expect("download");
-    Some(buf)
+    Ok(buf)
 }
