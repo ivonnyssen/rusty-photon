@@ -107,9 +107,19 @@ fix.
 > shifted full scale — `((2^BitDepth) - 2) << (16 - BitDepth)` — so this
 > camera advertises **65528**, exactly the ceiling measured above. Re-verified
 > on the same hardware: the same blown-out frame that gave
-> `pixels >= MaxADU` = 0 now gives **6 709**, and ConformU 4.4.0 stays clean
-> on both suites with `MaxADU OK 65528`. The figures in this record are the
-> pre-change measurements that motivated it, and are left as they were taken.
+> `pixels >= MaxADU` = 0 now gives **6 709**.
+>
+> **Two ConformU runs are archived here, and they report different `MaxADU`
+> values by design.** The `conformance.log` / `alpacaprotocol.log` pair above
+> is the *pre-change* run and shows `MaxADU OK 65532`; it is the evidence that
+> motivated the margin and is left exactly as taken. The re-verification after
+> the change is preserved separately as
+> [post-margin-conformance.log](post-margin-conformance.log),
+> [post-margin-alpacaprotocol.log](post-margin-alpacaprotocol.log) and
+> [post-margin-conformance-results.json](post-margin-conformance-results.json)
+> — also clean on both suites (0/0/0/0, 82 timed members), with
+> `MaxADU OK 65528`. Read the pair by date: the numbers in the body of this
+> record are the pre-change measurements.
 
 ### Binning changes the packing, not the ceiling
 

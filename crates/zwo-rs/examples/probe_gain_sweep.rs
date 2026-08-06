@@ -35,6 +35,19 @@ fn main() {
     println!("{} camera(s) attached\n", cameras.len());
 
     for (index, info) in cameras.iter().enumerate() {
+        // Every frame below is Raw16, so a camera that does not offer it has
+        // nothing to contribute. Skip rather than let `set_roi_format` panic
+        // through `expect` and abort the remaining cameras — this sweep runs
+        // for an hour, and losing the cameras after the odd one out would be a
+        // poor trade. (RM3 notes no such ASI model is known; Raw8 is the SDK's
+        // universal baseline. This is cheap insurance, not an observed case.)
+        if !info.supported_video_formats.contains(&ImageType::Raw16) {
+            println!(
+                "-- camera {index} ({}) advertises {:?}, no Raw16 — skipped",
+                info.name, info.supported_video_formats
+            );
+            continue;
+        }
         let camera = match sdk.open_camera(index) {
             Ok(camera) => camera,
             Err(e) => {
