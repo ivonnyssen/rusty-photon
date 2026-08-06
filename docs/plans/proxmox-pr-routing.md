@@ -26,7 +26,8 @@ the full layered contract and its rationale.
 | R3 | Windows runner template + orchestrator pool slots (Windows slot, second Linux slot) | Done |
 | R4 | Route Windows: `bazel / windows-latest` with the `RP_POOL_WINDOWS` kill switch | Done |
 | R4b | Route msi.yml `build-verify` | Blocked on a timing measurement |
-| R5 | Route `bazel coverage` | Planned |
+| R5a | Route `bazel coverage`: workflow routing in bazel-coverage.yml | Done (workflow); **blocked on R5b before it takes effect** |
+| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Not started — prerequisite for R5a |
 
 Current state: `bazel / ubuntu-latest` and `bazel / windows-latest` run on
 the pool for push-to-main and same-repo PRs; `bazel coverage` and the macOS
@@ -34,9 +35,14 @@ leg do not. Templates and clone VMIDs live in the `SLOTS` array in
 `tools/ci/rp-runner-pool.sh`, which is the source of truth for what the pool
 runs — check there, not this document.
 
-R5 is ready to start: it needs the routing expression and a second Linux
-slot (a PR event fires both Linux legs at once, so routing coverage without
-one would queue one behind the other on every PR), and both are in place.
+R5 splits into a workflow change (R5a) and a template change (R5b), and the
+ordering is load-bearing: `RP_POOL_LINUX` is already `on` for the build/test
+leg, and R5a's routing gates on that same switch, so R5a takes effect the
+moment it merges. **R5b must land first** — without the nightly toolchain and
+instrumented externals pre-fetched into the Linux template's output base,
+every ephemeral coverage clone would re-fetch the nightly toolchain over the
+WAN on every job, defeating the pool's zero-WAN property. The second Linux
+slot R5 needs (a PR event fires both Linux legs at once) is already in place.
 R4b needs a measurement first.
 
 Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
@@ -189,7 +195,10 @@ not a required check, so a pool hiccup has a smaller blast radius.
 ### R5 — Route `bazel coverage`
 
 The third required Bazel check (bazel-coverage.yml), same recipe as the
-Linux leg above with three coverage-specific points:
+Linux leg above with three coverage-specific points. Points 1 and 2 (the
+routing expression and the cache split, plus the provisioning guards) are
+implemented in bazel-coverage.yml (R5a); point 3 (the template warmup, R5b)
+is the remaining prerequisite and must land before R5a takes effect:
 
 1. **Expression.** Not a matrix job, so the routing expression above with a
    literal fallback: `… && fromJSON('["self-hosted", "proxmox-ephemeral"]') ||
