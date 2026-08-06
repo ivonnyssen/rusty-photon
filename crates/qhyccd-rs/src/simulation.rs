@@ -576,12 +576,31 @@ pub enum ImagePattern {
 /// — a multi-megapixel frame is millions of samples.
 struct PixelNoise {
     state: u32,
+    /// `2 * range + 1`, the width of the interval samples land in. Held rather
+    /// than recomputed because `range` is fixed for a whole frame and
+    /// `next_signed` runs once per pixel.
+    span: u64,
+    /// The same `range`, in the width the subtraction needs.
+    range: i64,
 }
 
 impl PixelNoise {
-    fn new(seed: u32) -> Self {
-        // xorshift is stuck at zero; force a nonzero start.
-        Self { state: seed | 1 }
+    /// `range` is the half-width of the interval `next_signed` draws from; a
+    /// negative one is no noise at all, which `span == 1` yields for free.
+    fn new(seed: u32, range: i32) -> Self {
+        let range = range.max(0);
+        // Once per frame, so the saturating spellings cost nothing: `range`
+        // fits `i32`, so `2 * range + 1` cannot leave `u64` and neither arm
+        // can be taken.
+        let span = u64::from(range.unsigned_abs())
+            .saturating_mul(2)
+            .saturating_add(1);
+        Self {
+            // xorshift is stuck at zero; force a nonzero start.
+            state: seed | 1,
+            span,
+            range: i64::from(range),
+        }
     }
 
     fn next_u32(&mut self) -> u32 {
@@ -600,15 +619,14 @@ impl PixelNoise {
     /// megapixel per frame the divide was most of the cost of generating one,
     /// and it dominated the loop badly enough to make an indexed write look
     /// faster than walking the buffer.
-    fn next_signed(&mut self, range: i32) -> i32 {
-        if range <= 0 {
-            return 0;
-        }
-        let span = u64::from(range.unsigned_abs()) * 2 + 1;
-        // `scaled < span`, so the difference lands in `-range..=range` and
-        // therefore fits `i32` whenever `range` does.
-        let scaled = (u64::from(self.next_u32()) * span) >> 32;
-        (scaled as i64 - i64::from(range)) as i32
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        reason = "every step is bounded, and this body runs once per pixel: `range <= i32::MAX` gives `span <= 2^32 - 1`, so the product is at most `(2^32 - 1)^2 = 2^64 - 2^33 + 1`, inside `u64` with 2^33 - 1 to spare; `scaled < span` then puts the difference in `-range..=range`, which fits `i32` because `range` did. Neither cast has a total spelling that is not a dead arm, and writing the arithmetic saturating instead measured +45% on the per-pixel loop"
+    )]
+    fn next_signed(&mut self) -> i32 {
+        let scaled = (u64::from(self.next_u32()) * self.span) >> 32;
+        (scaled as i64 - self.range) as i32
     }
 }
 
@@ -831,14 +849,14 @@ impl ImageGenerator {
     fn generate_gradient_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let [base, _] = self.base_level.to_be_bytes();
         let noise_range = quantize::to_i32(255.0 * self.noise_level);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // Rows and pixels are chunks of the buffer, so the column index stays a
         // coordinate the ramp reads and never becomes an offset.
         for row in data.chunks_exact_mut(frame.row_bytes) {
             for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 let gradient = quantize::to_u8((f64::from(x) / f64::from(frame.width)) * 200.0);
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 let value = sample_u8(
                     i32::from(base)
                         .saturating_add(i32::from(gradient))
@@ -858,12 +876,12 @@ impl ImageGenerator {
         data.par_chunks_mut(frame.row_bytes)
             .enumerate()
             .for_each(|(y, row)| {
-                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y));
+                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y), noise_range);
 
                 for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                     let gradient =
                         quantize::to_u16((f64::from(x) / f64::from(frame.width)) * 50000.0);
-                    let noise = noise_source.next_signed(noise_range);
+                    let noise = noise_source.next_signed();
                     let value = sample_u16(
                         i32::from(base_level)
                             .saturating_add(i32::from(gradient))
@@ -885,19 +903,19 @@ impl ImageGenerator {
         // Fill with background noise
         let [base, _] = self.base_level.to_be_bytes();
         let noise_range = quantize::to_i32(255.0 * self.noise_level * 0.5); // Less noise for starfield
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // One draw per pixel, replicated across its channels — the model the
         // 16-bit starfield and every other generator here uses. A mono frame's
         // pixel is a single byte, where chunking costs more than this body does.
         if frame.pixel_bytes == 1 {
             for sample in data.iter_mut() {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 *sample = sample_u8(i32::from(base).saturating_add(noise));
             }
         } else {
             for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 pixel.fill(sample_u8(i32::from(base).saturating_add(noise)));
             }
         }
@@ -930,10 +948,10 @@ impl ImageGenerator {
     ) {
         // Fill with background noise
         let noise_range = quantize::to_i32(65535.0 * self.noise_level * 0.3);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-            let noise = noise_source.next_signed(noise_range);
+            let noise = noise_source.next_signed();
             let value = sample_u16(i32::from(self.base_level).saturating_add(noise));
 
             write_sample(pixel, value);
@@ -1057,7 +1075,7 @@ impl ImageGenerator {
     fn generate_flat_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let [base, _] = self.base_level.to_be_bytes();
         let noise_range = quantize::to_i32(255.0 * self.noise_level);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // A flat is uniform, so the pixel's position never enters the value —
         // walking pixels is the whole loop. A mono frame's pixel *is* its
@@ -1065,12 +1083,12 @@ impl ImageGenerator {
         // body does, so that case walks samples directly.
         if frame.pixel_bytes == 1 {
             for sample in data.iter_mut() {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 *sample = sample_u8(i32::from(base).saturating_add(noise));
             }
         } else {
             for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 pixel.fill(sample_u8(i32::from(base).saturating_add(noise)));
             }
         }
@@ -1078,10 +1096,10 @@ impl ImageGenerator {
 
     fn generate_flat_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-            let noise = noise_source.next_signed(noise_range);
+            let noise = noise_source.next_signed();
             let value = sample_u16(i32::from(self.base_level).saturating_add(noise));
 
             write_sample(pixel, value);
@@ -1090,7 +1108,7 @@ impl ImageGenerator {
 
     fn generate_test_pattern_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(255.0 * self.noise_level * 0.5);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // The frame's centre, and the vertical leg of the distance to it: both
         // are invariant across the row, so only the horizontal leg is per-pixel.
@@ -1116,7 +1134,7 @@ impl ImageGenerator {
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod = if ring == 0 { 20 } else { -20 };
 
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 let value = sample_u8(
                     i32::from(base)
                         .saturating_add(ring_mod)
@@ -1130,7 +1148,7 @@ impl ImageGenerator {
 
     fn generate_test_pattern_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level * 0.5);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         let (cx, cy) = (frame.width / 2, frame.height / 2);
 
@@ -1153,7 +1171,7 @@ impl ImageGenerator {
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod: i32 = if ring == 0 { 5000 } else { -5000 };
 
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 let value = sample_u16(
                     i32::from(base)
                         .saturating_add(ring_mod)
@@ -1185,15 +1203,18 @@ mod image_generator_tests {
 
     #[test]
     fn pixel_noise_zero_or_negative_range_is_zero() {
-        let mut noise = PixelNoise::new(42);
-        assert_eq!(noise.next_signed(0), 0);
-        assert_eq!(noise.next_signed(-5), 0);
+        // A zero range gives a span of one, so every draw scales to zero; a
+        // negative one is clamped to the same thing rather than rejected.
+        let mut zero = PixelNoise::new(42, 0);
+        let mut negative = PixelNoise::new(42, -5);
+        assert!((0..100).all(|_| zero.next_signed() == 0));
+        assert!((0..100).all(|_| negative.next_signed() == 0));
     }
 
     #[test]
     fn pixel_noise_stays_within_range_and_varies() {
-        let mut noise = PixelNoise::new(7);
-        let samples: Vec<i32> = (0..1000).map(|_| noise.next_signed(100)).collect();
+        let mut noise = PixelNoise::new(7, 100);
+        let samples: Vec<i32> = (0..1000).map(|_| noise.next_signed()).collect();
         assert!(samples.iter().all(|v| (-100..=100).contains(v)));
         assert!(
             samples.iter().any(|v| *v != samples[0]),
@@ -1207,8 +1228,8 @@ mod image_generator_tests {
         // that lost the top value would bias every frame dark, and one that
         // overshot would push samples outside the envelope the generators
         // clamp against. 20k draws over a 21-wide span settle it.
-        let mut noise = PixelNoise::new(3);
-        let samples: Vec<i32> = (0..20_000).map(|_| noise.next_signed(10)).collect();
+        let mut noise = PixelNoise::new(3, 10);
+        let samples: Vec<i32> = (0..20_000).map(|_| noise.next_signed()).collect();
         assert_eq!(*samples.iter().min().unwrap(), -10);
         assert_eq!(*samples.iter().max().unwrap(), 10);
     }

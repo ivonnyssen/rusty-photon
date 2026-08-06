@@ -806,6 +806,81 @@ generalize: **a same-process A/B is the only comparison that survives layout
 noise**, and **a saturating spelling in a vectorizable loop can cost far more
 than the widening it avoids.**
 
+### L5c — the noise source, and three benchmarks that disagreed
+
+`PixelNoise::next_signed` was the file's hottest body — one call per pixel, so
+6.3 million per full frame — and carried five of the ten sites left after the
+star geometry. It recomputed a value that could not change:
+
+```rust
+fn next_signed(&mut self, range: i32) -> i32 {
+    if range <= 0 { return 0; }
+    let span = u64::from(range.unsigned_abs()) * 2 + 1;   // per pixel
+    let scaled = (u64::from(self.next_u32()) * span) >> 32;
+    (scaled as i64 - i64::from(range)) as i32
+}
+```
+
+`range` is fixed for a whole frame, so `span` belongs on the struct. Moving it
+there deletes one site outright, lets the constructor spell the remaining
+arithmetic saturating for free (once per frame), and drops the per-pixel
+`range <= 0` branch — a zero range now yields a span of one, which scales every
+draw to zero anyway. What is left is two lines under **one** `#[expect]`
+carrying the bound proof: `range <= i32::MAX` gives `span <= 2^32 - 1`, so the
+product is at most `(2^32 - 1)^2 = 2^64 - 2^33 + 1`, inside `u64` with `2^33 - 1`
+to spare.
+
+**Neither cast has a total spelling.** `scaled as i64` and the final `as i32`
+are both provably in range, and both `try_from` forms would be arms that can
+never be taken — the dead-arm trap this plan has hit before. An `#[expect]` is
+the honest answer where a `checked_*` would be theatre.
+
+10 sites → 5.
+
+#### Three benchmarks, three answers, one that was measuring the right thing
+
+This is the part worth carrying forward, because two of the three were
+convincing and wrong:
+
+| how it was measured | verdict on the hoist |
+|---|---|
+| microbenchmark accumulating draws into an `i64` | **−12 to −14%** |
+| whole generators, separate binaries, min of 5 passes | inconclusive (±8% noise) |
+| **the real loop body, both forms in one process** | **0%** |
+
+The microbenchmark's `acc += next_signed()` creates a dependency chain that
+exposes the span computation's latency. The real loop stores to an independent
+buffer, so out-of-order execution hides that work entirely behind the xorshift's
+own state chain — the recomputation was *already free*, and the 14% was an
+artifact of the harness. The cross-binary run, meanwhile, could not see anything
+at all: `generate_gradient_8bit` moved +8% between builds that do not change it.
+
+**So the hoist is not a speedup, and this plan should not claim one.** It is
+worth keeping because a frame-invariant value computed per pixel is wrong on its
+own terms, and because it shrinks the exemption. What *is* a measured result is
+the alternative:
+
+| per-pixel noise draw, 6.29 M samples | |
+|---|---|
+| recompute the span (original) | 10.5 ms |
+| hoisted, arithmetic under `#[expect]` | 10.5 ms |
+| **hoisted, arithmetic saturating** | **15.3 ms (+45%)** |
+
+That is the second time in this rung a saturating spelling cost far more than
+the widening it avoided — the star geometry's integer variant measured +50%.
+Two sites, two independent measurements, one rule: **inside a per-pixel loop,
+reach for `#[expect]` with a bound proof, not for `saturating_*`.** Outside one,
+saturating is free and should stay the default.
+
+#### Frames are non-deterministic, so compare the stream
+
+An attempt to verify the hoist by hashing generated frames failed before it
+started: `generate_8bit` draws `frame_seed` from `rand::rng()` on every call, by
+design, so two runs of the *same binary* disagree. Only the zero-noise cases
+matched, which looked exactly like a real regression. The check that works is
+the noise stream itself — `next_signed` for a fixed seed — which is identical
+before and after across ranges 0, 10, 100, 65535 and `i32::MAX`.
+
 ## L6a — split the CI channels
 
 Being strict on stable and getting early warning from beta are two goals, and
