@@ -864,6 +864,13 @@ pub(crate) mod mock {
             }
         }
 
+        /// Seed the slot the wheel reports, so a handshake can be handed a
+        /// position outside the wheel's own slot count — what the CFW status
+        /// decode produces for any nonstandard status byte.
+        pub fn set_reported_position(&self, position: u32) {
+            *self.position.lock() = position;
+        }
+
         /// Land a move parked by [`defer_move`](Self::defer_move).
         pub fn complete_move(&self) {
             if let Some(position) = self.pending.lock().take() {

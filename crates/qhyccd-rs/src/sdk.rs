@@ -75,8 +75,12 @@ impl Sdk {
                     num => Ok(num),
                 }?;
 
-                let mut cameras = Vec::with_capacity(num_cameras as usize);
-                let mut filter_wheels = Vec::with_capacity(num_cameras as usize);
+                // Capacity is only a hint, so a count too large to address just
+                // means no preallocation — the scan below is bounded by that
+                // same count.
+                let hint = usize::try_from(num_cameras).unwrap_or(0);
+                let mut cameras = Vec::with_capacity(hint);
+                let mut filter_wheels = Vec::with_capacity(hint);
                 for index in 0..num_cameras {
                     let id = {
                         let mut c_id: [c_char; 32] = [0; 32];
