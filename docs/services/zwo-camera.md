@@ -657,7 +657,7 @@ EAF; those belong to the other zwo services.)
     so the single published `MaxADU` still describes every bin.
   - **The formula is the container's ceiling, not necessarily the sensor's.**
     The ASI178MM clips one ADC count short of full scale: comprehensively
-    blown-out frames top out at exactly `16382 << 2 = **65528**` and never
+    blown-out frames top out at exactly `16382 << 2` = **65528** and never
     reach the 65532 the driver reports — at every gain from 0 to 510 and at
     bins 1-3. The practical cost is that `pixel >= MaxADU` never fires on that
     model, so a client cannot detect clipped stars, which is the same class of
