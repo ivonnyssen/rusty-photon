@@ -264,14 +264,60 @@ is the only remaining lever on #765 — see the wedge note below.
 Four phases, mirroring R1–R4. The security contract is unchanged: every
 ADR-020 layer must hold on the new host before the leg is routed.
 
-**R8a — measure before buying.** GitHub's hosted `macos-latest` gives public
-repos a 3-core M1; a base M4 mini is 10 cores. That should be decisive, but
-"should" is not a measurement and this project's rule is to measure first.
-Borrow or rent an Apple Silicon machine for an afternoon, run the three
-Bazel steps against the LAN cache, and compare with the 334s median above.
-Acceptance: the whole job beats hosted by enough to matter after a
-cold-cache first run — the same bar R2 and R4 cleared. If it does not, stop
-here; the rest of this phase is wasted money.
+**R8a — measure before buying.** The operator's MacBook Pro (M5 Max, 128 GB)
+is the measurement host: enough memory to run the target two-slot
+arrangement with headroom, so this phase answers the *sizing* question as
+well as the speed one, and no hardware is bought on an estimate. Three
+measurements, in order of what they decide:
+
+1. **Speed, the purchase gate.** The three Bazel steps against the LAN
+   cache, cold then warm — the LAN cache's macOS namespace is empty (only
+   Linux and Windows jobs have ever written to it), so the first run is
+   genuinely cold and the pair is what to read. Acceptance: the whole job
+   beats the 334s hosted median by enough to matter, the same bar R2 and R4
+   cleared.
+
+   Constrain it: `--local_resources=cpu=<mini core count>`. An M5 Max has
+   more, and faster, cores than any mini, so an unconstrained number
+   flatters the purchase. Even constrained this is an **upper bound** —
+   capping the count does not slow the cores — so read it as "the mini will
+   not beat this" and leave margin above the acceptance bar.
+
+   One trap: `build:macos --action_env=GITHUB_WORKSPACE` bakes that path
+   into every macOS action key, so a build run by hand outside the Actions
+   runner misses the cache entirely unless the variable is exported to the
+   path CI uses. Useful when deliberately measuring uncached, baffling
+   otherwise.
+2. **Slot RAM, which decides what to buy.** Run the full `build` + `test` +
+   `bdd` sequence inside a Tart VM sampling every 2s, at two VM sizes so the
+   elastic component shows — the same method the x86 slots were sized with.
+   The estimate this plan carries is ~16 GiB per slot, extrapolated from the
+   12-core Linux clone's 8.96 GiB peak, and it is an extrapolation until
+   this runs. Pin the VM's vCPU to the mini's core count: `test:ci
+   --local_test_jobs=HOST_CPUS*1.25` scales concurrent BDD suites with cores,
+   and each is a 3-process OmniSim + rp + session-runner trio, so an M5 Max's
+   core count would measure a machine nobody is buying. `.bazelrc`'s own
+   comment on that factor says to revisit it if larger runners join;
+   Windows already needed `test:windows --local_test_jobs=HOST_CPUS` and
+   macOS has no override.
+3. **Two concurrent VMs.** Both slots running the whole job at once —
+   mechanism (clone, JIT injection, one job, self-destroy, two runners on
+   distinct labels) and whether they contend. What this host *cannot* tell
+   you is sustained thermals: a laptop throttles differently than a mini on
+   a shelf.
+
+**Sizing conclusion this phase confirms or corrects.** At ~16 GiB per slot,
+two slots plus the macOS host and Tart is ~40 GiB, so **48 GB** is the buy —
+unified memory is soldered, which makes under-buying permanent and is why
+the margin is deliberate. 32 GB only works by giving something up: two
+12 GiB slots, below the 1.5×-peak rule, or a single slot. A single slot is
+less unreasonable than it sounds — macOS gets exactly one job per PR event,
+where Linux gets two after R5, and both Linux slots were busy simultaneously
+1.0% of the time — but the operator wants two, and two is what 48 GB buys.
+**Storage: 512 GB floor, 1 TB comfortable.** A macOS base image is 40–60 GB
+before the warmed output base and external repos, plus two clones on top
+(APFS copy-on-write, so mostly shared until written); 256 GB does not fit
+the template plus two clones.
 
 **R8b — host and template.** macOS guests may only be virtualized on Apple
 hardware, so the Mac is a second hypervisor rather than another Proxmox
