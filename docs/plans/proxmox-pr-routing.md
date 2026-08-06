@@ -5,8 +5,9 @@
 Route real `pull_request`-triggered CI legs of this public repository to the
 Proxmox ephemeral runner pool ([skill doc](../skills/proxmox-runner-pool.md)):
 `bazel / ubuntu-latest`, `bazel coverage` (bazel-coverage.yml), and
-`bazel / windows-latest` — the three required Bazel checks — plus msi.yml's
-`build-verify` if its measurement pans out. Fork PRs stay on GitHub-hosted
+`bazel / windows-latest` — the three required Bazel checks. msi.yml's
+`build-verify` was measured and deliberately left on hosted (R4b below). Fork
+PRs stay on GitHub-hosted
 runners and every layer of the security contract in
 [ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
 holds. Measured baseline: the pool completes the Linux Bazel steps in ~16 s
@@ -25,7 +26,7 @@ the full layered contract and its rationale.
 | R2 | Route Linux: conditional `runs-on` in bazel.yml, LAN write secret gated on push, provisioning guards, kill switch | Done |
 | R3 | Windows runner template + orchestrator pool slots (Windows slot, second Linux slot) | Done |
 | R4 | Route Windows: `bazel / windows-latest` with the `RP_POOL_WINDOWS` kill switch | Done |
-| R4b | Route msi.yml `build-verify` | Blocked on a timing measurement |
+| R4b | Route msi.yml `build-verify` | Measured — not routing (a wash; stays hosted) |
 | R5a | Route `bazel coverage`: workflow routing in bazel-coverage.yml | Done |
 | R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903 |
 
@@ -45,7 +46,7 @@ base (rolled in via #903); without it every ephemeral coverage clone would
 re-fetch the nightly toolchain over the WAN, defeating the pool's zero-WAN
 property. Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
 clone versus ~12 min cold. The second Linux slot R5 needs (a PR event fires
-both Linux legs at once) is in place. R4b still needs a measurement.
+both Linux legs at once) is in place. R4b was measured and stays hosted.
 
 Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
 the strongest motivation — the remote-cache wedge ladder — is tracked in
@@ -184,15 +185,28 @@ main.
 
 ## Remaining work
 
-### R4b — Route msi.yml `build-verify`
+### R4b — Route msi.yml `build-verify` (Measured — not routing)
 
-Blocked on a measurement that has not been taken. `build-verify` is Cargo,
-not Bazel, so the LAN Bazel cache does not help it; the open questions are
-raw cores versus hosted, and whether `Swatinem/rust-cache` (which pulls over
-the WAN) helps or hurts on this link. Measure the release compile on the
-Windows template first and route it only if it beats hosted. It is
-`pull_request` path-triggered, so the same fork exclusion applies, and it is
-not a required check, so a pool hiccup has a smaller blast radius.
+Measured and **left on hosted**. `build-verify` is Cargo, not Bazel, so the
+LAN Bazel cache does not help it; the open questions were raw cores versus
+hosted, and whether `Swatinem/rust-cache` (which pulls over the WAN) helps or
+hurts on this link. Both were answered by a same-cache A/B: two
+`workflow_dispatch` runs of the same commit, one pinned to the Windows pool
+and one on `windows-latest`.
+
+Result: **pool 726s versus hosted 732s — a wash.** The pool's 12-core clone
+compiles the suite ~200s faster (`Build the suite MSI` 425s vs 627s), but
+that entire advantage is eaten by `rust-cache`'s save-over-WAN Post step
+(224s) plus a smaller artifact-upload WAN tax (pool 31s vs hosted 4s). The
+cause is structural, not incidental: the ephemeral clone never persists a
+`target/` between jobs, so it pays the WAN cache tax on both ends of every
+run, while 12 cores make even a *cold* compile fast enough that `rust-cache`
+saves less than it costs to transfer — on this venue `rust-cache` is net
+overhead. A `rust-cache`-off pool variant would land at ~495s (a real ~32%
+win), but `build-verify` is a **non-required** check that fires only on
+packaging-input PRs and would contend for one of just two Windows slots
+against the required `bazel / windows-latest`, so the added complexity is not
+worth it. Left hosted; revisit only if msi latency ever starts to matter.
 
 ### R5 — Route `bazel coverage` (Done — implementation record)
 
