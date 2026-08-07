@@ -894,10 +894,16 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 ### Gain / offset / readout
 
 - **GO1.** `Gain`/`Offset` (`SVB_GAIN`/`SVB_BLACK_LEVEL`) return the
-  current SDK value, or `NOT_IMPLEMENTED` if the control is absent.
+  current SDK value, or `NOT_IMPLEMENTED` if the control is absent. The SDK
+  reports it as a `long`; a value outside ASCOM's `i32` returns
+  `INVALID_OPERATION` rather than a truncated number.
 - **GO2.** Setters validate against cached `[min, max]`; out-of-range →
   `INVALID_VALUE`.
-- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
+- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
+  converted **once at the open handshake** from the SDK's `long` to ASCOM's
+  `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
+  (`NOT_IMPLEMENTED` from all four members) rather than advertising a clamped
+  bound the camera would then reject.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   connect the driver intersects `SVB_CAMERA_PROPERTY.SupportedVideoFormat`
   with the formats it can deliver, in preference order `Raw16` then

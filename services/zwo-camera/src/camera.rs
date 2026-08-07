@@ -118,8 +118,12 @@ struct DeviceState {
     intended_roi: Mutex<Option<Roi>>,
     /// `(min, max)` exposure microseconds from `ASIGetControlCaps(ASI_EXPOSURE)`.
     exposure_range_us: Mutex<Option<(i64, i64)>>,
-    gain_min_max: Mutex<Option<(i64, i64)>>,
-    offset_min_max: Mutex<Option<(i64, i64)>>,
+    /// Gain range in ASCOM's own width, converted once at the open handshake
+    /// (see [`ascom_range`]). `None` means the control is not advertised —
+    /// either the model lacks it, or its range has no `i32` spelling.
+    gain_min_max: Mutex<Option<(i32, i32)>>,
+    /// Offset range, on the same terms as [`DeviceState::gain_min_max`].
+    offset_min_max: Mutex<Option<(i32, i32)>>,
     /// Whether the camera advertises an `ASI_TEMPERATURE` control (cached at the
     /// open handshake). Decoupled from cooling: most ASI cameras — cooled or not —
     /// expose a readable sensor temperature, so `CCDTemperature` is reported
@@ -332,10 +336,8 @@ impl ZwoCamera {
         })?;
         *self.state.exposure_range_us.lock() = Some((exposure.min, exposure.max));
 
-        *self.state.gain_min_max.lock() =
-            find(ControlType::Gain).map(|c: &ControlCaps| (c.min, c.max));
-        *self.state.offset_min_max.lock() =
-            find(ControlType::Offset).map(|c: &ControlCaps| (c.min, c.max));
+        *self.state.gain_min_max.lock() = find(ControlType::Gain).and_then(ascom_range);
+        *self.state.offset_min_max.lock() = find(ControlType::Offset).and_then(ascom_range);
         // `CCDTemperature` is reported whenever the sensor-temperature control is
         // present — independent of cooling (an uncooled ASI still reads its sensor
         // temperature). The cooler-setpoint members remain gated on `is_cooler_cam`.
@@ -484,6 +486,18 @@ fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
         width: extent(roi.width),
         height: extent(roi.height),
     }
+}
+
+/// A control's range as ASCOM must describe it, or `None` when the driver
+/// reports bounds outside `i32`.
+///
+/// ASCOM's `Gain`/`GainMin`/`GainMax` (and the offset trio) are `i32` while the
+/// ASI SDK reports control caps as `long`. Converting here rather than at each
+/// read asks the "does it fit?" question once, at the handshake, where leaving
+/// the control unadvertised is a meaningful answer — a clamped bound would
+/// advertise a maximum the camera then rejects.
+fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
+    Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
 }
 
 /// Greatest common divisor (Euclid).
@@ -1016,9 +1030,11 @@ impl Camera for ZwoCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::Gain)
-                .map(|g| g as i32)
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
+            let raw = h
+                .control_value(ControlType::Gain)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            i32::try_from(raw)
+                .map_err(|_| ASCOMError::invalid_operation(format!("camera reported gain {raw}")))
         })
         .await
     }
@@ -1026,21 +1042,21 @@ impl Camera for ZwoCamera {
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.gain_min_max.lock())
-            .map(|(min, _)| min as i32)
+            .map(|(min, _)| min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.gain_min_max.lock())
-            .map(|(_, max)| max as i32)
+            .map(|(_, max)| max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let (min, max) = (*self.state.gain_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
-        if i64::from(gain) < min || i64::from(gain) > max {
+        if gain < min || gain > max {
             return Err(ASCOMError::invalid_value(format!(
                 "gain {gain} outside [{min}, {max}]"
             )));
@@ -1058,9 +1074,11 @@ impl Camera for ZwoCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::Offset)
-                .map(|o| o as i32)
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
+            let raw = h
+                .control_value(ControlType::Offset)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            i32::try_from(raw)
+                .map_err(|_| ASCOMError::invalid_operation(format!("camera reported offset {raw}")))
         })
         .await
     }
@@ -1068,21 +1086,21 @@ impl Camera for ZwoCamera {
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.offset_min_max.lock())
-            .map(|(min, _)| min as i32)
+            .map(|(min, _)| min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.offset_min_max.lock())
-            .map(|(_, max)| max as i32)
+            .map(|(_, max)| max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let (min, max) = (*self.state.offset_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
-        if i64::from(offset) < min || i64::from(offset) > max {
+        if offset < min || offset > max {
             return Err(ASCOMError::invalid_value(format!(
                 "offset {offset} outside [{min}, {max}]"
             )));
@@ -2007,6 +2025,47 @@ mod tests {
         assert_eq!(device.gain().await.unwrap(), max);
         let err = device.set_gain(max + 1).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[test]
+    fn ascom_range_has_no_answer_for_bounds_outside_i32() {
+        let cap = |min, max| ControlCaps {
+            name: "Gain".to_string(),
+            control_type: ControlType::Gain,
+            min,
+            max,
+            default: 0,
+            is_writable: true,
+            is_auto_supported: false,
+        };
+        assert_eq!(ascom_range(&cap(0, 500)), Some((0, 500)));
+        assert_eq!(
+            ascom_range(&cap(0, i64::from(i32::MAX) + 1)),
+            None,
+            "a max above i32 must not saturate into a bound the camera never offered"
+        );
+        assert_eq!(ascom_range(&cap(i64::from(i32::MIN) - 1, 0)), None);
+    }
+
+    #[tokio::test]
+    async fn a_gain_range_outside_i32_leaves_the_control_unadvertised() {
+        // Degrade rather than lie: a clamped bound would advertise a maximum the
+        // camera then rejects.
+        let device = connected_device(MockCameraHandle::default().with_control_range(
+            ControlType::Gain,
+            0,
+            i64::from(i32::MAX) + 1,
+        ));
+        for code in [
+            device.gain().await.unwrap_err().code,
+            device.gain_min().await.unwrap_err().code,
+            device.gain_max().await.unwrap_err().code,
+            device.set_gain(5).await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_IMPLEMENTED);
+        }
+        // Offset is cached independently and is unaffected.
+        assert_eq!(device.offset_max().await.unwrap(), 1000);
     }
 
     #[tokio::test]

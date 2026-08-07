@@ -629,10 +629,22 @@ pub(crate) mod mock {
             self.controls.lock().remove(&control);
             self
         }
+        /// Drop a control on an already-constructed mock, so a *reconnect*
+        /// observes a camera that no longer advertises it.
+        pub fn remove_control(&self, control: ControlType) {
+            self.controls.lock().remove(&control);
+        }
         /// Add a control with a presence/value (e.g. `CamColor` → Bayer code, or
         /// `CamMechanicalShutter` to report a shutter).
         pub fn with_control(self, control: ControlType, value: u32) -> Self {
             self.controls.lock().insert(control, value);
+            self
+        }
+        /// Override a control's `(min, max, step)` range (e.g. a gain range too
+        /// wide for ASCOM's `i32`, to test that the control is left
+        /// unadvertised rather than clamped).
+        pub fn with_range(self, control: ControlType, range: (f64, f64, f64)) -> Self {
+            self.ranges.lock().insert(control, range);
             self
         }
         /// Override a numeric parameter returned by `get_parameter` (e.g. set

@@ -854,6 +854,19 @@ pub(crate) mod mock {
             self
         }
 
+        /// Override a control's caps range (e.g. a gain range too wide for
+        /// ASCOM's `i32`, to test that the control is left unadvertised rather
+        /// than clamped).
+        pub fn with_control_range(self, control: ControlType, min: i64, max: i64) -> Self {
+            for cap in self.caps.lock().iter_mut() {
+                if cap.control_type == control {
+                    cap.min = min;
+                    cap.max = max;
+                }
+            }
+            self
+        }
+
         /// Present a monochrome model (ST1's `Monochrome`/bayer-offset
         /// `NOT_IMPLEMENTED` branch) — the default mirrors the colour
         /// SV605CC-Simulated.
