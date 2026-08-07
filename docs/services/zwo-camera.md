@@ -1166,6 +1166,28 @@ presents a single simulated camera, so C0/C4 had only ever been simulated.
   return `NOT_IMPLEMENTED` for the cooler getters, in the same service.
 - **Tenet 3** — `CoolerOn` read `false` after every connect, on every run.
 
+**The shared camera-core crate on hardware (2026-08-07).** The same three
+bodies, re-run at `28bdd094` after the ROI rule set, the Bayer offsets and the
+single-plane `ImageArray` unpack moved out of the three camera drivers into
+[`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/). Both
+suites clean on all three; full record in
+[docs/validation](../validation/2026-08-07-zwo-camera-three-cameras-linux/README.md).
+What it established that the simulator could not:
+
+- **The Bayer chain end to end, on a physical mosaic.** The ASI120MC-S reports
+  `BayerOffsetX/Y = (1, 0)` — GRBG. That is `ASI_BAYER_GR` travelling through
+  `zwo-rs`'s `BayerPattern::Gr`, this driver's map onto camera-core's `Grbg`,
+  and the shared `offsets()` rule. `Gr`/`Gb` are the pair whose offsets are
+  transposes of each other, so it is the case a mis-mapping would show up in.
+- **The shared `GeometryError` text and its ASCOM code reach the client
+  unchanged.** ConformU's sub-frame rejection tests record the crate's own
+  message arriving via `From<GeometryError> for ASCOMError` — *"NumX must be a
+  multiple of 8 and NumY a multiple of 2"*, *"StartX + NumX exceeds
+  CameraXSize / BinX"* — so collapsing three `map_err` call sites into one
+  conversion altered neither the wording nor `INVALID_VALUE`.
+- **The shared unpack at both depths across three sensors**, over the
+  negotiated `Raw16`/`Raw8` modes, all within ConformU's response targets.
+
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their
 ConformU output was not preserved. Recorded re-runs against the same physical
