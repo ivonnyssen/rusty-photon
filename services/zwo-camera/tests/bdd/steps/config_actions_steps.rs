@@ -62,15 +62,23 @@ async fn schema_offers_max_adu_modes(world: &mut CameraWorld) {
         "schema must advertise the accurate default"
     );
 
-    // Resolve the $ref and read the *selectable values*. Substring-searching
-    // the serialized schema would also match a mode named only in some
-    // description, and so could pass while the field offered nothing.
-    let target = field["$ref"].as_str().expect("max_adu_reporting is a $ref");
-    let name = target.rsplit('/').next().expect("$ref has a final segment");
-    let def = schema["$defs"]
-        .get(name)
-        .or_else(|| schema["definitions"].get(name))
-        .unwrap_or_else(|| panic!("schema has no definition for {name}: {schema}"));
+    // Read the *selectable values*. Substring-searching the serialized schema
+    // would also match a mode named only in some description, and so could
+    // pass while the field offered nothing.
+    //
+    // The values may sit behind a $ref or inline on the field itself — a
+    // generator may do either, and both are correct schema — so resolve only
+    // when a $ref is actually present rather than requiring one.
+    let def = match field["$ref"].as_str() {
+        Some(target) => {
+            let name = target.rsplit('/').next().expect("$ref has a final segment");
+            schema["$defs"]
+                .get(name)
+                .or_else(|| schema["definitions"].get(name))
+                .unwrap_or_else(|| panic!("schema has no definition for {name}: {schema}"))
+        }
+        None => field,
+    };
 
     // schemars renders a *documented* fieldless enum as `oneOf[].const`, and an
     // undocumented one as a flat `enum` array. Accept either, so that editing a

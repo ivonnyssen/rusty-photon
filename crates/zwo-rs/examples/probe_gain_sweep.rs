@@ -190,7 +190,11 @@ fn expose(
     camera.download_exposure(&mut buf).expect("download");
     Some(
         buf.chunks_exact(2)
-            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            // Little-endian, not native: the camera puts Raw16 on the wire in
+            // that order whatever the host is, so a big-endian host reading
+            // native would compute every ceiling and shift from byte-swapped
+            // pixels — silently, since the probe has nothing to check against.
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect(),
     )
 }
