@@ -139,12 +139,14 @@ checks pending**. The shape:
 ```sh
 # watch-pr.sh <pr-number> <copilot-round-baseline>
 # ($1 must be the numeric PR id: the gh api call below cannot take a URL/branch)
-while :; do
-  # A merged/closed PR never settles: without this the loop spins to its
-  # timeout while looking perfectly healthy. Empty defaults to OPEN on
+# Bounded deliberately: an unbounded watch that has wedged looks exactly
+# like one that is still waiting, so give it a deadline it can report.
+for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
+  # A merged/closed PR never settles: without this the loop runs to its
+  # deadline while looking perfectly healthy. Empty defaults to OPEN on
   # purpose, like the :-defaults below — a transient gh failure must not
-  # read as "closed" and end the watch early. A persistent failure still
-  # surfaces, as the loop then reaches its timeout and says so.
+  # read as "closed" and end the watch early. A persistent one still
+  # surfaces, as the loop then hits the deadline and says so.
   state=$(gh pr view "$1" --json state --jq .state)
   [ "${state:-OPEN}" != "OPEN" ] && { echo "PR is $state"; exit 0; }
   rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
@@ -163,6 +165,7 @@ while :; do
   [ "${pending:-1}" -eq 0 ]    && { echo "no checks pending"; exit 0; }
   sleep 60
 done
+echo "watcher timed out"   # never silently: "nothing happened" is a result
 ```
 
 (`--json bucket` is the machine contract — normalized
