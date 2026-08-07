@@ -9,6 +9,8 @@
 # - macos / windows: the same on the other two host OSes
 #   (Windows BDD runs in one job here — on a nightly run the ~10m sequential
 #    per-scenario spawn cost is irrelevant, so it is not split per-service.)
+#   The macOS job additionally denies rustc warnings, because no per-PR check
+#   does that for macOS any more — see its `env:` block.
 #
 # Coverage is NOT collected here: `bazel coverage` (bazel-coverage.yml) is the
 # sole coverage source (canonical `<pkg>` Codecov flags).
@@ -93,6 +95,17 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     name: macos-latest
+    env:
+      # macOS has no per-PR deny-warnings gate: bazel.yml's macOS leg is
+      # push-to-main + nightly only, and check.yml's clippy runs on ubuntu
+      # alone. A warning that fires on macOS and nowhere else — the dead-code
+      # class that Bazel's `-Dwarnings` settings exist for — would otherwise
+      # only be printed, never enforced. Denying here covers the Cargo target
+      # set, which `--all-targets --all-features` reaches further into than
+      # the Bazel graph does. Registry dependencies are unaffected: Cargo
+      # caps their lints, the same exemption crate_universe gives them under
+      # Bazel.
+      RUSTFLAGS: "-Dwarnings"
     steps:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
