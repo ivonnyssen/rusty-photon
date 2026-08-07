@@ -598,7 +598,13 @@ const fn bayer_offsets(mode: BayerPattern) -> (u8, u8) {
 
 /// Convert a single-plane SDK frame into an ASCOM `ImageArray` with `[x][y]` axis
 /// order (ASCOM stores width-major).
-fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
+///
+/// Takes the frame **by value** so the 8-bit path can hand its buffer straight to
+/// `Array2` rather than copying a frame the capture path already owns — on a
+/// 60 MP sensor that copy is the frame itself. 16-bit still pays one, since its
+/// bytes have to be re-read as `u16`. Same trade as `zwo-camera` and
+/// `svbony-camera`.
+fn to_image_array(mut image: ImageData) -> Result<ImageArray, String> {
     if image.channels != 1 {
         return Err(format!("unsupported channel count {}", image.channels));
     }
@@ -612,19 +618,25 @@ fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
     match image.bits_per_pixel {
         8 => {
             let needed = w.saturating_mul(h);
+            // `from_shape_vec` demands an exact length, and `truncate` only
+            // trims a caller's slack — it cannot grow a short buffer — so the
+            // shortfall has to be rejected before it.
             if image.data.len() < needed {
                 return Err("8-bit buffer too small for frame".to_string());
             }
-            let arr = Array2::from_shape_vec((h, w), image.data[..needed].to_vec())
-                .map_err(|e| e.to_string())?;
+            image.data.truncate(needed);
+            let arr = Array2::from_shape_vec((h, w), image.data).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
         }
         16 => {
             let needed = w.saturating_mul(h).saturating_mul(2);
-            if image.data.len() < needed {
+            // The length check and the slice are one question, so `get` asks it
+            // once: there is no separate test left to keep in step with the
+            // bound it guards.
+            let Some(frame) = image.data.get(..needed) else {
                 return Err("16-bit buffer too small for frame".to_string());
-            }
-            let pixels: Vec<u16> = image.data[..needed]
+            };
+            let pixels: Vec<u16> = frame
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -748,7 +760,7 @@ async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, ge
         // Discard silently if a newer start / abort / disconnect superseded us.
         if state.exposure_generation.load(Ordering::Acquire) == generation {
             match result {
-                Capture::Frame(image) => match to_image_array(&image) {
+                Capture::Frame(image) => match to_image_array(image) {
                     Ok(array) => {
                         *state.last_image.lock() = Some(array);
                         *state.last_error.lock() = None;
@@ -1717,7 +1729,7 @@ mod tests {
             bits_per_pixel: 16,
             channels: 1,
         };
-        let array = to_image_array(&image).unwrap();
+        let array = to_image_array(image).unwrap();
         // ASCOM [x][y]: first axis = width.
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
@@ -1732,7 +1744,7 @@ mod tests {
             bits_per_pixel: 16,
             channels: 4,
         };
-        assert!(to_image_array(&image).is_err());
+        assert!(to_image_array(image).is_err());
     }
 
     #[test]
@@ -1744,7 +1756,7 @@ mod tests {
             bits_per_pixel: 8,
             channels: 1,
         };
-        let array = to_image_array(&image).unwrap();
+        let array = to_image_array(image).unwrap();
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
     }
@@ -1759,9 +1771,10 @@ mod tests {
                 bits_per_pixel: bits,
                 channels: 1,
             };
+            let err = to_image_array(image).unwrap_err();
             assert!(
-                to_image_array(&image).is_err(),
-                "{bits}-bit undersized buffer must be rejected"
+                err.contains("buffer too small"),
+                "{bits}-bit undersized buffer must be rejected: {err}"
             );
         }
     }

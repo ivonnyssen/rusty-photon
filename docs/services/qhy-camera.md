@@ -471,6 +471,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **RM1.** `ReadoutModes` is the SDK's named mode list; `set_readout_mode`
   validates the index and updates cached resolution; an invalid index returns
   `INVALID_VALUE`.
+- **RM2.** The `ImageArray` unpack is total in both directions, and reports the
+  **format before the length**: a bit depth the driver cannot unpack is rejected
+  as such even when the buffer is also short, because the length it would be
+  measured against is derived from that same unusable depth. A buffer shorter
+  than the frame is rejected as "buffer too small". The 8-bit path takes the
+  download buffer **by value** and hands it to `Array2` without copying — on a
+  60 MP sensor that copy is the frame itself; 16-bit pays one, since its bytes
+  must be re-read as `u16`. Identical in `zwo-camera` (RM5) and `svbony-camera`
+  (RM5).
 
 ### Cooling
 

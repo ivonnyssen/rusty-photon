@@ -669,19 +669,29 @@ fn to_image_array(
     let needed = w
         .saturating_mul(h)
         .saturating_mul(image_type.bytes_per_pixel());
-    if bytes.len() < needed {
-        return Err(format!("{image_type:?} buffer too small for frame"));
-    }
+    let too_small = || format!("{image_type:?} buffer too small for frame");
     // Each arm builds the frame row-major in its own element type, then
     // reverses the axes for ASCOM's width-major order.
     match image_type {
         ImageType::Raw8 => {
+            // `from_shape_vec` demands an exact length, and `truncate` only
+            // trims a caller's slack — it cannot grow a short buffer — so the
+            // shortfall has to be rejected before it.
+            if bytes.len() < needed {
+                return Err(too_small());
+            }
             bytes.truncate(needed);
             let arr = Array2::from_shape_vec((h, w), bytes).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
         }
         ImageType::Raw16 => {
-            let pixels: Vec<u16> = bytes[..needed]
+            // The length check and the slice are one question, so `get` asks it
+            // once: there is no separate test left to keep in step with the
+            // bound it guards.
+            let Some(frame) = bytes.get(..needed) else {
+                return Err(too_small());
+            };
+            let pixels: Vec<u16> = frame
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -1839,8 +1849,20 @@ mod tests {
 
     #[test]
     fn to_image_array_rejects_short_buffer() {
-        assert!(to_image_array(vec![0u8; 10], 64, 48, ImageType::Raw16).is_err());
-        assert!(to_image_array(vec![0u8; 10], 64, 48, ImageType::Raw8).is_err());
+        for image_type in [ImageType::Raw16, ImageType::Raw8] {
+            let err = to_image_array(vec![0u8; 10], 64, 48, image_type).unwrap_err();
+            assert!(err.contains("buffer too small"), "{image_type:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn to_image_array_names_an_unsupported_format_before_the_length() {
+        // Each arm now owns its own length check, so a format the driver
+        // cannot unpack is reported as such even when the buffer is also
+        // short — the length it would be measured against is derived from
+        // that same unusable format, so leading with it would misdirect.
+        let err = to_image_array(vec![0u8; 10], 64, 48, ImageType::Rgb24).unwrap_err();
+        assert!(err.contains("unsupported download format"), "{err}");
     }
 
     /// The device only ever selects a raw format (RM1/RM4), but the transform
