@@ -580,11 +580,6 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
             "NumX and NumY must be greater than 0",
         ));
     }
-    if !roi.width.is_multiple_of(8) || !roi.height.is_multiple_of(2) {
-        return Err(ASCOMError::invalid_value(
-            "SVBony requires NumX a multiple of 8 and NumY a multiple of 2",
-        ));
-    }
     // The bin divides the sensor extent, so a zero bin is not a geometry that
     // fails a rule — it is one with no rule to apply. Rejecting it completes
     // this validator rather than leaving a division for callers to prove safe.
@@ -593,6 +588,11 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
             "BinX and BinY must be greater than 0",
         ));
     };
+    if !roi.width.is_multiple_of(8) || !roi.height.is_multiple_of(2) {
+        return Err(ASCOMError::invalid_value(
+            "SVBony requires NumX a multiple of 8 and NumY a multiple of 2",
+        ));
+    }
     if roi.start_x.saturating_add(roi.width) > max_x {
         return Err(ASCOMError::invalid_value(
             "StartX + NumX exceeds CameraXSize / BinX",
@@ -1819,8 +1819,10 @@ mod tests {
     fn check_geometry_rejects_zero_size() {
         assert!(check_geometry(roi(0, 0, 0, 64), 3008, 3008, 1).is_err());
         assert!(check_geometry(roi(0, 0, 64, 0), 3008, 3008, 1).is_err());
-        // a zero bin is rejected, not divided by
-        let err = check_geometry(roi(0, 0, 64, 64), 3008, 3008, 0).unwrap_err();
+        // A zero bin is rejected, not divided by — and it is reported ahead of
+        // the alignment rule, so a ROI that is *also* misaligned still hears
+        // about the bin. Nothing can be computed without one.
+        let err = check_geometry(roi(0, 0, 100, 64), 3008, 3008, 0).unwrap_err();
         assert!(err.message.contains("BinX and BinY"), "{}", err.message);
     }
 
