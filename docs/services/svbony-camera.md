@@ -874,7 +874,16 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **B1.** `set_bin_x`/`set_bin_y` validate against `SupportedBins`;
   unsupported → `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`.
-- **B3.** A bin change rescales the cached ROI by the bin ratio.
+- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
+  `set_num_y` store without validating (the members are set independently, so
+  only the combination is checked, at `StartExposure`), so whatever the client
+  last set is what gets rescaled — and the rescale must not change which value
+  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
+  minimum of 1, because truncating it to 0 would make R2 reject a value the
+  driver invented rather than the client's own `NumX`, which here is R3's
+  `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
+  than being clamped into an R3 alignment complaint about a 1 nobody set.
+  Identical in `qhy-camera` and `zwo-camera`.
 - **R1.** ROI setters accept any `u32`; geometry validated at
   `StartExposure`.
 - **R2.** Out-of-bounds/zero sub-frame → `INVALID_VALUE`.
@@ -885,10 +894,16 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 ### Gain / offset / readout
 
 - **GO1.** `Gain`/`Offset` (`SVB_GAIN`/`SVB_BLACK_LEVEL`) return the
-  current SDK value, or `NOT_IMPLEMENTED` if the control is absent.
+  current SDK value, or `NOT_IMPLEMENTED` if the control is absent. The SDK
+  reports it as a `long`; a value outside ASCOM's `i32` returns
+  `INVALID_OPERATION` rather than a truncated number.
 - **GO2.** Setters validate against cached `[min, max]`; out-of-range →
   `INVALID_VALUE`.
-- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
+- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
+  converted **once at the open handshake** from the SDK's `long` to ASCOM's
+  `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
+  (`NOT_IMPLEMENTED` from all four members) rather than advertising a clamped
+  bound the camera would then reject.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   connect the driver intersects `SVB_CAMERA_PROPERTY.SupportedVideoFormat`
   with the formats it can deliver, in preference order `Raw16` then

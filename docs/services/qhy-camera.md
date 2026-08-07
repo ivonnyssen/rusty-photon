@@ -402,7 +402,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
-- **B3.** A bin change rescales the cached ROI by the bin ratio.
+- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
+  `set_num_y` store without validating (the members are set independently, so
+  only the combination is checked, at `StartExposure`), so whatever the client
+  last set is what gets rescaled — and the rescale must not change which value
+  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
+  minimum of 1, because truncating it to 0 would make R2 reject a value the
+  driver invented. A **client-set 0** is preserved for the same reason read the
+  other way: QHY has no alignment rule (contrast `zwo-camera`/`svbony-camera`
+  R3), so a 1 substituted here would clear every remaining check and expose a
+  one-pixel frame in place of the R2 error the client had earned. Identical in
+  `svbony-camera` and `zwo-camera`.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
@@ -440,10 +450,24 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 ### Gain / offset / readout
 
 - **GO1.** `Gain`/`Offset` return the current SDK value, or `NOT_IMPLEMENTED` if
-  the control is unavailable on the model.
+  the control is unavailable on the model. The SDK reports it as an `f64`
+  (its uniform control carrier); it is rounded to nearest for ASCOM's `i32`,
+  and a value outside `i32` returns `INVALID_OPERATION` rather than a
+  saturated number.
 - **GO2.** `set_gain`/`set_offset` validate against cached `[min, max]` and apply
   via the SDK; out-of-range returns `INVALID_VALUE`.
-- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
+- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
+  converted **once at connect** to ASCOM's `i32` by rounding to nearest — the
+  SDK carries an integer bound in a float, so truncation would advertise a
+  maximum one below the one the camera accepts. A bound with no `i32` spelling
+  leaves the control **unadvertised** (`NOT_IMPLEMENTED` from all four members)
+  with a `warn!`, rather than advertising a clamped bound the camera would then
+  reject.
+- **GO4.** The cache is the sole gate on all six members, so each connect
+  **overwrites** it — including with "unavailable". A control missing on this
+  connect, or whose bounds this connect cannot name, clears the cached range
+  instead of leaving the previous session's bounds standing to be advertised
+  (the reconnect hygiene of C3, applied to the control caches).
 - **RM1.** `ReadoutModes` is the SDK's named mode list; `set_readout_mode`
   validates the index and updates cached resolution; an invalid index returns
   `INVALID_VALUE`.

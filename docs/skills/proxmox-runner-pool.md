@@ -305,6 +305,32 @@ dangerous combination. The rule bifurcates by runner kind
     anything (bazel, the warm cache), re-wipe `/etc/machine-id` (and clear
     `/var/lib/dhcp/*.leases`) afterwards. Windows is immune — its clones DHCP
     by MAC, which Proxmox regenerates per clone.
+  * **A Linux template rebuild must run a coverage warmup before capture, not
+    just a build/test warmup** — specifically
+    `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
+    load-bearing: it overrides the default stable channel (`.bazelrc` pins
+    `channel=stable`) to the pinned *nightly* toolchain — a bare
+    `bazel coverage //...` compiles on stable and fetches nothing new,
+    defeating the warmup. The build/test toolchain never pulls that nightly,
+    so a template warmed only with `bazel build`/`bazel test` still hands
+    every coverage clone a cold nightly toolchain to fetch over WAN on its
+    single job — measured at ~12 min cold versus ~2m47s once the toolchain is
+    baked into the output base. The warmup must check out to the **exact**
+    runner work path
+    (`/home/ci/actions-runner/_work/rusty-photon/rusty-photon`): external
+    repos — the toolchain among them — live under an output-base dir keyed by
+    an md5 of the workspace path, so a warmup done at any other path populates
+    a directory no clone will read. (Linux action keys are path-independent —
+    they carry no `GITHUB_WORKSPACE`, unlike Windows — so the *build/test*
+    actions transfer regardless of warmup path; only the external-repo fetch
+    is path-sensitive, and that is what the nightly coverage toolchain is.)
+    Run it as the `ci` user with the runner's own CI flags —
+    `bazel coverage --config=ci --config=coverage --config=remote-cache //...`
+    plus the LAN-cache override the pool jobs apply
+    (`--remote_cache="$RP_LAN_CACHE_URL"` after `--config=remote-cache`, the
+    URL sourced from the runner's `.env`, never the repo) — so the warmup
+    exercises the same cache routing a real job does, then re-wipe
+    `/etc/machine-id` as above.
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)

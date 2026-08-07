@@ -39,7 +39,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
-use svbony_rs::{BayerPattern, CameraInfo, ControlType, ImageType};
+use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
 
 use crate::backend::{CameraHandle, CaptureRequest};
@@ -149,8 +149,13 @@ struct DeviceState {
     intended_roi: Mutex<Option<Roi>>,
     /// `(min, max)` exposure microseconds from `SVBGetControlCaps(SVB_EXPOSURE)`.
     exposure_range_us: Mutex<Option<(i64, i64)>>,
-    gain_min_max: Mutex<Option<(i64, i64)>>,
-    offset_min_max: Mutex<Option<(i64, i64)>>,
+    /// Gain range in ASCOM's own width, converted once at the open handshake
+    /// (see [`ascom_range`]). `None` means the control is not advertised —
+    /// either the model lacks it, or its range has no `i32` spelling.
+    gain_min_max: Mutex<Option<(i32, i32)>>,
+    /// Offset (`SVB_BLACK_LEVEL`) range, on the same terms as
+    /// [`DeviceState::gain_min_max`].
+    offset_min_max: Mutex<Option<(i32, i32)>>,
     target_temperature: Mutex<Option<f64>>,
 
     exposure_in_flight: AtomicBool,
@@ -377,8 +382,8 @@ impl SvbonyCamera {
             ASCOMError::NOT_CONNECTED
         })?;
         *self.state.exposure_range_us.lock() = Some((exposure.min, exposure.max));
-        *self.state.gain_min_max.lock() = find(ControlType::Gain).map(|c| (c.min, c.max));
-        *self.state.offset_min_max.lock() = find(ControlType::BlackLevel).map(|c| (c.min, c.max));
+        *self.state.gain_min_max.lock() = find(ControlType::Gain).and_then(ascom_range);
+        *self.state.offset_min_max.lock() = find(ControlType::BlackLevel).and_then(ascom_range);
 
         // Negotiate the download format against what the camera actually
         // advertises (RM1) instead of assuming Raw16: a model that does not
@@ -592,6 +597,18 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
     Ok(())
 }
 
+/// A control's range as ASCOM must describe it, or `None` when the driver
+/// reports bounds outside `i32`.
+///
+/// ASCOM's `Gain`/`GainMin`/`GainMax` (and the offset trio) are `i32` while the
+/// SVBony SDK reports control caps as `long`. Converting here rather than at
+/// each read asks the "does it fit?" question once, at the handshake, where
+/// leaving the control unadvertised is a meaningful answer — a clamped bound
+/// would advertise a maximum the camera then rejects.
+fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
+    Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
+}
+
 fn gcd(a: u32, b: u32) -> u32 {
     if b == 0 {
         a
@@ -633,13 +650,32 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 }
 
 /// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
+///
+/// `set_num_x`/`set_num_y` store without validating — the ASCOM members are set
+/// independently, so only the combination can be checked, and it is, at
+/// `StartExposure`. Whatever the client last set therefore arrives here, and
+/// rescaling must not change which value the eventual error is about:
+///
+/// - A sub-pixel extent would truncate to 0 at a larger bin, and `StartExposure`
+///   would then reject a 0 this function invented. Clamping to 1 keeps the
+///   complaint on the client's own `NumX`, which on SVBony is the `%8`/`%2` rule.
+/// - A client-set 0 is preserved, so it still meets the "must be greater than 0"
+///   check it earned. Clamping that to 1 would move the error onto the alignment
+///   rule for a value the client never set.
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
     let factor = f64::from(old) / f64::from(new);
+    let extent = |v: u32| {
+        if v == 0 {
+            0
+        } else {
+            ((f64::from(v) * factor) as u32).max(1)
+        }
+    };
     Roi {
         start_x: (f64::from(roi.start_x) * factor) as u32,
         start_y: (f64::from(roi.start_y) * factor) as u32,
-        width: (f64::from(roi.width) * factor) as u32,
-        height: (f64::from(roi.height) * factor) as u32,
+        width: extent(roi.width),
+        height: extent(roi.height),
     }
 }
 
@@ -1045,9 +1081,11 @@ impl Camera for SvbonyCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::Gain)
-                .map(|g| g as i32)
-                .map_err(|e| ASCOMError::invalid_operation(format!("failed to read gain: {e}")))
+            let raw = h
+                .control_value(ControlType::Gain)
+                .map_err(|e| ASCOMError::invalid_operation(format!("failed to read gain: {e}")))?;
+            i32::try_from(raw)
+                .map_err(|_| ASCOMError::invalid_operation(format!("camera reported gain {raw}")))
         })
         .await
     }
@@ -1055,21 +1093,21 @@ impl Camera for SvbonyCamera {
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.gain_min_max.lock())
-            .map(|(min, _)| min as i32)
+            .map(|(min, _)| min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.gain_min_max.lock())
-            .map(|(_, max)| max as i32)
+            .map(|(_, max)| max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let (min, max) = (*self.state.gain_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
-        if i64::from(gain) < min || i64::from(gain) > max {
+        if gain < min || gain > max {
             return Err(ASCOMError::invalid_value(format!(
                 "gain {gain} outside [{min}, {max}]"
             )));
@@ -1087,9 +1125,11 @@ impl Camera for SvbonyCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::BlackLevel)
-                .map(|o| o as i32)
-                .map_err(|e| ASCOMError::invalid_operation(format!("failed to read offset: {e}")))
+            let raw = h.control_value(ControlType::BlackLevel).map_err(|e| {
+                ASCOMError::invalid_operation(format!("failed to read offset: {e}"))
+            })?;
+            i32::try_from(raw)
+                .map_err(|_| ASCOMError::invalid_operation(format!("camera reported offset {raw}")))
         })
         .await
     }
@@ -1097,21 +1137,21 @@ impl Camera for SvbonyCamera {
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.offset_min_max.lock())
-            .map(|(min, _)| min as i32)
+            .map(|(min, _)| min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.offset_min_max.lock())
-            .map(|(_, max)| max as i32)
+            .map(|(_, max)| max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let (min, max) = (*self.state.offset_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
-        if i64::from(offset) < min || i64::from(offset) > max {
+        if offset < min || offset > max {
             return Err(ASCOMError::invalid_value(format!(
                 "offset {offset} outside [{min}, {max}]"
             )));
@@ -1658,6 +1698,26 @@ mod tests {
     }
 
     #[test]
+    fn rescale_roi_clamps_tiny_dimensions_to_one() {
+        // A 1-pixel ROI is reachable: `set_num_x` stores without validating, so
+        // it can be resting in state when the bin changes. Rescaling must not
+        // manufacture a zero the client never set.
+        let scaled = rescale_roi(roi(0, 0, 1, 1), 1, 2);
+        assert_eq!((scaled.width, scaled.height), (1, 1));
+    }
+
+    #[test]
+    fn rescale_roi_preserves_a_client_set_zero() {
+        // The other direction of the same rule: a 0 the client did set must
+        // survive, so StartExposure still answers about that 0 rather than
+        // about the %8 alignment rule a clamped 1 would trip instead.
+        let scaled = rescale_roi(roi(0, 0, 0, 0), 1, 2);
+        assert_eq!((scaled.width, scaled.height), (0, 0));
+        let err = check_geometry(scaled, 3008, 3008, 2).unwrap_err();
+        assert!(err.message.contains("greater than 0"), "{}", err.message);
+    }
+
+    #[test]
     fn guide_direction_maps_every_ascom_direction() {
         assert_eq!(
             guide_direction(GuideDirection::North),
@@ -1843,6 +1903,48 @@ mod tests {
         let cam = connected_device(MockCameraHandle::default());
         cam.set_gain(50).await.unwrap();
         assert_eq!(cam.gain().await.unwrap(), 50);
+    }
+
+    #[test]
+    fn ascom_range_has_no_answer_for_bounds_outside_i32() {
+        let cap = |min, max| ControlCaps {
+            name: "Gain".to_string(),
+            description: String::new(),
+            control_type: ControlType::Gain,
+            min,
+            max,
+            default: 0,
+            is_writable: true,
+            is_auto_supported: false,
+        };
+        assert_eq!(ascom_range(&cap(0, 720)), Some((0, 720)));
+        assert_eq!(
+            ascom_range(&cap(0, i64::from(i32::MAX) + 1)),
+            None,
+            "a max above i32 must not saturate into a bound the camera never offered"
+        );
+        assert_eq!(ascom_range(&cap(i64::from(i32::MIN) - 1, 0)), None);
+    }
+
+    #[tokio::test]
+    async fn a_gain_range_outside_i32_leaves_the_control_unadvertised() {
+        // Degrade rather than lie: a clamped bound would advertise a maximum the
+        // camera then rejects.
+        let cam = connected_device(MockCameraHandle::default().with_control_range(
+            ControlType::Gain,
+            0,
+            i64::from(i32::MAX) + 1,
+        ));
+        for code in [
+            cam.gain().await.unwrap_err().code,
+            cam.gain_min().await.unwrap_err().code,
+            cam.gain_max().await.unwrap_err().code,
+            cam.set_gain(5).await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMError::NOT_IMPLEMENTED.code);
+        }
+        // Offset is cached independently and is unaffected.
+        cam.offset_max().await.unwrap();
     }
 
     // --- offset (the ASCOM Offset == SVBony BlackLevel control, GO1) ------------------

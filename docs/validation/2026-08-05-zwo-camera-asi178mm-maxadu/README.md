@@ -100,7 +100,26 @@ The 12-bit ASI120MC-S *does* reach its full-scale `4095 << 4 = 65520`, so the
 shortfall is a per-sensor property and is not derivable from `BitDepth` or
 anything else `ASI_CAMERA_INFO` reports. Tracked as
 [#898](https://github.com/rusty-photon/rusty-photon/issues/898); no code was
-changed here, because the fix is a design decision rather than a bug fix.
+changed *in this run*, because the fix was a design decision rather than a bug
+fix.
+
+> **Resolved 2026-08-05.** ST3 now reports one quantization step below the
+> shifted full scale — `((2^BitDepth) - 2) << (16 - BitDepth)` — so this
+> camera advertises **65528**, exactly the ceiling measured above. Re-verified
+> on the same hardware: the same blown-out frame that gave
+> `pixels >= MaxADU` = 0 now gives **6 709**.
+>
+> **Two ConformU runs are archived here, and they report different `MaxADU`
+> values by design.** The `conformance.log` / `alpacaprotocol.log` pair above
+> is the *pre-change* run and shows `MaxADU OK 65532`; it is the evidence that
+> motivated the margin and is left exactly as taken. The re-verification after
+> the change is preserved separately as
+> [post-margin-conformance.log](post-margin-conformance.log),
+> [post-margin-alpacaprotocol.log](post-margin-alpacaprotocol.log) and
+> [post-margin-conformance-results.json](post-margin-conformance-results.json)
+> — also clean on both suites (0/0/0/0, 82 timed members), with
+> `MaxADU OK 65528`. Read the pair by date: the numbers in the body of this
+> record are the pre-change measurements.
 
 ### Binning changes the packing, not the ceiling
 

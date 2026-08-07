@@ -542,6 +542,19 @@ pub(crate) mod mock {
             self
         }
 
+        /// Override a control's caps range (e.g. a gain range too wide for
+        /// ASCOM's `i32`, to test that the control is left unadvertised rather
+        /// than clamped).
+        pub fn with_control_range(mut self, control: ControlType, min: i64, max: i64) -> Self {
+            for cap in &mut self.caps {
+                if cap.control_type == control {
+                    cap.min = min;
+                    cap.max = max;
+                }
+            }
+            self
+        }
+
         /// Present a model advertising exactly `formats` as its
         /// `SupportedVideoFormat` — the default mirrors a camera offering both
         /// raw formats. Drives the readout-mode negotiation (RM1) and its

@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail) and the CFW codec / buffer copies — **`qhyccd-rs` production code now at zero** |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1038,6 +1038,99 @@ what remains in the crate is test scope and `libqhyccd-sys`, which does not
 inherit the workspace lints (`-sys` shims are L7's bucket — and its one site,
 `const QHYCCD_ERROR_F64: f64 = u32::MAX as f64`, has no alternative anyway:
 `f64::from` is not `const`).
+
+### L5d — the gain range, cached at the wrong type
+
+The three ASCOM camera services carry the same six accessors, and between them
+26 of the `as_conversions` sites were one mistake repeated: the SDK's gain and
+offset range cached in the SDK's own width, then narrowed at every read.
+
+```rust
+gain_min_max: Mutex<Option<(f64, f64)>>,   // qhy; (i64, i64) in zwo/svbony
+
+.map(|(min, _)| min as i32)                // ×6 per service
+```
+
+All six exist to answer one question — *what integer does ASCOM report?* —
+and ASCOM's `Gain`/`GainMin`/`GainMax` are `i32`. Nothing in any of the three
+drivers needs the wider type for anything else, so the width was the
+transport's word kept past the point where it meant something. **Converting
+once, where the range enters the cache, removes every cast**: each read becomes
+a copy and `set_gain`'s bounds check becomes native `i32`.
+
+That forces the question the casts were dodging: *what if the SDK's range has
+no `i32` spelling?* Clamping advertises a maximum the camera then rejects —
+ConformU fails `SetGain` at the advertised bound and a client sees a lie. The
+range is now validated at connect and a control that fails is left
+**unadvertised**, with a `warn!`. Degrade, don't lie (tenet 2), decided once
+rather than six times per request.
+
+**Two defects fell out of the rewrite.** `qhy-camera` compared in the *lossy*
+direction — `gain < min as i32`, narrowing the cached bound rather than
+widening the caller's value — so a bound above `i32::MAX` saturated and the
+comparison silently admitted or rejected the wrong thing. (`zwo`/`svbony`
+already widened, and were unaffected.) And `set_gain`'s
+`"gain control available but min/max not cached"` arm existed only because
+"control available" and "range cached" were two facts that could disagree;
+gating on the cache alone subsumes both, which also drops a live
+`is_control_available` SDK round-trip from every QHY `Gain` read.
+
+Collapsing two facts into one does carry an obligation, and review caught it:
+the survivor must be written on **every** connect, including with
+"unavailable". QHY assigned its cache only inside `if is_control_available`, so
+a control that went away between sessions would have left the previous
+session's bounds standing for the accessors to advertise — harmless while a
+live probe was the real gate, a stale answer once the cache became the only
+one. (`zwo`/`svbony` already assigned unconditionally.) *When a cache stops
+being an optimisation and becomes the authority, every path that used to skip
+writing it turns into a bug.*
+
+QHY needs a rounding policy the other two do not, because the QHY SDK carries
+every control through one `f64` parameter — the same uniform carrier
+`qhyccd-rs`'s `quantize` documents — so a gain bound is an integer travelling
+in a float:
+
+```rust
+fn ascom_bound(value: f64) -> Option<i32> {
+    let rounded = value.round();
+    if (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&rounded) {
+        Some(rounded as i32)
+    } else {
+        None
+    }
+}
+```
+
+`.round()`, not truncation: float error can land on either side of the integer
+the SDK meant, and a `100` arriving as `99.999…` would otherwise advertise a
+maximum one below the one the camera accepts. **`contains` is not a style
+choice** — written as two comparisons, a NaN passes both tests and reaches
+`NaN as i32`, which is `0`. A gain bound of zero conjured from a NaN is exactly
+the class of silent-wrong value this rung exists to remove.
+
+`zwo`/`svbony` report caps as `long`, so `TryFrom` does the whole job and
+neither needs an exemption:
+
+```rust
+fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
+    Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
+}
+```
+
+**26 sites → 0 across three services for one `#[expect]`**, in the one place
+no `TryFrom<f64>` exists to spell it otherwise. The remaining 60 sites in the
+three files are the shapes that repeat verbatim across all three — `rescale_roi`,
+the clamped `pct as u8`, the `bytes[..needed]` frame copies, and `zwo`'s `MaxADU`
+shift.
+
+`rescale_roi` was the one where the repetition itself was the finding, and it
+went to #913 rather than here: `qhy` carried a `.max(1)` clamp its two siblings
+lacked, with a comment describing the bug their absence implied. Copying the
+clamp across then exposed the half nobody had — an explicit `NumX = 0` was being
+rewritten to 1, inventing exactly the value the clamp existed to prevent, and on
+`qhy`, which has no alignment rule to catch it, that cleared every check and
+exposed a one-pixel frame. **Reading three copies of a function against each
+other is its own audit**, and worth doing before deciding which copy is right.
 
 ## L6a — split the CI channels
 
