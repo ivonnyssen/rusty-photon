@@ -155,8 +155,16 @@ impl SimulatedCameraConfig {
         self
     }
 
-    /// Adds filter wheel support with the specified number of slots
+    /// Adds filter wheel support with the specified number of slots, capped at
+    /// the sixteen a `CONTROL_CFWPORT` value can address
+    /// ([`CFW_MAX_SLOTS`](crate::camera::CFW_MAX_SLOTS)).
+    ///
+    /// The cap keeps the simulated wheel internally consistent. Without it a
+    /// larger count would be advertised through `CfwSlotsNum` and `CfwPort`'s
+    /// range while every slot from the sixteenth up has no code to command it
+    /// by — a wheel reporting a size it then refuses to move within.
     pub fn with_filter_wheel(mut self, slots: u32) -> Self {
+        let slots = slots.min(crate::camera::CFW_MAX_SLOTS);
         self.filter_wheel_slots = slots;
         if slots > 0 {
             // The guard above is what keeps the decrement total.
@@ -1157,6 +1165,40 @@ impl ImageGenerator {
                 write_sample(pixel, value);
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod filter_wheel_config_tests {
+    use super::{ControlType, SimulatedCameraConfig};
+
+    #[test]
+    fn a_wheel_is_capped_at_the_slots_the_encoding_can_address() {
+        // Asking for more slots than a CONTROL_CFWPORT digit can name would
+        // advertise a count the wheel then refuses to move within, so the
+        // count and the encoding have to agree.
+        let config = SimulatedCameraConfig::default().with_filter_wheel(20);
+        assert_eq!(config.filter_wheel_slots, 16);
+        assert_eq!(
+            config.supported_controls.get(&ControlType::CfwSlotsNum),
+            Some(&(16.0, 16.0, 0.0))
+        );
+        // The port's range is 0-indexed, so its top is the last nameable slot.
+        assert_eq!(
+            config.supported_controls.get(&ControlType::CfwPort),
+            Some(&(0.0, 15.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn a_wheel_within_the_bound_is_untouched() {
+        let config = SimulatedCameraConfig::default().with_filter_wheel(5);
+        assert_eq!(config.filter_wheel_slots, 5);
+        assert_eq!(
+            config.supported_controls.get(&ControlType::CfwPort),
+            Some(&(0.0, 4.0, 1.0))
+        );
     }
 }
 

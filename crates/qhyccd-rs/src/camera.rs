@@ -53,6 +53,17 @@ use crate::simulation::{self, SimulatedCameraState};
 // physical slot. Shared by the real accessors and the simulation backend so a
 // crate round-trip stays consistent; verified only on hardware for slots >= 10.
 
+/// Slots a `CONTROL_CFWPORT` value can address. This is the encoding's bound,
+/// not a chosen limit — one hex digit names sixteen positions and no more — so
+/// anything advertising a slot *count* has to agree with it (a test below pins
+/// the two together).
+///
+/// Only a slot *count* needs this; the encoders carry the bound in their own
+/// signatures. That is the simulator's config and the test, so the const is
+/// scoped to them rather than sitting dead in a real-SDK build.
+#[cfg(any(feature = "simulation", test))]
+pub(crate) const CFW_MAX_SLOTS: u32 = 16;
+
 /// Encode a 0-indexed slot as its `CONTROL_CFWPORT` hex-ASCII code, or `None`
 /// for a slot the encoding cannot name. A single hex digit addresses sixteen
 /// positions and no more, which is what [`char::from_digit`] enforces here —
@@ -62,9 +73,12 @@ fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
 }
 
 /// Decode a `CONTROL_CFWPORT` hex-ASCII code back to a 0-indexed slot.
-/// [`char::to_digit`] accepts exactly the codes the wheel can report, in either
-/// case; any other byte falls back to the legacy decimal decode so a nonstandard
-/// value degrades rather than panics.
+///
+/// [`char::to_digit`] is **ASCII-only**: std defines a digit as `0-9`, `a-z`,
+/// `A-Z`, so at radix 16 it accepts exactly `0-9`, `A-F`, `a-f` — the codes the
+/// wheel can report, in either case — and nothing else, non-ASCII code points
+/// included. Any other byte falls back to the legacy decimal decode so a
+/// nonstandard value degrades rather than panics.
 fn cfw_ascii_to_slot(ascii: u32) -> u32 {
     char::from_u32(ascii)
         .and_then(|c| c.to_digit(16))
@@ -90,6 +104,15 @@ mod cfw_encoding_tests {
         // slot with an unusual code — it is a slot with no code at all.
         assert_eq!(cfw_slot_to_ascii(16), None);
         assert_eq!(cfw_slot_to_ascii(u32::MAX), None);
+    }
+
+    #[test]
+    fn max_slots_is_exactly_where_the_encoding_runs_out() {
+        // `CFW_MAX_SLOTS` is advertised as a slot count elsewhere (the
+        // simulator caps its wheel with it), so it has to stay pinned to the
+        // codec rather than drift into a second, independent 16.
+        assert!(cfw_slot_to_ascii(super::CFW_MAX_SLOTS - 1).is_some());
+        assert_eq!(cfw_slot_to_ascii(super::CFW_MAX_SLOTS), None);
     }
 
     #[test]

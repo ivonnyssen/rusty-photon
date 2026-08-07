@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SimulatedCameraConfig::with_filter_wheel` now caps the slot count at 16, the
+  number a `CONTROL_CFWPORT` hex digit can address. A larger count was accepted
+  and advertised through `CfwSlotsNum` and `CfwPort`'s range while every slot
+  from the sixteenth up had no code to command it by, so the simulated wheel
+  reported a size it then refused to move within (`InvalidFilterSlot`).
+  Simulation only; configurations of 16 or fewer slots are unaffected.
+
 - `start_single_frame_exposure` no longer reports a spurious error when
   `ExpQHYCCDSingleFrame` returns `QHYCCD_READ_DIRECTLY` (`0x2001`) — a non-error
   return meaning the single frame is already captured and can be read
