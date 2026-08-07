@@ -480,17 +480,33 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
     Ok(())
 }
 
-/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3). Width/height
-/// are clamped to a minimum of 1: rescaling a 1-pixel ROI to a larger bin would
-/// otherwise truncate to 0, then the next `StartExposure` would fail geometry
-/// validation with a confusing "NumX/NumY must be > 0" (which the user never set).
+/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
+///
+/// `set_num_x`/`set_num_y` store without validating — the ASCOM members are set
+/// independently, so only the combination can be checked, and it is, at
+/// `StartExposure`. Whatever the client last set therefore arrives here, and
+/// rescaling must not change which value the eventual error is about:
+///
+/// - A sub-pixel extent would truncate to 0 at a larger bin, and `StartExposure`
+///   would then reject a 0 this function invented. Clamping to 1 keeps the
+///   complaint on the client's own `NumX`.
+/// - A client-set 0 is preserved, so `StartExposure` still rejects it. QHY has no
+///   alignment rule, so a 1 here would clear every remaining check and expose a
+///   one-pixel frame in place of the error the client had earned.
 fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
     let factor = f64::from(old) / f64::from(new);
+    let extent = |v: u32| {
+        if v == 0 {
+            0
+        } else {
+            ((f64::from(v) * factor) as u32).max(1)
+        }
+    };
     CCDChipArea {
         start_x: (f64::from(roi.start_x) * factor) as u32,
         start_y: (f64::from(roi.start_y) * factor) as u32,
-        width: ((f64::from(roi.width) * factor) as u32).max(1),
-        height: ((f64::from(roi.height) * factor) as u32).max(1),
+        width: extent(roi.width),
+        height: extent(roi.height),
     }
 }
 
@@ -1603,6 +1619,18 @@ mod tests {
         let scaled = rescale_roi(area(0, 0, 1, 1), 1, 2);
         assert_eq!(scaled, area(0, 0, 1, 1));
         assert!(scaled.width >= 1 && scaled.height >= 1);
+    }
+
+    #[test]
+    fn rescale_roi_preserves_a_client_set_zero() {
+        // The other direction of the same rule, and on QHY the consequential
+        // one: with no alignment rule to catch it, a clamped 1 clears every
+        // check and exposes a one-pixel frame. The 0 must survive to be
+        // rejected.
+        let scaled = rescale_roi(area(0, 0, 0, 0), 1, 2);
+        assert_eq!(scaled, area(0, 0, 0, 0));
+        let err = check_geometry(scaled, 3072, 2048, 2).unwrap_err();
+        assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
 
     #[test]

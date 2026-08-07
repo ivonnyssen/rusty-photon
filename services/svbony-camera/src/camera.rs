@@ -633,13 +633,32 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 }
 
 /// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
+///
+/// `set_num_x`/`set_num_y` store without validating — the ASCOM members are set
+/// independently, so only the combination can be checked, and it is, at
+/// `StartExposure`. Whatever the client last set therefore arrives here, and
+/// rescaling must not change which value the eventual error is about:
+///
+/// - A sub-pixel extent would truncate to 0 at a larger bin, and `StartExposure`
+///   would then reject a 0 this function invented. Clamping to 1 keeps the
+///   complaint on the client's own `NumX`, which on SVBony is the `%8`/`%2` rule.
+/// - A client-set 0 is preserved, so it still meets the "must be greater than 0"
+///   check it earned. Clamping that to 1 would move the error onto the alignment
+///   rule for a value the client never set.
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
     let factor = f64::from(old) / f64::from(new);
+    let extent = |v: u32| {
+        if v == 0 {
+            0
+        } else {
+            ((f64::from(v) * factor) as u32).max(1)
+        }
+    };
     Roi {
         start_x: (f64::from(roi.start_x) * factor) as u32,
         start_y: (f64::from(roi.start_y) * factor) as u32,
-        width: (f64::from(roi.width) * factor) as u32,
-        height: (f64::from(roi.height) * factor) as u32,
+        width: extent(roi.width),
+        height: extent(roi.height),
     }
 }
 
@@ -1655,6 +1674,26 @@ mod tests {
         assert_eq!(scaled.start_y, 100);
         assert_eq!(scaled.width, 400);
         assert_eq!(scaled.height, 300);
+    }
+
+    #[test]
+    fn rescale_roi_clamps_tiny_dimensions_to_one() {
+        // A 1-pixel ROI is reachable: `set_num_x` stores without validating, so
+        // it can be resting in state when the bin changes. Rescaling must not
+        // manufacture a zero the client never set.
+        let scaled = rescale_roi(roi(0, 0, 1, 1), 1, 2);
+        assert_eq!((scaled.width, scaled.height), (1, 1));
+    }
+
+    #[test]
+    fn rescale_roi_preserves_a_client_set_zero() {
+        // The other direction of the same rule: a 0 the client did set must
+        // survive, so StartExposure still answers about that 0 rather than
+        // about the %8 alignment rule a clamped 1 would trip instead.
+        let scaled = rescale_roi(roi(0, 0, 0, 0), 1, 2);
+        assert_eq!((scaled.width, scaled.height), (0, 0));
+        let err = check_geometry(scaled, 3008, 3008, 2).unwrap_err();
+        assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
 
     #[test]

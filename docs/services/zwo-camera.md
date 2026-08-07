@@ -554,7 +554,16 @@ EAF; those belong to the other zwo services.)
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
   `SupportedBins` (typically 1–4, up to 8).
-- **B3.** A bin change rescales the cached ROI by the bin ratio.
+- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
+  `set_num_y` store without validating (the members are set independently, so
+  only the combination is checked, at `StartExposure`), so whatever the client
+  last set is what gets rescaled — and the rescale must not change which value
+  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
+  minimum of 1, because truncating it to 0 would make R2 reject a value the
+  driver invented rather than the client's own `NumX`, which here is R3's
+  `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
+  than being clamped into an R3 alignment complaint about a 1 nobody set.
+  Identical in `qhy-camera` and `svbony-camera`.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2/R3), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
