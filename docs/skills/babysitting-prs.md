@@ -141,7 +141,10 @@ checks pending**. The shape:
 # ($1 must be the numeric PR id: the gh api call below cannot take a URL/branch)
 while :; do
   # A merged/closed PR never settles: without this the loop spins to its
-  # timeout while looking perfectly healthy.
+  # timeout while looking perfectly healthy. Empty defaults to OPEN on
+  # purpose, like the :-defaults below — a transient gh failure must not
+  # read as "closed" and end the watch early. A persistent failure still
+  # surfaces, as the loop then reaches its timeout and says so.
   state=$(gh pr view "$1" --json state --jq .state)
   [ "${state:-OPEN}" != "OPEN" ] && { echo "PR is $state"; exit 0; }
   rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
