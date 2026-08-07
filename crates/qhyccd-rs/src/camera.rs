@@ -68,7 +68,7 @@ pub(crate) const CFW_MAX_SLOTS: u32 = 16;
 /// for a slot the encoding cannot name. A single hex digit addresses sixteen
 /// positions and no more, which is what [`char::from_digit`] enforces here —
 /// the bound lives in the return type rather than in this sentence.
-fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
+pub(crate) fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
     char::from_digit(slot, 16).map(|d| u32::from(d.to_ascii_uppercase()))
 }
 
@@ -1951,8 +1951,10 @@ impl Camera {
                 ControlType::CfwPort => {
                     // Value is the hex-ASCII position code (see `cfw_ascii_to_slot`).
                     // Command a move; the wheel reaches the slot after a few polls
-                    // (see `poll_filter_wheel`), not instantly.
-                    state.command_filter_wheel(cfw_ascii_to_slot(quantize::to_u32(value)));
+                    // (see `poll_filter_wheel`), not instantly. The decode carries a
+                    // legacy fallback with no upper bound, so the command is the
+                    // place that rejects a slot the wheel could not report back.
+                    state.command_filter_wheel(cfw_ascii_to_slot(quantize::to_u32(value)))?;
                 }
                 ControlType::Cooler => {
                     state.target_temperature = value;
