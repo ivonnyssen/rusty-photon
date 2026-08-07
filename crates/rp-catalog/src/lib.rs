@@ -230,6 +230,22 @@ fn read_u16(bytes: &[u8], off: usize) -> u16 {
         .map_or(0, |b| u16::from_le_bytes(*b))
 }
 
+// Address computation is saturating for the same reason the readers above are
+// total: a corrupt blob must degrade to a miss, not wrap onto an unrelated
+// byte and read it as a field. `usize::MAX` addresses nothing, so a saturated
+// offset lands in the readers' defensive arm.
+
+/// End of a section that starts at `start` and holds `count` fields of
+/// `width` bytes each.
+const fn section_end(start: usize, width: usize, count: usize) -> usize {
+    start.saturating_add(count.saturating_mul(width))
+}
+
+/// Byte offset of row `idx` in a section of `width`-byte fields.
+const fn field(section: usize, width: usize, idx: usize) -> usize {
+    section.saturating_add(idx.saturating_mul(width))
+}
+
 /// Great-circle separation between two points given in degrees, via the
 /// haversine form (stable at small angles, exact at the poles).
 fn separation_arcmin(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
@@ -286,7 +302,7 @@ impl Catalog {
     }
 
     fn load(bytes: &'static [u8]) -> Result<Self, CatalogError> {
-        if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC {
+        if bytes.len() < HEADER_LEN || !bytes.starts_with(MAGIC) {
             return Err(CatalogError::BadMagic);
         }
         let dso = read_position(bytes, 8);
@@ -321,20 +337,20 @@ impl Catalog {
         _pool_len: usize,
     ) -> Self {
         let dso_dec = HEADER_LEN;
-        let dso_ra = dso_dec + 4 * dso_count;
-        let dso_mag = dso_ra + 4 * dso_count;
-        let dso_size = dso_mag + 2 * dso_count;
-        let dso_type = dso_size + 2 * dso_count;
-        let dso_cat = dso_type + dso_count;
-        let dso_name = dso_cat + dso_count;
-        let star_dec = dso_name + 4 * dso_count;
-        let star_ra = star_dec + 4 * star_count;
-        let star_hd = star_ra + 4 * star_count;
-        let star_mag = star_hd + 4 * star_count;
-        let keys = star_mag + 2 * star_count;
-        let named = keys + 8 * key_count;
-        let types = named + 8 * named_count;
-        let pool = types + 4 * type_count;
+        let dso_ra = section_end(dso_dec, 4, dso_count);
+        let dso_mag = section_end(dso_ra, 4, dso_count);
+        let dso_size = section_end(dso_mag, 2, dso_count);
+        let dso_type = section_end(dso_size, 2, dso_count);
+        let dso_cat = section_end(dso_type, 1, dso_count);
+        let dso_name = section_end(dso_cat, 1, dso_count);
+        let star_dec = section_end(dso_name, 4, dso_count);
+        let star_ra = section_end(star_dec, 4, star_count);
+        let star_hd = section_end(star_ra, 4, star_count);
+        let star_mag = section_end(star_hd, 4, star_count);
+        let keys = section_end(star_mag, 2, star_count);
+        let named = section_end(keys, 8, key_count);
+        let types = section_end(named, 8, named_count);
+        let pool = section_end(types, 4, type_count);
         Self {
             bytes,
             dso_count,
@@ -382,28 +398,31 @@ impl Catalog {
 
     fn dso_coord_degrees(&self, idx: usize) -> (f64, f64) {
         (
-            f64::from(read_u32(self.bytes, self.dso_ra + 4 * idx)) / MAS_PER_DEGREE,
-            f64::from(read_i32(self.bytes, self.dso_dec + 4 * idx)) / MAS_PER_DEGREE,
+            f64::from(read_u32(self.bytes, field(self.dso_ra, 4, idx))) / MAS_PER_DEGREE,
+            f64::from(read_i32(self.bytes, field(self.dso_dec, 4, idx))) / MAS_PER_DEGREE,
         )
     }
 
     fn star_coord_degrees(&self, idx: usize) -> (f64, f64) {
         (
-            f64::from(read_u32(self.bytes, self.star_ra + 4 * idx)) / MAS_PER_DEGREE,
-            f64::from(read_i32(self.bytes, self.star_dec + 4 * idx)) / MAS_PER_DEGREE,
+            f64::from(read_u32(self.bytes, field(self.star_ra, 4, idx))) / MAS_PER_DEGREE,
+            f64::from(read_i32(self.bytes, field(self.star_dec, 4, idx))) / MAS_PER_DEGREE,
         )
     }
 
     fn dso_name(&self, idx: usize) -> &str {
-        self.pool_str(read_position(self.bytes, self.dso_name + 4 * idx))
+        self.pool_str(read_position(self.bytes, field(self.dso_name, 4, idx)))
     }
 
     fn dso_rank(&self, idx: usize) -> u8 {
-        self.bytes.get(self.dso_cat + idx).copied().unwrap_or(0)
+        self.bytes
+            .get(field(self.dso_cat, 1, idx))
+            .copied()
+            .unwrap_or(0)
     }
 
     fn star_hd(&self, idx: usize) -> u32 {
-        read_u32(self.bytes, self.star_hd + 4 * idx)
+        read_u32(self.bytes, field(self.star_hd, 4, idx))
     }
 
     /// Proper name for an HD number, if that star is IAU-named.
@@ -412,12 +431,13 @@ impl Catalog {
         let mut hi = self.named_count;
         while lo < hi {
             let mid = usize::midpoint(lo, hi);
-            let entry_hd = read_u32(self.bytes, self.named + 8 * mid);
+            let entry_hd = read_u32(self.bytes, field(self.named, 8, mid));
             match entry_hd.cmp(&hd) {
-                Ordering::Less => lo = mid + 1,
+                Ordering::Less => lo = mid.saturating_add(1),
                 Ordering::Greater => hi = mid,
                 Ordering::Equal => {
-                    let off = read_position(self.bytes, self.named + 8 * mid + 4);
+                    let off =
+                        read_position(self.bytes, field(self.named, 8, mid).saturating_add(4));
                     return Some(self.pool_str(off));
                 }
             }
@@ -426,7 +446,7 @@ impl Catalog {
     }
 
     fn magnitude_from(&self, section: usize, idx: usize) -> Option<f64> {
-        match read_i16(self.bytes, section + 2 * idx) {
+        match read_i16(self.bytes, field(section, 2, idx)) {
             MAG_NONE => None,
             m => Some(f64::from(m) / 100.0),
         }
@@ -447,13 +467,18 @@ impl Catalog {
 
     fn materialize_dso(&self, idx: usize) -> Option<ResolvedTarget> {
         let (ra, dec) = self.dso_coord_degrees(idx);
-        let type_idx = usize::from(self.bytes.get(self.dso_type + idx).copied().unwrap_or(0));
+        let type_idx = usize::from(
+            self.bytes
+                .get(field(self.dso_type, 1, idx))
+                .copied()
+                .unwrap_or(0),
+        );
         let type_off = if type_idx < self.type_count {
-            read_position(self.bytes, self.types + 4 * type_idx)
+            read_position(self.bytes, field(self.types, 4, type_idx))
         } else {
             usize::MAX // out-of-table index: `pool_str` reads it as absent
         };
-        let size = match read_u16(self.bytes, self.dso_size + 2 * idx) {
+        let size = match read_u16(self.bytes, field(self.dso_size, 2, idx)) {
             0 => None,
             s => Some(f64::from(s) / 10.0),
         };
@@ -501,11 +526,11 @@ impl Catalog {
     }
 
     fn key_at(&self, idx: usize) -> &str {
-        self.pool_str(read_position(self.bytes, self.keys + 8 * idx))
+        self.pool_str(read_position(self.bytes, field(self.keys, 8, idx)))
     }
 
     fn key_ref_at(&self, idx: usize) -> u32 {
-        read_u32(self.bytes, self.keys + 8 * idx + 4)
+        read_u32(self.bytes, field(self.keys, 8, idx).saturating_add(4))
     }
 
     fn key_lookup(&self, key: &str) -> Option<u32> {
@@ -514,7 +539,7 @@ impl Catalog {
         while lo < hi {
             let mid = usize::midpoint(lo, hi);
             match self.key_at(mid).cmp(key) {
-                Ordering::Less => lo = mid + 1,
+                Ordering::Less => lo = mid.saturating_add(1),
                 Ordering::Greater => hi = mid,
                 Ordering::Equal => return Some(self.key_ref_at(mid)),
             }
@@ -548,7 +573,7 @@ impl Catalog {
     /// Aliases are lookup keys, not entries, and are not counted.
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.dso_count + self.star_count
+        self.dso_count.saturating_add(self.star_count)
     }
 
     #[must_use]
@@ -563,8 +588,8 @@ impl Catalog {
         let mut hi = count;
         while lo < hi {
             let mid = usize::midpoint(lo, hi);
-            if i64::from(read_i32(self.bytes, section + 4 * mid)) < min_mas {
-                lo = mid + 1;
+            if i64::from(read_i32(self.bytes, field(section, 4, mid))) < min_mas {
+                lo = mid.saturating_add(1);
             } else {
                 hi = mid;
             }
@@ -644,12 +669,24 @@ impl Catalog {
         if radius_arcmin <= 0.0 || !radius_arcmin.is_finite() {
             return Vec::new();
         }
-        let radius_mas = (radius_arcmin / ARCMIN_PER_DEGREE * MAS_PER_DEGREE).ceil() as i64;
-        let dec_mas = (dec * MAS_PER_DEGREE) as i64;
+        // `dec` is bounded to ±90° by `IcrsCoord` and the guard above makes the
+        // radius finite, so both values fit an `i64` with room to spare. A
+        // float-to-int `as` saturates rather than wraps, and saturating — here
+        // and in the band bounds below — only widens the dec band toward the
+        // section edge; the exact great-circle test is what admits a row.
+        #[expect(
+            clippy::as_conversions,
+            reason = "bounded by the guards above; no TryFrom<f64> for i64 exists"
+        )]
+        let (radius_mas, dec_mas) = (
+            (radius_arcmin / ARCMIN_PER_DEGREE * MAS_PER_DEGREE).ceil() as i64,
+            (dec * MAS_PER_DEGREE) as i64,
+        );
+        let max_mas = dec_mas.saturating_add(radius_mas);
+        let start = self.dec_lower_bound(dec_section, count, dec_mas.saturating_sub(radius_mas));
         let mut hits = Vec::new();
-        let mut idx = self.dec_lower_bound(dec_section, count, dec_mas - radius_mas);
-        while idx < count {
-            if i64::from(read_i32(self.bytes, dec_section + 4 * idx)) > dec_mas + radius_mas {
+        for idx in start..count {
+            if i64::from(read_i32(self.bytes, field(dec_section, 4, idx))) > max_mas {
                 break;
             }
             let (row_ra, row_dec) = coord_of(idx);
@@ -657,7 +694,6 @@ impl Catalog {
             if separation <= radius_arcmin {
                 hits.push((idx, separation));
             }
-            idx += 1;
         }
         hits
     }
@@ -735,22 +771,31 @@ fn levenshtein(a: &str, b: &str, cap: usize) -> usize {
     if b.is_empty() {
         return a.len().min(cap);
     }
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr: Vec<usize> = vec![0; n + 1];
+    // Single-row DP: `cell` holds the previous row's value for this column
+    // until it is overwritten, so `diag` and `left` carry the two values the
+    // recurrence needs that the row no longer does — the previous row's value
+    // one column back, and the value just written. Every distance is bounded
+    // by the longer string's length, so the saturating adds cannot saturate;
+    // they are the total spelling of `+ 1`.
+    let mut row: Vec<usize> = (0..=n).collect();
     for (i, ca) in a.bytes().enumerate() {
-        curr[0] = i + 1;
-        let mut row_min = curr[0];
-        for (j, cb) in b.bytes().enumerate() {
-            let cost = usize::from(ca != cb);
-            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
-            row_min = row_min.min(curr[j + 1]);
+        let mut left = i.saturating_add(1); // this row's column 0
+        let mut diag = i; // the previous row's column 0
+        let mut row_min = left;
+        for (cell, cb) in row.iter_mut().skip(1).zip(b.bytes()) {
+            let up = *cell;
+            let step = left.min(up).saturating_add(1);
+            let next = step.min(diag.saturating_add(usize::from(ca != cb)));
+            *cell = next;
+            row_min = row_min.min(next);
+            diag = up;
+            left = next;
         }
         if row_min >= cap {
             return cap;
         }
-        std::mem::swap(&mut prev, &mut curr);
     }
-    prev[n].min(cap)
+    row.last().copied().unwrap_or(0).min(cap)
 }
 
 #[cfg(test)]
