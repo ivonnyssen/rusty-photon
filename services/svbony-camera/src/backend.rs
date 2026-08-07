@@ -167,7 +167,9 @@ impl CaptureRequest {
 #[must_use]
 pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
     let us = exposure_us.max(0);
-    let ms = us.saturating_mul(2) / 1_000 + 500;
+    // 1_000 is a literal divisor, so the division is total; the base is a floor
+    // the timeout must never drop below, so it saturates rather than wraps.
+    let ms = (us.saturating_mul(2) / 1_000).saturating_add(500);
     i32::try_from(ms).unwrap_or(i32::MAX)
 }
 
@@ -177,6 +179,9 @@ pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
 /// for why polling in slices instead of one blocking call for the whole
 /// deadline matters.
 const VIDEO_DATA_POLL_MS: i32 = 250;
+/// [`VIDEO_DATA_POLL_MS`] as the `u64` `Duration::from_millis` wants. Declared
+/// once so the two spellings of the same constant cannot drift.
+const VIDEO_DATA_POLL_MS_U64: u64 = 250;
 
 /// The blocking camera operations the ASCOM `Camera` device drives. Every
 /// method is synchronous (the SDK is blocking C FFI); callers offload SDK
@@ -432,7 +437,10 @@ impl CameraHandle for SvbonyCameraHandle {
         // abort during the simulated integration drains promptly too.
         #[cfg(feature = "simulation")]
         {
-            let sim_deadline = Instant::now() + request.duration;
+            // Validated against `ExposureMax` upstream, so this cannot overflow
+            // the clock; `now` would simply end the wait at once.
+            let sim_start = Instant::now();
+            let sim_deadline = sim_start.checked_add(request.duration).unwrap_or(sim_start);
             loop {
                 if request.cancel.load(Ordering::Acquire) {
                     return self.abort_capture(&request);
@@ -441,7 +449,7 @@ impl CameraHandle for SvbonyCameraHandle {
                 if remaining.is_zero() {
                     break;
                 }
-                std::thread::sleep(remaining.min(Duration::from_millis(VIDEO_DATA_POLL_MS as u64)));
+                std::thread::sleep(remaining.min(Duration::from_millis(VIDEO_DATA_POLL_MS_U64)));
             }
         }
         #[cfg(not(feature = "simulation"))]
@@ -476,10 +484,14 @@ impl CameraHandle for SvbonyCameraHandle {
         // from a short slice just means "no frame yet"; retry until either a
         // frame arrives or the overall deadline elapses (at which point the
         // final `Timeout` is the real, reported error).
-        let deadline = Instant::now()
-            + Duration::from_millis(
+        // The timeout is derived from a validated exposure, so this cannot
+        // overflow the clock; `now` would end the poll loop on its first pass.
+        let poll_start = Instant::now();
+        let deadline = poll_start
+            .checked_add(Duration::from_millis(
                 u64::try_from(exposure_timeout_ms(request.exposure_us)).unwrap_or(0),
-            );
+            ))
+            .unwrap_or(poll_start);
         loop {
             // Abort/disconnect check between slices — the only interrupt
             // path this SDK admits (see the module docs, "How `capture`

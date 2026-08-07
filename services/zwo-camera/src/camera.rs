@@ -22,7 +22,7 @@
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
-use std::num::NonZeroU128;
+use std::num::{NonZeroU128, NonZeroU32};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -479,17 +479,19 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
 ///   check it earned. Clamping that to 1 would move the error onto the alignment
 ///   rule for a value the client never set.
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
-    let factor = f64::from(old) / f64::from(new);
-    let extent = |v: u32| {
-        if v == 0 {
-            0
-        } else {
-            ((f64::from(v) * factor) as u32).max(1)
-        }
+    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
+    // exactly where the float form did, without the rounding error a divide and
+    // a multiply in `f64` can accumulate between them.
+    let old = u32::from(old);
+    let Some(new) = NonZeroU32::new(u32::from(new)) else {
+        // A zero bin is not a scale, so there is nothing to rescale by.
+        return roi;
     };
+    let scale = |v: u32| v.saturating_mul(old) / new;
+    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
     Roi {
-        start_x: (f64::from(roi.start_x) * factor) as u32,
-        start_y: (f64::from(roi.start_y) * factor) as u32,
+        start_x: scale(roi.start_x),
+        start_y: scale(roi.start_y),
         width: extent(roi.width),
         height: extent(roi.height),
     }
@@ -507,22 +509,30 @@ fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
     Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
 }
 
-/// Greatest common divisor (Euclid).
-fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
+/// Greatest common divisor (Euclid) of two non-zero operands. The result is
+/// itself non-zero, since it divides both — which is what lets [`lcm`] divide
+/// by it without a second check.
+fn gcd(a: NonZeroU32, b: NonZeroU32) -> NonZeroU32 {
+    let (mut a, mut b) = (a, b);
+    // `a % b` is total once `b` carries its own non-zero-ness, so the loop
+    // needs no separate guard on the divisor.
+    while let Some(rem) = NonZeroU32::new(a.get() % b) {
+        a = b;
+        b = rem;
     }
+    b
 }
 
 /// Least common multiple (`0` if either operand is `0`).
 fn lcm(a: u32, b: u32) -> u32 {
-    if a == 0 || b == 0 {
-        0
-    } else {
-        a / gcd(a, b) * b
-    }
+    let (Some(a_nz), Some(b_nz)) = (NonZeroU32::new(a), NonZeroU32::new(b)) else {
+        // Zero shares no multiple with anything.
+        return 0;
+    };
+    // The gcd divides `a` exactly, so dividing before multiplying keeps the
+    // intermediate as small as it can be; saturating covers a pair whose
+    // multiple genuinely does not fit.
+    (a / gcd(a_nz, b_nz)).saturating_mul(b)
 }
 
 /// The largest sensor extent (≤ `max`) the driver reports such that the full
@@ -542,11 +552,11 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
         .filter(|&b| b > 0)
         .map(|b| unit.saturating_mul(b))
         .fold(1, lcm);
-    if step == 0 || step > max {
-        max
-    } else {
-        max - max % step
-    }
+    let Some(step) = NonZeroU32::new(step).filter(|s| s.get() <= max) else {
+        return max;
+    };
+    // A remainder is never larger than what it came from, so this cannot wrap.
+    max.saturating_sub(max % step)
 }
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
@@ -624,7 +634,17 @@ fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting
         // or degenerate (1) depth says nothing about the packing at all — there
         // is no step size to step down by.
         _ if bit_depth <= 1 || bit_depth >= 16 => u32::from(u16::MAX),
-        _ => ((1u32 << bit_depth) - 2) << (16 - bit_depth),
+        // Reached only for `bit_depth` in 2..=15 (the arm above), where every
+        // step below is exact: `1 << 15` fits, `- 2` cannot underflow from 4 or
+        // more, and the final shift is by at most 14. The saturating spellings
+        // are therefore identical here, not a clamp that changes the answer —
+        // and this is a per-query call, not a per-pixel one.
+        _ => 1u32
+            .checked_shl(bit_depth)
+            .unwrap_or(u32::from(u16::MAX))
+            .saturating_sub(2)
+            .checked_shl(16u32.saturating_sub(bit_depth))
+            .unwrap_or(u32::from(u16::MAX)),
     }
 }
 
@@ -1169,9 +1189,12 @@ impl Camera for ZwoCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
-        self.state
-            .readout_mode
-            .store(readout_mode as u8, Ordering::Release);
+        // Bounded by the `available` check above, which is itself a `usize`
+        // length, so this narrowing has an answer for every index that got here.
+        self.state.readout_mode.store(
+            u8::try_from(readout_mode).unwrap_or(u8::MAX),
+            Ordering::Release,
+        );
         Ok(())
     }
 
@@ -1238,9 +1261,14 @@ impl Camera for ZwoCamera {
             return Ok(target);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::TargetTemp)
-                .map(|t| t as f64)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+            let raw = h
+                .control_value(ControlType::TargetTemp)
+                .map_err(|_| ASCOMError::INVALID_VALUE)?;
+            // A temperature outside `i32` is not a temperature; say so rather
+            // than widen it lossily.
+            i32::try_from(raw).map(f64::from).map_err(|_| {
+                ASCOMError::invalid_value(format!("camera reported target temperature {raw}"))
+            })
         })
         .await
     }
@@ -1255,6 +1283,14 @@ impl Camera for ZwoCamera {
                 "target temperature {set_ccd_temperature} outside [-273.15, 80]"
             )));
         }
+        // Validated to [-273.15, 80] immediately above, so the rounded value is
+        // in [-273, 80] — a range `i64` holds with room to spare. No
+        // `TryFrom<f64>` exists to spell that, and a fallible form would add an
+        // arm the check above already makes unreachable.
+        #[expect(
+            clippy::as_conversions,
+            reason = "bounded by the range check above; no TryFrom<f64> for i64 exists"
+        )]
         let raw = set_ccd_temperature.round() as i64;
         self.on_handle(move |h| {
             h.set_control_value(ControlType::TargetTemp, raw)
@@ -1296,9 +1332,12 @@ impl Camera for ZwoCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::CoolerPowerPerc)
-                .map(|p| p as f64)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+            let raw = h
+                .control_value(ControlType::CoolerPowerPerc)
+                .map_err(|_| ASCOMError::INVALID_VALUE)?;
+            i32::try_from(raw).map(f64::from).map_err(|_| {
+                ASCOMError::invalid_value(format!("camera reported cooler power {raw}"))
+            })
         })
         .await
     }
@@ -1419,7 +1458,10 @@ impl Camera for ZwoCamera {
 
         let (min_us, max_us) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        let exposure_us = (duration.as_secs_f64() * 1_000_000.0).round() as i64;
+        // Exact microseconds from the `Duration` itself: no float to round, and
+        // a duration too long for the SDK's `i64` saturates rather than wrapping
+        // into a short exposure.
+        let exposure_us = i64::try_from(duration.as_micros()).unwrap_or(i64::MAX);
         if exposure_us < min_us || exposure_us > max_us {
             return Err(ASCOMError::invalid_value(format!(
                 "exposure {exposure_us}us outside [{min_us}, {max_us}]"
@@ -1520,7 +1562,10 @@ impl Camera for ZwoCamera {
             .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide task failed: {e}")))?
             .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))?;
 
-        *self.state.pulse_guide_until.lock() = Some(SystemTime::now() + duration);
+        // A guide pulse is milliseconds long, so this cannot overflow the clock;
+        // falling back to `now` would simply report the pulse as already done.
+        let now = SystemTime::now();
+        *self.state.pulse_guide_until.lock() = Some(now.checked_add(duration).unwrap_or(now));
 
         let off_handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);

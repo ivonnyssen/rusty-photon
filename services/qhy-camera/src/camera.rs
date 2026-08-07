@@ -21,7 +21,7 @@
 //! Blocking exposure SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -512,17 +512,19 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
 ///   alignment rule, so a 1 here would clear every remaining check and expose a
 ///   one-pixel frame in place of the error the client had earned.
 fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
-    let factor = f64::from(old) / f64::from(new);
-    let extent = |v: u32| {
-        if v == 0 {
-            0
-        } else {
-            ((f64::from(v) * factor) as u32).max(1)
-        }
+    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
+    // exactly where the float form did, without the rounding error a divide and
+    // a multiply in `f64` can accumulate between them.
+    let old = u32::from(old);
+    let Some(new) = NonZeroU32::new(u32::from(new)) else {
+        // A zero bin is not a scale, so there is nothing to rescale by.
+        return roi;
     };
+    let scale = |v: u32| v.saturating_mul(old) / new;
+    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
     CCDChipArea {
-        start_x: (f64::from(roi.start_x) * factor) as u32,
-        start_y: (f64::from(roi.start_y) * factor) as u32,
+        start_x: scale(roi.start_x),
+        start_y: scale(roi.start_y),
         width: extent(roi.width),
         height: extent(roi.height),
     }
@@ -698,7 +700,11 @@ async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) 
     if !sleep_unless_cancelled(state, expected).await {
         return false;
     }
-    let deadline = tokio::time::Instant::now() + EXPOSURE_CONFIRM_TIMEOUT;
+    // A deadline this far out cannot overflow the clock; falling back to `now`
+    // if it somehow did just skips straight to the readout, which blocks until
+    // the frame really is ready.
+    let now = tokio::time::Instant::now();
+    let deadline = now.checked_add(EXPOSURE_CONFIRM_TIMEOUT).unwrap_or(now);
     while tokio::time::Instant::now() < deadline {
         let polled = Arc::clone(handle);
         let remaining =
@@ -1076,21 +1082,24 @@ impl Camera for QhyCameraDevice {
         self.ensure_connected()?;
         let (min, _, _) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(min as u64))
+        // `Duration` takes the seconds directly, so the SDK's `f64` never has to
+        // become an integer here; a value it cannot represent is an error rather
+        // than a saturated number.
+        Duration::try_from_secs_f64(min / 1_000_000.0).map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     async fn exposure_max(&self) -> ASCOMResult<Duration> {
         self.ensure_connected()?;
         let (_, max, _) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(max as u64))
+        Duration::try_from_secs_f64(max / 1_000_000.0).map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     async fn exposure_resolution(&self) -> ASCOMResult<Duration> {
         self.ensure_connected()?;
         let (_, _, step) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(step as u64))
+        Duration::try_from_secs_f64(step / 1_000_000.0).map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     // --- gain / offset ----------------------------------------------------------
@@ -1212,7 +1221,9 @@ impl Camera for QhyCameraDevice {
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mode = readout_mode as u32;
+        // An index the SDK's `u32` cannot hold is out of range by definition,
+        // and the count check below is where that is reported.
+        let mode = u32::try_from(readout_mode).unwrap_or(u32::MAX);
         let count = self
             .handle
             .get_number_of_readout_modes()
@@ -1594,9 +1605,12 @@ impl Camera for QhyCameraDevice {
         *self.state.last_error.lock() = None;
         *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
         *self.state.last_exposure_duration.lock() = Some(duration);
-        self.state
-            .expected_duration_us
-            .store(exposure_us as u64, Ordering::Release);
+        // Exact microseconds from the `Duration` itself rather than a narrowed
+        // copy of the float sent to the SDK.
+        self.state.expected_duration_us.store(
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
 
         let handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);

@@ -272,7 +272,11 @@ impl CameraHandle for ZwoCameraHandle {
         // async-operation timeout. A deadline bounds the integration to the
         // requested duration plus at most one overshooting nap, whatever the
         // scheduler does.
-        let deadline = std::time::Instant::now() + request.duration;
+        // The duration is validated against `ExposureMax` upstream, so this
+        // cannot overflow the clock; falling back to `now` would end the wait
+        // immediately and let the poll below do the bounding.
+        let start = std::time::Instant::now();
+        let deadline = start.checked_add(request.duration).unwrap_or(start);
         let step = Duration::from_millis(20);
         let mut preserve = false;
         loop {
@@ -292,7 +296,7 @@ impl CameraHandle for ZwoCameraHandle {
             if now >= deadline {
                 break;
             }
-            std::thread::sleep(step.min(deadline - now));
+            std::thread::sleep(step.min(deadline.saturating_duration_since(now)));
         }
 
         // Poll to completion (unless gracefully stopped) and download, under the
@@ -306,7 +310,10 @@ impl CameraHandle for ZwoCameraHandle {
             // Poll the SDK to readout completion against a real-clock DEADLINE,
             // for the same reason as the integration wait above: a fixed nap
             // count drifts unpredictably under blocking-pool oversubscription.
-            let readout_deadline = std::time::Instant::now() + READOUT_TIMEOUT;
+            let readout_start = std::time::Instant::now();
+            let readout_deadline = readout_start
+                .checked_add(READOUT_TIMEOUT)
+                .unwrap_or(readout_start);
             let step = Duration::from_millis(10);
             loop {
                 match self.stop.load(Ordering::SeqCst) {
@@ -330,7 +337,9 @@ impl CameraHandle for ZwoCameraHandle {
                         if now >= readout_deadline {
                             break;
                         }
-                        std::thread::sleep(step.min(readout_deadline - now));
+                        std::thread::sleep(
+                            step.min(readout_deadline.saturating_duration_since(now)),
+                        );
                     }
                 }
             }
@@ -701,7 +710,7 @@ pub(crate) mod mock {
                 if now >= deadline {
                     break;
                 }
-                std::thread::sleep(step.min(deadline - now));
+                std::thread::sleep(step.min(deadline.saturating_duration_since(now)));
             }
             if self.stop.load(Ordering::SeqCst) == STOP_ABORT {
                 return Ok(None);

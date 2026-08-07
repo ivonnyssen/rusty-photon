@@ -138,7 +138,7 @@ impl ServerBuilder {
                 });
             }
             server.devices.register(device);
-            camera_count += 1;
+            camera_count = camera_count.saturating_add(1);
             debug!(camera = %id, "registered Camera device");
 
             if cfw_ids.contains(&id) {
@@ -154,7 +154,7 @@ impl ServerBuilder {
                     None,
                 );
                 server.devices.register(device);
-                fw_count += 1;
+                fw_count = fw_count.saturating_add(1);
                 debug!(filter_wheel = %id, "registered FilterWheel device");
             }
         }

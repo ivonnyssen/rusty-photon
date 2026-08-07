@@ -30,7 +30,7 @@
 //! late-completing task — the same discipline `zwo-camera`'s
 //! `run_exposure`/`result_lock` pattern uses.
 
-use std::num::NonZeroU128;
+use std::num::{NonZeroU128, NonZeroU32};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -91,12 +91,14 @@ const READOUT_FORMATS: [ReadoutFormat; 2] = [
         // whose saturated Raw16 pixels read 65535 (low bits populated, so a
         // genuine rescale, not a bare left shift) — so the delivered data's
         // ceiling is the format's, not the ADC's (ST3).
-        max_adu: u16::MAX as u32,
+        // `u16::MAX`, spelled out because `From` is not const-stable.
+        max_adu: 65_535,
     },
     ReadoutFormat {
         image_type: ImageType::Raw8,
         name: "Raw8",
-        max_adu: u8::MAX as u32,
+        // `u8::MAX`, spelled out because `From` is not const-stable.
+        max_adu: 255,
     },
 ];
 
@@ -616,20 +618,30 @@ fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
     Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
 }
 
-fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
+/// Greatest common divisor (Euclid) of two non-zero operands. The result is
+/// itself non-zero, since it divides both — which is what lets [`lcm`] divide
+/// by it without a second check.
+fn gcd(a: NonZeroU32, b: NonZeroU32) -> NonZeroU32 {
+    let (mut a, mut b) = (a, b);
+    // `a % b` is total once `b` carries its own non-zero-ness, so the loop
+    // needs no separate guard on the divisor.
+    while let Some(rem) = NonZeroU32::new(a.get() % b) {
+        a = b;
+        b = rem;
     }
+    b
 }
 
+/// Least common multiple (`0` if either operand is `0`).
 fn lcm(a: u32, b: u32) -> u32 {
-    if a == 0 || b == 0 {
-        0
-    } else {
-        a / gcd(a, b) * b
-    }
+    let (Some(a_nz), Some(b_nz)) = (NonZeroU32::new(a), NonZeroU32::new(b)) else {
+        // Zero shares no multiple with anything.
+        return 0;
+    };
+    // The gcd divides `a` exactly, so dividing before multiplying keeps the
+    // intermediate as small as it can be; saturating covers a pair whose
+    // multiple genuinely does not fit.
+    (a / gcd(a_nz, b_nz)).saturating_mul(b)
 }
 
 /// The largest sensor extent (≤ `max`) the driver reports such that the full
@@ -649,11 +661,11 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
         .filter(|&b| b > 0)
         .map(|b| unit.saturating_mul(b))
         .fold(1, lcm);
-    if step == 0 || step > max {
-        max
-    } else {
-        max - max % step
-    }
+    let Some(step) = NonZeroU32::new(step).filter(|s| s.get() <= max) else {
+        return max;
+    };
+    // A remainder is never larger than what it came from, so this cannot wrap.
+    max.saturating_sub(max % step)
 }
 
 /// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
@@ -670,17 +682,19 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 ///   check it earned. Clamping that to 1 would move the error onto the alignment
 ///   rule for a value the client never set.
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
-    let factor = f64::from(old) / f64::from(new);
-    let extent = |v: u32| {
-        if v == 0 {
-            0
-        } else {
-            ((f64::from(v) * factor) as u32).max(1)
-        }
+    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
+    // exactly where the float form did, without the rounding error a divide and
+    // a multiply in `f64` can accumulate between them.
+    let old = u32::from(old);
+    let Some(new) = NonZeroU32::new(u32::from(new)) else {
+        // A zero bin is not a scale, so there is nothing to rescale by.
+        return roi;
     };
+    let scale = |v: u32| v.saturating_mul(old) / new;
+    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
     Roi {
-        start_x: (f64::from(roi.start_x) * factor) as u32,
-        start_y: (f64::from(roi.start_y) * factor) as u32,
+        start_x: scale(roi.start_x),
+        start_y: scale(roi.start_y),
         width: extent(roi.width),
         height: extent(roi.height),
     }
@@ -1227,9 +1241,12 @@ impl Camera for SvbonyCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
-        self.state
-            .readout_mode
-            .store(readout_mode as u8, Ordering::Release);
+        // Bounded by the range check above, which is itself a `usize` length, so
+        // this narrowing has an answer for every index that got here.
+        self.state.readout_mode.store(
+            u8::try_from(readout_mode).unwrap_or(u8::MAX),
+            Ordering::Release,
+        );
         Ok(())
     }
 
@@ -1284,12 +1301,22 @@ impl Camera for SvbonyCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::CurrentTemperature)
-                .map(|t| t as f64 / 10.0)
+            let raw = h
+                .control_value(ControlType::CurrentTemperature)
                 .map_err(|e| {
                     ASCOMError::new(
                         UNSPECIFIED_ERROR,
                         format!("failed to read sensor temperature: {e}"),
+                    )
+                })?;
+            // A temperature outside `i32` is not a temperature; say so rather
+            // than widen it lossily. Tenths of a degree (K3).
+            i32::try_from(raw)
+                .map(|t| f64::from(t) / 10.0)
+                .map_err(|_| {
+                    ASCOMError::new(
+                        UNSPECIFIED_ERROR,
+                        format!("camera reported sensor temperature {raw}"),
                     )
                 })
         })
@@ -1305,10 +1332,15 @@ impl Camera for SvbonyCamera {
             return Ok(target);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::TargetTemperature)
-                .map(|t| t as f64 / 10.0)
+            let raw = h
+                .control_value(ControlType::TargetTemperature)
                 .map_err(|e| {
                     ASCOMError::invalid_value(format!("failed to read target temperature: {e}"))
+                })?;
+            i32::try_from(raw)
+                .map(|t| f64::from(t) / 10.0)
+                .map_err(|_| {
+                    ASCOMError::invalid_value(format!("camera reported target temperature {raw}"))
                 })
         })
         .await
@@ -1325,6 +1357,14 @@ impl Camera for SvbonyCamera {
             )));
         }
         // K3: encode to tenths of a degree (SVB_TARGET_TEMPERATURE's units).
+        // Validated to [-273.15, 80] immediately above, so the rounded tenths are
+        // in [-2732, 800] — a range `i64` holds with room to spare. No
+        // `TryFrom<f64>` exists to spell that, and a fallible form would add an
+        // arm the check above already makes unreachable.
+        #[expect(
+            clippy::as_conversions,
+            reason = "bounded by the range check above; no TryFrom<f64> for i64 exists"
+        )]
         let tenths = (set_ccd_temperature * 10.0).round() as i64;
         self.on_handle(move |h| {
             h.set_control_value(ControlType::TargetTemperature, tenths)
@@ -1375,9 +1415,12 @@ impl Camera for SvbonyCamera {
         }
         // K4: SVB_COOLER_POWER is already a 0-100 percent, no normalization.
         self.on_handle(|h| {
-            h.control_value(ControlType::CoolerPower)
-                .map(|p| p as f64)
-                .map_err(|e| ASCOMError::invalid_value(format!("failed to read cooler power: {e}")))
+            let raw = h.control_value(ControlType::CoolerPower).map_err(|e| {
+                ASCOMError::invalid_value(format!("failed to read cooler power: {e}"))
+            })?;
+            i32::try_from(raw).map(f64::from).map_err(|_| {
+                ASCOMError::invalid_value(format!("camera reported cooler power {raw}"))
+            })
         })
         .await
     }
@@ -1515,7 +1558,10 @@ impl Camera for SvbonyCamera {
         let sensor = self.sensor()?;
         let (min_us, max_us) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        let exposure_us = (duration.as_secs_f64() * 1_000_000.0).round() as i64;
+        // Exact microseconds from the `Duration` itself: no float to round, and
+        // a duration too long for the SDK's `i64` saturates rather than wrapping
+        // into a short exposure.
+        let exposure_us = i64::try_from(duration.as_micros()).unwrap_or(i64::MAX);
         if exposure_us < min_us || exposure_us > max_us {
             return Err(ASCOMError::invalid_value(format!(
                 "exposure {exposure_us}us outside [{min_us}, {max_us}]"
