@@ -100,7 +100,7 @@ fn negotiated_formats(info: &CameraInfo) -> Vec<ReadoutFormat> {
 ///
 /// This is the *whole* difference between this driver's geometry and
 /// `qhy-camera`'s, which passes `None` — everything else about validating a ROI
-/// is shared, and lives in `rusty-photon-camera-geometry`.
+/// is shared, and lives in `rusty-photon-camera-core`.
 const ALIGNMENT: Option<Alignment> = Some(Alignment::new(
     NonZeroU32::new(8).expect("8 is not zero"),
     NonZeroU32::new(2).expect("2 is not zero"),
@@ -1671,7 +1671,7 @@ mod tests {
     #[test]
     fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
         // The rescale arithmetic and its full case list live in
-        // `rusty-photon-camera-geometry`; what this pins is that the two halves
+        // `rusty-photon-camera-core`; what this pins is that the two halves
         // are wired together — a 0 the client set survives the bin change and
         // `StartExposure` still answers about that 0, rather than about the %8
         // alignment rule a clamped 1 would trip instead.

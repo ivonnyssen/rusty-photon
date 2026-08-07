@@ -1661,7 +1661,7 @@ mod tests {
     #[test]
     fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
         // The rescale arithmetic and its full case list live in
-        // `rusty-photon-camera-geometry`; what this pins is that the two halves
+        // `rusty-photon-camera-core`; what this pins is that the two halves
         // are wired together through the `CCDChipArea` conversion — a 0 the
         // client set survives the bin change, and `StartExposure` still answers
         // about that 0.
