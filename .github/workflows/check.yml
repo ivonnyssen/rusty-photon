@@ -364,8 +364,8 @@ jobs:
             '.packages[] | select(.rust_version)
              | select(.name as $n | ($skip | index($n)) | not)
              | .manifest_path' | \
-          while read manifest; do
-            echo "::group::$(basename $(dirname $manifest))"
+          while read -r manifest; do
+            echo "::group::$(basename "$(dirname "$manifest")")"
             cargo msrv verify --manifest-path "$manifest"
             echo "::endgroup::"
           done

@@ -330,13 +330,13 @@ jobs:
             [ -e "$f" ] || continue
             mv "$f" "$(printf '%s' "$f" | tr '^' '.')"
           done
-          ls -1 *.rpm
+          ls -1 -- *.rpm
       # One merged sums file across all legs, generated AFTER the renaming
       # above.
       - name: Merge checksums
         run: |
           cd assets
-          sha256sum *.deb *.rpm *.msi *.tar.gz > SHA256SUMS.txt
+          sha256sum -- *.deb *.rpm *.msi *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
       # Rendered from the merged assets (tarball sha256s + the manifest the
       # meta-formula downloads), pushed to the tap only after the release

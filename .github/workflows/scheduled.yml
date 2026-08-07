@@ -88,16 +88,16 @@ jobs:
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.miri.command) | {name: .name, command: .metadata.miri.command}]')
 
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
 
           # Check if we have any services
           COUNT=$(echo "$SERVICES" | jq 'length')
           if [ "$COUNT" -gt 0 ]; then
-            echo "has_services=true" >> $GITHUB_OUTPUT
+            echo "has_services=true" >> "$GITHUB_OUTPUT"
             echo "Found $COUNT Miri services:"
             echo "$SERVICES" | jq -r '.[] | "  - \(.name): \(.command)"'
           else
-            echo "has_services=false" >> $GITHUB_OUTPUT
+            echo "has_services=false" >> "$GITHUB_OUTPUT"
             echo "No Miri services found"
           fi
 
