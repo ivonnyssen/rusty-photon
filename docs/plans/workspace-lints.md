@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1215,6 +1215,46 @@ better candidate: its guard bounds `bit_depth` to `2..=15`, where every step is
 exact, so `checked_shl` is identical rather than a clamp — and the
 hardware-validated ceilings (65504 / 65528 / 65520) stayed test-pinned across
 the change.
+
+### L5f — `rp-catalog`
+
+56 production sites, all in `lib.rs`, to **zero**; the test module contributes
+none. The crate was already built around total field readers (`first_chunk`
+parses, `position`'s saturating widen, `checked_add` in the pool-string walk),
+so what remained was the arithmetic *around* those readers, and it fell into
+shapes with one answer each.
+
+**Address computation now saturates, and that closes a documented gap rather
+than appeasing the lint.** Release builds run with overflow checks off, so
+`section + 4 * idx` over a corrupt count or row index *wrapped* — and
+`materialize`'s own comment already said what a wrapped read does: land on an
+unrelated byte and yield a fully-formed target with a plausible position. Two
+const helpers (`section_end` for the layout chain, `field` for row addressing)
+now spell every offset; saturation yields `usize::MAX`, which addresses
+nothing, so every reader turns corruption into its documented miss value. A
+corrupt header still cannot slip through `load`: a saturated layout can never
+equal the blob's real length, so the exact-length check reports `Truncated`
+exactly as before.
+
+**The Levenshtein DP went index-free instead of getting an exemption.** The
+two-row textbook form carried 16 of the 56 sites. The rewrite keeps one row
+and carries the two values the recurrence needs that the row no longer holds —
+the previous row's value one column back (`diag`) and the value just written
+(`left`) — while `iter_mut().skip(1).zip(b.bytes())` makes the bounds the
+iterator's problem. That drops the second vector and the swap, keeps the
+cap-4 early exit that makes the ~20k-key fuzzy scan affordable, and its
+saturating adds are simply the total spelling of a distance the cap truncates
+anyway. The classic-form tests (kitten/sitting, cap truncation, empty edges)
+and the fuzzy-suggestion tests over the real key table pinned the behavior
+across the change.
+
+**Two exemptions, the same shape as L5e's.** `scan_band` turns a validated
+declination (±90° by `IcrsCoord`) and a guard-checked finite radius into
+milliarcsecond band bounds; no `TryFrom<f64>` exists to spell it, a float-to-int
+`as` saturates rather than wraps, and a saturated bound only widens the dec
+band that the exact great-circle test then filters. The workspace's exemption
+count for the L5 three stands at four, all f64-to-integer narrowings below a
+visible guard.
 
 ## L6a — split the CI channels
 
