@@ -999,7 +999,11 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **ST1.** `SensorType` is `RGGB` (colour) when `IsColorCam`, else
   `Monochrome`; `BayerOffsetX/Y` follow `BayerPattern` — read at runtime,
   never hardcoded to the SV605CC's own pattern (a future mono/other-pattern
-  model must report correctly).
+  model must report correctly). The driver maps `SVB_BAYER_*` — which
+  abbreviates the quad to its first row — onto
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  `BayerPattern`, which locates the first red photosite; the offsets themselves
+  are **one implementation** across the three camera drivers.
 - **ST2.** `ElectronsPerADU` is **`NOT_IMPLEMENTED`, confirmed permanent**
   — `SVB_CAMERA_PROPERTY` has no native electrons-per-ADU field (unlike
   ZWO's `ElecPerADU`), and real-hardware validation confirmed no control

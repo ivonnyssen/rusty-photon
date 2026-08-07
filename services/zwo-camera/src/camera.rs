@@ -551,13 +551,18 @@ fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting
 }
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y`.
+///
+/// `ASI_BAYER_RG` and friends abbreviate the quad to its first row, so the
+/// vendor spelling is all this maps; where the red photosite then sits is the
+/// shared crate's rule.
 const fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
     match pattern {
-        BayerPattern::Rg => (0, 0),
-        BayerPattern::Bg => (1, 1),
-        BayerPattern::Gr => (1, 0),
-        BayerPattern::Gb => (0, 1),
+        BayerPattern::Rg => geometry::BayerPattern::Rggb,
+        BayerPattern::Bg => geometry::BayerPattern::Bggr,
+        BayerPattern::Gr => geometry::BayerPattern::Grbg,
+        BayerPattern::Gb => geometry::BayerPattern::Gbrg,
     }
+    .offsets()
 }
 
 /// Map an ASCOM guide direction onto the `zwo-rs` one.
@@ -1718,6 +1723,10 @@ mod tests {
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
 
+    /// The offsets come from the shared crate, so these values are not a
+    /// restatement of anything in this file — they pin the vendor mapping end
+    /// to end. `Gr` and `Gb` are the pair worth having a test for: they differ
+    /// by one letter and their offsets are transposes of each other.
     #[test]
     fn bayer_offset_mapping() {
         assert_eq!(bayer_offsets(BayerPattern::Rg), (0, 0));

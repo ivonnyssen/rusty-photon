@@ -12,9 +12,15 @@
 //!
 //! What lives here is the arithmetic with no vendor in it. Anything a vendor
 //! genuinely disagrees about stays in the driver: the frame unpack, the
-//! `MaxADU` ceiling, the Bayer table, the readout formats. The rule of thumb is
-//! the dependency list below — a vendor type or an `ascom-alpaca` type in a
-//! signature here would mean the item belongs in a driver instead.
+//! `MaxADU` ceiling, the readout formats, and which of its own enum's spellings
+//! names which mosaic. The rule of thumb is the dependency list below — a
+//! vendor type or an `ascom-alpaca` type in a signature here would mean the
+//! item belongs in a driver instead.
+//!
+//! [`BayerPattern`] shows where that line falls. Each SDK names the same four
+//! mosaics differently (`ASI_BAYER_RG`, `QHY BayerPattern::RGGB`), so the
+//! driver translates its own spelling; but *where the first red photosite sits*
+//! is one ASCOM rule, so [`BayerPattern::offsets`] answers it once.
 //!
 //! Where drivers differ by *degree* rather than in kind, the difference is a
 //! parameter. `qhy-camera` has no sub-frame alignment rule while the other two
@@ -39,6 +45,47 @@ pub struct Roi {
     pub width: u32,
     /// Height in binned pixels (ASCOM `NumY`).
     pub height: u32,
+}
+
+/// A Bayer mosaic, named — as every vendor SDK names it — by the colours of its
+/// top-left 2x2 photosite quad read row-major.
+///
+/// Four variants because a Bayer quad has four arrangements and no more: red
+/// takes one corner, blue the opposite one, and the greens the other diagonal.
+/// A driver maps its SDK's spelling onto these; the ASCOM offsets then come
+/// from [`offsets`](Self::offsets) rather than from a table per driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BayerPattern {
+    /// `R G` over `G B`.
+    Rggb,
+    /// `B G` over `G R`.
+    Bggr,
+    /// `G R` over `B G`.
+    Grbg,
+    /// `G B` over `R G`.
+    Gbrg,
+}
+
+impl BayerPattern {
+    /// ASCOM `BayerOffsetX` and `BayerOffsetY`: the column and row of the first
+    /// red photosite within the top-left quad.
+    ///
+    /// ```
+    /// use rusty_photon_camera_geometry::BayerPattern;
+    ///
+    /// // `GRBG` reads `G R` over `B G`, so red is one across and none down.
+    /// assert_eq!(BayerPattern::Grbg.offsets(), (1, 0));
+    /// assert_eq!(BayerPattern::Rggb.offsets(), (0, 0));
+    /// ```
+    #[must_use]
+    pub const fn offsets(self) -> (u8, u8) {
+        match self {
+            Self::Rggb => (0, 0),
+            Self::Grbg => (1, 0),
+            Self::Gbrg => (0, 1),
+            Self::Bggr => (1, 1),
+        }
+    }
 }
 
 /// A sensor's sub-frame alignment rule: the binned extent must be a multiple of
@@ -624,6 +671,30 @@ mod tests {
         // Dividing by the gcd first keeps the intermediate small; saturating
         // covers a pair whose multiple genuinely does not fit.
         assert_eq!(lcm(u32::MAX, u32::MAX - 1), u32::MAX);
+    }
+
+    // --- BayerPattern --------------------------------------------------------
+
+    /// Derived from each variant's *name* rather than restating the table
+    /// `offsets` already holds: the name is the quad read row-major, so the
+    /// red photosite at index `i` sits at `(i % 2, i / 2)`. A restatement
+    /// would pass just as happily with x and y transposed, and on a square
+    /// sensor nothing downstream would notice.
+    #[test]
+    fn offsets_locate_the_first_red_photosite_of_the_named_quad() {
+        for (pattern, name) in [
+            (BayerPattern::Rggb, "RGGB"),
+            (BayerPattern::Bggr, "BGGR"),
+            (BayerPattern::Grbg, "GRBG"),
+            (BayerPattern::Gbrg, "GBRG"),
+        ] {
+            let red = name.find('R').expect("a Bayer quad has a red photosite");
+            let expected = (
+                u8::try_from(red % 2).expect("a quad index is below 4"),
+                u8::try_from(red / 2).expect("a quad index is below 4"),
+            );
+            assert_eq!(pattern.offsets(), expected, "{name}");
+        }
     }
 
     // --- progress_percent ----------------------------------------------------

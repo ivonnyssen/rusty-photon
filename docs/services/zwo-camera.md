@@ -686,7 +686,11 @@ EAF; those belong to the other zwo services.)
 ### Sensor type & signal
 
 - **ST1.** `SensorType` is `RGGB` (colour) when `IsColorCam`, else `Monochrome`;
-  `BayerOffsetX/Y` follow `ASI_CAMERA_INFO.BayerPattern`.
+  `BayerOffsetX/Y` follow `ASI_CAMERA_INFO.BayerPattern`. The driver maps
+  `ASI_BAYER_*` — which abbreviates the quad to its first row — onto
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  `BayerPattern`, which locates the first red photosite; the offsets themselves
+  are **one implementation** across the three camera drivers.
 - **ST2.** `ElectronsPerADU` returns the native `ASI_CAMERA_INFO.ElecPerADU`
   (a finite positive value), **not** `NOT_IMPLEMENTED` — read **live on every
   call**, never from the `CameraInfo` cached at enumeration and never computed.
