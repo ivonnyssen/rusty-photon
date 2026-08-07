@@ -1,0 +1,28 @@
+[package]
+name = "rusty-photon-camera-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vendor-neutral logic shared by the ASCOM camera drivers: ROI validation, bin rescaling, sensor alignment, Bayer offsets, frame unpacking"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+# ASCOM Alpaca is the workspace's lingua franca, so speaking its vocabulary
+# here — `ImageArray`, `ASCOMError` — is the point rather than a leak: the
+# alternative is a parallel vocabulary every driver then re-maps. What stays
+# out is the *device* half: nothing here implements `Camera` or `Device`, and
+# no vendor SDK type appears in a signature. Those two remain the test for
+# whether an item belongs in a driver instead.
+#
+# `server` is here because `ascom-alpaca` refuses to build with neither network
+# feature, not because anything in this crate serves anything. All three
+# consumers enable it, so a workspace build unifies to the same feature set and
+# this costs nothing there; a standalone `cargo build -p` of this crate is what
+# pays, by pulling a web stack to compile four type definitions.
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+ndarray = { workspace = true }

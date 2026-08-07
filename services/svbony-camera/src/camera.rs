@@ -38,9 +38,8 @@ use std::time::{Duration, SystemTime};
 use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
-use ndarray::Array2;
 use parking_lot::Mutex;
-use rusty_photon_camera_geometry::{self as geometry, Alignment, Roi};
+use rusty_photon_camera_core::{self as camera_core, Alignment, PixelDepth, Roi};
 use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
 
@@ -423,7 +422,7 @@ impl SvbonyCamera {
         // Both extents from one call, taking the same `ALIGNMENT` that
         // validates ROIs — so a sensor sized for one rule can never be reported
         // while ROIs are checked against another.
-        let (max_width, max_height) = geometry::aligned_sensor(
+        let (max_width, max_height) = camera_core::aligned_sensor(
             u32::try_from(property.max_width).unwrap_or(0),
             u32::try_from(property.max_height).unwrap_or(0),
             &supported_bins,
@@ -575,11 +574,11 @@ fn handshake_err(step: &'static str) -> impl FnOnce(crate::backend::BackendError
 /// Geometry validation (R2/R3), as the ASCOM error a client sees.
 ///
 /// The rules, their order, and the message text all live in
-/// `rusty-photon-camera-geometry`, shared with `qhy-camera` and `zwo-camera`.
-/// What this driver contributes is the `SVBony` [`ALIGNMENT`] rule and the
-/// mapping of the shared error onto ASCOM's `INVALID_VALUE`.
+/// `rusty-photon-camera-core`, shared with `qhy-camera` and `zwo-camera`, as
+/// does the ASCOM code it becomes. What this driver contributes is the
+/// `SVBony` [`ALIGNMENT`] rule.
 fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResult<()> {
-    geometry::check(roi, sensor_w, sensor_h, bin, ALIGNMENT).map_err(ASCOMError::invalid_value)
+    Ok(camera_core::check(roi, sensor_w, sensor_h, bin, ALIGNMENT)?)
 }
 
 /// A control's range as ASCOM must describe it, or `None` when the driver
@@ -601,10 +600,10 @@ fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
 /// shared crate's rule.
 const fn bayer_offsets(pattern: BayerPattern) -> (u8, u8) {
     match pattern {
-        BayerPattern::Rg => geometry::BayerPattern::Rggb,
-        BayerPattern::Bg => geometry::BayerPattern::Bggr,
-        BayerPattern::Gr => geometry::BayerPattern::Grbg,
-        BayerPattern::Gb => geometry::BayerPattern::Gbrg,
+        BayerPattern::Rg => camera_core::BayerPattern::Rggb,
+        BayerPattern::Bg => camera_core::BayerPattern::Bggr,
+        BayerPattern::Gr => camera_core::BayerPattern::Grbg,
+        BayerPattern::Gb => camera_core::BayerPattern::Gbrg,
     }
     .offsets()
 }
@@ -625,64 +624,22 @@ const fn guide_direction(direction: GuideDirection) -> svbony_rs::GuideDirection
 /// can select are convertible; anything else is a caller error, reported
 /// rather than mis-unpacked.
 ///
-/// Takes the download buffer **by value** so the `Raw8` arm can hand it
-/// straight to `Array2` instead of copying a full frame the capture path
-/// already owns (18 MB at the SV605CC's full frame). `Raw16` still pays one
-/// copy — its bytes have to be re-read as `u16` — and `ImageArray` widens
-/// whichever array it gets to `i32` internally regardless, so this saves an
-/// intermediate, not the dominant allocation.
+/// The unpack itself is `rusty-photon-camera-core`'s, shared with
+/// `qhy-camera` and `zwo-camera`; this driver's share is the format→depth
+/// decision above and the format name in the message.
 fn to_image_array(
-    mut bytes: Vec<u8>,
+    bytes: Vec<u8>,
     width: u32,
     height: u32,
     image_type: ImageType,
 ) -> Result<ImageArray, String> {
-    // The ASCOM subframe arrives fixed-width; here it becomes the length of
-    // `bytes` and the shape of the array, so convert once. A frame too large
-    // to address saturates, which lands it in the same "buffer too small"
-    // answer as any other short read rather than wrapping into a length the
-    // buffer appears to satisfy.
-    let w = usize::try_from(width).unwrap_or(usize::MAX);
-    let h = usize::try_from(height).unwrap_or(usize::MAX);
-    let needed = w
-        .saturating_mul(h)
-        .saturating_mul(image_type.bytes_per_pixel());
-    let too_small = || format!("{image_type:?} buffer too small for frame");
-    // Each arm builds the frame row-major in its own element type, then
-    // reverses the axes for ASCOM's width-major order.
-    match image_type {
-        ImageType::Raw8 => {
-            // `from_shape_vec` demands an exact length, and `truncate` only
-            // trims a caller's slack — it cannot grow a short buffer — so the
-            // shortfall has to be rejected before it.
-            if bytes.len() < needed {
-                return Err(too_small());
-            }
-            bytes.truncate(needed);
-            let arr = Array2::from_shape_vec((h, w), bytes).map_err(|e| e.to_string())?;
-            Ok(ImageArray::from(arr.reversed_axes()))
-        }
-        ImageType::Raw16 => {
-            // The length check and the slice are one question, so `get` asks it
-            // once: there is no separate test left to keep in step with the
-            // bound it guards.
-            let Some(frame) = bytes.get(..needed) else {
-                return Err(too_small());
-            };
-            let pixels: Vec<u16> = frame
-                .as_chunks::<2>()
-                .0
-                .iter()
-                // Little-endian on the wire regardless of host: `from_ne_bytes` would
-                // byte-swap every pixel on a big-endian machine, turning a frame into
-                // noise rather than failing visibly.
-                .map(|c| u16::from_le_bytes(*c))
-                .collect();
-            let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
-            Ok(ImageArray::from(arr.reversed_axes()))
-        }
-        other => Err(format!("unsupported download format {other:?}")),
-    }
+    let depth = match image_type {
+        ImageType::Raw8 => PixelDepth::Eight,
+        ImageType::Raw16 => PixelDepth::Sixteen,
+        other => return Err(format!("unsupported download format {other:?}")),
+    };
+    camera_core::to_image_array(bytes, width, height, depth)
+        .map_err(|error| format!("{image_type:?} {error}"))
 }
 
 /// The detached capture task: runs the blocking soft-trigger SDK chain *and*
@@ -871,7 +828,7 @@ impl Camera for SvbonyCamera {
         {
             let mut roi = self.state.intended_roi.lock();
             if let Some(area) = *roi {
-                *roi = Some(geometry::rescale(area, old, bin_x));
+                *roi = Some(camera_core::rescale(area, old, bin_x));
             }
         }
         self.state.bin.store(bin_x, Ordering::Release);
@@ -1397,7 +1354,7 @@ impl Camera for SvbonyCamera {
         // Never 100 while in flight — that answer belongs to the ready state
         // above, and the cap is shared with the sibling drivers.
         let elapsed = start.elapsed().unwrap_or(Duration::ZERO);
-        Ok(geometry::progress_percent(elapsed, duration))
+        Ok(camera_core::progress_percent(elapsed, duration))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1637,7 +1594,7 @@ mod tests {
         // are wired together — a 0 the client set survives the bin change and
         // `StartExposure` still answers about that 0, rather than about the %8
         // alignment rule a clamped 1 would trip instead.
-        let scaled = geometry::rescale(roi(0, 0, 0, 0), 1, 2);
+        let scaled = camera_core::rescale(roi(0, 0, 0, 0), 1, 2);
         let err = check_geometry(scaled, 3008, 3008, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
@@ -1700,12 +1657,9 @@ mod tests {
 
     #[test]
     fn to_image_array_16bit_reads_the_wire_order() {
-        // The camera puts 16-bit pixels on the wire little-endian, so `34 12`
-        // is 0x1234. This pins the contract and would catch an outright swap
-        // (`from_be_bytes`, or hand-rolled shifts), but it CANNOT catch a
-        // regression to `from_ne_bytes`: on a little-endian host the two are
-        // the same instruction. Observing that needs a big-endian target,
-        // which CI does not have.
+        // The camera puts 16-bit pixels on the wire low byte first, so `34 12`
+        // is 0x1234. This pins the driver's route into the shared unpack; the
+        // wire contract itself is pinned there.
         let mut bytes = vec![0u8; 64 * 48 * 2];
         bytes[0] = 0x34;
         bytes[1] = 0x12;

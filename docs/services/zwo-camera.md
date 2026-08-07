@@ -550,7 +550,7 @@ EAF; those belong to the other zwo services.)
   bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
   resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
   exactly. Bounds checks (R2) use the *reported* extent. Both extents are computed by
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `aligned_sensor` from the *same* alignment rule R3 validates against, so the
   reported size and the ROI check cannot be aligned to different multiples.
   Shared with the sibling camera driver that hit the same ConformU failure on
@@ -569,7 +569,7 @@ EAF; those belong to the other zwo services.)
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
   **One implementation**, in
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/) — this
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
@@ -583,7 +583,7 @@ EAF; those belong to the other zwo services.)
 - **R-order.** When a ROI breaks more than one rule at once, the client is told
   about the first of: zero extent, zero bin, alignment, bounds. The order is part of
   the contract and is pinned by tests in
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/),
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/),
   because it decides which value a client is sent to fix — a zero bin is not a
   geometry that fails a rule but one with *no rule to apply*, so it is reported
   ahead of a complaint a client could otherwise chase while the real problem sat
@@ -669,7 +669,10 @@ EAF; those belong to the other zwo services.)
   shorter than `w × h × bytes_per_pixel` is rejected as "buffer too small". The
   8-bit path takes the download buffer **by value** and hands it to `Array2`
   without copying; 16-bit pays one, since its bytes must be re-read as `u16`.
-  Identical in `qhy-camera` (RM2) and `svbony-camera` (RM5).
+  **One implementation**, in
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
+  driver's share is only which of its own formats maps onto which pixel
+  depth, and the format name the message carries.
 
 ### Cooling
 
@@ -688,7 +691,7 @@ EAF; those belong to the other zwo services.)
 - **ST1.** `SensorType` is `RGGB` (colour) when `IsColorCam`, else `Monochrome`;
   `BayerOffsetX/Y` follow `ASI_CAMERA_INFO.BayerPattern`. The driver maps
   `ASI_BAYER_*` — which abbreviates the quad to its first row — onto
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `BayerPattern`, which locates the first red photosite; the offsets themselves
   are **one implementation** across the three camera drivers.
 - **ST2.** `ElectronsPerADU` returns the native `ASI_CAMERA_INFO.ElecPerADU`

@@ -549,7 +549,7 @@ responsive during an in-flight exposure.
   pixel-size call). `CameraXSize`/`CameraYSize` report the sensor extent
   **aligned down** so the full frame divided by *every* supported bin
   satisfies the width%8/height%2 ROI rule
-  ([`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  ([`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `aligned_sensor`, fed the *same* alignment rule R3 validates against, one
   implementation shared with `zwo-camera`'s R4 —
   which reached it from an ASI2600 rather than an SV605CC; SV605CC: raw 3008×3008 → reported
@@ -887,7 +887,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
   **One implementation**, in
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/) — this
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
@@ -900,7 +900,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **R-order.** When a ROI breaks more than one rule at once, the client is told
   about the first of: zero extent, zero bin, alignment, bounds. The order is part of
   the contract and is pinned by tests in
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/),
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/),
   because it decides which value a client is sent to fix — a zero bin is not a
   geometry that fails a rule but one with *no rule to apply*, so it is reported
   ahead of a complaint a client could otherwise chase while the real problem sat
@@ -966,7 +966,10 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   shorter than `w × h × bytes_per_pixel` is rejected as "buffer too small". The
   8-bit path takes the download buffer **by value** and hands it to `Array2`
   without copying; 16-bit pays one, since its bytes must be re-read as `u16`.
-  Identical in `qhy-camera` (RM2) and `zwo-camera` (RM5).
+  **One implementation**, in
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
+  driver's share is only which of its own formats maps onto which pixel
+  depth, and the format name the message carries.
 
 ### Cooling
 
@@ -1001,7 +1004,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   never hardcoded to the SV605CC's own pattern (a future mono/other-pattern
   model must report correctly). The driver maps `SVB_BAYER_*` — which
   abbreviates the quad to its first row — onto
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `BayerPattern`, which locates the first red photosite; the offsets themselves
   are **one implementation** across the three camera drivers.
 - **ST2.** `ElectronsPerADU` is **`NOT_IMPLEMENTED`, confirmed permanent**
