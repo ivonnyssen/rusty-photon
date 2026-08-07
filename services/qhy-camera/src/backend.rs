@@ -629,6 +629,11 @@ pub(crate) mod mock {
             self.controls.lock().remove(&control);
             self
         }
+        /// Drop a control on an already-constructed mock, so a *reconnect*
+        /// observes a camera that no longer advertises it.
+        pub fn remove_control(&self, control: ControlType) {
+            self.controls.lock().remove(&control);
+        }
         /// Add a control with a presence/value (e.g. `CamColor` → Bayer code, or
         /// `CamMechanicalShutter` to report a shutter).
         pub fn with_control(self, control: ControlType, value: u32) -> Self {

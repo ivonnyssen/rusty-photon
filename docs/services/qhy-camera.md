@@ -453,6 +453,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   leaves the control **unadvertised** (`NOT_IMPLEMENTED` from all four members)
   with a `warn!`, rather than advertising a clamped bound the camera would then
   reject.
+- **GO4.** The cache is the sole gate on all six members, so each connect
+  **overwrites** it — including with "unavailable". A control missing on this
+  connect, or whose bounds this connect cannot name, clears the cached range
+  instead of leaving the previous session's bounds standing to be advertised
+  (the reconnect hygiene of C3, applied to the control caches).
 - **RM1.** `ReadoutModes` is the SDK's named mode list; `set_readout_mode`
   validates the index and updates cached resolution; an invalid index returns
   `INVALID_VALUE`.

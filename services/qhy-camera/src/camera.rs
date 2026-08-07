@@ -293,14 +293,21 @@ impl QhyCameraDevice {
         let exposure = h.exposure_range_us().map_err(nc)?;
         *self.state.exposure_range_us.lock() = Some(exposure);
 
-        if h.is_control_available(ControlType::Gain).is_some() {
+        let gain_range = if h.is_control_available(ControlType::Gain).is_some() {
             let (min, max, _) = h.gain_range().map_err(nc)?;
-            cache_range(&self.state.gain_min_max, "gain", min, max);
-        }
-        if h.is_control_available(ControlType::Offset).is_some() {
+            Some((min, max))
+        } else {
+            None
+        };
+        cache_range(&self.state.gain_min_max, "gain", gain_range);
+
+        let offset_range = if h.is_control_available(ControlType::Offset).is_some() {
             let (min, max, _) = h.offset_range().map_err(nc)?;
-            cache_range(&self.state.offset_min_max, "offset", min, max);
-        }
+            Some((min, max))
+        } else {
+            None
+        };
+        cache_range(&self.state.offset_min_max, "offset", offset_range);
 
         self.state.bin.store(1, Ordering::Release);
         Ok(())
@@ -523,21 +530,38 @@ fn ascom_bound(value: f64) -> Option<i32> {
     }
 }
 
-/// Cache a control's ASCOM-describable range, or leave it unset and say why.
+/// Cache a control's ASCOM-describable range, or clear it and say why.
 ///
-/// Leaving it unset reports `NOT_IMPLEMENTED` for the control rather than
+/// `range` is `None` when the control is not advertised at all. Either way this
+/// **always writes**, because the cache is what the accessors gate on: it has to
+/// describe the camera on *this* connect, not the last one. A control that has
+/// gone away, or whose bounds this connect cannot name, must clear the cell
+/// rather than leave a previous session's bounds standing — the same reconnect
+/// hygiene as C3.
+///
+/// An unset cell reports `NOT_IMPLEMENTED` for the control, rather than
 /// advertising a clamped bound the camera would then reject.
-fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, min: f64, max: f64) {
-    match (ascom_bound(min), ascom_bound(max)) {
-        (Some(min), Some(max)) => {
-            debug!(control, min, max, "cached control range");
-            *cell.lock() = Some((min, max));
+fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, range: Option<(f64, f64)>) {
+    let cached = match range {
+        Some((min, max)) => match (ascom_bound(min), ascom_bound(max)) {
+            (Some(min), Some(max)) => {
+                debug!(control, min, max, "cached control range");
+                Some((min, max))
+            }
+            _ => {
+                warn!(
+                    control,
+                    min, max, "range has no i32 spelling; not advertised"
+                );
+                None
+            }
+        },
+        None => {
+            debug!(control, "control not available; not advertised");
+            None
         }
-        _ => warn!(
-            control,
-            min, max, "range has no i32 spelling; not advertised"
-        ),
-    }
+    };
+    *cell.lock() = cached;
 }
 
 /// `MaxADU = 2^bits - 1` (e.g. 65535 for a 16-bit sensor), saturating.
@@ -1907,6 +1931,26 @@ mod tests {
         let device = connected_device(MockCameraHandle::default());
         assert_eq!(device.gain_min().await.unwrap(), 0);
         assert_eq!(device.gain_max().await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn a_control_that_vanishes_on_reconnect_stops_being_advertised() {
+        // The accessors gate solely on the cache, so the cache has to describe
+        // *this* connect: a range left over from the last one would advertise a
+        // control the camera no longer has. Same reconnect hygiene as C3.
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        assert_eq!(device.gain_max().await.unwrap(), 100);
+
+        device.set_connected(false).await.unwrap();
+        handle.remove_control(ControlType::Gain);
+        device.set_connected(true).await.unwrap();
+
+        assert_eq!(
+            device.gain_max().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+        // The sibling control, still present, is untouched.
+        assert_eq!(device.offset_max().await.unwrap(), 255);
     }
 
     #[test]

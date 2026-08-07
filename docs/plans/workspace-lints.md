@@ -764,6 +764,16 @@ already widened, and were unaffected.) And `set_gain`'s
 gating on the cache alone subsumes both, which also drops a live
 `is_control_available` SDK round-trip from every QHY `Gain` read.
 
+Collapsing two facts into one does carry an obligation, and review caught it:
+the survivor must be written on **every** connect, including with
+"unavailable". QHY assigned its cache only inside `if is_control_available`, so
+a control that went away between sessions would have left the previous
+session's bounds standing for the accessors to advertise — harmless while a
+live probe was the real gate, a stale answer once the cache became the only
+one. (`zwo`/`svbony` already assigned unconditionally.) *When a cache stops
+being an optimisation and becomes the authority, every path that used to skip
+writing it turns into a bug.*
+
 QHY needs a rounding policy the other two do not, because the QHY SDK carries
 every control through one `f64` parameter — the same uniform carrier
 `qhyccd-rs`'s `quantize` documents — so a gain bound is an integer travelling
