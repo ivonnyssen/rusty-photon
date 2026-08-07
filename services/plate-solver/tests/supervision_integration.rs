@@ -74,6 +74,43 @@ fn cmd_with_mode(mode: &str) -> Command {
     cmd
 }
 
+/// `ignore_sigterm` mode, but immune to SIGTERM from the child's very first
+/// instruction rather than from the point its `main` installs `SIG_IGN`.
+///
+/// The mock installs `SIG_IGN` itself, but only after `exec`, the Rust runtime
+/// start-up, an env read and a mode dispatch. The supervision deadline under
+/// test is 100 ms, and `spawn_with_deadline` starts that clock inside itself —
+/// there is no seam where a caller could wait for the child to report itself
+/// ready. So SIGTERM arriving before the mock reaches its `signal` call finds
+/// the *default* disposition and terminates the child, and the supervisor
+/// correctly reports `TimedOutTerminated` where the test wants
+/// `TimedOutKilled`. Measured on an idle 10-core arm64 host that start-up path
+/// is ~5 ms against the 100 ms deadline, and ~19 ms with the CPU 4x
+/// oversubscribed — a real margin, but a margin, and one that a
+/// process-spawn-heavy test suite has been observed to close.
+///
+/// Setting the disposition in `pre_exec` removes the window rather than
+/// widening it: `SIG_IGN` is preserved across `execve` (unlike handlers, which
+/// reset to default), so the child image starts already ignoring SIGTERM. That
+/// is also the more faithful subject for this assertion — the contract is
+/// "child ignores the graceful signal", and a child that has been ignoring it
+/// since before the deadline is exactly the real-world case.
+#[cfg(unix)]
+fn cmd_ignoring_sigterm_from_exec() -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = cmd_with_mode("ignore_sigterm");
+    // SAFETY: `pre_exec` requires the closure to be async-signal-safe, because
+    // it runs in the forked child between `fork` and `execve`. `signal(2)` is
+    // on POSIX's async-signal-safe list, and the closure does nothing else.
+    unsafe {
+        cmd.as_std_mut().pre_exec(|| {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+    cmd
+}
+
 #[tokio::test]
 async fn exited_when_child_exits_within_deadline() {
     // `normal` mode would try to write a .wcs sidecar; we want a clean
@@ -120,7 +157,7 @@ async fn timed_out_killed_when_child_ignores_graceful_signal() {
     // same. Gating to Unix here avoids spurious flakiness on Windows
     // CI runners with quirky console-attach behavior; the contract
     // assertion holds on both platforms by design.
-    let cmd = cmd_with_mode("ignore_sigterm");
+    let cmd = cmd_ignoring_sigterm_from_exec();
     let start = Instant::now();
     let outcome = spawn_with_deadline(cmd, Duration::from_millis(100))
         .await
