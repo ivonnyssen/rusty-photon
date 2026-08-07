@@ -349,11 +349,12 @@ impl ZwoCamera {
 
         self.state.bin.store(1, Ordering::Release);
         self.state.readout_mode.store(0, Ordering::Release);
+        let (width, height) = self.reported_sensor();
         *self.state.intended_roi.lock() = Some(Roi {
             start_x: 0,
             start_y: 0,
-            width: self.reported_width(),
-            height: self.reported_height(),
+            width,
+            height,
         });
         *self.state.target_temperature.lock() = None;
         Ok(())
@@ -404,20 +405,13 @@ impl ZwoCamera {
         )
     }
 
-    fn reported_width(&self) -> u32 {
-        self.reported_sensor().0
-    }
-
-    fn reported_height(&self) -> u32 {
-        self.reported_sensor().1
-    }
-
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
     /// returning the [`CaptureRequest`] geometry to push to the SDK.
     fn validated_geometry(&self, bin: u32) -> ASCOMResult<Roi> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
-        check_geometry(roi, self.reported_width(), self.reported_height(), bin)?;
+        let (sensor_w, sensor_h) = self.reported_sensor();
+        check_geometry(roi, sensor_w, sensor_h, bin)?;
         Ok(roi)
     }
 
@@ -763,12 +757,14 @@ impl Camera for ZwoCamera {
 
     async fn camera_x_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        Ok(self.reported_width())
+        let (width, _) = self.reported_sensor();
+        Ok(width)
     }
 
     async fn camera_y_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        Ok(self.reported_height())
+        let (_, height) = self.reported_sensor();
+        Ok(height)
     }
 
     async fn pixel_size_x(&self) -> ASCOMResult<f64> {
