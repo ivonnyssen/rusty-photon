@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1131,6 +1131,90 @@ rewritten to 1, inventing exactly the value the clamp existed to prevent, and on
 `qhy`, which has no alignment rule to catch it, that cleared every check and
 exposed a one-pixel frame. **Reading three copies of a function against each
 other is its own audit**, and worth doing before deciding which copy is right.
+
+### L5e — the rest of the camera services, and what reading three copies found
+
+66 production sites across `qhy-camera`, `zwo-camera` and `svbony-camera` to
+**zero**, under two exemptions. The rung was run as a deliberate three-way
+audit — every shared shape read in all three files before any of them was
+changed — because L5d had already shown that is where the defects are.
+
+**It found three, none of them lint problems.**
+
+*A copy that cost a frame.* `zwo` and `svbony` take the download buffer by
+value, so their 8-bit path hands it straight to `Array2`; zwo's doc comment says
+so explicitly. `qhy` took `&ImageData` and copied — on a 60 MP sensor, the frame
+itself, once per 8-bit download. The caller already owned it and did not use it
+afterwards.
+
+*A zero that could reach a divide.* `check_geometry` divides the sensor extent
+by the bin. Both `zwo-rs` and `svbony-rs` built `supported_bins` with
+`u32::try_from(b).unwrap_or(0)`, and the `take_while(b != 0)` sentinel stops at
+a literal zero but **not** at a negative — so a negative SDK entry became a `0`
+in the list, `0` there reads as a supported bin factor, and `set_bin_x`
+validates a client's `BinX` against that list. Both wrappers now drop the entry
+rather than inventing one.
+
+*Host byte order in the unpack* (#920): all three read 16-bit pixels with
+`u16::from_ne_bytes` where the cameras put them on the wire little-endian. Latent
+— every supported target is little-endian — but the fix's test says in its own
+comment that it cannot catch a regression, since observing one needs a
+big-endian target CI does not have. **A test that cannot fail for the reason you
+wrote it should say so.**
+
+**The general form worth carrying:** *reading three copies of a function against
+each other is its own audit, and it is not the same as reading any one of them
+carefully.* Each file was individually reasonable. What showed up was one copy
+quietly paying a cost, or missing a guard, that the other two did not.
+
+#### `NonZero` is where a zero guard belongs
+
+The rung's recurring move, and the same shape as #911's `char::from_digit`: when
+a guard exists only to make a later division total, the divisor's **type** can
+carry it instead, so the two cannot drift apart.
+
+```rust
+// before: two facts, checked in different places
+if expected == 0 { return Ok(0); }
+let pct = (done as f64 / expected as f64 * 100.0).clamp(0.0, 99.0);
+
+// after: one fact, carried by the type
+let Some(expected) = NonZeroU64::new(expected) else { return Ok(0) };
+let pct = done.saturating_mul(100) / expected;
+```
+
+`Div`/`Rem` by `NonZeroU*` are total, so nothing downstream needs a second
+check. It applied four times: `PercentCompleted`'s ratio, `gcd`/`lcm` (`gcd`
+now takes and returns `NonZeroU32`, so `a % b` needs no guard and `lcm` can
+divide by the result), `aligned_sensor_extent`'s step, and `rescale_roi`'s bin.
+
+#### Integer arithmetic beat the float it replaced, twice
+
+`rescale_roi` scaled through an `f64` ratio and `PercentCompleted` divided two
+floats. Both are now exact integer arithmetic — `v * old / new` and
+`done * 100 / expected` — which truncates in exactly the same places while
+removing the rounding error a divide and a multiply in `f64` accumulate between
+them. The float form could land 49.9999 where the ratio is exactly 50.
+
+The same applies to durations: exposure microseconds now come from
+`Duration::as_micros` rather than `(as_secs_f64() * 1e6).round()`, and qhy's
+exposure *range* goes the other way through `Duration::try_from_secs_f64`, so
+the SDK's `f64` never becomes an integer at all. **A float in the middle of an
+integer computation is usually a cast waiting to be justified.**
+
+#### The two exemptions
+
+Both are the same site in two services: `set_set_ccd_temperature` narrows a
+validated `f64` to the SDK's `i64`, four lines below the range check that bounds
+it to `[-273.15, 80]`. No `TryFrom<f64>` exists to spell that, and a fallible
+form would add an arm the check above already makes unreachable. This is the
+"guard clippy cannot see" case from L5c, and it is what an `#[expect]` is for.
+
+Notably `zwo`'s `MaxADU` shift did **not** need one, despite looking like the
+better candidate: its guard bounds `bit_depth` to `2..=15`, where every step is
+exact, so `checked_shl` is identical rather than a clamp — and the
+hardware-validated ceilings (65504 / 65528 / 65520) stayed test-pinned across
+the change.
 
 ## L6a — split the CI channels
 

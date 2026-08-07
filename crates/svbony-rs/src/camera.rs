@@ -1119,7 +1119,11 @@ fn camera_property_from_raw(raw: &sys::SvbCameraProperty) -> CameraProperty {
             .supported_bins
             .iter()
             .take_while(|&&b| b != 0)
-            .map(|&b| u32::try_from(b).unwrap_or(0))
+            // Drop an entry that is not a bin rather than mapping it to 0: a
+            // 0 in this list reads as a supported bin factor, and a driver
+            // validating a client's `BinX` against the list would accept it
+            // and then divide the sensor extent by it.
+            .filter_map(|&b| u32::try_from(b).ok())
             .collect(),
         supported_video_formats: raw
             .supported_video_format

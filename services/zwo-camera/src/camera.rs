@@ -22,6 +22,7 @@
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
+use std::num::{NonZeroU128, NonZeroU32};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -438,13 +439,19 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
             "NumX and NumY must be greater than 0",
         ));
     }
+    // The bin divides the sensor extent, so a zero bin is not a geometry that
+    // fails a rule — it is one with no rule to apply. Rejecting it completes
+    // this validator rather than leaving a division for callers to prove safe.
+    let (Some(max_x), Some(max_y)) = (sensor_w.checked_div(bin), sensor_h.checked_div(bin)) else {
+        return Err(ASCOMError::invalid_value(
+            "BinX and BinY must be greater than 0",
+        ));
+    };
     if !roi.width.is_multiple_of(8) || !roi.height.is_multiple_of(2) {
         return Err(ASCOMError::invalid_value(
             "ASI requires NumX a multiple of 8 and NumY a multiple of 2",
         ));
     }
-    let max_x = sensor_w / bin;
-    let max_y = sensor_h / bin;
     if roi.start_x.saturating_add(roi.width) > max_x {
         return Err(ASCOMError::invalid_value(
             "StartX + NumX exceeds CameraXSize / BinX",
@@ -472,17 +479,19 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
 ///   check it earned. Clamping that to 1 would move the error onto the alignment
 ///   rule for a value the client never set.
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
-    let factor = f64::from(old) / f64::from(new);
-    let extent = |v: u32| {
-        if v == 0 {
-            0
-        } else {
-            ((f64::from(v) * factor) as u32).max(1)
-        }
+    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
+    // exactly where the float form did, without the rounding error a divide and
+    // a multiply in `f64` can accumulate between them.
+    let old = u32::from(old);
+    let Some(new) = NonZeroU32::new(u32::from(new)) else {
+        // A zero bin is not a scale, so there is nothing to rescale by.
+        return roi;
     };
+    let scale = |v: u32| v.saturating_mul(old) / new;
+    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
     Roi {
-        start_x: (f64::from(roi.start_x) * factor) as u32,
-        start_y: (f64::from(roi.start_y) * factor) as u32,
+        start_x: scale(roi.start_x),
+        start_y: scale(roi.start_y),
         width: extent(roi.width),
         height: extent(roi.height),
     }
@@ -500,22 +509,30 @@ fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
     Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
 }
 
-/// Greatest common divisor (Euclid).
-fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
+/// Greatest common divisor (Euclid) of two non-zero operands. The result is
+/// itself non-zero, since it divides both — which is what lets [`lcm`] divide
+/// by it without a second check.
+fn gcd(a: NonZeroU32, b: NonZeroU32) -> NonZeroU32 {
+    let (mut a, mut b) = (a, b);
+    // `a % b` is total once `b` carries its own non-zero-ness, so the loop
+    // needs no separate guard on the divisor.
+    while let Some(rem) = NonZeroU32::new(a.get() % b) {
+        a = b;
+        b = rem;
     }
+    b
 }
 
 /// Least common multiple (`0` if either operand is `0`).
 fn lcm(a: u32, b: u32) -> u32 {
-    if a == 0 || b == 0 {
-        0
-    } else {
-        a / gcd(a, b) * b
-    }
+    let (Some(a_nz), Some(b_nz)) = (NonZeroU32::new(a), NonZeroU32::new(b)) else {
+        // Zero shares no multiple with anything.
+        return 0;
+    };
+    // The gcd divides `a` exactly, so dividing before multiplying keeps the
+    // intermediate as small as it can be; saturating covers a pair whose
+    // multiple genuinely does not fit.
+    (a / gcd(a_nz, b_nz)).saturating_mul(b)
 }
 
 /// The largest sensor extent (≤ `max`) the driver reports such that the full
@@ -535,11 +552,11 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
         .filter(|&b| b > 0)
         .map(|b| unit.saturating_mul(b))
         .fold(1, lcm);
-    if step == 0 || step > max {
-        max
-    } else {
-        max - max % step
-    }
+    let Some(step) = NonZeroU32::new(step).filter(|s| s.get() <= max) else {
+        return max;
+    };
+    // A remainder is never larger than what it came from, so this cannot wrap.
+    max.saturating_sub(max % step)
 }
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
@@ -617,7 +634,17 @@ fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting
         // or degenerate (1) depth says nothing about the packing at all — there
         // is no step size to step down by.
         _ if bit_depth <= 1 || bit_depth >= 16 => u32::from(u16::MAX),
-        _ => ((1u32 << bit_depth) - 2) << (16 - bit_depth),
+        // Reached only for `bit_depth` in 2..=15 (the arm above), where every
+        // step below is exact: `1 << 15` fits, `- 2` cannot underflow from 4 or
+        // more, and the final shift is by at most 14. The saturating spellings
+        // are therefore identical here, not a clamp that changes the answer —
+        // and this is a per-query call, not a per-pixel one.
+        _ => 1u32
+            .checked_shl(bit_depth)
+            .unwrap_or(u32::from(u16::MAX))
+            .saturating_sub(2)
+            .checked_shl(16u32.saturating_sub(bit_depth))
+            .unwrap_or(u32::from(u16::MAX)),
     }
 }
 
@@ -669,23 +696,36 @@ fn to_image_array(
     let needed = w
         .saturating_mul(h)
         .saturating_mul(image_type.bytes_per_pixel());
-    if bytes.len() < needed {
-        return Err(format!("{image_type:?} buffer too small for frame"));
-    }
+    let too_small = || format!("{image_type:?} buffer too small for frame");
     // Each arm builds the frame row-major in its own element type, then
     // reverses the axes for ASCOM's width-major order.
     match image_type {
         ImageType::Raw8 => {
+            // `from_shape_vec` demands an exact length, and `truncate` only
+            // trims a caller's slack — it cannot grow a short buffer — so the
+            // shortfall has to be rejected before it.
+            if bytes.len() < needed {
+                return Err(too_small());
+            }
             bytes.truncate(needed);
             let arr = Array2::from_shape_vec((h, w), bytes).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
         }
         ImageType::Raw16 => {
-            let pixels: Vec<u16> = bytes[..needed]
+            // The length check and the slice are one question, so `get` asks it
+            // once: there is no separate test left to keep in step with the
+            // bound it guards.
+            let Some(frame) = bytes.get(..needed) else {
+                return Err(too_small());
+            };
+            let pixels: Vec<u16> = frame
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|c| u16::from_ne_bytes(*c))
+                // Little-endian on the wire regardless of host: `from_ne_bytes` would
+                // byte-swap every pixel on a big-endian machine, turning a frame into
+                // noise rather than failing visibly.
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
@@ -1149,9 +1189,12 @@ impl Camera for ZwoCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
-        self.state
-            .readout_mode
-            .store(readout_mode as u8, Ordering::Release);
+        // Bounded by the `available` check above, which is itself a `usize`
+        // length, so this narrowing has an answer for every index that got here.
+        self.state.readout_mode.store(
+            u8::try_from(readout_mode).unwrap_or(u8::MAX),
+            Ordering::Release,
+        );
         Ok(())
     }
 
@@ -1218,9 +1261,14 @@ impl Camera for ZwoCamera {
             return Ok(target);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::TargetTemp)
-                .map(|t| t as f64)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+            let raw = h
+                .control_value(ControlType::TargetTemp)
+                .map_err(|_| ASCOMError::INVALID_VALUE)?;
+            // A temperature outside `i32` is not a temperature; say so rather
+            // than widen it lossily.
+            i32::try_from(raw).map(f64::from).map_err(|_| {
+                ASCOMError::invalid_value(format!("camera reported target temperature {raw}"))
+            })
         })
         .await
     }
@@ -1235,6 +1283,14 @@ impl Camera for ZwoCamera {
                 "target temperature {set_ccd_temperature} outside [-273.15, 80]"
             )));
         }
+        // Validated to [-273.15, 80] immediately above, so the rounded value is
+        // in [-273, 80] — a range `i64` holds with room to spare. No
+        // `TryFrom<f64>` exists to spell that, and a fallible form would add an
+        // arm the check above already makes unreachable.
+        #[expect(
+            clippy::as_conversions,
+            reason = "bounded by the range check above; no TryFrom<f64> for i64 exists"
+        )]
         let raw = set_ccd_temperature.round() as i64;
         self.on_handle(move |h| {
             h.set_control_value(ControlType::TargetTemp, raw)
@@ -1276,9 +1332,12 @@ impl Camera for ZwoCamera {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.control_value(ControlType::CoolerPowerPerc)
-                .map(|p| p as f64)
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+            let raw = h
+                .control_value(ControlType::CoolerPowerPerc)
+                .map_err(|_| ASCOMError::INVALID_VALUE)?;
+            i32::try_from(raw).map(f64::from).map_err(|_| {
+                ASCOMError::invalid_value(format!("camera reported cooler power {raw}"))
+            })
         })
         .await
     }
@@ -1343,13 +1402,19 @@ impl Camera for ZwoCamera {
         let (Some(start), Some(duration)) = (start, duration) else {
             return Ok(0);
         };
-        if duration.is_zero() {
+        // A duration under a microsecond has no ratio worth reporting.
+        // `NonZeroU128` carries that answer down into the division, so the guard
+        // and the divisor are one fact rather than two that could drift apart.
+        let Some(duration_us) = NonZeroU128::new(duration.as_micros()) else {
             return Ok(99);
-        }
+        };
         let elapsed = start.elapsed().unwrap_or(Duration::ZERO);
-        // Never report 100 while in flight (that is reserved for the ready state).
-        let pct = (elapsed.as_secs_f64() / duration.as_secs_f64() * 100.0).clamp(0.0, 99.0);
-        Ok(pct as u8)
+        // Never report 100 while in flight (that is reserved for the ready
+        // state). Integer throughout, so there is no float to round: the ratio
+        // is capped at 99 before it is narrowed, which gives the conversion an
+        // answer for every input, and the fallback is that same cap.
+        let pct = elapsed.as_micros().saturating_mul(100) / duration_us;
+        Ok(u8::try_from(pct.min(99)).unwrap_or(99))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1393,7 +1458,10 @@ impl Camera for ZwoCamera {
 
         let (min_us, max_us) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        let exposure_us = (duration.as_secs_f64() * 1_000_000.0).round() as i64;
+        // Exact microseconds from the `Duration` itself: no float to round, and
+        // a duration too long for the SDK's `i64` saturates rather than wrapping
+        // into a short exposure.
+        let exposure_us = i64::try_from(duration.as_micros()).unwrap_or(i64::MAX);
         if exposure_us < min_us || exposure_us > max_us {
             return Err(ASCOMError::invalid_value(format!(
                 "exposure {exposure_us}us outside [{min_us}, {max_us}]"
@@ -1494,7 +1562,10 @@ impl Camera for ZwoCamera {
             .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide task failed: {e}")))?
             .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))?;
 
-        *self.state.pulse_guide_until.lock() = Some(SystemTime::now() + duration);
+        // A guide pulse is milliseconds long, so this cannot overflow the clock;
+        // falling back to `now` would simply report the pulse as already done.
+        let now = SystemTime::now();
+        *self.state.pulse_guide_until.lock() = Some(now.checked_add(duration).unwrap_or(now));
 
         let off_handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
@@ -1782,6 +1853,11 @@ mod tests {
         // zero
         assert!(check_geometry(roi(0, 0, 0, 64), 6248, 4176, 1).is_err());
         assert!(check_geometry(roi(0, 0, 64, 0), 6248, 4176, 1).is_err());
+        // A zero bin is rejected, not divided by — and it is reported ahead of
+        // the alignment rule, so a ROI that is *also* misaligned still hears
+        // about the bin. Nothing can be computed without one.
+        let err = check_geometry(roi(0, 0, 100, 64), 6248, 4176, 0).unwrap_err();
+        assert!(err.message.contains("BinX and BinY"), "{}", err.message);
         // misaligned (NumX % 8 != 0, NumY % 2 != 0)
         assert!(check_geometry(roi(0, 0, 100, 64), 6248, 4176, 1).is_err());
         assert!(check_geometry(roi(0, 0, 64, 47), 6248, 4176, 1).is_err());
@@ -1824,6 +1900,21 @@ mod tests {
         assert_eq!(array.dim().1, 48);
     }
 
+    #[test]
+    fn to_image_array_16bit_reads_the_wire_order() {
+        // The camera puts 16-bit pixels on the wire little-endian, so `34 12`
+        // is 0x1234. This pins the contract and would catch an outright swap
+        // (`from_be_bytes`, or hand-rolled shifts), but it CANNOT catch a
+        // regression to `from_ne_bytes`: on a little-endian host the two are
+        // the same instruction. Observing that needs a big-endian target,
+        // which CI does not have.
+        let mut bytes = vec![0u8; 64 * 48 * 2];
+        bytes[0] = 0x34;
+        bytes[1] = 0x12;
+        let array = to_image_array(bytes, 64, 48, ImageType::Raw16).unwrap();
+        assert_eq!(array[(0, 0, 0)], 0x1234_i32);
+    }
+
     /// The Raw8 unpack reads one byte per pixel — before this, an 8-bit frame
     /// was rejected as "buffer too small" because the transform assumed 16-bit.
     #[test]
@@ -1839,8 +1930,20 @@ mod tests {
 
     #[test]
     fn to_image_array_rejects_short_buffer() {
-        assert!(to_image_array(vec![0u8; 10], 64, 48, ImageType::Raw16).is_err());
-        assert!(to_image_array(vec![0u8; 10], 64, 48, ImageType::Raw8).is_err());
+        for image_type in [ImageType::Raw16, ImageType::Raw8] {
+            let err = to_image_array(vec![0u8; 10], 64, 48, image_type).unwrap_err();
+            assert!(err.contains("buffer too small"), "{image_type:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn to_image_array_names_an_unsupported_format_before_the_length() {
+        // Each arm now owns its own length check, so a format the driver
+        // cannot unpack is reported as such even when the buffer is also
+        // short — the length it would be measured against is derived from
+        // that same unusable format, so leading with it would misdirect.
+        let err = to_image_array(vec![0u8; 10], 64, 48, ImageType::Rgb24).unwrap_err();
+        assert!(err.contains("unsupported download format"), "{err}");
     }
 
     /// The device only ever selects a raw format (RM1/RM4), but the transform

@@ -219,7 +219,7 @@ impl SharedCameraConnection {
         if *refs == 0 {
             self.camera.open().map_err(BackendError::from_err)?;
         }
-        *refs += 1;
+        *refs = refs.saturating_add(1);
         connected.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -234,7 +234,8 @@ impl SharedCameraConnection {
             return Ok(());
         }
         connected.store(false, Ordering::SeqCst);
-        *refs -= 1; // > 0 here: this device held a ref while `connected` was true
+        // > 0 here: this device held a ref while `connected` was true.
+        *refs = refs.saturating_sub(1);
         if *refs == 0 {
             self.camera.close().map_err(BackendError::from_err)?;
         }

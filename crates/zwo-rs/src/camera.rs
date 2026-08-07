@@ -909,7 +909,11 @@ fn camera_info_from_raw(raw: &sys::ASI_CAMERA_INFO) -> CameraInfo {
             .SupportedBins
             .iter()
             .take_while(|&&b| b != 0)
-            .map(|&b| u32::try_from(b).unwrap_or(0))
+            // Drop an entry that is not a bin rather than mapping it to 0: a
+            // 0 in this list reads as a supported bin factor, and a driver
+            // validating a client's `BinX` against the list would accept it
+            // and then divide the sensor extent by it.
+            .filter_map(|&b| u32::try_from(b).ok())
             .collect(),
         // `ASI_IMG_END` (-1) terminates the array; anything the wrapper does
         // not model is skipped rather than ending the scan early.

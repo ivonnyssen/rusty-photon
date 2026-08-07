@@ -21,6 +21,7 @@
 //! Blocking exposure SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -476,8 +477,14 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
             "NumX and NumY must be greater than 0",
         ));
     }
-    let max_x = ccd_w / bin;
-    let max_y = ccd_h / bin;
+    // The bin divides the sensor extent, so a zero bin is not a geometry that
+    // fails a rule — it is one with no rule to apply. Rejecting it completes
+    // this validator rather than leaving a division for callers to prove safe.
+    let (Some(max_x), Some(max_y)) = (ccd_w.checked_div(bin), ccd_h.checked_div(bin)) else {
+        return Err(ASCOMError::invalid_value(
+            "BinX and BinY must be greater than 0",
+        ));
+    };
     if roi.start_x.saturating_add(roi.width) > max_x {
         return Err(ASCOMError::invalid_value(
             "StartX + NumX exceeds CameraXSize / BinX",
@@ -505,17 +512,19 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
 ///   alignment rule, so a 1 here would clear every remaining check and expose a
 ///   one-pixel frame in place of the error the client had earned.
 fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
-    let factor = f64::from(old) / f64::from(new);
-    let extent = |v: u32| {
-        if v == 0 {
-            0
-        } else {
-            ((f64::from(v) * factor) as u32).max(1)
-        }
+    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
+    // exactly where the float form did, without the rounding error a divide and
+    // a multiply in `f64` can accumulate between them.
+    let old = u32::from(old);
+    let Some(new) = NonZeroU32::new(u32::from(new)) else {
+        // A zero bin is not a scale, so there is nothing to rescale by.
+        return roi;
     };
+    let scale = |v: u32| v.saturating_mul(old) / new;
+    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
     CCDChipArea {
-        start_x: (f64::from(roi.start_x) * factor) as u32,
-        start_y: (f64::from(roi.start_y) * factor) as u32,
+        start_x: scale(roi.start_x),
+        start_y: scale(roi.start_y),
         width: extent(roi.width),
         height: extent(roi.height),
     }
@@ -598,7 +607,13 @@ const fn bayer_offsets(mode: BayerPattern) -> (u8, u8) {
 
 /// Convert a single-plane SDK frame into an ASCOM `ImageArray` with `[x][y]` axis
 /// order (ASCOM stores width-major).
-fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
+///
+/// Takes the frame **by value** so the 8-bit path can hand its buffer straight to
+/// `Array2` rather than copying a frame the capture path already owns — on a
+/// 60 MP sensor that copy is the frame itself. 16-bit still pays one, since its
+/// bytes have to be re-read as `u16`. Same trade as `zwo-camera` and
+/// `svbony-camera`.
+fn to_image_array(mut image: ImageData) -> Result<ImageArray, String> {
     if image.channels != 1 {
         return Err(format!("unsupported channel count {}", image.channels));
     }
@@ -612,23 +627,32 @@ fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
     match image.bits_per_pixel {
         8 => {
             let needed = w.saturating_mul(h);
+            // `from_shape_vec` demands an exact length, and `truncate` only
+            // trims a caller's slack — it cannot grow a short buffer — so the
+            // shortfall has to be rejected before it.
             if image.data.len() < needed {
                 return Err("8-bit buffer too small for frame".to_string());
             }
-            let arr = Array2::from_shape_vec((h, w), image.data[..needed].to_vec())
-                .map_err(|e| e.to_string())?;
+            image.data.truncate(needed);
+            let arr = Array2::from_shape_vec((h, w), image.data).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
         }
         16 => {
             let needed = w.saturating_mul(h).saturating_mul(2);
-            if image.data.len() < needed {
+            // The length check and the slice are one question, so `get` asks it
+            // once: there is no separate test left to keep in step with the
+            // bound it guards.
+            let Some(frame) = image.data.get(..needed) else {
                 return Err("16-bit buffer too small for frame".to_string());
-            }
-            let pixels: Vec<u16> = image.data[..needed]
+            };
+            let pixels: Vec<u16> = frame
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|c| u16::from_ne_bytes(*c))
+                // Little-endian on the wire regardless of host: `from_ne_bytes` would
+                // byte-swap every pixel on a big-endian machine, turning a frame into
+                // noise rather than failing visibly.
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
@@ -676,7 +700,11 @@ async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) 
     if !sleep_unless_cancelled(state, expected).await {
         return false;
     }
-    let deadline = tokio::time::Instant::now() + EXPOSURE_CONFIRM_TIMEOUT;
+    // A deadline this far out cannot overflow the clock; falling back to `now`
+    // if it somehow did just skips straight to the readout, which blocks until
+    // the frame really is ready.
+    let now = tokio::time::Instant::now();
+    let deadline = now.checked_add(EXPOSURE_CONFIRM_TIMEOUT).unwrap_or(now);
     while tokio::time::Instant::now() < deadline {
         let polled = Arc::clone(handle);
         let remaining =
@@ -748,7 +776,7 @@ async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, ge
         // Discard silently if a newer start / abort / disconnect superseded us.
         if state.exposure_generation.load(Ordering::Acquire) == generation {
             match result {
-                Capture::Frame(image) => match to_image_array(&image) {
+                Capture::Frame(image) => match to_image_array(image) {
                     Ok(array) => {
                         *state.last_image.lock() = Some(array);
                         *state.last_error.lock() = None;
@@ -1054,21 +1082,24 @@ impl Camera for QhyCameraDevice {
         self.ensure_connected()?;
         let (min, _, _) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(min as u64))
+        // `Duration` takes the seconds directly, so the SDK's `f64` never has to
+        // become an integer here; a value it cannot represent is an error rather
+        // than a saturated number.
+        Duration::try_from_secs_f64(min / 1_000_000.0).map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     async fn exposure_max(&self) -> ASCOMResult<Duration> {
         self.ensure_connected()?;
         let (_, max, _) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(max as u64))
+        Duration::try_from_secs_f64(max / 1_000_000.0).map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     async fn exposure_resolution(&self) -> ASCOMResult<Duration> {
         self.ensure_connected()?;
         let (_, _, step) =
             (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-        Ok(Duration::from_micros(step as u64))
+        Duration::try_from_secs_f64(step / 1_000_000.0).map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     // --- gain / offset ----------------------------------------------------------
@@ -1190,7 +1221,9 @@ impl Camera for QhyCameraDevice {
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mode = readout_mode as u32;
+        // An index the SDK's `u32` cannot hold is out of range by definition,
+        // and the count check below is where that is reported.
+        let mode = u32::try_from(readout_mode).unwrap_or(u32::MAX);
         let count = self
             .handle
             .get_number_of_readout_modes()
@@ -1444,10 +1477,13 @@ impl Camera for QhyCameraDevice {
                 100
             });
         }
+        // A zero expected duration has no ratio to report. `NonZeroU64` carries
+        // that answer down into the division below, so the guard and the divisor
+        // are one fact rather than two that could drift apart.
         let expected = self.state.expected_duration_us.load(Ordering::Acquire);
-        if expected == 0 {
+        let Some(expected) = NonZeroU64::new(expected) else {
             return Ok(0);
-        }
+        };
         // `get_remaining_exposure_us` reads 0 both just-before the SDK exposure
         // actually begins and at completion; while still in flight, never report
         // 100 (that is reserved for the Idle/ready state above).
@@ -1456,9 +1492,13 @@ impl Camera for QhyCameraDevice {
                 .get_remaining_exposure_us()
                 .map_err(|_| ASCOMError::invalid_operation("failed to read remaining exposure"))?,
         );
-        let done = expected.saturating_sub(remaining);
-        let pct = (done as f64 / expected as f64 * 100.0).clamp(0.0, 99.0);
-        Ok(pct as u8)
+        let done = expected.get().saturating_sub(remaining);
+        // Integer throughout, so there is no float to round: the ratio is capped
+        // at 99 before it is narrowed, which gives the conversion an answer for
+        // every input. The fallback is that same cap, so even an impossible
+        // overflow lands on what the clamp means.
+        let pct = done.saturating_mul(100) / expected;
+        Ok(u8::try_from(pct.min(99)).unwrap_or(99))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1565,9 +1605,12 @@ impl Camera for QhyCameraDevice {
         *self.state.last_error.lock() = None;
         *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
         *self.state.last_exposure_duration.lock() = Some(duration);
-        self.state
-            .expected_duration_us
-            .store(exposure_us as u64, Ordering::Release);
+        // Exact microseconds from the `Duration` itself rather than a narrowed
+        // copy of the float sent to the SDK.
+        self.state.expected_duration_us.store(
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
 
         let handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
@@ -1695,6 +1738,9 @@ mod tests {
         // zero
         assert!(check_geometry(area(0, 0, 0, 100), 3072, 2048, 1).is_err());
         assert!(check_geometry(area(0, 0, 100, 0), 3072, 2048, 1).is_err());
+        // a zero bin is rejected, not divided by
+        let err = check_geometry(area(0, 0, 100, 100), 3072, 2048, 0).unwrap_err();
+        assert!(err.message.contains("BinX and BinY"), "{}", err.message);
         // out of bounds in x and y
         assert!(check_geometry(area(0, 0, 4000, 100), 3072, 2048, 1).is_err());
         assert!(check_geometry(area(0, 0, 100, 3000), 3072, 2048, 1).is_err());
@@ -1717,10 +1763,32 @@ mod tests {
             bits_per_pixel: 16,
             channels: 1,
         };
-        let array = to_image_array(&image).unwrap();
+        let array = to_image_array(image).unwrap();
         // ASCOM [x][y]: first axis = width.
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
+    }
+
+    #[test]
+    fn to_image_array_16bit_reads_the_wire_order() {
+        // The camera puts 16-bit pixels on the wire little-endian, so `34 12`
+        // is 0x1234. This pins the contract and would catch an outright swap
+        // (`from_be_bytes`, or hand-rolled shifts), but it CANNOT catch a
+        // regression to `from_ne_bytes`: on a little-endian host the two are
+        // the same instruction. Observing that needs a big-endian target,
+        // which CI does not have.
+        let mut data = vec![0u8; 64 * 48 * 2];
+        data[0] = 0x34;
+        data[1] = 0x12;
+        let image = ImageData {
+            data,
+            width: 64,
+            height: 48,
+            bits_per_pixel: 16,
+            channels: 1,
+        };
+        let array = to_image_array(image).unwrap();
+        assert_eq!(array[(0, 0, 0)], 0x1234_i32);
     }
 
     #[test]
@@ -1732,7 +1800,7 @@ mod tests {
             bits_per_pixel: 16,
             channels: 4,
         };
-        assert!(to_image_array(&image).is_err());
+        assert!(to_image_array(image).is_err());
     }
 
     #[test]
@@ -1744,7 +1812,7 @@ mod tests {
             bits_per_pixel: 8,
             channels: 1,
         };
-        let array = to_image_array(&image).unwrap();
+        let array = to_image_array(image).unwrap();
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
     }
@@ -1759,9 +1827,10 @@ mod tests {
                 bits_per_pixel: bits,
                 channels: 1,
             };
+            let err = to_image_array(image).unwrap_err();
             assert!(
-                to_image_array(&image).is_err(),
-                "{bits}-bit undersized buffer must be rejected"
+                err.contains("buffer too small"),
+                "{bits}-bit undersized buffer must be rejected: {err}"
             );
         }
     }

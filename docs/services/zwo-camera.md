@@ -608,6 +608,13 @@ EAF; those belong to the other zwo services.)
   `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
   (`NOT_IMPLEMENTED` from all four members) rather than advertising a clamped
   bound the camera would then reject.
+- **GO4.** The cache is the sole gate on all six members, so each connect
+  **overwrites** it — including with "unavailable". Here that falls out of the
+  handshake assigning it unconditionally (`find(ControlType::Gain).and_then(…)`,
+  which yields `None` when the control is absent), so a control missing on this
+  connect cannot leave a previous session's bounds standing to be advertised.
+  Identical in `svbony-camera` and `qhy-camera`, which reaches it differently —
+  see its GO4.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   enumeration the driver intersects `ASI_CAMERA_INFO.SupportedVideoFormat` with
   the formats it can deliver, in preference order `Raw16` then `Raw8`, and
@@ -638,6 +645,14 @@ EAF; those belong to the other zwo services.)
   "Real-hardware validation"). A name match would force that working camera to
   8 bits. If a USB2 ASI120/ASI130 is ever shown to misbehave, the guard can be
   added then — scoped by `is_usb3`, and with evidence.
+- **RM5.** The `ImageArray` unpack is total in both directions, and reports the
+  **format before the length**: a format the driver cannot unpack (RM4) is
+  rejected as such even when the buffer is also short, because the length it
+  would be measured against is derived from that same unusable format. A buffer
+  shorter than `w × h × bytes_per_pixel` is rejected as "buffer too small". The
+  8-bit path takes the download buffer **by value** and hands it to `Array2`
+  without copying; 16-bit pays one, since its bytes must be re-read as `u16`.
+  Identical in `qhy-camera` (RM2) and `svbony-camera` (RM5).
 
 ### Cooling
 
