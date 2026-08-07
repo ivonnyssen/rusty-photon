@@ -21,7 +21,7 @@
 //! Blocking exposure SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -32,6 +32,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
 use qhyccd_rs::{BayerPattern, CCDChipArea, ControlType};
+use rusty_photon_camera_geometry::{self as geometry, Alignment, Roi};
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
@@ -469,65 +470,52 @@ impl QhyCameraDevice {
     }
 }
 
-/// Geometry validation shared by `validated_roi` (R2). Rejects a zero or
-/// out-of-bounds sub-frame.
-fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMResult<()> {
-    if roi.width == 0 || roi.height == 0 {
-        return Err(ASCOMError::invalid_value(
-            "NumX and NumY must be greater than 0",
-        ));
+/// QHY imposes **no** sub-frame alignment rule — contrast `zwo-camera` and
+/// `svbony-camera`, which both require `NumX % 8 == 0` and `NumY % 2 == 0`.
+/// That absence is the whole of this driver's geometry difference from the
+/// other two; the rules themselves are shared.
+const ALIGNMENT: Option<Alignment> = None;
+
+/// The SDK's `CCDChipArea` as the shared geometry's [`Roi`], and back.
+///
+/// This driver keeps `CCDChipArea` in state because that is the type
+/// `SetQHYCCDResolution` takes, while the shared rules speak a vendor-free
+/// `Roi`. The two meet in these two functions rather than inside either of
+/// them.
+const fn to_roi(area: CCDChipArea) -> Roi {
+    Roi {
+        start_x: area.start_x,
+        start_y: area.start_y,
+        width: area.width,
+        height: area.height,
     }
-    // The bin divides the sensor extent, so a zero bin is not a geometry that
-    // fails a rule — it is one with no rule to apply. Rejecting it completes
-    // this validator rather than leaving a division for callers to prove safe.
-    let (Some(max_x), Some(max_y)) = (ccd_w.checked_div(bin), ccd_h.checked_div(bin)) else {
-        return Err(ASCOMError::invalid_value(
-            "BinX and BinY must be greater than 0",
-        ));
-    };
-    if roi.start_x.saturating_add(roi.width) > max_x {
-        return Err(ASCOMError::invalid_value(
-            "StartX + NumX exceeds CameraXSize / BinX",
-        ));
-    }
-    if roi.start_y.saturating_add(roi.height) > max_y {
-        return Err(ASCOMError::invalid_value(
-            "StartY + NumY exceeds CameraYSize / BinY",
-        ));
-    }
-    Ok(())
 }
 
-/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
-///
-/// `set_num_x`/`set_num_y` store without validating — the ASCOM members are set
-/// independently, so only the combination can be checked, and it is, at
-/// `StartExposure`. Whatever the client last set therefore arrives here, and
-/// rescaling must not change which value the eventual error is about:
-///
-/// - A sub-pixel extent would truncate to 0 at a larger bin, and `StartExposure`
-///   would then reject a 0 this function invented. Clamping to 1 keeps the
-///   complaint on the client's own `NumX`.
-/// - A client-set 0 is preserved, so `StartExposure` still rejects it. QHY has no
-///   alignment rule, so a 1 here would clear every remaining check and expose a
-///   one-pixel frame in place of the error the client had earned.
-fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
-    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
-    // exactly where the float form did, without the rounding error a divide and
-    // a multiply in `f64` can accumulate between them.
-    let old = u32::from(old);
-    let Some(new) = NonZeroU32::new(u32::from(new)) else {
-        // A zero bin is not a scale, so there is nothing to rescale by.
-        return roi;
-    };
-    let scale = |v: u32| v.saturating_mul(old) / new;
-    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
+const fn from_roi(roi: Roi) -> CCDChipArea {
     CCDChipArea {
-        start_x: scale(roi.start_x),
-        start_y: scale(roi.start_y),
-        width: extent(roi.width),
-        height: extent(roi.height),
+        start_x: roi.start_x,
+        start_y: roi.start_y,
+        width: roi.width,
+        height: roi.height,
     }
+}
+
+/// Geometry validation shared by `validated_roi` (R2), as the ASCOM error a
+/// client sees.
+///
+/// The rules, their order, and the message text all live in
+/// `rusty-photon-camera-geometry`, shared with `zwo-camera` and
+/// `svbony-camera`. What this driver contributes is [`ALIGNMENT`] — which for
+/// QHY is the *absence* of a rule — and the mapping of the shared error onto
+/// ASCOM's `INVALID_VALUE`.
+fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMResult<()> {
+    geometry::check(to_roi(roi), ccd_w, ccd_h, bin, ALIGNMENT).map_err(ASCOMError::invalid_value)
+}
+
+/// A bin change rescales the cached ROI (B3); see `geometry::rescale` for why a
+/// sub-pixel extent clamps to 1 while a client-set 0 does not.
+fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
+    from_roi(geometry::rescale(to_roi(roi), old, new))
 }
 
 /// The ASCOM spelling of a gain or offset bound the SDK reports as `f64`.
@@ -1493,12 +1481,12 @@ impl Camera for QhyCameraDevice {
                 .map_err(|_| ASCOMError::invalid_operation("failed to read remaining exposure"))?,
         );
         let done = expected.get().saturating_sub(remaining);
-        // Integer throughout, so there is no float to round: the ratio is capped
-        // at 99 before it is narrowed, which gives the conversion an answer for
-        // every input. The fallback is that same cap, so even an impossible
-        // overflow lands on what the clamp means.
-        let pct = done.saturating_mul(100) / expected;
-        Ok(u8::try_from(pct.min(99)).unwrap_or(99))
+        // Never 100 while in flight — that answer belongs to the Idle/ready
+        // state above, and the cap is shared with the sibling drivers.
+        Ok(geometry::progress_percent(
+            Duration::from_micros(done),
+            Duration::from_micros(expected.get()),
+        ))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1699,30 +1687,28 @@ mod tests {
     }
 
     #[test]
-    fn rescale_roi_scales_by_bin_ratio() {
-        let scaled = rescale_roi(area(100, 200, 800, 600), 1, 2);
-        assert_eq!(scaled, area(50, 100, 400, 300));
-    }
-
-    #[test]
-    fn rescale_roi_clamps_tiny_dimensions_to_one() {
-        // A 1×1 ROI binned 1→2 would truncate to 0×0 and make the next
-        // StartExposure fail geometry validation; clamp keeps it at 1×1.
-        let scaled = rescale_roi(area(0, 0, 1, 1), 1, 2);
-        assert_eq!(scaled, area(0, 0, 1, 1));
-        assert!(scaled.width >= 1 && scaled.height >= 1);
-    }
-
-    #[test]
-    fn rescale_roi_preserves_a_client_set_zero() {
-        // The other direction of the same rule, and on QHY the consequential
-        // one: with no alignment rule to catch it, a clamped 1 clears every
-        // check and exposes a one-pixel frame. The 0 must survive to be
-        // rejected.
+    fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
+        // The rescale arithmetic and its full case list live in
+        // `rusty-photon-camera-geometry`; what this pins is that the two halves
+        // are wired together through the `CCDChipArea` conversion — a 0 the
+        // client set survives the bin change, and `StartExposure` still answers
+        // about that 0.
         let scaled = rescale_roi(area(0, 0, 0, 0), 1, 2);
-        assert_eq!(scaled, area(0, 0, 0, 0));
+        assert_eq!((scaled.width, scaled.height), (0, 0));
         let err = check_geometry(scaled, 3072, 2048, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
+    }
+
+    #[test]
+    fn geometry_imposes_no_alignment_rule() {
+        // The rule set, its order, and the bounds arithmetic are the shared
+        // crate's; what is this driver's is the *absence* of an alignment rule.
+        // A ROI that both siblings reject as misaligned is valid here.
+        check_geometry(area(0, 0, 100, 47), 3072, 2048, 1).unwrap();
+        // The conversion carries all four fields, so a bound is still enforced.
+        let err = check_geometry(area(3000, 0, 100, 48), 3072, 2048, 1).unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(err.message.contains("StartX + NumX"), "{}", err.message);
     }
 
     #[test]
@@ -1731,27 +1717,6 @@ mod tests {
         assert_eq!(bayer_offsets(BayerPattern::GBRG), (0, 1));
         assert_eq!(bayer_offsets(BayerPattern::GRBG), (1, 0));
         assert_eq!(bayer_offsets(BayerPattern::BGGR), (1, 1));
-    }
-
-    #[test]
-    fn check_geometry_rejects_zero_and_out_of_bounds() {
-        // zero
-        assert!(check_geometry(area(0, 0, 0, 100), 3072, 2048, 1).is_err());
-        assert!(check_geometry(area(0, 0, 100, 0), 3072, 2048, 1).is_err());
-        // a zero bin is rejected, not divided by
-        let err = check_geometry(area(0, 0, 100, 100), 3072, 2048, 0).unwrap_err();
-        assert!(err.message.contains("BinX and BinY"), "{}", err.message);
-        // out of bounds in x and y
-        assert!(check_geometry(area(0, 0, 4000, 100), 3072, 2048, 1).is_err());
-        assert!(check_geometry(area(0, 0, 100, 3000), 3072, 2048, 1).is_err());
-        assert!(check_geometry(area(3000, 0, 100, 100), 3072, 2048, 1).is_err());
-        assert!(check_geometry(area(0, 2000, 100, 100), 3072, 2048, 1).is_err());
-        // valid full + sub frames
-        assert!(check_geometry(area(0, 0, 3072, 2048), 3072, 2048, 1).is_ok());
-        assert!(check_geometry(area(0, 0, 64, 48), 3072, 2048, 1).is_ok());
-        // binned bounds shrink
-        assert!(check_geometry(area(0, 0, 1536, 1024), 3072, 2048, 2).is_ok());
-        assert!(check_geometry(area(0, 0, 2000, 100), 3072, 2048, 2).is_err());
     }
 
     #[test]

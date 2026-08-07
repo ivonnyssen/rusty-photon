@@ -3854,6 +3854,7 @@ dependencies = [
  "qhyccd-rs",
  "reqwest 0.13.4",
  "rp-auth",
+ "rusty-photon-camera-geometry",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",
@@ -4792,6 +4793,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-photon-camera-geometry"
+version = "0.1.0"
+
+[[package]]
 name = "rusty-photon-config"
 version = "0.1.0"
 dependencies = [
@@ -5618,6 +5623,7 @@ dependencies = [
  "parking_lot",
  "reqwest 0.13.4",
  "rp-auth",
+ "rusty-photon-camera-geometry",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",
@@ -7125,6 +7131,7 @@ dependencies = [
  "parking_lot",
  "reqwest 0.13.4",
  "rp-auth",
+ "rusty-photon-camera-geometry",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",

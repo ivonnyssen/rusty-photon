@@ -411,13 +411,24 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   driver invented. A **client-set 0** is preserved for the same reason read the
   other way: QHY has no alignment rule (contrast `zwo-camera`/`svbony-camera`
   R3), so a 1 substituted here would clear every remaining check and expose a
-  one-pixel frame in place of the R2 error the client had earned. Identical in
-  `svbony-camera` and `zwo-camera`.
+  one-pixel frame in place of the R2 error the client had earned. **One implementation**, in
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/) — this
+  rule was three copies until one drifted, and the drift went unseen because
+  each driver curated its own test cases, so the missing behaviour and its
+  missing test hid each other.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
   analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE`; otherwise the ROI is
   applied to the SDK before exposing.
+- **R-order.** When a ROI breaks more than one rule at once, the client is told
+  about the first of: zero extent, zero bin, bounds. The order is part of
+  the contract and is pinned by tests in
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/),
+  because it decides which value a client is sent to fix — a zero bin is not a
+  geometry that fails a rule but one with *no rule to apply*, so it is reported
+  ahead of a complaint a client could otherwise chase while the real problem sat
+  in `BinX`.
 
 ### Exposure
 

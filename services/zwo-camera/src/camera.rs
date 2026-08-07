@@ -22,7 +22,7 @@
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
-use std::num::{NonZeroU128, NonZeroU32};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -32,6 +32,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
+use rusty_photon_camera_geometry::{self as geometry, Alignment, Roi};
 use tracing::{debug, warn};
 use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 
@@ -95,14 +96,16 @@ fn negotiated_formats(info: &CameraInfo) -> Vec<ReadoutFormat> {
         .collect()
 }
 
-/// A region of interest in *binned* pixel coordinates.
-#[derive(Debug, Clone, Copy)]
-struct Roi {
-    start_x: u32,
-    start_y: u32,
-    width: u32,
-    height: u32,
-}
+/// The ASI sub-frame alignment rule (R3): a binned width that is a multiple of
+/// 8 and a height that is a multiple of 2.
+///
+/// This is the *whole* difference between this driver's geometry and
+/// `qhy-camera`'s, which passes `None` — everything else about validating a ROI
+/// is shared, and lives in `rusty-photon-camera-geometry`.
+const ALIGNMENT: Option<Alignment> = Some(Alignment::new(
+    NonZeroU32::new(8).expect("8 is not zero"),
+    NonZeroU32::new(2).expect("2 is not zero"),
+));
 
 /// Per-device runtime state: caches populated at connect plus the exposure state
 /// machine. Atomics for the hot/simple flags; `parking_lot::Mutex` for the
@@ -346,11 +349,12 @@ impl ZwoCamera {
 
         self.state.bin.store(1, Ordering::Release);
         self.state.readout_mode.store(0, Ordering::Release);
+        let (width, height) = self.reported_sensor();
         *self.state.intended_roi.lock() = Some(Roi {
             start_x: 0,
             start_y: 0,
-            width: self.reported_width(),
-            height: self.reported_height(),
+            width,
+            height,
         });
         *self.state.target_temperature.lock() = None;
         Ok(())
@@ -386,16 +390,19 @@ impl ZwoCamera {
         self.handle.request_stop(false);
     }
 
-    /// Reported `CameraXSize`: the sensor width reduced so a full frame at every
-    /// supported bin is a valid ASI ROI (see [`aligned_sensor_extent`]).
-    fn reported_width(&self) -> u32 {
-        aligned_sensor_extent(self.info.max_width, &self.info.supported_bins, 8)
-    }
-
-    /// Reported `CameraYSize`: the sensor height aligned so the binned full frame
-    /// stays a multiple of 2 (see [`aligned_sensor_extent`]).
-    fn reported_height(&self) -> u32 {
-        aligned_sensor_extent(self.info.max_height, &self.info.supported_bins, 2)
+    /// Reported `CameraXSize`/`CameraYSize` (R4): the sensor extents reduced so
+    /// a full frame at every supported bin is a valid ASI ROI.
+    ///
+    /// Both come from one call, taking the same [`ALIGNMENT`] that validates
+    /// ROIs — so a sensor sized for one rule can never be reported while ROIs
+    /// are checked against another.
+    fn reported_sensor(&self) -> (u32, u32) {
+        geometry::aligned_sensor(
+            self.info.max_width,
+            self.info.max_height,
+            &self.info.supported_bins,
+            ALIGNMENT,
+        )
     }
 
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
@@ -403,7 +410,8 @@ impl ZwoCamera {
     fn validated_geometry(&self, bin: u32) -> ASCOMResult<Roi> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
-        check_geometry(roi, self.reported_width(), self.reported_height(), bin)?;
+        let (sensor_w, sensor_h) = self.reported_sensor();
+        check_geometry(roi, sensor_w, sensor_h, bin)?;
         Ok(roi)
     }
 
@@ -431,70 +439,14 @@ impl ZwoCamera {
     }
 }
 
-/// Geometry validation (R2/R3). Rejects a zero, misaligned, or out-of-bounds
-/// sub-frame. ASI requires `NumX % 8 == 0` and `NumY % 2 == 0`.
+/// Geometry validation (R2/R3), as the ASCOM error a client sees.
+///
+/// The rules, their order, and the message text all live in
+/// `rusty-photon-camera-geometry`, shared with `qhy-camera` and
+/// `svbony-camera`. What this driver contributes is the ASI [`ALIGNMENT`] rule
+/// and the mapping of the shared error onto ASCOM's `INVALID_VALUE`.
 fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResult<()> {
-    if roi.width == 0 || roi.height == 0 {
-        return Err(ASCOMError::invalid_value(
-            "NumX and NumY must be greater than 0",
-        ));
-    }
-    // The bin divides the sensor extent, so a zero bin is not a geometry that
-    // fails a rule — it is one with no rule to apply. Rejecting it completes
-    // this validator rather than leaving a division for callers to prove safe.
-    let (Some(max_x), Some(max_y)) = (sensor_w.checked_div(bin), sensor_h.checked_div(bin)) else {
-        return Err(ASCOMError::invalid_value(
-            "BinX and BinY must be greater than 0",
-        ));
-    };
-    if !roi.width.is_multiple_of(8) || !roi.height.is_multiple_of(2) {
-        return Err(ASCOMError::invalid_value(
-            "ASI requires NumX a multiple of 8 and NumY a multiple of 2",
-        ));
-    }
-    if roi.start_x.saturating_add(roi.width) > max_x {
-        return Err(ASCOMError::invalid_value(
-            "StartX + NumX exceeds CameraXSize / BinX",
-        ));
-    }
-    if roi.start_y.saturating_add(roi.height) > max_y {
-        return Err(ASCOMError::invalid_value(
-            "StartY + NumY exceeds CameraYSize / BinY",
-        ));
-    }
-    Ok(())
-}
-
-/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
-///
-/// `set_num_x`/`set_num_y` store without validating — the ASCOM members are set
-/// independently, so only the combination can be checked, and it is, at
-/// `StartExposure`. Whatever the client last set therefore arrives here, and
-/// rescaling must not change which value the eventual error is about:
-///
-/// - A sub-pixel extent would truncate to 0 at a larger bin, and `StartExposure`
-///   would then reject a 0 this function invented. Clamping to 1 keeps the
-///   complaint on the client's own `NumX`, which on ASI is the `%8`/`%2` rule.
-/// - A client-set 0 is preserved, so it still meets the "must be greater than 0"
-///   check it earned. Clamping that to 1 would move the error onto the alignment
-///   rule for a value the client never set.
-fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
-    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
-    // exactly where the float form did, without the rounding error a divide and
-    // a multiply in `f64` can accumulate between them.
-    let old = u32::from(old);
-    let Some(new) = NonZeroU32::new(u32::from(new)) else {
-        // A zero bin is not a scale, so there is nothing to rescale by.
-        return roi;
-    };
-    let scale = |v: u32| v.saturating_mul(old) / new;
-    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
-    Roi {
-        start_x: scale(roi.start_x),
-        start_y: scale(roi.start_y),
-        width: extent(roi.width),
-        height: extent(roi.height),
-    }
+    geometry::check(roi, sensor_w, sensor_h, bin, ALIGNMENT).map_err(ASCOMError::invalid_value)
 }
 
 /// A control's range as ASCOM must describe it, or `None` when the driver
@@ -507,56 +459,6 @@ fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
 /// advertise a maximum the camera then rejects.
 fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
     Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
-}
-
-/// Greatest common divisor (Euclid) of two non-zero operands. The result is
-/// itself non-zero, since it divides both — which is what lets [`lcm`] divide
-/// by it without a second check.
-fn gcd(a: NonZeroU32, b: NonZeroU32) -> NonZeroU32 {
-    let (mut a, mut b) = (a, b);
-    // `a % b` is total once `b` carries its own non-zero-ness, so the loop
-    // needs no separate guard on the divisor.
-    while let Some(rem) = NonZeroU32::new(a.get() % b) {
-        a = b;
-        b = rem;
-    }
-    b
-}
-
-/// Least common multiple (`0` if either operand is `0`).
-fn lcm(a: u32, b: u32) -> u32 {
-    let (Some(a_nz), Some(b_nz)) = (NonZeroU32::new(a), NonZeroU32::new(b)) else {
-        // Zero shares no multiple with anything.
-        return 0;
-    };
-    // The gcd divides `a` exactly, so dividing before multiplying keeps the
-    // intermediate as small as it can be; saturating covers a pair whose
-    // multiple genuinely does not fit.
-    (a / gcd(a_nz, b_nz)).saturating_mul(b)
-}
-
-/// The largest sensor extent (≤ `max`) the driver reports such that the full
-/// frame divided by *every* supported bin is a valid ASI ROI — i.e. the binned
-/// extent is a multiple of `unit` (8 for width, 2 for height).
-///
-/// `ConformU` takes a full frame at every bin via `NumX = CameraXSize / bin` (and
-/// likewise `NumY`), so reporting the raw sensor size makes those binned full
-/// frames unachievable whenever `raw / bin` is not a multiple of `unit` (e.g. an
-/// ASI2600's 6248 / 2 = 3124, not a multiple of 8). Reducing the reported extent
-/// to a multiple of `lcm(unit·bin)` guarantees every binned full frame is
-/// exactly achievable, and as a bonus makes [`rescale_roi`] round-trip cleanly.
-fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
-    let step = supported_bins
-        .iter()
-        .copied()
-        .filter(|&b| b > 0)
-        .map(|b| unit.saturating_mul(b))
-        .fold(1, lcm);
-    let Some(step) = NonZeroU32::new(step).filter(|s| s.get() <= max) else {
-        return max;
-    };
-    // A remainder is never larger than what it came from, so this cannot wrap.
-    max.saturating_sub(max % step)
 }
 
 /// `MaxADU` for a frame delivered in `image_type` from a `bit_depth`-bit ADC.
@@ -855,12 +757,14 @@ impl Camera for ZwoCamera {
 
     async fn camera_x_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        Ok(self.reported_width())
+        let (width, _) = self.reported_sensor();
+        Ok(width)
     }
 
     async fn camera_y_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        Ok(self.reported_height())
+        let (_, height) = self.reported_sensor();
+        Ok(height)
     }
 
     async fn pixel_size_x(&self) -> ASCOMResult<f64> {
@@ -929,7 +833,7 @@ impl Camera for ZwoCamera {
         {
             let mut roi = self.state.intended_roi.lock();
             if let Some(area) = *roi {
-                *roi = Some(rescale_roi(area, old, bin_x));
+                *roi = Some(geometry::rescale(area, old, bin_x));
             }
         }
         self.state.bin.store(bin_x, Ordering::Release);
@@ -1402,19 +1306,10 @@ impl Camera for ZwoCamera {
         let (Some(start), Some(duration)) = (start, duration) else {
             return Ok(0);
         };
-        // A duration under a microsecond has no ratio worth reporting.
-        // `NonZeroU128` carries that answer down into the division, so the guard
-        // and the divisor are one fact rather than two that could drift apart.
-        let Some(duration_us) = NonZeroU128::new(duration.as_micros()) else {
-            return Ok(99);
-        };
+        // Never 100 while in flight — that answer belongs to the ready state
+        // above, and the cap is shared with the sibling drivers.
         let elapsed = start.elapsed().unwrap_or(Duration::ZERO);
-        // Never report 100 while in flight (that is reserved for the ready
-        // state). Integer throughout, so there is no float to round: the ratio
-        // is capped at 99 before it is narrowed, which gives the conversion an
-        // answer for every input, and the fallback is that same cap.
-        let pct = elapsed.as_micros().saturating_mul(100) / duration_us;
-        Ok(u8::try_from(pct.min(99)).unwrap_or(99))
+        Ok(geometry::progress_percent(elapsed, duration))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1812,30 +1707,13 @@ mod tests {
     }
 
     #[test]
-    fn rescale_roi_scales_by_bin_ratio() {
-        let scaled = rescale_roi(roi(100, 200, 800, 600), 1, 2);
-        assert_eq!(scaled.start_x, 50);
-        assert_eq!(scaled.start_y, 100);
-        assert_eq!(scaled.width, 400);
-        assert_eq!(scaled.height, 300);
-    }
-
-    #[test]
-    fn rescale_roi_clamps_tiny_dimensions_to_one() {
-        // A 1-pixel ROI is reachable: `set_num_x` stores without validating, so
-        // it can be resting in state when the bin changes. Rescaling must not
-        // manufacture a zero the client never set.
-        let scaled = rescale_roi(roi(0, 0, 1, 1), 1, 2);
-        assert_eq!((scaled.width, scaled.height), (1, 1));
-    }
-
-    #[test]
-    fn rescale_roi_preserves_a_client_set_zero() {
-        // The other direction of the same rule: a 0 the client did set must
-        // survive, so StartExposure still answers about that 0 rather than
-        // about the %8 alignment rule a clamped 1 would trip instead.
-        let scaled = rescale_roi(roi(0, 0, 0, 0), 1, 2);
-        assert_eq!((scaled.width, scaled.height), (0, 0));
+    fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
+        // The rescale arithmetic and its full case list live in
+        // `rusty-photon-camera-geometry`; what this pins is that the two halves
+        // are wired together — a 0 the client set survives the bin change and
+        // `StartExposure` still answers about that 0, rather than about the %8
+        // alignment rule a clamped 1 would trip instead.
+        let scaled = geometry::rescale(roi(0, 0, 0, 0), 1, 2);
         let err = check_geometry(scaled, 6248, 4176, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
@@ -1849,46 +1727,18 @@ mod tests {
     }
 
     #[test]
-    fn check_geometry_rejects_zero_misaligned_and_out_of_bounds() {
-        // zero
-        assert!(check_geometry(roi(0, 0, 0, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 0, 64, 0), 6248, 4176, 1).is_err());
-        // A zero bin is rejected, not divided by — and it is reported ahead of
-        // the alignment rule, so a ROI that is *also* misaligned still hears
-        // about the bin. Nothing can be computed without one.
-        let err = check_geometry(roi(0, 0, 100, 64), 6248, 4176, 0).unwrap_err();
-        assert!(err.message.contains("BinX and BinY"), "{}", err.message);
-        // misaligned (NumX % 8 != 0, NumY % 2 != 0)
-        assert!(check_geometry(roi(0, 0, 100, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 0, 64, 47), 6248, 4176, 1).is_err());
-        // out of bounds in x and y
-        assert!(check_geometry(roi(0, 0, 8000, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 0, 64, 6000), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(6248, 0, 64, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 4176, 64, 64), 6248, 4176, 1).is_err());
-        // valid full + sub frames
-        assert!(check_geometry(roi(0, 0, 6248, 4176), 6248, 4176, 1).is_ok());
-        assert!(check_geometry(roi(0, 0, 64, 48), 6248, 4176, 1).is_ok());
-        // binned bounds shrink
-        assert!(check_geometry(roi(0, 0, 3120, 2088), 6248, 4176, 2).is_ok());
-        assert!(check_geometry(roi(0, 0, 4000, 64), 6248, 4176, 2).is_err());
-    }
-
-    #[test]
-    fn reports_sensor_size_aligned_for_binned_full_frames() {
-        // 6248 reduces to 6240 so 6240/{1,2,3,4} are all multiples of 8; 4176 is
-        // already aligned (4176/{1,2,3,4} are all even). This is what lets
-        // ConformU's binned full frame (NumX = CameraXSize/bin) pass geometry.
-        assert_eq!(aligned_sensor_extent(6248, &[1, 2, 3, 4], 8), 6240);
-        assert_eq!(aligned_sensor_extent(4176, &[1, 2, 3, 4], 2), 4176);
-        for bin in [1u32, 2, 3, 4] {
-            assert_eq!((6240 / bin) % 8, 0, "width / {bin} not a multiple of 8");
-            assert_eq!((4176 / bin) % 2, 0, "height / {bin} not even");
-        }
-        // Degenerate inputs are returned unchanged, never reduced to zero.
-        assert_eq!(aligned_sensor_extent(10, &[1, 2, 3, 4], 8), 10);
-        assert_eq!(aligned_sensor_extent(100, &[], 8), 100);
-        assert_eq!(aligned_sensor_extent(100, &[0], 8), 100);
+    fn geometry_applies_the_asi_alignment_rule_and_reports_it_as_ascom() {
+        // The rule set, its order, and the bounds arithmetic are the shared
+        // crate's; this pins the two things that are this driver's — that the
+        // ASI %8/%2 rule is the one in force, and that a failure arrives as an
+        // ASCOM message rather than a `GeometryError`.
+        let err = check_geometry(roi(0, 0, 100, 64), 6248, 4176, 1).unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(err.message.contains("multiple of 8"), "{}", err.message);
+        let err = check_geometry(roi(0, 0, 64, 47), 6248, 4176, 1).unwrap_err();
+        assert!(err.message.contains("multiple of 2"), "{}", err.message);
+        // A full frame at the reported (aligned) extent passes.
+        check_geometry(roi(0, 0, 6240, 4176), 6240, 4176, 1).unwrap();
     }
 
     #[test]

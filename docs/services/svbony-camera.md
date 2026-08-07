@@ -548,8 +548,11 @@ responsive during an in-flight exposure.
   `SVBGetSensorPixelSize`); `PixelSizeX == PixelSizeY` (a single SDK
   pixel-size call). `CameraXSize`/`CameraYSize` report the sensor extent
   **aligned down** so the full frame divided by *every* supported bin
-  satisfies the width%8/height%2 ROI rule (`aligned_sensor_extent`, the
-  same mechanism as `zwo-camera`'s R4; SV605CC: raw 3008×3008 → reported
+  satisfies the width%8/height%2 ROI rule
+  ([`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  `aligned_sensor`, fed the *same* alignment rule R3 validates against, one
+  implementation shared with `zwo-camera`'s R4 —
+  which reached it from an ASI2600 rather than an SV605CC; SV605CC: raw 3008×3008 → reported
   2976×3000). Phase E originally reported the raw extent and deferred this
   decision to real ConformU coverage — which then failed exactly as
   predicted (real-hardware ConformU takes a full frame at every bin via
@@ -883,13 +886,25 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   driver invented rather than the client's own `NumX`, which here is R3's
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
-  Identical in `qhy-camera` and `zwo-camera`.
+  **One implementation**, in
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/) — this
+  rule was three copies until one drifted, and the drift went unseen because
+  each driver curated its own test cases, so the missing behaviour and its
+  missing test hid each other.
 - **R1.** ROI setters accept any `u32`; geometry validated at
   `StartExposure`.
 - **R2.** Out-of-bounds/zero sub-frame → `INVALID_VALUE`.
 - **R3.** `SVBSetROIFormat`'s alignment rule — `width % 8 != 0` or
   `height % 2 != 0` — → `INVALID_VALUE`; identical to `zwo-camera`'s ASI
   rule.
+- **R-order.** When a ROI breaks more than one rule at once, the client is told
+  about the first of: zero extent, zero bin, alignment, bounds. The order is part of
+  the contract and is pinned by tests in
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/),
+  because it decides which value a client is sent to fix — a zero bin is not a
+  geometry that fails a rule but one with *no rule to apply*, so it is reported
+  ahead of a complaint a client could otherwise chase while the real problem sat
+  in `BinX`.
 
 ### Gain / offset / readout
 
