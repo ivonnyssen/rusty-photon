@@ -1,0 +1,21 @@
+# actionlint configuration.
+#
+# actionlint validates every `runs-on` label against the set GitHub hosts, so
+# this repo's self-hosted labels read as typos unless they are declared here.
+# Nothing in CI runs actionlint today — it is a local tool (`actionlint` from
+# the repo root lints all of .github/workflows). Keeping this file accurate is
+# what lets a clean run mean "no findings" rather than "the usual three".
+#
+# Add a label here only when a runner actually advertises it; a label listed
+# here but never registered makes the job queue forever instead of failing.
+self-hosted-runner:
+  labels:
+    # Pi 5 field rig, ARM64 — the nightly `pi-nightly.yml` runner.
+    - raspberry-pi
+    # Proxmox ephemeral runner pool (LXC, one VM per job, destroyed after).
+    # Linux venue for `bazel.yml`, `bazel-coverage.yml`, and
+    # `proxmox-runner-test.yml`; reached only on trusted events, see the
+    # `runs-on` expression comments in bazel.yml.
+    - proxmox-ephemeral
+    # Windows venue of the same pool.
+    - proxmox-ephemeral-windows
