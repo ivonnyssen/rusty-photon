@@ -550,7 +550,8 @@ responsive during an in-flight exposure.
   **aligned down** so the full frame divided by *every* supported bin
   satisfies the width%8/height%2 ROI rule
   ([`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
-  `aligned_sensor_extent`, one implementation shared with `zwo-camera`'s R4 —
+  `aligned_sensor`, fed the *same* alignment rule R3 validates against, one
+  implementation shared with `zwo-camera`'s R4 —
   which reached it from an ASI2600 rather than an SV605CC; SV605CC: raw 3008×3008 → reported
   2976×3000). Phase E originally reported the raw extent and deferred this
   decision to real ConformU coverage — which then failed exactly as

@@ -420,15 +420,14 @@ impl SvbonyCamera {
         // NumX = CameraXSize / bin, which the raw extent cannot satisfy at
         // every bin (3008/3 = 1002 is not a multiple of 8).
         let supported_bins: Vec<u32> = property.supported_bins.clone();
-        let max_width = geometry::aligned_sensor_extent(
+        // Both extents from one call, taking the same `ALIGNMENT` that
+        // validates ROIs — so a sensor sized for one rule can never be reported
+        // while ROIs are checked against another.
+        let (max_width, max_height) = geometry::aligned_sensor(
             u32::try_from(property.max_width).unwrap_or(0),
-            &supported_bins,
-            8,
-        );
-        let max_height = geometry::aligned_sensor_extent(
             u32::try_from(property.max_height).unwrap_or(0),
             &supported_bins,
-            2,
+            ALIGNMENT,
         );
         *self.state.intended_roi.lock() = Some(Roi {
             start_x: 0,

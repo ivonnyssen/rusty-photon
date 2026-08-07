@@ -549,10 +549,12 @@ EAF; those belong to the other zwo services.)
   (the raw 6248/2 = 3124 is not a multiple of 8, so the raw width would make the
   bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
   resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
-  exactly. Bounds checks (R2) use the *reported* extent. The alignment is computed by
+  exactly. Bounds checks (R2) use the *reported* extent. Both extents are computed by
   [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
-  `aligned_sensor_extent`, shared with the sibling camera driver that hit the
-  same ConformU failure on different hardware.
+  `aligned_sensor` from the *same* alignment rule R3 validates against, so the
+  reported size and the ROI check cannot be aligned to different multiples.
+  Shared with the sibling camera driver that hit the same ConformU failure on
+  different hardware.
 - **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's `SupportedBins` and
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from

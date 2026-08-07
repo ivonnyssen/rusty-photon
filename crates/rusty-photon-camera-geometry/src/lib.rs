@@ -237,16 +237,11 @@ pub fn rescale(roi: Roi, old: u8, new: u8) -> Roi {
 /// Degenerate inputs return `max` unchanged rather than reducing it: an empty
 /// bin list, a bin list of zeroes, or a step that already exceeds the sensor.
 ///
-/// ```
-/// use rusty_photon_camera_geometry::aligned_sensor_extent;
-///
-/// // ASI2600: 6248 reduces to 6240, so 6240/{1,2,3,4} are all multiples of 8.
-/// assert_eq!(aligned_sensor_extent(6248, &[1, 2, 3, 4], 8), 6240);
-/// // Nothing to align against leaves the extent alone.
-/// assert_eq!(aligned_sensor_extent(6248, &[], 8), 6248);
-/// ```
-#[must_use]
-pub fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
+/// Private, and reached only through [`aligned_sensor`]: a caller that picks the
+/// `unit` per axis by hand can pass one the ROI check does not use, or swap the
+/// two axes' multiples, and get a driver that validates against one rule while
+/// reporting a sensor sized for another.
+fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
     let step = supported_bins
         .iter()
         .copied()
@@ -258,6 +253,50 @@ pub fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32
     };
     // A remainder is never larger than what it came from, so this cannot wrap.
     max.saturating_sub(max % step)
+}
+
+/// Both sensor extents, reduced so a full frame at every supported bin is still
+/// a valid ROI under `align` — the `CameraXSize`/`CameraYSize` a driver reports.
+///
+/// Taking the whole [`Alignment`] rather than a per-axis multiple is what holds
+/// this in step with [`check`]. The multiple an extent is aligned *to* and the
+/// multiple a ROI is validated *against* are then the same value by
+/// construction, and the width and height multiples cannot be swapped between
+/// the axes on the way in. Reporting a sensor sized for one rule while checking
+/// ROIs against another makes the binned full frame unachievable, which is the
+/// exact failure ConformU caught on hardware.
+///
+/// `None` is no rule, so there is nothing to align to and both extents pass
+/// through — `qhy-camera`'s case.
+///
+/// ```
+/// use core::num::NonZeroU32;
+/// use rusty_photon_camera_geometry::{aligned_sensor, Alignment};
+///
+/// let eight = NonZeroU32::new(8).unwrap();
+/// let two = NonZeroU32::new(2).unwrap();
+/// let asi = Some(Alignment::new(eight, two));
+///
+/// // ASI2600: 6248 reduces to 6240, so 6240/{1,2,3,4} are all multiples of 8;
+/// // 4176 is already aligned for the height rule.
+/// assert_eq!(aligned_sensor(6248, 4176, &[1, 2, 3, 4], asi), (6240, 4176));
+/// // No rule, nothing to align to.
+/// assert_eq!(aligned_sensor(6248, 4176, &[1, 2, 3, 4], None), (6248, 4176));
+/// ```
+#[must_use]
+pub fn aligned_sensor(
+    max_width: u32,
+    max_height: u32,
+    supported_bins: &[u32],
+    align: Option<Alignment>,
+) -> (u32, u32) {
+    let Some(align) = align else {
+        return (max_width, max_height);
+    };
+    (
+        aligned_sensor_extent(max_width, supported_bins, align.width.get()),
+        aligned_sensor_extent(max_height, supported_bins, align.height.get()),
+    )
 }
 
 /// Greatest common divisor (Euclid) of two non-zero operands. The result is
@@ -551,6 +590,20 @@ mod tests {
             assert_eq!((2976 / bin) % 8, 0, "width at bin {bin}");
             assert_eq!((3000 / bin) % 2, 0, "height at bin {bin}");
         }
+    }
+
+    #[test]
+    fn both_axes_take_their_own_multiple_from_one_alignment() {
+        // The SV605CC is square, so the pair is only right if each axis used its
+        // own multiple: 3008 aligns to 2976 under the width rule and to 3000
+        // under the height rule. Passing the units by hand is where those could
+        // be swapped; there is no longer a way to.
+        assert_eq!(aligned_sensor(3008, 3008, &[1, 2, 3, 4], ASI), (2976, 3000));
+        // No rule, nothing to align to.
+        assert_eq!(
+            aligned_sensor(3008, 3008, &[1, 2, 3, 4], None),
+            (3008, 3008)
+        );
     }
 
     #[test]

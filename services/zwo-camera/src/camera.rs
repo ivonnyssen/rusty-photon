@@ -389,16 +389,27 @@ impl ZwoCamera {
         self.handle.request_stop(false);
     }
 
-    /// Reported `CameraXSize`: the sensor width reduced so a full frame at every
-    /// supported bin is a valid ASI ROI (see `geometry::aligned_sensor_extent`).
-    fn reported_width(&self) -> u32 {
-        geometry::aligned_sensor_extent(self.info.max_width, &self.info.supported_bins, 8)
+    /// Reported `CameraXSize`/`CameraYSize` (R4): the sensor extents reduced so
+    /// a full frame at every supported bin is a valid ASI ROI.
+    ///
+    /// Both come from one call, taking the same [`ALIGNMENT`] that validates
+    /// ROIs — so a sensor sized for one rule can never be reported while ROIs
+    /// are checked against another.
+    fn reported_sensor(&self) -> (u32, u32) {
+        geometry::aligned_sensor(
+            self.info.max_width,
+            self.info.max_height,
+            &self.info.supported_bins,
+            ALIGNMENT,
+        )
     }
 
-    /// Reported `CameraYSize`: the sensor height aligned so the binned full frame
-    /// stays a multiple of 2 (see `geometry::aligned_sensor_extent`).
+    fn reported_width(&self) -> u32 {
+        self.reported_sensor().0
+    }
+
     fn reported_height(&self) -> u32 {
-        geometry::aligned_sensor_extent(self.info.max_height, &self.info.supported_bins, 2)
+        self.reported_sensor().1
     }
 
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
