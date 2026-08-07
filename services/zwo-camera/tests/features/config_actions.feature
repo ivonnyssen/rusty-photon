@@ -27,6 +27,14 @@ Feature: Configuration actions
     And the schema should mark server.port as a read-only field
     And the schema should report no locked identity fields
 
+  Scenario: The MaxADU reporting contract is discoverable through the schema
+    An operator whose client was written against ZWO's own ASCOM driver needs
+    to find the compatibility mode without reading the source, so both wire
+    names must reach them through config.schema.
+
+    When config.schema is called
+    Then the schema should offer both MaxADU reporting modes
+
   Scenario: Read the current configuration
     When config.get is called
     Then the config should report an empty devices map

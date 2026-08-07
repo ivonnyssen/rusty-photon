@@ -7,7 +7,10 @@
 //!   camera SDK serial (see `docs/services/zwo-camera.md` "Device identity"),
 //!   not minted into config, so there is no identity field to lock.
 //! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
-//! - **Editable:** the per-serial `devices` map (`name` / `description`).
+//! - **Editable:** the per-serial `devices` map (`name` / `description`) and
+//!   `max_adu_reporting`. The latter is baked into each device at construction,
+//!   so it takes effect on the reload `config.apply` fires — which rebuilds the
+//!   server and re-creates every device — not on the live objects.
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
 

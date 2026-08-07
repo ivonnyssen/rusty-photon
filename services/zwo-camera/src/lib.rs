@@ -138,7 +138,11 @@ impl ServerBuilder {
             // config-actions `devices.{serial}` paths), NOT the prefixed
             // `ZWO:{name}:{serial}` UniqueID — looking up by UniqueID would never
             // match a user's serial-keyed entry.
-            let mut device = ZwoCamera::new(handle, self.config.devices.get(&cam.serial));
+            let mut device = ZwoCamera::new(
+                handle,
+                self.config.devices.get(&cam.serial),
+                self.config.max_adu_reporting,
+            );
             if let (Some(path), Some(reload)) = (self.config_path.clone(), self.reload.clone()) {
                 device = device.with_config_actions(rusty_photon_driver::ConfigActionCtx {
                     effective: self.config.clone(),

@@ -328,11 +328,21 @@ ASI C API exposes and what `zwo-rs` will wrap.
   A camera without the control reports `NOT_IMPLEMENTED`.
 - **Sensor type** — `Monochrome` vs `RGGB` (+ `BayerOffsetX/Y`) from
   `IsColorCam` / `BayerPattern`.
-- **`MaxADU`** = **the selected readout format's delivered ceiling**, NOT
-  `(2^BitDepth) - 1`: 255 in `Raw8`, and in `Raw16` the ADC's full scale
-  *shifted into the 16-bit container* (`((2^BitDepth) - 1) << (16 - BitDepth)`
-  — 65535 for a 16-bit ADC, **65520** for a 12-bit one). Hardware-measured, see
-  ST3. `SensorName` comes from the device name.
+- **`MaxADU`** = **a saturation threshold chosen to be reachable** in the
+  selected readout format, NOT `(2^BitDepth) - 1` and not an exact upper bound:
+  255 in `Raw8`, and in `Raw16` the ADC's full scale *shifted into the 16-bit
+  container*, one quantization step below the top code
+  (`((2^BitDepth) - 2) << (16 - BitDepth)` — **65528** for a 14-bit ADC,
+  **65504** for a 12-bit one). Where that margin applies, a sensor reaching its
+  top code delivers pixels one step *above* `MaxADU`; ST3 explains the trade. A
+  16-bit depth reports 65535 because it fills the container and there is no
+  shift to step down from; an unknown depth reports 65535 because it says
+  nothing about the packing at all — in both cases the value is the container's
+  own maximum, so nothing can exceed it. Hardware-measured, see ST3.
+  Configurable: `max_adu_reporting` selects this accurate threshold (default) or
+  the flat container maximum that ZWO's own ASCOM driver reports, for clients
+  written against that value — see ST3 *the compatibility switch*.
+  `SensorName` comes from the device name.
 - **Dark/bias frames** — ASI sensors have **no mechanical shutter**; `Light =
   false` is **accepted** and captures normally (there is no shutter to actuate —
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
@@ -379,6 +389,8 @@ per-serial display overrides plus the port.
       "description": "ASI2600MM-Pro @ 1000mm"
     }
   },
+  // Which MaxADU contract to present (ST3). Omit for the accurate default.
+  "max_adu_reporting": "saturation_threshold",
   "server": {
     "port": 11122,
     "bind_address": "0.0.0.0",
@@ -402,6 +414,13 @@ Sections:
   (gain/offset/target temperature) — with heterogeneous cameras those are
   per-serial concerns and clients set them over ASCOM; per-serial defaults are
   deferred (see *Future Work*).
+- **max_adu_reporting** — Which `MaxADU` contract to present, service-wide:
+  `saturation_threshold` (default, the accurate reachable value) or
+  `container_full_scale` (a flat 65535 in `Raw16`, matching ZWO's own ASCOM
+  driver for clients written against it). Editable, but baked into each device
+  at construction, so it takes effect on the reload `config.apply` fires rather
+  than on the live objects. See ST3 *the compatibility switch* — the compat mode
+  disables saturation detection on sub-16-bit sensors.
 - **server.port** — Listening port (**11122**, next free in the 1112x family;
   11121 is `qhy-camera`). One port hosts all enumerated devices. Hard read-only
   (self-lockout: a port change would make the BFF lose the devices).
@@ -630,11 +649,20 @@ EAF; those belong to the other zwo services.)
   enumerated it and would not move when a client changes `Gain` — which is
   precisely what a client reading `ElectronsPerADU` for SNR or exposure math
   needs it to do.
-- **ST3.** `MaxADU` = **the ceiling of the data actually delivered in the
-  selected readout mode** (RM2), not `(2^BitDepth) - 1`:
+- **ST3.** `MaxADU` = **a saturation threshold chosen to be reachable** by the
+  delivered data in the selected readout mode (RM2) — not `(2^BitDepth) - 1`,
+  and deliberately *not* an exact upper bound on the pixel values (see *the
+  margin*, which explains why a client may see values slightly above it, and
+  why "reachable" is a design intent rather than a guarantee):
   - `Raw8` → **255**, whatever the ADC depth is.
-  - `Raw16` → `((2^BitDepth) - 1) << (16 - BitDepth)`: **65535** for a 16-bit
-    ADC, **65532** for a 14-bit one, **65520** for a 12-bit one.
+  - `Raw16` → `((2^BitDepth) - 2) << (16 - BitDepth)`: **65528** for a 14-bit
+    ADC, **65504** for a 12-bit one — one quantization step below the shifted
+    full scale, see *the margin* below.
+  - `Raw16` from a 16-bit ADC → the container's own **65535**: it fills the
+    container, so there is no shift to step down from.
+  - `Raw16` from an unknown (0) or degenerate (1) depth → **65535** as well,
+    but for a different reason: the depth says nothing about the packing, so
+    there is no step size to step down by.
 
   ASI packs sub-16-bit ADC data into the Raw16 container by *left-shifting* it,
   so the ceiling belongs to the container, not the ADC. Hardware-measured on a
@@ -649,22 +677,136 @@ EAF; those belong to the other zwo services.)
   rescale, low bits populated.) An unknown (0) depth falls back to the
   container's own 65535.
 
-  Two measured caveats, neither of which the formula expresses:
+  **The margin: why the shifted branch reports one step below full scale.**
+  A sensor need not reach its top ADC code. The physical ASI178MM clips at
+  `16382 << 2` = **65528**, one count short of the `16383 << 2 = 65532` the
+  shift alone predicts — measured at every gain from 0 to 510, at bins 1-3,
+  and at exposures from 1 s to 15 s, with ~98 000 pixels piled on 65528 and
+  nothing above it. ASCOM defines this property as *"the maximum ADU value the
+  camera can produce"*, and clients test saturation as `pixel >= MaxADU`, so an
+  unreachable ceiling does not merely round badly: it makes saturation
+  **undetectable**. Measured through the driver before the margin existed, a
+  comprehensively blown-out frame gave `pixels >= MaxADU` = 0 while 13 655
+  pixels sat at the sensor's real ceiling; with it, the same frame reports
+  6 709 saturated pixels.
+
+  **The shortfall is genuinely per-model — all three cameras were blown out
+  and they do not agree:**
+
+  | camera | ADC | shift predicts | **delivered ceiling** | margin |
+  |---|---|---|---|---|
+  | ASI178MM | 14-bit | 65532 | **65528** = `16382 << 2` | exact |
+  | ASI1600MM-Cool | 12-bit | 65520 | **65504** = `4094 << 4` | exact |
+  | ASI120MC-S | 12-bit | 65520 | **65520** = `4095 << 4` | costs one code |
+
+  Two of the three clip one ADC count short, and on those the margin *is* the
+  measured ceiling rather than a conservative approximation. The ASI120MC-S
+  really does reach full scale — confirmed at every gain across its 0-100
+  range — so identical 12-bit sensors disagree, and no formula derived from
+  `BitDepth` can be exact on all of them.
+
+  **All three ceilings are confirmed through a second, independent driver
+  stack.** Driving the same three cameras through **ZWO's own ASCOM driver**
+  (6.5.36, ASCOM Platform 7.1.3, Windows) to saturation delivers 65528, 65504
+  and 65520 — identical to the values above, measured by different code, in a
+  different language, on a different operating system, against a different build
+  of the SDK. The per-model shortfall is therefore a property of the sensors,
+  not an artefact of this driver's unpacking.
+
+  **One step is what the measurements support, not a proof.** Every sensor seen
+  so far clips by at most one ADC count, so one step of margin is enough to
+  make `pixel >= MaxADU` satisfiable on all of them. A model that clipped
+  *two* or more counts short would defeat it again, and nothing in the SDK
+  would reveal that in advance — so on an unmeasured camera, reachability is
+  the design intent rather than a guarantee. Widening the margin further is not
+  free: each extra step raises the false-positive band on every sensor that
+  does reach its top code, which is why it is one and not two. Any new model
+  worth trusting for saturation detection should be run through
+  `probe_ceiling` (or `probe_gain_sweep` for the whole register).
+
+  **The cost of being wrong in the safe direction is measured, and it is
+  tiny.** On the ASI120MC-S, a blown-out full frame through the driver:
+
+  ```
+  delivered max : 65520  (6095 px)      advertised MaxADU : 65504
+  pixels >= MaxADU : 6098   of which at the ceiling: 6095   false positives: 3
+  ```
+
+  Three pixels out of 1 228 800 — 0.0002% — are called saturated one ADC LSB
+  early, while all 6 095 genuinely saturated pixels are flagged. Against that,
+  without the margin the other two cameras report **zero** saturated pixels on
+  a comprehensively saturated frame. The error is *below the sensor's own
+  resolution* either way, since a shifted container cannot represent anything
+  finer; the asymmetry is that understating costs a fraction of one code while
+  overstating costs the entire capability.
+
+  **The margin's other consequence: on a sensor that reaches full scale,
+  delivered pixels exceed the advertised `MaxADU`.** The ASI120MC-S delivers
+  65520 while reporting 65504, so a client normalising `pixel / MaxADU` sees
+  **1.00024** at the top codes rather than 1.0. Measured across that camera's
+  whole gain register, this happens at **101 of 101 gains** — it is the normal
+  case on such a sensor, not an edge case. Clients that clamp are unaffected;
+  one that asserts `≤ 1.0` would trip. That is the price of choosing a
+  reachable saturation threshold over an exact upper bound, and ASCOM's single
+  `MaxADU` cannot express both.
+
+  **The compatibility switch: `max_adu_reporting`.** ZWO ships its own ASCOM
+  driver for these cameras, and it reports a flat **65535** — measured on all
+  three, driver 6.5.36 under ASCOM Platform 7.1.3, constant across every readout
+  mode, five gains spanning each camera's full range, and every supported bin.
+  Clients written against ZWO's driver may therefore carry logic that assumes
+  65535, and for them this driver's accurate value is a behaviour change: pixels
+  never reach `MaxADU` on such a client's arithmetic *by design*, whereas here
+  they do, and on a sensor that reaches full scale they exceed it. A top-level
+  config key chooses which contract to present:
+
+  | `max_adu_reporting` | `Raw16`, sub-16-bit ADC | meaning |
+  |---|---|---|
+  | `saturation_threshold` *(default)* | `((2^BitDepth) - 2) << (16 - BitDepth)` | reachable — `pixel >= MaxADU` detects saturation |
+  | `container_full_scale` | 65535 | matches ZWO's own ASCOM driver; nothing can exceed it |
+
+  The setting is **service-wide** and changes only the shifted branch: `Raw8` is
+  255 either way, and a 16-bit or unknown depth is 65535 either way, because in
+  those branches the container maximum *is* the answer. The default is the
+  accurate value — saturation detection is the capability the property exists
+  for, and it should work without configuration; `container_full_scale` is the
+  deliberate opt-out for an installation whose client needs ZWO's number.
+
+  Choosing `container_full_scale` **disables saturation detection** on any
+  sub-16-bit sensor: that is precisely the state ZWO's driver is in, where a
+  fully blown-out frame reports zero pixels at or above `MaxADU` on all three
+  cameras. It is a compatibility mode, not a second correct answer.
+
+  **Verified exhaustively, at every gain each camera advertises** — 601, 511
+  and 101 values respectively, 1 213 frames, exposure scaled by `10^(gain/200)`
+  so low gains are not left dark (an unsaturated frame cannot falsify a
+  ceiling):
+
+  | camera | gains | ceiling delivered | exceeded it | reached it | packing |
+  |---|---|---|---|---|---|
+  | ASI1600MM-Cool | 601 | 65504 | never | 586/601 | shift 4 at every gain |
+  | ASI178MM | 511 | 65528 | never | 511/511 | shift 2 at every gain |
+  | ASI120MC-S | 101 | 65520 | never | 101/101 | shift 4 at every gain |
+
+  No frame at any gain on any camera exceeded its ceiling, and the shift
+  signature never moved. The 15 ASI1600MM-Cool gains that did not *reach* the
+  ceiling are exactly gains 0-14, where the brightest pixel climbs 55696 →
+  65008 and then pins from gain 15 up — an under-exposed scene at the bottom of
+  the register, not a second ceiling. `crates/zwo-rs/examples/probe_gain_sweep.rs`
+  is the probe; it runs for about an hour across three cameras.
+
+  The margin is spent only where the shift creates it (see the ST3 bullets
+  above): a 16-bit ADC fills the container and has no shift to step down from,
+  while an unknown depth says nothing about the packing at all. `Raw8` was
+  measured reaching exactly 255 on every camera tried, so it takes no margin
+  either.
+
+  One further measured caveat, which the formula does not express:
 
   - **The shift signature is a bin-1 property.** At bin ≥ 2 the SDK combines
     neighbouring ADC counts, which populates the low bits — an ASI178MM frame
     at bin 2 looks "rescaled" by the low-bit test. The *ceiling* is unchanged,
     so the single published `MaxADU` still describes every bin.
-  - **The formula is the container's ceiling, not necessarily the sensor's.**
-    The ASI178MM clips one ADC count short of full scale: comprehensively
-    blown-out frames top out at exactly `16382 << 2` = **65528** and never
-    reach the 65532 the driver reports — at every gain from 0 to 510 and at
-    bins 1-3. The practical cost is that `pixel >= MaxADU` never fires on that
-    model, so a client cannot detect clipped stars, which is the same class of
-    defect the 4095 → 65520 correction fixed. The ASI120MC-S, by contrast,
-    does reach its full-scale `4095 << 4`, so the shortfall is per-sensor and
-    not derivable from anything the SDK reports. Tracked as
-    [#898](https://github.com/rusty-photon/rusty-photon/issues/898).
 
 ### Pulse guiding
 
@@ -701,7 +843,7 @@ scenarios.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
-| `MaxADU` | The selected format's delivered ceiling (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container — 65535 for 16-bit, 65520 for 12-bit |
+| `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. Where the margin applies, a sensor reaching its top code delivers one step above this; the 65535 cases are the container maximum and cannot be exceeded |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
@@ -777,7 +919,8 @@ now stands at **69 unit tests** and **65 BDD scenarios**.
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
   state machine (Idle/Exposing/Error, `ImageReady`, percent-completed), gain/
   offset range checks, cooling gating, Bayer-offset mapping, the format-aware
-  `MaxADU` (ST3, incl. the 12-bit → 65520 shift), the readout-format
+  `MaxADU` (ST3, incl. the shift, the one-step margin, and the no-shift
+  depths that take none), the readout-format
   negotiation and its `to_image_array` unpacks, the gain scaling of
   `ElectronsPerADU` (ST2), and the paths the `zwo-rs` simulation can't force
   (mid-exposure SDK error E9; a model without an ST4 port PG2; an uncooled
@@ -819,10 +962,11 @@ members within their response targets:
 > later ASI120MC-S measurement (below) shows ASI left-shifts sub-16-bit data into
 > the Raw16 container, so a 12-bit camera delivers up to 65520, not 4095. The
 > **ASI178MM has since been re-measured** on the bench (2026-08-05) and now
-> reports 65532 — see *ASI178MM — the delivered ceiling* below, which also
-> records the one respect in which the hardware disagrees with that figure. The
-> **ASI1600MM-Cool has not**; it should now report 65520 instead of the 4095
-> below, but nobody has compared that against its delivered pixels. Tracked as
+> reports **65528** — see *ASI178MM — the delivered ceiling* below, the run
+> that established ST3's one-step margin. The **ASI1600MM-Cool has since been
+> re-measured too** (same evening) and reports **65504**, which its hardware
+> was confirmed to deliver exactly. Both cameras named here are now measured
+> against their delivered pixels, closing
 > [#888](https://github.com/rusty-photon/rusty-photon/issues/888).
 
 - **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
@@ -869,14 +1013,21 @@ whose behaviour decides whether enumeration is a sufficient selection rule:
   camera to 8 bits.
 - **`Raw16` is a bare left shift, not a rescale**: every pixel's low 4 bits are
   zero at bin 1, and a saturated full frame reaches exactly `4095 << 4 = 65520`
-  — the measurement behind ST3's corrected `MaxADU`.
+  — the measurement behind ST3's corrected `MaxADU`. **Re-confirmed 2026-08-05**
+  with the deliberate-overexposure method: 65520 is reached at every gain
+  across the camera's 0-100 range, so unlike the ASI178MM and ASI1600MM-Cool
+  this sensor really does deliver its top ADC code. It is therefore the one
+  camera that pays for ST3's margin — measured at **3 pixels in 1 228 800**
+  called saturated one LSB early, against 6 095 correctly flagged (see ST3).
 - **End-to-end through the driver** (production non-`simulation` binary, real
   camera, over Alpaca): `ReadoutModes` reports `["Raw16", "Raw8"]`,
   `ReadoutMode` defaults to 0, and switching mode changes both the delivered
-  frame and `MaxADU` consistently — mode 0 gives `MaxADU` 65520 with a 64×48
+  frame and `MaxADU` consistently — mode 0 gave `MaxADU` 65520 with a 64×48
   frame ranging 16-17872, mode 1 gives `MaxADU` 255 with the same geometry
   ranging 0-48. **The 8-bit download path is hardware-proven**, not just
-  simulated.
+  simulated. *(The 65520 is what this run recorded; ST3 has since added the
+  one-step margin, so this camera now reports 65504 — one ADC LSB below the
+  ceiling it was measured reaching. See the ASI178MM run below for why.)*
 
 `crates/zwo-rs/examples/probe_formats.rs` is the probe that produced these
 numbers; re-run it against any new ZWO model rather than assuming this one
@@ -892,24 +1043,74 @@ from a model that delivers 14-bit data unshifted (which would have needed
 - **The shift model holds.** The camera advertises `[Raw8, Raw16]`, and its
   `Raw16` pixels carry **two always-zero low bits** at bin 1 — a left shift by
   `16 - 14`, exactly as on the 12-bit camera. The 16383 this doc recorded in
-  2026-06-20 was wrong by a factor of four; 65532 is the right order.
+  2026-06-20 was wrong by a factor of four.
 - **But the sensor clips one ADC count short.** Comprehensively blown-out
   frames top out at exactly `16382 << 2 = 65528`, never 65532 — measured at
   gains 0/100/300/510, bins 1-3, and exposures 1 s/5 s/15 s, with ~98 000
-  pixels piled on 65528 and nothing above it. Through the driver over Alpaca,
-  a saturated full frame gives `pixels >= MaxADU` = **0**. See ST3 and
-  [#898](https://github.com/rusty-photon/rusty-photon/issues/898).
+  pixels piled on 65528 and nothing above it. **This is the measurement behind
+  ST3's one-step margin.** Before it, the driver reported the shifted full
+  scale and a saturated full frame over Alpaca gave `pixels >= MaxADU` = **0**
+  while 13 655 pixels sat at the sensor's ceiling; with the margin the same
+  frame reports **6 709** saturated pixels.
 - **Binning changes the packing but not the ceiling.** At bin ≥ 2 the SDK
   combines neighbouring counts and the low bits populate, so the shift
   signature is only visible at bin 1. The ceiling stays 65528, so one published
   `MaxADU` still describes every bin.
 - **ConformU 4.4.0 clean on both suites** against the negotiated list —
-  `ReadoutModes Read OK Raw16` / `OK Raw8`, `MaxADU OK 65532` — with zero
-  errors, issues, configuration alerts or timing issues.
+  `ReadoutModes Read OK Raw16` / `OK Raw8` — with zero errors, issues,
+  configuration alerts or timing issues, both before the margin
+  (`MaxADU OK 65532`) and after it (`MaxADU OK 65528`).
 
 `crates/zwo-rs/examples/probe_ceiling.rs` is the probe behind this one: it
 deliberately overexposes and prints the histogram tail, which is what separates
 a real clip from the brightest thing in the room.
+
+**ASI1600MM-Cool — the delivered ceiling (2026-08-05).** The 12-bit half of
+#888, measured the same evening. Full record:
+[docs/validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/](../validation/2026-08-05-zwo-camera-asi1600mm-cool-maxadu/README.md).
+
+- **It clips one ADC count short as well.** Driven to complete saturation
+  (gain 600, 15 s), **every** pixel of the frame — all 16 389 120 at bin 1,
+  and the whole frame at bins 2-4 — sits at exactly `4094 << 4` = **65504**,
+  with nothing above. The same ceiling shows as a clip at lower gains
+  (`65504×28` at gain 100), so it is fixed, not an over-driven-gain artifact.
+  End-to-end through the driver a saturated frame reports `pixels >= MaxADU` =
+  **16 146 432**, i.e. all of them.
+- **The margin is exact here too.** `((2^12) - 2) << 4 = 65504` is the measured
+  value, not an approximation — as `((2^14) - 2) << 2 = 65528` was on the
+  ASI178MM. Note this is a *different* answer from the ASI120MC-S, which shares
+  its 12-bit depth but does reach `4095 << 4`: the shortfall is a property of
+  the sensor, not of the bit depth.
+- **Binning walks the shift down** rather than destroying it: 4 zero bits at
+  bin 1, 2 at bin 2, none at bins 3-4 — consistent with the SDK averaging the
+  binned pixels. The ceiling is unchanged at every bin.
+- **Cooling (K1-K4) re-confirmed with the TEC powered**: `CoolerPower` ramps
+  0 → 24 % while the sensor falls 17.7 °C → 6.2 °C in 120 s, and returns to
+  0 % when switched off. `CoolerOn` reads `false` after every connect — tenet
+  3 holding on hardware.
+- **ConformU 4.4.0 clean on both suites** (0/0/0/0, 87 timed members) with
+  `MaxADU OK 65504`, run with the cooler powered.
+
+**Three cameras on one service (2026-08-05).** With the ASI1600MM-Cool,
+ASI178MM and ASI120MC-S all attached, the enumeration contracts were exercised
+on hardware for the first time with more than one body — the BDD suite
+presents a single simulated camera, so C0/C4 had only ever been simulated.
+
+- **C0** — all three registered with distinct UniqueIDs, exercising *both*
+  identity paths side by side: real `ASIGetSerialNumber` on the ASI178MM and
+  ASI120MC-S, and the `noserial-0` fallback on the ASI1600MM-Cool, which
+  exposes neither a serial nor a flash id.
+- **C4** — connect is per-device (`[T,F,F] → [T,T,F] → [T,T,T]`), and a
+  2 s exposure on one camera left the other two at `CameraState` `Idle` with
+  `ImageReady` false.
+- **RM1/RM4 against a camera that really offers the excluded formats** — the
+  ASI120MC-S advertises `[Raw8, Rgb24, Y8, Raw16]` and the driver publishes
+  `["Raw16", "Raw8"]`, so the `Rgb24`/`Y8` exclusion is confirmed on hardware
+  rather than only in the simulator.
+- **K1 both ways at once** — the cooled body reports
+  `CanSetCCDTemperature`/`CanGetCoolerPower` `true` while the two uncooled ones
+  return `NOT_IMPLEMENTED` for the cooler getters, in the same service.
+- **Tenet 3** — `CoolerOn` read `false` after every connect, on every run.
 
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their
@@ -980,6 +1181,22 @@ register. Measured across three bodies:
 The modern bodies follow ASI's 0.1 dB gain convention exactly. The legacy
 ASI120MC-S does not: its gain scale is 0–100 and the mapping is something else
 entirely (the 0.1 dB law would predict ÷1.33, ÷1.78, ÷3.16 at those gains).
+
+**Checked at every gain each camera advertises** (601 / 511 / 101 values, read
+through the driver over Alpaca):
+
+| Camera | vs `10^(gain/200)` | monotonic | distinct values |
+|---|---|---|---|
+| ASI1600MM-Cool | worst error **0.000 %** across 601 gains | yes | — |
+| ASI178MM | worst error **0.000 %** across 511 gains | yes | — |
+| ASI120MC-S | worst error **95.06 %** (at gain 100) | yes | 101 of 101 |
+
+The two modern bodies match the 0.1 dB law to the float's precision at *every*
+gain, not merely at sampled points. The ASI120MC-S misses it by 95 % at the top
+of its range — exactly the ÷64-versus-÷3.16 gap above — and its divisor ladder
+walks 1, 1.3125, 1.625, 1.9375, 2.5, 3.125 … 32, 40, 48, 56, 64 in segments
+that fit no single expression. It returns a **distinct value at all 101 gains**,
+so the property really does track every step of the register.
 
 **That is the case for reading the value rather than computing it.** Any
 driver-side formula would have to be right for every model ZWO has ever shipped,
