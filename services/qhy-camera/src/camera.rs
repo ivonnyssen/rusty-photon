@@ -75,8 +75,12 @@ struct DeviceState {
     /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
     intended_roi: Mutex<Option<CCDChipArea>>,
     exposure_range_us: Mutex<Option<(f64, f64, f64)>>,
-    gain_min_max: Mutex<Option<(f64, f64)>>,
-    offset_min_max: Mutex<Option<(f64, f64)>>,
+    /// Gain range in ASCOM's own width, converted once at connect (see
+    /// [`cache_range`]). `None` means the control is not advertised — either the
+    /// model lacks it, or its range has no `i32` spelling.
+    gain_min_max: Mutex<Option<(i32, i32)>>,
+    /// Offset range, on the same terms as [`DeviceState::gain_min_max`].
+    offset_min_max: Mutex<Option<(i32, i32)>>,
     target_temperature: Mutex<Option<f64>>,
     /// Tracked independently of the SDK's `CurPWM` readback: neither real
     /// hardware nor the simulation backend updates `CurPWM` synchronously
@@ -291,11 +295,11 @@ impl QhyCameraDevice {
 
         if h.is_control_available(ControlType::Gain).is_some() {
             let (min, max, _) = h.gain_range().map_err(nc)?;
-            *self.state.gain_min_max.lock() = Some((min, max));
+            cache_range(&self.state.gain_min_max, "gain", min, max);
         }
         if h.is_control_available(ControlType::Offset).is_some() {
             let (min, max, _) = h.offset_range().map_err(nc)?;
-            *self.state.offset_min_max.lock() = Some((min, max));
+            cache_range(&self.state.offset_min_max, "offset", min, max);
         }
 
         self.state.bin.store(1, Ordering::Release);
@@ -491,6 +495,48 @@ fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
         start_y: (f64::from(roi.start_y) * factor) as u32,
         width: ((f64::from(roi.width) * factor) as u32).max(1),
         height: ((f64::from(roi.height) * factor) as u32).max(1),
+    }
+}
+
+/// The ASCOM spelling of a gain or offset bound the SDK reports as `f64`.
+///
+/// The QHY SDK carries every control through one `f64` parameter, but a gain
+/// bound is an integer underneath and ASCOM's `Gain`/`GainMin`/`GainMax` are
+/// `i32`. Rounding to nearest recovers the integer the SDK meant whichever side
+/// the float representation lands on; truncating would turn a 100 that arrives
+/// as 99.999… into 99 and advertise a maximum one below the one the camera
+/// accepts.
+///
+/// `None` is the case a cast has to invent a value for: a bound outside `i32`
+/// is a control ASCOM has no vocabulary for. NaN lands there too — a range
+/// check written as two comparisons would let it through to a `0` bound.
+#[expect(
+    clippy::as_conversions,
+    reason = "no TryFrom<f64> for i32 exists; the range check is what makes this total"
+)]
+fn ascom_bound(value: f64) -> Option<i32> {
+    let rounded = value.round();
+    if (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&rounded) {
+        Some(rounded as i32)
+    } else {
+        None
+    }
+}
+
+/// Cache a control's ASCOM-describable range, or leave it unset and say why.
+///
+/// Leaving it unset reports `NOT_IMPLEMENTED` for the control rather than
+/// advertising a clamped bound the camera would then reject.
+fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, min: f64, max: f64) {
+    match (ascom_bound(min), ascom_bound(max)) {
+        (Some(min), Some(max)) => {
+            debug!(control, min, max, "cached control range");
+            *cell.lock() = Some((min, max));
+        }
+        _ => warn!(
+            control,
+            min, max, "range has no i32 spelling; not advertised"
+        ),
     }
 }
 
@@ -989,49 +1035,40 @@ impl Camera for QhyCameraDevice {
 
     async fn gain(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Gain)
-            .is_none()
-        {
+        // The cache holds a range only for a control that is both available and
+        // describable in ASCOM's width, so it answers both questions at once —
+        // and without an SDK round-trip on every read.
+        if self.state.gain_min_max.lock().is_none() {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
+        let raw = self
+            .handle
             .gain()
-            .map(|g| g as i32)
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        ascom_bound(raw)
+            .ok_or_else(|| ASCOMError::invalid_operation(format!("camera reported gain {raw}")))
     }
 
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.gain_min_max.lock())
-            .map(|(min, _)| min as i32)
+            .map(|(min, _)| min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.gain_min_max.lock())
-            .map(|(_, max)| max as i32)
+            .map(|(_, max)| max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Gain)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        let (min, max) = (*self.state.gain_min_max.lock()).ok_or_else(|| {
-            ASCOMError::invalid_operation("gain control available but min/max not cached")
-        })?;
-        if gain < min as i32 || gain > max as i32 {
+        let (min, max) = (*self.state.gain_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
+        if gain < min || gain > max {
             return Err(ASCOMError::invalid_value(format!(
-                "gain {gain} outside [{}, {}]",
-                min as i32, max as i32
+                "gain {gain} outside [{min}, {max}]"
             )));
         }
         self.handle
@@ -1041,49 +1078,37 @@ impl Camera for QhyCameraDevice {
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Offset)
-            .is_none()
-        {
+        if self.state.offset_min_max.lock().is_none() {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
+        let raw = self
+            .handle
             .offset()
-            .map(|o| o as i32)
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        ascom_bound(raw)
+            .ok_or_else(|| ASCOMError::invalid_operation(format!("camera reported offset {raw}")))
     }
 
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.offset_min_max.lock())
-            .map(|(min, _)| min as i32)
+            .map(|(min, _)| min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
         (*self.state.offset_min_max.lock())
-            .map(|(_, max)| max as i32)
+            .map(|(_, max)| max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Offset)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        let (min, max) = (*self.state.offset_min_max.lock()).ok_or_else(|| {
-            ASCOMError::invalid_operation("offset control available but min/max not cached")
-        })?;
-        if offset < min as i32 || offset > max as i32 {
+        let (min, max) = (*self.state.offset_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
+        if offset < min || offset > max {
             return Err(ASCOMError::invalid_value(format!(
-                "offset {offset} outside [{}, {}]",
-                min as i32, max as i32
+                "offset {offset} outside [{min}, {max}]"
             )));
         }
         self.handle
@@ -1882,6 +1907,65 @@ mod tests {
         let device = connected_device(MockCameraHandle::default());
         assert_eq!(device.gain_min().await.unwrap(), 0);
         assert_eq!(device.gain_max().await.unwrap(), 100);
+    }
+
+    #[test]
+    fn ascom_bound_rounds_to_nearest_from_either_side() {
+        // The SDK's `f64` carries an integer; float representation can land on
+        // either side of it, and truncation only recovers one of them.
+        assert_eq!(ascom_bound(99.999_999), Some(100));
+        assert_eq!(ascom_bound(100.000_001), Some(100));
+        assert_eq!(ascom_bound(100.4), Some(100));
+        assert_eq!(ascom_bound(-0.6), Some(-1));
+    }
+
+    #[test]
+    fn ascom_bound_has_no_answer_outside_i32() {
+        // The case a cast had to invent a value for: `as` saturates here, which
+        // would advertise `i32::MAX` as a gain the camera never offered.
+        assert_eq!(ascom_bound(f64::from(i32::MAX) + 1.0), None);
+        assert_eq!(ascom_bound(f64::from(i32::MIN) - 1.0), None);
+        assert_eq!(ascom_bound(f64::INFINITY), None);
+        // NaN compares false against both ends, so a range check written as two
+        // comparisons would let it through to `NaN as i32` — which is 0.
+        assert_eq!(ascom_bound(f64::NAN), None);
+    }
+
+    #[test]
+    fn ascom_bound_keeps_the_extremes_it_can_name() {
+        assert_eq!(ascom_bound(f64::from(i32::MAX)), Some(i32::MAX));
+        assert_eq!(ascom_bound(f64::from(i32::MIN)), Some(i32::MIN));
+    }
+
+    #[tokio::test]
+    async fn a_gain_range_outside_i32_leaves_the_control_unadvertised() {
+        // Degrade rather than lie: a clamped bound would advertise a maximum the
+        // camera then rejects.
+        let device = connected_device(
+            MockCameraHandle::default()
+                .with_range(ControlType::Gain, (0.0, f64::from(i32::MAX) + 1.0, 1.0)),
+        );
+        for code in [
+            device.gain().await.unwrap_err().code,
+            device.gain_min().await.unwrap_err().code,
+            device.gain_max().await.unwrap_err().code,
+            device.set_gain(5).await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_IMPLEMENTED);
+        }
+        // Offset is cached independently and is unaffected.
+        assert_eq!(device.offset_max().await.unwrap(), 255);
+    }
+
+    #[tokio::test]
+    async fn a_gain_the_camera_cannot_name_is_an_error_not_a_number() {
+        let device = connected_device(
+            MockCameraHandle::default().with_param(ControlType::Gain, f64::from(i32::MAX) + 1.0),
+        );
+        assert_eq!(
+            device.gain().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
     }
 
     #[tokio::test]

@@ -440,10 +440,19 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 ### Gain / offset / readout
 
 - **GO1.** `Gain`/`Offset` return the current SDK value, or `NOT_IMPLEMENTED` if
-  the control is unavailable on the model.
+  the control is unavailable on the model. The SDK reports it as an `f64`
+  (its uniform control carrier); it is rounded to nearest for ASCOM's `i32`,
+  and a value outside `i32` returns `INVALID_OPERATION` rather than a
+  saturated number.
 - **GO2.** `set_gain`/`set_offset` validate against cached `[min, max]` and apply
   via the SDK; out-of-range returns `INVALID_VALUE`.
-- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
+- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
+  converted **once at connect** to ASCOM's `i32` by rounding to nearest — the
+  SDK carries an integer bound in a float, so truncation would advertise a
+  maximum one below the one the camera accepts. A bound with no `i32` spelling
+  leaves the control **unadvertised** (`NOT_IMPLEMENTED` from all four members)
+  with a `warn!`, rather than advertising a clamped bound the camera would then
+  reject.
 - **RM1.** `ReadoutModes` is the SDK's named mode list; `set_readout_mode`
   validates the index and updates cached resolution; an invalid index returns
   `INVALID_VALUE`.

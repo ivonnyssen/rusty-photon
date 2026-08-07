@@ -635,6 +635,13 @@ pub(crate) mod mock {
             self.controls.lock().insert(control, value);
             self
         }
+        /// Override a control's `(min, max, step)` range (e.g. a gain range too
+        /// wide for ASCOM's `i32`, to test that the control is left
+        /// unadvertised rather than clamped).
+        pub fn with_range(self, control: ControlType, range: (f64, f64, f64)) -> Self {
+            self.ranges.lock().insert(control, range);
+            self
+        }
         /// Override a numeric parameter returned by `get_parameter` (e.g. set
         /// `OutputDataActualBits` to 0 to mimic the QHY5III715C's SDK quirk).
         pub fn with_param(self, control: ControlType, value: f64) -> Self {

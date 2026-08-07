@@ -570,10 +570,16 @@ EAF; those belong to the other zwo services.)
 ### Gain / offset / readout
 
 - **GO1.** `Gain`/`Offset` return the current SDK value, or `NOT_IMPLEMENTED` if
-  the control is unavailable on the model.
+  the control is unavailable on the model. The SDK reports it as a `long`; a
+  value outside ASCOM's `i32` returns `INVALID_OPERATION` rather than a
+  truncated number.
 - **GO2.** `set_gain`/`set_offset` validate against cached `[min, max]` and apply
   via the SDK; out-of-range returns `INVALID_VALUE`.
-- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max.
+- **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
+  converted **once at the open handshake** from the SDK's `long` to ASCOM's
+  `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
+  (`NOT_IMPLEMENTED` from all four members) rather than advertising a clamped
+  bound the camera would then reject.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   enumeration the driver intersects `ASI_CAMERA_INFO.SupportedVideoFormat` with
   the formats it can deliver, in preference order `Raw16` then `Raw8`, and
