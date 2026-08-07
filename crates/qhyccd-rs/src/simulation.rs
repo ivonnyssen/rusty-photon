@@ -966,8 +966,10 @@ impl ImageGenerator {
             for dx in 0..=diameter {
                 // The offset from the centre is a magnitude and a direction,
                 // and the two halves are wanted separately: the distance needs
-                // the magnitude, the coordinate needs the direction. A star
-                // near an edge overhangs it, which is the `None` arm.
+                // the magnitude, the coordinate needs the direction. The `None`
+                // arm is a star overhanging the *near* edge, where the
+                // coordinate would go negative — half the bounds check. The far
+                // edge is `frame.pixel_mut` below, which is why both are needed.
                 let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
                 let (Some(x), Some(y)) = (
                     if dx >= radius {
