@@ -503,9 +503,11 @@ const fn from_roi(roi: Roi) -> CCDChipArea {
 /// Geometry validation shared by `validated_roi` (R2), as the ASCOM error a
 /// client sees.
 ///
-/// The rules and their order live in `rusty-photon-camera-geometry`, shared
-/// with `zwo-camera` and `svbony-camera`; this driver contributes [`ALIGNMENT`]
-/// and the spelling of the failure.
+/// The rules, their order, and the message text all live in
+/// `rusty-photon-camera-geometry`, shared with `zwo-camera` and
+/// `svbony-camera`. What this driver contributes is [`ALIGNMENT`] — which for
+/// QHY is the *absence* of a rule — and the mapping of the shared error onto
+/// ASCOM's `INVALID_VALUE`.
 fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMResult<()> {
     geometry::check(to_roi(roi), ccd_w, ccd_h, bin, ALIGNMENT).map_err(ASCOMError::invalid_value)
 }

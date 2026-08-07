@@ -436,9 +436,10 @@ impl ZwoCamera {
 
 /// Geometry validation (R2/R3), as the ASCOM error a client sees.
 ///
-/// The rules and their order live in `rusty-photon-camera-geometry`, shared
-/// with `qhy-camera` and `svbony-camera`; this driver contributes the ASI
-/// [`ALIGNMENT`] rule and the spelling of the failure.
+/// The rules, their order, and the message text all live in
+/// `rusty-photon-camera-geometry`, shared with `qhy-camera` and
+/// `svbony-camera`. What this driver contributes is the ASI [`ALIGNMENT`] rule
+/// and the mapping of the shared error onto ASCOM's `INVALID_VALUE`.
 fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResult<()> {
     geometry::check(roi, sensor_w, sensor_h, bin, ALIGNMENT).map_err(ASCOMError::invalid_value)
 }
