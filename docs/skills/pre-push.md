@@ -36,12 +36,14 @@
 ## Procedure
 
 > **Bazel is the per-PR gate.** The required checks are
-> `bazel / {ubuntu,macos,windows}-latest` (build + test), `bazel coverage`, and
+> `bazel / {ubuntu,windows}-latest` (build + test), `bazel coverage`, and
 > the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel does not run
-> rustfmt/clippy). `bazel/cargo target parity`, plus the Cargo build / test /
-> hack / msrv jobs, run nightly and do not gate PRs — none of them collects
-> coverage; `bazel coverage` is the sole source. So the authoritative pre-push
-> is:
+> rustfmt/clippy). `bazel / macos-latest` is **not** a PR check — it runs on
+> push-to-main and nightly, so a macOS-only break is caught on main within
+> minutes of the merge rather than blocking the PR. `bazel/cargo target
+> parity`, plus the Cargo build / test / hack / msrv jobs, run nightly and do
+> not gate PRs — none of them collects coverage; `bazel coverage` is the sole
+> source. So the authoritative pre-push is:
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
@@ -205,6 +207,11 @@ runs `--workspace` (no narrowing job).
 | **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` | stable, cargo-nextest | Off-PR |
 | **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Off-PR |
 | **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Off-PR |
+
+The `macos` job runs with `RUSTFLAGS=-Dwarnings`. Nothing on a PR denies rustc
+warnings for macOS — `bazel / macos-latest` is off the PR gate and clippy runs
+on ubuntu only — so this job is where a macOS-only warning is enforced rather
+than merely printed.
 
 This workflow does not collect coverage — `bazel coverage` (bazel-coverage.yml)
 is the sole coverage source.

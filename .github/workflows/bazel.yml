@@ -1,9 +1,12 @@
 # Bazel build + test — the per-PR build/test gate.
 #
 # Bazel is the required build/test gate on PRs; the Cargo build/test jobs
-# (test.yml) run as a nightly safety net. This 3-OS matrix produces the
-# `bazel / <os>` required checks. Coverage is gated separately by
-# bazel-coverage.yml and Bazel/Cargo target parity by parity.yml.
+# (test.yml) run as a nightly safety net. A pull request builds the Linux +
+# Windows matrix, producing the `bazel / ubuntu-latest` and
+# `bazel / windows-latest` required checks; macOS joins the matrix on
+# push-to-main and on the nightly schedule only — see the `os:` comment for
+# why. Coverage is gated separately by bazel-coverage.yml and Bazel/Cargo
+# target parity by parity.yml.
 #
 # Venue routing (ADR-020, docs/plans/proxmox-pr-routing.md): the Linux and
 # Windows legs run on the ephemeral self-hosted pool
@@ -38,7 +41,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS is not a PR gate. It has no pool venue, so it stays on hosted
+        # runners where it is the slowest leg by a wide margin — it decides
+        # when a PR goes green while Linux and Windows have long finished. It
+        # still runs on push-to-main and on the nightly schedule, so a
+        # macOS-only break surfaces within minutes of a merge rather than at
+        # the next PR, and the hosted macOS cache keeps being written.
+        #
+        # Computed with `fromJSON` rather than a job-level `if`: a job-level
+        # `if` that reads the `matrix` context is not a skipped job, it is a
+        # startup failure for the whole workflow file.
+        # Folded so this evaluates as ONE line: unlike `runs-on`, which takes
+        # the expression's value as-is, a matrix value has to come back as a
+        # JSON array, so it is not worth finding out how a newline inside the
+        # `${{ }}` is treated. Continuation lines therefore sit at the same
+        # indent as `${{`, which is what makes YAML fold them with spaces.
+        os: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '["ubuntu-latest", "windows-latest"]'
+          || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     # Every falsy branch of this expression resolves to the hosted runner
     # (matrix.os) — fork PR, schedule, kill switch off, null head.repo all
     # land on the safe side. Same-repo detection compares the PR's head
