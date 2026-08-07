@@ -260,8 +260,12 @@ So when the conformu legs are the only thing red, check for a new release
 before reading the diff:
 
 ```sh
-gh api repos/ASCOMInitiative/ConformU/releases --jq '.[0:3][] | "\(.tag_name)\t\(.published_at)"'
+gh api repos/ASCOMInitiative/ConformU/releases \
+  --jq '.[0:3][] | "\(.tag_name | ltrimstr("v"))\t\(.published_at)"'
 ```
+
+(Tags are `v`-prefixed; `ltrimstr` drops it so the output compares directly
+against the version ConformU itself prints, below.)
 
 If one landed between the last green run and the red one, that is the
 first hypothesis. Confirm what a run actually installed rather than

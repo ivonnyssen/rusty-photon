@@ -51,8 +51,9 @@ locally installed tool can silently fall behind. A record made on a version
 the project no longer runs is evidence for a validator it has moved past:
 
 ```sh
-conformu --version
-gh api repos/ASCOMInitiative/ConformU/releases/latest --jq .tag_name
+conformu --version   # prints e.g. "Conform Universal 4.5.0 (Build …)"
+gh api repos/ASCOMInitiative/ConformU/releases/latest \
+  --jq '.tag_name | ltrimstr("v")'   # the tag is v-prefixed; print "4.5.0"
 ```
 
 Only **successful** runs are recorded — this directory is the proof trail
