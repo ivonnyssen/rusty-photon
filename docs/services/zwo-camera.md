@@ -549,7 +549,10 @@ EAF; those belong to the other zwo services.)
   (the raw 6248/2 = 3124 is not a multiple of 8, so the raw width would make the
   bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
   resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
-  exactly. Bounds checks (R2) use the *reported* extent.
+  exactly. Bounds checks (R2) use the *reported* extent. The alignment is computed by
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  `aligned_sensor_extent`, shared with the sibling camera driver that hit the
+  same ConformU failure on different hardware.
 - **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's `SupportedBins` and
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
@@ -563,7 +566,11 @@ EAF; those belong to the other zwo services.)
   driver invented rather than the client's own `NumX`, which here is R3's
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
-  Identical in `qhy-camera` and `svbony-camera`.
+  **One implementation**, in
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/) — this
+  rule was three copies until one drifted, and the drift went unseen because
+  each driver curated its own test cases, so the missing behaviour and its
+  missing test hid each other.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2/R3), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
@@ -571,6 +578,14 @@ EAF; those belong to the other zwo services.)
 - **R3.** `StartExposure` with a sub-frame that violates the ASI alignment rules —
   `NumX % 8 != 0` or `NumY % 2 != 0` — returns `INVALID_VALUE`; otherwise the ROI
   is applied to the SDK before exposing.
+- **R-order.** When a ROI breaks more than one rule at once, the client is told
+  about the first of: zero extent, zero bin, alignment, bounds. The order is part of
+  the contract and is pinned by tests in
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/),
+  because it decides which value a client is sent to fix — a zero bin is not a
+  geometry that fails a rule but one with *no rule to apply*, so it is reported
+  ahead of a complaint a client could otherwise chase while the real problem sat
+  in `BinX`.
 
 ### Exposure
 
