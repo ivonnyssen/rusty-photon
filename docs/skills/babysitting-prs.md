@@ -99,10 +99,16 @@ So parse the body of every round:
 ```sh
 # jq -s '.[][]' for the same reason as the watcher above: --paginate
 # concatenates one array per page, which a bare '.[]' mishandles.
+#
+# Print each matching body whole. Do NOT pipe through `grep -A<n>`: that
+# caps the output at n lines per match, so a long or repeated suppressed
+# section is silently cut off — which is exactly the failure this section
+# exists to prevent. (On #902 a `grep -A100` form dropped 17 lines.)
 gh api --paginate 'repos/{owner}/{repo}/pulls/<n>/reviews' \
-  | jq -s -r '.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")
-              | "\(.commit_id[0:8])  \(.body)"' \
-  | grep -A100 'Suppressed comments'
+  | jq -s -r '.[][]
+      | select(.user.login == "copilot-pull-request-reviewer[bot]")
+      | select(.body | test("Suppressed comments"))
+      | "=== \(.commit_id[0:8])\n\(.body)"'
 ```
 
 Triage them exactly like inline comments (same priors below). Since
