@@ -31,10 +31,11 @@ the full layered contract and its rationale.
 | R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903 |
 
 Current state: `bazel / ubuntu-latest`, `bazel / windows-latest`, and
-`bazel coverage` run on the pool for push-to-main and same-repo PRs; only the
-macOS leg does not. Templates and clone VMIDs live in the `SLOTS` array in
-`tools/ci/rp-runner-pool.sh`, which is the source of truth for what the pool
-runs — check there, not this document.
+`bazel coverage` run on the pool for push-to-main and same-repo PRs. The macOS
+leg has no pool venue and is no longer a PR check at all — it runs on
+push-to-main and on the nightly schedule, both hosted. Templates and clone
+VMIDs live in the `SLOTS` array in `tools/ci/rp-runner-pool.sh`, which is the
+source of truth for what the pool runs — check there, not this document.
 
 R5 split into a workflow change (R5a, this file + `bazel-coverage.yml`) and a
 template change (R5b), with a load-bearing ordering: `RP_POOL_LINUX` is already
@@ -48,9 +49,29 @@ property. Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
 clone versus ~12 min cold. The second Linux slot R5 needs (a PR event fires
 both Linux legs at once) is in place. R4b was measured and stays hosted.
 
-Deferred beyond this plan: the macOS leg (requires physical Apple hardware;
-the strongest motivation — the remote-cache wedge ladder — is tracked in
-#765).
+The macOS leg is not deferred so much as **resolved the other way**. Giving it
+a pool venue needs physical Apple hardware, which was scoped and measured in
+#893; at current prices that is not worth buying for a leg that runs a build
+everything else has already run. So instead of routing it, it was taken off
+the PR gate: `bazel.yml`'s matrix drops `macos-latest` on `pull_request` and
+keeps it on push-to-main and the nightly schedule, both hosted. macOS is still
+built and tested on every merge — it simply no longer decides when a PR goes
+green. `bazel / macos-latest` was removed from the branch ruleset's required
+checks in the same change; leaving it required would have deadlocked every PR
+on a check that no longer reports.
+
+Two consequences worth stating, since they are the price of this:
+
+* A macOS-only break now lands on main and is caught minutes later by the
+  push-to-main run, instead of being caught before merge. Reverting is the
+  remedy, and the window is one merge wide.
+* Nothing on a PR denies rustc warnings for macOS any more (`check.yml`'s
+  clippy is ubuntu-only). `test.yml`'s nightly `macos` job therefore runs with
+  `RUSTFLAGS=-Dwarnings`, so the macOS-only warning class stays enforced
+  somewhere rather than merely printed.
+
+The remote-cache wedge ladder that was the strongest motivation for a macOS
+venue (#765) is unaffected — it still bites the hosted runs.
 
 ### Host capacity (14 cores / 20 threads, 94 GB)
 
@@ -121,7 +142,7 @@ colliding with the phase identifiers.
 | `pull_request`, fork (after approval) | GitHub-hosted | cloud | no |
 | `push` to main | pool | LAN | yes (repo secret) |
 | nightly `schedule` | GitHub-hosted | cloud | yes (as today) |
-| macOS leg (always) | GitHub-hosted | cloud | as today |
+| macOS leg (`push` + nightly only — never on a PR) | GitHub-hosted | cloud | as today |
 
 Each OS carries its own kill switch — `RP_POOL_LINUX` and `RP_POOL_WINDOWS`
 — because the two venues fail independently: a wedged Windows slot or a
@@ -155,7 +176,9 @@ main.
 
    Every falsy branch resolves to `matrix.os` (hosted) — a fork PR, a
    schedule run, a deleted variable, or a null `head.repo` all land on the
-   safe side. The trusted-event test is spelled out once per OS because
+   safe side. `macos-latest` reaches this expression only on the events that
+   still put it in the matrix (push-to-main, nightly), and falls through to
+   hosted. The trusted-event test is spelled out once per OS because
    `runs-on` is evaluated before the job exists, so neither the `env` context
    nor a job output can hold it; **the copies must stay identical — a
    divergence there is a security boundary moving.**

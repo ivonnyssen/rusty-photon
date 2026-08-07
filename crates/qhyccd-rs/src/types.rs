@@ -74,15 +74,29 @@ pub enum BayerPattern {
     RGGB = 4,
 }
 
+impl From<BayerPattern> for u32 {
+    /// The SDK code for a pattern. Total in this direction — every variant has
+    /// one — which is why the discriminants are written out here rather than
+    /// read back off the enum with a cast.
+    fn from(pattern: BayerPattern) -> Self {
+        match pattern {
+            BayerPattern::GBRG => 1,
+            BayerPattern::GRBG => 2,
+            BayerPattern::BGGR => 3,
+            BayerPattern::RGGB => 4,
+        }
+    }
+}
+
 impl TryFrom<u32> for BayerPattern {
     type Error = ();
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            x if x == BayerPattern::GBRG as u32 => Ok(BayerPattern::GBRG),
-            x if x == BayerPattern::GRBG as u32 => Ok(BayerPattern::GRBG),
-            x if x == BayerPattern::BGGR as u32 => Ok(BayerPattern::BGGR),
-            x if x == BayerPattern::RGGB as u32 => Ok(BayerPattern::RGGB),
+            1 => Ok(BayerPattern::GBRG),
+            2 => Ok(BayerPattern::GRBG),
+            3 => Ok(BayerPattern::BGGR),
+            4 => Ok(BayerPattern::RGGB),
             _ => Err(()),
         }
     }
@@ -123,6 +137,17 @@ mod tests {
         assert_eq!(BayerPattern::try_from(2), Ok(BayerPattern::GRBG));
         assert_eq!(BayerPattern::try_from(3), Ok(BayerPattern::BGGR));
         assert_eq!(BayerPattern::try_from(4), Ok(BayerPattern::RGGB));
+    }
+
+    #[test]
+    fn bayer_pattern_converts_to_the_four_sdk_codes() {
+        // Pins the codes in the outward direction too: with the discriminants
+        // no longer read back off the enum, this is what keeps `From` and the
+        // SDK numbering the doc comment promises from drifting apart.
+        assert_eq!(u32::from(BayerPattern::GBRG), 1);
+        assert_eq!(u32::from(BayerPattern::GRBG), 2);
+        assert_eq!(u32::from(BayerPattern::BGGR), 3);
+        assert_eq!(u32::from(BayerPattern::RGGB), 4);
     }
 
     #[test]

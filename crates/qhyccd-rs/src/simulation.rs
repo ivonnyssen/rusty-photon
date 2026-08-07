@@ -24,6 +24,7 @@
 //!     .with_noise_level(0.02);
 //! ```
 
+use crate::quantize;
 use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, StreamMode};
 use rand::{Rng, RngExt};
 use rayon::prelude::*;
@@ -154,12 +155,23 @@ impl SimulatedCameraConfig {
         self
     }
 
-    /// Adds filter wheel support with the specified number of slots
+    /// Adds filter wheel support with the specified number of slots, capped at
+    /// the sixteen a `CONTROL_CFWPORT` value can address
+    /// ([`CFW_MAX_SLOTS`](crate::camera::CFW_MAX_SLOTS)).
+    ///
+    /// The cap keeps the simulated wheel internally consistent. Without it a
+    /// larger count would be advertised through `CfwSlotsNum` and `CfwPort`'s
+    /// range while every slot from the sixteenth up has no code to command it
+    /// by — a wheel reporting a size it then refuses to move within.
     pub fn with_filter_wheel(mut self, slots: u32) -> Self {
+        let slots = slots.min(crate::camera::CFW_MAX_SLOTS);
         self.filter_wheel_slots = slots;
         if slots > 0 {
-            self.supported_controls
-                .insert(ControlType::CfwPort, (0.0, f64::from(slots - 1), 1.0));
+            // The guard above is what keeps the decrement total.
+            self.supported_controls.insert(
+                ControlType::CfwPort,
+                (0.0, f64::from(slots.saturating_sub(1)), 1.0),
+            );
             self.supported_controls.insert(
                 ControlType::CfwSlotsNum,
                 (f64::from(slots), f64::from(slots), 0.0),
@@ -171,14 +183,10 @@ impl SimulatedCameraConfig {
     /// Makes this a color camera with the specified Bayer pattern
     pub fn with_color(mut self, bayer_pattern: BayerPattern) -> Self {
         self.bayer_pattern = Some(bayer_pattern);
-        self.supported_controls.insert(
-            ControlType::CamColor,
-            (
-                bayer_pattern as u32 as f64,
-                bayer_pattern as u32 as f64,
-                0.0,
-            ),
-        );
+        // A fixed control: the pattern is both ends of its range.
+        let code = f64::from(u32::from(bayer_pattern));
+        self.supported_controls
+            .insert(ControlType::CamColor, (code, code, 0.0));
         self.supported_controls
             .insert(ControlType::Wbr, (0.0, 255.0, 1.0));
         self.supported_controls
@@ -537,7 +545,7 @@ impl SimulatedCameraState {
     /// exercised instead of an unrealistic instantaneous move.
     pub fn poll_filter_wheel(&mut self) -> u32 {
         if self.filter_wheel_settle_polls > 0 {
-            self.filter_wheel_settle_polls -= 1;
+            self.filter_wheel_settle_polls = self.filter_wheel_settle_polls.saturating_sub(1);
             if self.filter_wheel_settle_polls == 0 {
                 self.filter_wheel_position = self.filter_wheel_target;
             }
@@ -576,12 +584,31 @@ pub enum ImagePattern {
 /// — a multi-megapixel frame is millions of samples.
 struct PixelNoise {
     state: u32,
+    /// `2 * range + 1`, the width of the interval samples land in. Held rather
+    /// than recomputed because `range` is fixed for a whole frame and
+    /// `next_signed` runs once per pixel.
+    span: u64,
+    /// The same `range`, in the width the subtraction needs.
+    range: i64,
 }
 
 impl PixelNoise {
-    fn new(seed: u32) -> Self {
-        // xorshift is stuck at zero; force a nonzero start.
-        Self { state: seed | 1 }
+    /// `range` is the half-width of the interval `next_signed` draws from; a
+    /// negative one is no noise at all, which `span == 1` yields for free.
+    fn new(seed: u32, range: i32) -> Self {
+        let range = range.max(0);
+        // Once per frame, so the saturating spellings cost nothing: `range`
+        // fits `i32`, so `2 * range + 1` cannot leave `u64` and neither arm
+        // can be taken.
+        let span = u64::from(range.unsigned_abs())
+            .saturating_mul(2)
+            .saturating_add(1);
+        Self {
+            // xorshift is stuck at zero; force a nonzero start.
+            state: seed | 1,
+            span,
+            range: i64::from(range),
+        }
     }
 
     fn next_u32(&mut self) -> u32 {
@@ -600,20 +627,23 @@ impl PixelNoise {
     /// megapixel per frame the divide was most of the cost of generating one,
     /// and it dominated the loop badly enough to make an indexed write look
     /// faster than walking the buffer.
-    fn next_signed(&mut self, range: i32) -> i32 {
-        if range <= 0 {
-            return 0;
-        }
-        let span = u64::from(range.unsigned_abs()) * 2 + 1;
-        // `scaled < span`, so the difference lands in `-range..=range` and
-        // therefore fits `i32` whenever `range` does.
-        let scaled = (u64::from(self.next_u32()) * span) >> 32;
-        (scaled as i64 - i64::from(range)) as i32
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        reason = "every step is bounded, and this body runs once per pixel: `range <= i32::MAX` gives `span <= 2^32 - 1`, so the product is at most `(2^32 - 1)^2 = 2^64 - 2^33 + 1`, inside `u64` with 2^33 - 1 to spare; `scaled < span` then puts the difference in `-range..=range`, which fits `i32` because `range` did. Neither cast has a total spelling that is not a dead arm, and writing the arithmetic saturating instead measured +45% on the per-pixel loop"
+    )]
+    fn next_signed(&mut self) -> i32 {
+        let scaled = (u64::from(self.next_u32()) * self.span) >> 32;
+        (scaled as i64 - self.range) as i32
     }
 }
 
 /// Row-distinct seed so rayon rows (and serial frames reusing a seed)
 /// don't repeat the same noise sequence.
+#[expect(
+    clippy::as_conversions,
+    reason = "`row` indexes the rows of a frame whose height is a `u32`, so the truncation is unreachable; `usize` has no total conversion to `u32`, and every fallible spelling would add an arm that cannot be taken and whose fallback would alias row 0's seed. A seed needs only to differ between rows, which folding preserves either way"
+)]
 fn row_seed(frame_seed: u32, row: usize) -> u32 {
     frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
 }
@@ -639,36 +669,6 @@ fn sample_u8(v: i32) -> u8 {
 
 fn sample_u16(v: i32) -> u16 {
     u16::try_from(v).unwrap_or(if v < 0 { u16::MIN } else { u16::MAX })
-}
-
-/// Float → integer conversions, gathered so the policy is stated once instead of
-/// assumed at each site: `as` truncates toward zero and saturates at the
-/// destination's bounds, with NaN landing on zero. No `TryFrom<f64>` exists to
-/// spell that another way, which is why this module is the file's only
-/// `as_conversions` exemption rather than one per call.
-#[expect(
-    clippy::as_conversions,
-    reason = "no TryFrom<f64> exists; `as` truncates and saturates, and naming that policy here is the point of the module"
-)]
-mod quantize {
-    pub fn to_u8(v: f64) -> u8 {
-        v as u8
-    }
-    pub fn to_u16(v: f64) -> u16 {
-        v as u16
-    }
-    pub fn to_u32(v: f64) -> u32 {
-        v as u32
-    }
-    pub fn to_u64(v: f64) -> u64 {
-        v as u64
-    }
-    pub fn to_usize(v: f64) -> usize {
-        v as usize
-    }
-    pub fn to_i32(v: f64) -> i32 {
-        v as i32
-    }
 }
 
 /// Writes a 16-bit sample into every channel of a pixel. The chunk length is
@@ -831,14 +831,14 @@ impl ImageGenerator {
     fn generate_gradient_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let [base, _] = self.base_level.to_be_bytes();
         let noise_range = quantize::to_i32(255.0 * self.noise_level);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // Rows and pixels are chunks of the buffer, so the column index stays a
         // coordinate the ramp reads and never becomes an offset.
         for row in data.chunks_exact_mut(frame.row_bytes) {
             for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 let gradient = quantize::to_u8((f64::from(x) / f64::from(frame.width)) * 200.0);
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 let value = sample_u8(
                     i32::from(base)
                         .saturating_add(i32::from(gradient))
@@ -858,12 +858,12 @@ impl ImageGenerator {
         data.par_chunks_mut(frame.row_bytes)
             .enumerate()
             .for_each(|(y, row)| {
-                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y));
+                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y), noise_range);
 
                 for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                     let gradient =
                         quantize::to_u16((f64::from(x) / f64::from(frame.width)) * 50000.0);
-                    let noise = noise_source.next_signed(noise_range);
+                    let noise = noise_source.next_signed();
                     let value = sample_u16(
                         i32::from(base_level)
                             .saturating_add(i32::from(gradient))
@@ -885,19 +885,19 @@ impl ImageGenerator {
         // Fill with background noise
         let [base, _] = self.base_level.to_be_bytes();
         let noise_range = quantize::to_i32(255.0 * self.noise_level * 0.5); // Less noise for starfield
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // One draw per pixel, replicated across its channels — the model the
         // 16-bit starfield and every other generator here uses. A mono frame's
         // pixel is a single byte, where chunking costs more than this body does.
         if frame.pixel_bytes == 1 {
             for sample in data.iter_mut() {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 *sample = sample_u8(i32::from(base).saturating_add(noise));
             }
         } else {
             for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 pixel.fill(sample_u8(i32::from(base).saturating_add(noise)));
             }
         }
@@ -910,10 +910,12 @@ impl ImageGenerator {
         let num_stars =
             quantize::to_usize(f64::from(frame.width) * f64::from(frame.height) * 0.001); // ~0.1% coverage
         for _ in 0..num_stars {
-            let x = rng.random_range(1..frame.width - 1);
-            let y = rng.random_range(1..frame.height - 1);
+            // The guard above is what keeps these ranges non-empty; the
+            // saturating spelling is only what says so to the compiler.
+            let x = rng.random_range(1..frame.width.saturating_sub(1));
+            let y = rng.random_range(1..frame.height.saturating_sub(1));
             let brightness: u8 = rng.random_range(150..255);
-            let size = rng.random_range(1..=3);
+            let size: u8 = rng.random_range(1..=3);
 
             self.draw_star_8bit(data, frame, x, y, brightness, size);
         }
@@ -928,10 +930,10 @@ impl ImageGenerator {
     ) {
         // Fill with background noise
         let noise_range = quantize::to_i32(65535.0 * self.noise_level * 0.3);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-            let noise = noise_source.next_signed(noise_range);
+            let noise = noise_source.next_signed();
             let value = sample_u16(i32::from(self.base_level).saturating_add(noise));
 
             write_sample(pixel, value);
@@ -945,10 +947,10 @@ impl ImageGenerator {
         let num_stars =
             quantize::to_usize(f64::from(frame.width) * f64::from(frame.height) * 0.001);
         for _ in 0..num_stars {
-            let x = rng.random_range(2..frame.width - 2);
-            let y = rng.random_range(2..frame.height - 2);
+            let x = rng.random_range(2..frame.width.saturating_sub(2));
+            let y = rng.random_range(2..frame.height.saturating_sub(2));
             let brightness: u16 = rng.random_range(40000..65535);
-            let size = rng.random_range(1..=3);
+            let size: u8 = rng.random_range(1..=3);
 
             self.draw_star_16bit(data, frame, x, y, brightness, size);
         }
@@ -961,23 +963,39 @@ impl ImageGenerator {
         cx: u32,
         cy: u32,
         brightness: u8,
-        size: u32,
+        size: u8,
     ) {
-        for dy in 0..=size * 2 {
-            for dx in 0..=size * 2 {
-                let x = cx as i32 + dx as i32 - size as i32;
-                let y = cy as i32 + dy as i32 - size as i32;
+        let radius = u32::from(size);
+        // `size` is a `u8`, so the widest box a caller can ask for is 511
+        // across and the doubling cannot leave `u32`.
+        let diameter = radius.saturating_mul(2);
 
-                // A star near an edge runs off the frame: the conversion
-                // rejects a coordinate past the near side, `pixel_mut` one past
-                // the far side.
-                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+        for dy in 0..=diameter {
+            for dx in 0..=diameter {
+                // The offset from the centre is a magnitude and a direction,
+                // and the two halves are wanted separately: the distance needs
+                // the magnitude, the coordinate needs the direction. The `None`
+                // arm is a star overhanging the *near* edge, where the
+                // coordinate would go negative — half the bounds check. The far
+                // edge is `frame.pixel_mut` below, which is why both are needed.
+                let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
+                let (Some(x), Some(y)) = (
+                    if dx >= radius {
+                        cx.checked_add(ox)
+                    } else {
+                        cx.checked_sub(ox)
+                    },
+                    if dy >= radius {
+                        cy.checked_add(oy)
+                    } else {
+                        cy.checked_sub(oy)
+                    },
+                ) else {
                     continue;
                 };
 
-                let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2))
-                    as f64)
-                    .sqrt();
+                let (fx, fy) = (f64::from(ox), f64::from(oy));
+                let dist = (fx * fx + fy * fy).sqrt();
                 if dist <= f64::from(size) {
                     let falloff = 1.0 - (dist / (f64::from(size) + 1.0));
                     let value = quantize::to_u8(f64::from(brightness) * falloff);
@@ -1000,20 +1018,31 @@ impl ImageGenerator {
         cx: u32,
         cy: u32,
         brightness: u16,
-        size: u32,
+        size: u8,
     ) {
-        for dy in 0..=size * 2 {
-            for dx in 0..=size * 2 {
-                let x = cx as i32 + dx as i32 - size as i32;
-                let y = cy as i32 + dy as i32 - size as i32;
+        let radius = u32::from(size);
+        let diameter = radius.saturating_mul(2);
 
-                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+        for dy in 0..=diameter {
+            for dx in 0..=diameter {
+                let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
+                let (Some(x), Some(y)) = (
+                    if dx >= radius {
+                        cx.checked_add(ox)
+                    } else {
+                        cx.checked_sub(ox)
+                    },
+                    if dy >= radius {
+                        cy.checked_add(oy)
+                    } else {
+                        cy.checked_sub(oy)
+                    },
+                ) else {
                     continue;
                 };
 
-                let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2))
-                    as f64)
-                    .sqrt();
+                let (fx, fy) = (f64::from(ox), f64::from(oy));
+                let dist = (fx * fx + fy * fy).sqrt();
                 if dist <= f64::from(size) {
                     let falloff = 1.0 - (dist / (f64::from(size) + 1.0));
                     let value = quantize::to_u16(f64::from(brightness) * falloff);
@@ -1030,7 +1059,7 @@ impl ImageGenerator {
     fn generate_flat_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let [base, _] = self.base_level.to_be_bytes();
         let noise_range = quantize::to_i32(255.0 * self.noise_level);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         // A flat is uniform, so the pixel's position never enters the value —
         // walking pixels is the whole loop. A mono frame's pixel *is* its
@@ -1038,12 +1067,12 @@ impl ImageGenerator {
         // body does, so that case walks samples directly.
         if frame.pixel_bytes == 1 {
             for sample in data.iter_mut() {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 *sample = sample_u8(i32::from(base).saturating_add(noise));
             }
         } else {
             for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 pixel.fill(sample_u8(i32::from(base).saturating_add(noise)));
             }
         }
@@ -1051,10 +1080,10 @@ impl ImageGenerator {
 
     fn generate_flat_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
         for pixel in data.chunks_exact_mut(frame.pixel_bytes) {
-            let noise = noise_source.next_signed(noise_range);
+            let noise = noise_source.next_signed();
             let value = sample_u16(i32::from(self.base_level).saturating_add(noise));
 
             write_sample(pixel, value);
@@ -1063,27 +1092,33 @@ impl ImageGenerator {
 
     fn generate_test_pattern_8bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(255.0 * self.noise_level * 0.5);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
+
+        // The frame's centre, and the vertical leg of the distance to it: both
+        // are invariant across the row, so only the horizontal leg is per-pixel.
+        let (cx, cy) = (frame.width / 2, frame.height / 2);
 
         for (y, row) in (0u32..).zip(data.chunks_exact_mut(frame.row_bytes)) {
+            let dy = f64::from(y.abs_diff(cy));
+            let dy2 = dy * dy;
+
             for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 // Create a checkerboard with varying intensities
                 let block_size = 64;
                 let block_x = x / block_size;
                 let block_y = y / block_size;
-                let is_light = (block_x + block_y) % 2 == 0;
+                // Only the parity of the sum matters, and wrapping preserves it.
+                let is_light = block_x.wrapping_add(block_y) % 2 == 0;
 
                 let base = if is_light { 200u8 } else { 50u8 };
 
                 // Add concentric circles in center
-                let cx = frame.width / 2;
-                let cy = frame.height / 2;
-                let dist =
-                    (((x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2)) as f64).sqrt();
+                let dx = f64::from(x.abs_diff(cx));
+                let dist = (dx * dx + dy2).sqrt();
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod = if ring == 0 { 20 } else { -20 };
 
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 let value = sample_u8(
                     i32::from(base)
                         .saturating_add(ring_mod)
@@ -1097,27 +1132,30 @@ impl ImageGenerator {
 
     fn generate_test_pattern_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level * 0.5);
-        let mut noise_source = PixelNoise::new(frame_seed);
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
+
+        let (cx, cy) = (frame.width / 2, frame.height / 2);
 
         for (y, row) in (0u32..).zip(data.chunks_exact_mut(frame.row_bytes)) {
+            let dy = f64::from(y.abs_diff(cy));
+            let dy2 = dy * dy;
+
             for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
                 // Create a checkerboard with varying intensities
                 let block_size = 64;
                 let block_x = x / block_size;
                 let block_y = y / block_size;
-                let is_light = (block_x + block_y) % 2 == 0;
+                let is_light = block_x.wrapping_add(block_y) % 2 == 0;
 
                 let base: u16 = if is_light { 50000 } else { 10000 };
 
                 // Add concentric circles in center
-                let cx = frame.width / 2;
-                let cy = frame.height / 2;
-                let dist =
-                    (((x as i32 - cx as i32).pow(2) + (y as i32 - cy as i32).pow(2)) as f64).sqrt();
+                let dx = f64::from(x.abs_diff(cx));
+                let dist = (dx * dx + dy2).sqrt();
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod: i32 = if ring == 0 { 5000 } else { -5000 };
 
-                let noise = noise_source.next_signed(noise_range);
+                let noise = noise_source.next_signed();
                 let value = sample_u16(
                     i32::from(base)
                         .saturating_add(ring_mod)
@@ -1127,6 +1165,40 @@ impl ImageGenerator {
                 write_sample(pixel, value);
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod filter_wheel_config_tests {
+    use super::{ControlType, SimulatedCameraConfig};
+
+    #[test]
+    fn a_wheel_is_capped_at_the_slots_the_encoding_can_address() {
+        // Asking for more slots than a CONTROL_CFWPORT digit can name would
+        // advertise a count the wheel then refuses to move within, so the
+        // count and the encoding have to agree.
+        let config = SimulatedCameraConfig::default().with_filter_wheel(20);
+        assert_eq!(config.filter_wheel_slots, 16);
+        assert_eq!(
+            config.supported_controls.get(&ControlType::CfwSlotsNum),
+            Some(&(16.0, 16.0, 0.0))
+        );
+        // The port's range is 0-indexed, so its top is the last nameable slot.
+        assert_eq!(
+            config.supported_controls.get(&ControlType::CfwPort),
+            Some(&(0.0, 15.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn a_wheel_within_the_bound_is_untouched() {
+        let config = SimulatedCameraConfig::default().with_filter_wheel(5);
+        assert_eq!(config.filter_wheel_slots, 5);
+        assert_eq!(
+            config.supported_controls.get(&ControlType::CfwPort),
+            Some(&(0.0, 4.0, 1.0))
+        );
     }
 }
 
@@ -1149,15 +1221,18 @@ mod image_generator_tests {
 
     #[test]
     fn pixel_noise_zero_or_negative_range_is_zero() {
-        let mut noise = PixelNoise::new(42);
-        assert_eq!(noise.next_signed(0), 0);
-        assert_eq!(noise.next_signed(-5), 0);
+        // A zero range gives a span of one, so every draw scales to zero; a
+        // negative one is clamped to the same thing rather than rejected.
+        let mut zero = PixelNoise::new(42, 0);
+        let mut negative = PixelNoise::new(42, -5);
+        assert!((0..100).all(|_| zero.next_signed() == 0));
+        assert!((0..100).all(|_| negative.next_signed() == 0));
     }
 
     #[test]
     fn pixel_noise_stays_within_range_and_varies() {
-        let mut noise = PixelNoise::new(7);
-        let samples: Vec<i32> = (0..1000).map(|_| noise.next_signed(100)).collect();
+        let mut noise = PixelNoise::new(7, 100);
+        let samples: Vec<i32> = (0..1000).map(|_| noise.next_signed()).collect();
         assert!(samples.iter().all(|v| (-100..=100).contains(v)));
         assert!(
             samples.iter().any(|v| *v != samples[0]),
@@ -1171,8 +1246,8 @@ mod image_generator_tests {
         // that lost the top value would bias every frame dark, and one that
         // overshot would push samples outside the envelope the generators
         // clamp against. 20k draws over a 21-wide span settle it.
-        let mut noise = PixelNoise::new(3);
-        let samples: Vec<i32> = (0..20_000).map(|_| noise.next_signed(10)).collect();
+        let mut noise = PixelNoise::new(3, 10);
+        let samples: Vec<i32> = (0..20_000).map(|_| noise.next_signed()).collect();
         assert_eq!(*samples.iter().min().unwrap(), -10);
         assert_eq!(*samples.iter().max().unwrap(), 10);
     }
@@ -1385,6 +1460,23 @@ mod image_generator_tests {
         assert!(data[7] > 0, "the star's centre must be lit");
         assert_eq!(
             data[8], 0,
+            "the next row's first pixel is not the star's overhang"
+        );
+    }
+
+    #[test]
+    fn a_16bit_star_overhanging_the_frame_draws_only_the_part_inside_it() {
+        // The 16-bit drawer clips the same way, and its own placement only
+        // reaches an edge at random, so pin it here rather than leave it to
+        // whichever centres the generator happens to draw.
+        let frame = Frame::new(8, 8, 1, 2).unwrap();
+        let mut data = vec![0u8; frame.len];
+        ImageGenerator::default().draw_star_16bit(&mut data, frame, 7, 0, 40000, 2);
+
+        assert!(px16(&data, 8, 7, 0) > 0, "the star's centre must be lit");
+        assert_eq!(
+            px16(&data, 8, 0, 1),
+            0,
             "the next row's first pixel is not the star's overhang"
         );
     }

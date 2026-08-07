@@ -178,10 +178,10 @@ pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
 /// see the module docs ("Staying responsive during an in-flight exposure")
 /// for why polling in slices instead of one blocking call for the whole
 /// deadline matters.
-const VIDEO_DATA_POLL_MS: i32 = 250;
-/// [`VIDEO_DATA_POLL_MS`] as the `u64` `Duration::from_millis` wants. Declared
-/// once so the two spellings of the same constant cannot drift.
-const VIDEO_DATA_POLL_MS_U64: u64 = 250;
+/// Held as `u32` rather than the SDK's `i32`: a poll slice is a duration, so
+/// the sign was never meaningful, and the type makes the widening to
+/// `Duration`'s `u64` total. Only the SDK call narrows.
+const VIDEO_DATA_POLL_MS: u32 = 250;
 
 /// The blocking camera operations the ASCOM `Camera` device drives. Every
 /// method is synchronous (the SDK is blocking C FFI); callers offload SDK
@@ -449,7 +449,9 @@ impl CameraHandle for SvbonyCameraHandle {
                 if remaining.is_zero() {
                     break;
                 }
-                std::thread::sleep(remaining.min(Duration::from_millis(VIDEO_DATA_POLL_MS_U64)));
+                std::thread::sleep(
+                    remaining.min(Duration::from_millis(u64::from(VIDEO_DATA_POLL_MS))),
+                );
             }
         }
         #[cfg(not(feature = "simulation"))]
@@ -507,7 +509,12 @@ impl CameraHandle for SvbonyCameraHandle {
                     .as_millis(),
             )
             .unwrap_or(i32::MAX);
-            let poll_ms = VIDEO_DATA_POLL_MS.min(remaining_ms).max(1);
+            // The SDK takes `i32` milliseconds; the constant is far inside that
+            // range, so the saturation below is a spelling, not a clamp.
+            let poll_ms = i32::try_from(VIDEO_DATA_POLL_MS)
+                .unwrap_or(i32::MAX)
+                .min(remaining_ms)
+                .max(1);
             let result = {
                 let guard = self.camera.lock();
                 let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
