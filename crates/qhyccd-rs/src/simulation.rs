@@ -24,6 +24,7 @@
 //!     .with_noise_level(0.02);
 //! ```
 
+use crate::quantize;
 use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, StreamMode};
 use rand::{Rng, RngExt};
 use rayon::prelude::*;
@@ -660,36 +661,6 @@ fn sample_u8(v: i32) -> u8 {
 
 fn sample_u16(v: i32) -> u16 {
     u16::try_from(v).unwrap_or(if v < 0 { u16::MIN } else { u16::MAX })
-}
-
-/// Float → integer conversions, gathered so the policy is stated once instead of
-/// assumed at each site: `as` truncates toward zero and saturates at the
-/// destination's bounds, with NaN landing on zero. No `TryFrom<f64>` exists to
-/// spell that another way, which is why this module is the file's only
-/// `as_conversions` exemption rather than one per call.
-#[expect(
-    clippy::as_conversions,
-    reason = "no TryFrom<f64> exists; `as` truncates and saturates, and naming that policy here is the point of the module"
-)]
-mod quantize {
-    pub fn to_u8(v: f64) -> u8 {
-        v as u8
-    }
-    pub fn to_u16(v: f64) -> u16 {
-        v as u16
-    }
-    pub fn to_u32(v: f64) -> u32 {
-        v as u32
-    }
-    pub fn to_u64(v: f64) -> u64 {
-        v as u64
-    }
-    pub fn to_usize(v: f64) -> usize {
-        v as usize
-    }
-    pub fn to_i32(v: f64) -> i32 {
-        v as i32
-    }
 }
 
 /// Writes a 16-bit sample into every channel of a pixel. The chunk length is
