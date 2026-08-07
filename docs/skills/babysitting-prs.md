@@ -70,6 +70,15 @@ iterate:
    (`gh pr edit --add-reviewer Copilot` does **not** work; use the API
    call above.)
 
+   **An empty `requested_reviewers` afterwards does not mean the request
+   failed.** The POST returns HTTP 200 with the PR object, and that is
+   the confirmation — but `gh pr view <n> --json reviewRequests` reads
+   `[]` seconds later anyway, because this bot's entry does not linger
+   the way a human reviewer's does. Treating the empty list as failure
+   and re-POSTing costs a redundant round, and worse, invites reading
+   *that* round's arrival as the answer to the wrong request. Confirm
+   from the POST's exit status, then wait for the round count to rise.
+
 Repeat until the exit criteria hold. Comments from human reviewers go
 through the same loop, except: when inclined to decline, ask the
 reviewer rather than unilaterally closing the discussion.
@@ -207,8 +216,8 @@ Don't request a Copilot round on code that is about to change again.
 Draft PRs don't get Copilot auto-review; request it explicitly (same
 API call) once the PR is ready.
 
-Three things a watcher must get right, each of which produced a wrong
-answer on #902:
+Four things a watcher must get right — the first three each produced a
+wrong answer on #902:
 
 - **Check the PR is still open first.** A merged or closed PR never
   settles, and the loop spins to its timeout looking healthy.
@@ -217,6 +226,14 @@ answer on #902:
   baseline count of Copilot reviews before the push and watch for it to
   rise, as the snippet above does. Then read *every* review past the
   baseline, not just the newest — one round can arrive as two objects.
+- **Count Copilot's reviews, not the endpoint's length.** The
+  `select(.user.login == "copilot-pull-request-reviewer[bot]")` filter
+  above is load-bearing, not tidiness: `pulls/<n>/reviews` also carries a
+  review object for **each reply you post to a review comment**. On #927
+  a bare `length` read 3 rounds where Copilot had submitted 1 — your own
+  two replies inflated it. That fires phantom "new round" events, and
+  since the inflation arrives right when you finish replying, it can make
+  a *stale* round look like the fresh one and end the loop early.
 - **Settled CI does not end a wait for review, and a quiet round does
   not end a wait for CI.** They are separate criteria that can become
   true minutes apart; exiting on the first one and reporting readiness
