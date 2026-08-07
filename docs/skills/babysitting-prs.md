@@ -196,8 +196,10 @@ answer on #902:
 - **Check the PR is still open first.** A merged or closed PR never
   settles, and the loop spins to its timeout looking healthy.
 - **Don't key "a new round" on `commit_id == HEAD`.** See *Suppressed
-  comments*: reviews are not reliably stamped with the head SHA. Compare
-  against the set of review ids seen before the push instead.
+  comments*: reviews are not reliably stamped with the head SHA. Take a
+  baseline count of Copilot reviews before the push and watch for it to
+  rise, as the snippet above does. Then read *every* review past the
+  baseline, not just the newest — one round can arrive as two objects.
 - **Settled CI does not end a wait for review, and a quiet round does
   not end a wait for CI.** They are separate criteria that can become
   true minutes apart; exiting on the first one and reporting readiness
