@@ -874,7 +874,13 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **B1.** `set_bin_x`/`set_bin_y` validate against `SupportedBins`;
   unsupported → `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`.
-- **B3.** A bin change rescales the cached ROI by the bin ratio.
+- **B3.** A bin change rescales the cached ROI by the bin ratio, clamping
+  `NumX`/`NumY` to a minimum of 1. `set_num_x`/`set_num_y` store without
+  validating (the members are set independently, so only the combination is
+  checked, at `StartExposure`), so a sub-pixel ROI can be resting in state when
+  the bin changes; without the clamp it would truncate to 0 and the next
+  `StartExposure` would reject a value the driver invented rather than the one
+  the client set. Identical in `qhy-camera` and `zwo-camera`.
 - **R1.** ROI setters accept any `u32`; geometry validated at
   `StartExposure`.
 - **R2.** Out-of-bounds/zero sub-frame → `INVALID_VALUE`.

@@ -440,14 +440,22 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
     Ok(())
 }
 
-/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
+/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3). Width/height
+/// are clamped to a minimum of 1: `set_num_x`/`set_num_y` store without
+/// validating (the ASCOM members are set independently, so only the combination
+/// is checked, at `StartExposure`), so a sub-pixel ROI can be resting in state
+/// when the bin changes, and rescaling it to a larger bin would truncate to 0.
+/// The next `StartExposure` would then fail with "NumX and NumY must be greater
+/// than 0" — a value this driver invented, not one the client set. Clamping
+/// keeps the eventual complaint about the client's own `NumX`, which on ASI is
+/// the `%8`/`%2` rule.
 fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
     let factor = f64::from(old) / f64::from(new);
     Roi {
         start_x: (f64::from(roi.start_x) * factor) as u32,
         start_y: (f64::from(roi.start_y) * factor) as u32,
-        width: (f64::from(roi.width) * factor) as u32,
-        height: (f64::from(roi.height) * factor) as u32,
+        width: ((f64::from(roi.width) * factor) as u32).max(1),
+        height: ((f64::from(roi.height) * factor) as u32).max(1),
     }
 }
 
@@ -1524,6 +1532,15 @@ mod tests {
         assert_eq!(scaled.start_y, 100);
         assert_eq!(scaled.width, 400);
         assert_eq!(scaled.height, 300);
+    }
+
+    #[test]
+    fn rescale_roi_clamps_tiny_dimensions_to_one() {
+        // A 1-pixel ROI is reachable: `set_num_x` stores without validating, so
+        // it can be resting in state when the bin changes. Rescaling must not
+        // manufacture a zero the client never set.
+        let scaled = rescale_roi(roi(0, 0, 1, 1), 1, 2);
+        assert_eq!((scaled.width, scaled.height), (1, 1));
     }
 
     #[test]
