@@ -36,7 +36,7 @@ rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
-rusty-photon-camera-geometry = { workspace = true }
+rusty-photon-camera-core = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
@@ -49,7 +49,6 @@ clap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 derive_more = { workspace = true }
-ndarray = { workspace = true }
 parking_lot = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;

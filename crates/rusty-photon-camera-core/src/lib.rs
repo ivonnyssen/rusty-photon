@@ -1,4 +1,4 @@
-//! Sensor geometry shared by the workspace's ASCOM camera drivers.
+//! The vendor-neutral half of the workspace's ASCOM camera drivers.
 //!
 //! `qhy-camera`, `zwo-camera` and `svbony-camera` drive three unrelated vendor
 //! SDKs but present one ASCOM surface, so the rules that turn a client's
@@ -10,17 +10,21 @@
 //! nor the tests showed it, because each driver curated its own case list — the
 //! missing behaviour and its missing test hid each other.
 //!
-//! What lives here is the arithmetic with no vendor in it. Anything a vendor
-//! genuinely disagrees about stays in the driver: the frame unpack, the
-//! `MaxADU` ceiling, the readout formats, and which of its own enum's spellings
-//! names which mosaic. The rule of thumb is the dependency list below — a
-//! vendor type or an `ascom-alpaca` type in a signature here would mean the
-//! item belongs in a driver instead.
+//! # What belongs here
 //!
-//! [`BayerPattern`] shows where that line falls. Each SDK names the same four
+//! Two tests, both about the *driver* half rather than about dependencies:
+//! nothing here implements ASCOM's `Camera` or `Device` traits or holds device
+//! state, and no vendor SDK type appears in a signature. ASCOM Alpaca is the
+//! workspace's lingua franca, so speaking its vocabulary — [`ImageArray`],
+//! `ASCOMError` — is what lets a rule live here whole instead of arriving in a
+//! private dialect each driver has to translate.
+//!
+//! [`BayerPattern`] shows where the line falls. Each SDK names the same four
 //! mosaics differently (`ASI_BAYER_RG`, `QHY BayerPattern::RGGB`), so the
 //! driver translates its own spelling; but *where the first red photosite sits*
-//! is one ASCOM rule, so [`BayerPattern::offsets`] answers it once.
+//! is one ASCOM rule, so [`BayerPattern::offsets`] answers it once. What stays
+//! in the drivers is what a vendor genuinely disagrees about: the `MaxADU`
+//! ceiling, the readout formats, the exposure state machine.
 //!
 //! Where drivers differ by *degree* rather than in kind, the difference is a
 //! parameter. `qhy-camera` has no sub-frame alignment rule while the other two
@@ -33,6 +37,10 @@
 use core::fmt;
 use core::num::{NonZeroU128, NonZeroU32};
 use core::time::Duration;
+
+use ascom_alpaca::api::camera::ImageArray;
+use ascom_alpaca::ASCOMError;
+use ndarray::Array2;
 
 /// A region of interest in *binned* pixel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,7 +79,7 @@ impl BayerPattern {
     /// red photosite within the top-left quad.
     ///
     /// ```
-    /// use rusty_photon_camera_geometry::BayerPattern;
+    /// use rusty_photon_camera_core::BayerPattern;
     ///
     /// // `GRBG` reads `G R` over `B G`, so red is one across and none down.
     /// assert_eq!(BayerPattern::Grbg.offsets(), (1, 0));
@@ -148,6 +156,16 @@ impl fmt::Display for GeometryError {
 
 impl core::error::Error for GeometryError {}
 
+impl From<GeometryError> for ASCOMError {
+    /// Every geometry failure is the client having asked for a frame the sensor
+    /// cannot deliver, so they share one ASCOM code. Choosing it here rather
+    /// than at each driver's call site is the point: three `map_err`s were
+    /// three chances to disagree about what a bad ROI is.
+    fn from(error: GeometryError) -> Self {
+        Self::invalid_value(error)
+    }
+}
+
 /// Validate a ROI against the sensor at a given bin, with an optional
 /// alignment rule.
 ///
@@ -173,7 +191,7 @@ impl core::error::Error for GeometryError {}
 ///
 /// ```
 /// use core::num::NonZeroU32;
-/// use rusty_photon_camera_geometry::{check, Alignment, GeometryError, Roi};
+/// use rusty_photon_camera_core::{check, Alignment, GeometryError, Roi};
 ///
 /// let eight = NonZeroU32::new(8).unwrap();
 /// let two = NonZeroU32::new(2).unwrap();
@@ -240,7 +258,7 @@ pub fn check(
 /// then reported by [`check`], which is where a client can be told about it.
 ///
 /// ```
-/// use rusty_photon_camera_geometry::{rescale, Roi};
+/// use rusty_photon_camera_core::{rescale, Roi};
 ///
 /// let roi = Roi { start_x: 100, start_y: 100, width: 640, height: 480 };
 /// let binned = rescale(roi, 1, 2);
@@ -318,7 +336,7 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 ///
 /// ```
 /// use core::num::NonZeroU32;
-/// use rusty_photon_camera_geometry::{aligned_sensor, Alignment};
+/// use rusty_photon_camera_core::{aligned_sensor, Alignment};
 ///
 /// let eight = NonZeroU32::new(8).unwrap();
 /// let two = NonZeroU32::new(2).unwrap();
@@ -386,7 +404,7 @@ fn lcm(a: u32, b: u32) -> u32 {
 ///
 /// ```
 /// use core::time::Duration;
-/// use rusty_photon_camera_geometry::progress_percent;
+/// use rusty_photon_camera_core::progress_percent;
 ///
 /// let total = Duration::from_secs(10);
 /// assert_eq!(progress_percent(Duration::from_secs(3), total), 30);
@@ -404,6 +422,122 @@ pub fn progress_percent(done: Duration, total: Duration) -> u8 {
     // input, and the fallback is that same cap.
     let pct = done.as_micros().saturating_mul(100) / total_us;
     u8::try_from(pct.min(99)).unwrap_or(99)
+}
+
+/// How a downloaded frame stores each pixel.
+///
+/// The two single-plane depths every supported SDK delivers. Which of its own
+/// formats maps onto which of these is the driver's question — `Raw8`/`Raw16`,
+/// a bit count, a channel count — and so is which formats are unpackable at
+/// all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelDepth {
+    /// One byte per pixel.
+    Eight,
+    /// Two bytes per pixel, low byte first.
+    Sixteen,
+}
+
+impl PixelDepth {
+    /// Bytes one pixel occupies in a downloaded buffer.
+    #[must_use]
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Eight => 1,
+            Self::Sixteen => 2,
+        }
+    }
+}
+
+/// Why a downloaded frame could not become an [`ImageArray`].
+///
+/// The `Display` text carries no format name: the driver knows which of its
+/// own formats it asked for and prefixes it, so the message reads the same as
+/// when each driver owned the whole unpack.
+#[derive(Debug)]
+pub enum FrameError {
+    /// The buffer holds fewer bytes than `width × height × depth`.
+    TooSmall,
+    /// `ndarray` rejected the frame's shape.
+    Shape(ndarray::ShapeError),
+}
+
+impl fmt::Display for FrameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooSmall => f.write_str("buffer too small for frame"),
+            Self::Shape(error) => write!(f, "frame shape rejected: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for FrameError {}
+
+/// Unpack a single-plane frame into an ASCOM [`ImageArray`] with `[x][y]` axis
+/// order (ASCOM stores width-major).
+///
+/// Takes the buffer **by value** so the 8-bit path can hand it straight to
+/// `Array2` rather than copying a frame the capture path already owns — at full
+/// frame that copy is the frame itself. 16-bit still pays one, since its bytes
+/// have to be re-read as `u16`, and `ImageArray` widens whatever it gets to
+/// `i32` internally — so this saves an intermediate, not the dominant
+/// allocation.
+///
+/// ```
+/// use rusty_photon_camera_core::{to_image_array, PixelDepth};
+///
+/// // Two pixels, low byte first on the wire.
+/// let frame = to_image_array(vec![0x34, 0x12, 0x78, 0x56], 2, 1, PixelDepth::Sixteen).unwrap();
+/// assert_eq!(frame[(0, 0, 0)], 0x1234_i32);
+/// assert_eq!(frame[(1, 0, 0)], 0x5678_i32);
+/// ```
+pub fn to_image_array(
+    mut bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+    depth: PixelDepth,
+) -> Result<ImageArray, FrameError> {
+    // The SDKs report geometry as `u32`; here it is the length of `bytes` and
+    // the shape of the array, so convert once. A frame too large to address
+    // saturates, which lands it in the same "buffer too small" answer as any
+    // other short read rather than wrapping into a length the buffer appears to
+    // satisfy. (Saturate what you compare — this length is only ever compared,
+    // never allocated from.)
+    let w = usize::try_from(width).unwrap_or(usize::MAX);
+    let h = usize::try_from(height).unwrap_or(usize::MAX);
+    let needed = w.saturating_mul(h).saturating_mul(depth.bytes_per_pixel());
+    // Each arm builds the frame row-major in its own element type, then
+    // reverses the axes for ASCOM's width-major order.
+    match depth {
+        PixelDepth::Eight => {
+            // `from_shape_vec` demands an exact length, and `truncate` only
+            // trims a caller's slack — it cannot grow a short buffer — so the
+            // shortfall has to be rejected before it.
+            if bytes.len() < needed {
+                return Err(FrameError::TooSmall);
+            }
+            bytes.truncate(needed);
+            let arr = Array2::from_shape_vec((h, w), bytes).map_err(FrameError::Shape)?;
+            Ok(ImageArray::from(arr.reversed_axes()))
+        }
+        PixelDepth::Sixteen => {
+            // The length check and the slice are one question, so `get` asks it
+            // once: there is no separate test left to keep in step with the
+            // bound it guards.
+            let Some(frame) = bytes.get(..needed) else {
+                return Err(FrameError::TooSmall);
+            };
+            // Low byte first on the wire, which `from_le_bytes` says directly.
+            let pixels: Vec<u16> = frame
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect();
+            let arr = Array2::from_shape_vec((h, w), pixels).map_err(FrameError::Shape)?;
+            Ok(ImageArray::from(arr.reversed_axes()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +829,68 @@ mod tests {
             );
             assert_eq!(pattern.offsets(), expected, "{name}");
         }
+    }
+
+    // --- to_image_array ------------------------------------------------------
+
+    #[test]
+    fn frames_are_width_major_at_both_depths() {
+        for (depth, len) in [
+            (PixelDepth::Eight, 64 * 48),
+            (PixelDepth::Sixteen, 64 * 48 * 2),
+        ] {
+            let array = to_image_array(vec![0u8; len], 64, 48, depth).unwrap();
+            // ASCOM `[x][y]`: the first axis is width.
+            assert_eq!((array.dim().0, array.dim().1), (64, 48), "{depth:?}");
+        }
+    }
+
+    /// Pins the wire contract: `34 12` is 0x1234, low byte first. Catches an
+    /// outright swap (`from_be_bytes`, or hand-rolled shifts). It cannot catch
+    /// a regression to `from_ne_bytes` — the workspace is little-endian-only by
+    /// compile gate, so the two are the same instruction everywhere it builds.
+    #[test]
+    fn sixteen_bit_pixels_are_read_low_byte_first() {
+        let mut bytes = vec![0u8; 64 * 48 * 2];
+        bytes[0] = 0x34;
+        bytes[1] = 0x12;
+        let array = to_image_array(bytes, 64, 48, PixelDepth::Sixteen).unwrap();
+        assert_eq!(array[(0, 0, 0)], 0x1234_i32);
+    }
+
+    /// The 8-bit path reads one byte per pixel. Before the drivers grew this
+    /// arm, an 8-bit frame was rejected as "buffer too small" because the
+    /// transform assumed 16-bit throughout.
+    #[test]
+    fn eight_bit_pixels_are_one_byte_each() {
+        let bytes: Vec<u8> = (0..64 * 48)
+            .map(|i| u8::try_from(i % 251).unwrap_or(0))
+            .collect();
+        let expected = i32::from(bytes[2 * 64 + 3]);
+        let array = to_image_array(bytes, 64, 48, PixelDepth::Eight).unwrap();
+        // Row 2, column 3 row-major becomes `[x=3][y=2]` width-major.
+        assert_eq!(array[(3, 2, 0)], expected);
+    }
+
+    #[test]
+    fn a_short_buffer_is_rejected_at_both_depths() {
+        for depth in [PixelDepth::Eight, PixelDepth::Sixteen] {
+            let error = to_image_array(vec![0u8; 8], 64, 48, depth).unwrap_err();
+            assert!(matches!(error, FrameError::TooSmall), "{depth:?}: {error}");
+            // The driver prefixes its own format name, so the text must stand
+            // on its own without one.
+            assert_eq!(error.to_string(), "buffer too small for frame");
+        }
+    }
+
+    /// A frame whose pixel count cannot be addressed saturates into the same
+    /// "too small" answer rather than wrapping into a length the buffer
+    /// appears to satisfy.
+    #[test]
+    fn an_unaddressable_frame_is_too_small_rather_than_wrapping() {
+        let error =
+            to_image_array(vec![0u8; 8], u32::MAX, u32::MAX, PixelDepth::Sixteen).unwrap_err();
+        assert!(matches!(error, FrameError::TooSmall), "{error}");
     }
 
     // --- progress_percent ----------------------------------------------------

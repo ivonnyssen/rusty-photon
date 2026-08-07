@@ -13,7 +13,7 @@ members = [
   "crates/rp-targets",
   "crates/rp-vocabulary",
   "crates/rusty-photon-tls",
-  "crates/rusty-photon-camera-geometry",
+  "crates/rusty-photon-camera-core",
   "crates/rusty-photon-config",
   "crates/rusty-photon-doctor-checks",
   "crates/rusty-photon-driver",
@@ -232,7 +232,7 @@ cargo-husky = { version = "1", default-features = false, features = [
 ] }
 rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
 rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
-rusty-photon-camera-geometry = { path = "crates/rusty-photon-camera-geometry" }
+rusty-photon-camera-core = { path = "crates/rusty-photon-camera-core" }
 rusty-photon-config = { path = "crates/rusty-photon-config" }
 rusty-photon-doctor-checks = { path = "crates/rusty-photon-doctor-checks" }
 rusty-photon-driver = { path = "crates/rusty-photon-driver" }

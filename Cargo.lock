@@ -3849,12 +3849,11 @@ dependencies = [
  "cucumber",
  "derive_more",
  "libloading 0.9.0",
- "ndarray",
  "parking_lot",
  "qhyccd-rs",
  "reqwest 0.13.4",
  "rp-auth",
- "rusty-photon-camera-geometry",
+ "rusty-photon-camera-core",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",
@@ -4793,8 +4792,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusty-photon-camera-geometry"
+name = "rusty-photon-camera-core"
 version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "ndarray",
+]
 
 [[package]]
 name = "rusty-photon-config"
@@ -5619,11 +5622,10 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
- "ndarray",
  "parking_lot",
  "reqwest 0.13.4",
  "rp-auth",
- "rusty-photon-camera-geometry",
+ "rusty-photon-camera-core",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",
@@ -7127,11 +7129,10 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
- "ndarray",
  "parking_lot",
  "reqwest 0.13.4",
  "rp-auth",
- "rusty-photon-camera-geometry",
+ "rusty-photon-camera-core",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",

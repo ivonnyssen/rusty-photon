@@ -1,0 +1,36 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Every dependency is third-party and comes from Cargo.toml via `all_crate_deps`,
+# so there is no first-party dep to name explicitly and no SDK variant to pick.
+# Nothing here is platform-conditional either, so the target is identical on
+# Linux, macOS and Windows — worth stating, because the macOS leg runs
+# post-merge rather than on the PR gate.
+rust_library(
+    name = "rusty-photon-camera-core",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rusty_photon_camera_core",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rusty-photon-camera-core_unit_test",
+    size = "small",
+    crate = ":rusty-photon-camera-core",
+)
+
+# The public functions carry runnable examples, and those examples are the
+# shortest statement of each rule's contract — so they are compiled and run
+# rather than left to the nightly Cargo safety net.
+rust_doc_test(
+    name = "rusty-photon-camera-core_doc_test",
+    crate = ":rusty-photon-camera-core",
+)

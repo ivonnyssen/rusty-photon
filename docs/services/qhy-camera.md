@@ -412,7 +412,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   other way: QHY has no alignment rule (contrast `zwo-camera`/`svbony-camera`
   R3), so a 1 substituted here would clear every remaining check and expose a
   one-pixel frame in place of the R2 error the client had earned. **One implementation**, in
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/) — this
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
@@ -424,7 +424,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **R-order.** When a ROI breaks more than one rule at once, the client is told
   about the first of: zero extent, zero bin, bounds. The order is part of
   the contract and is pinned by tests in
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/),
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/),
   because it decides which value a client is sent to fix — a zero bin is not a
   geometry that fails a rule but one with *no rule to apply*, so it is reported
   ahead of a complaint a client could otherwise chase while the real problem sat
@@ -489,8 +489,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   than the frame is rejected as "buffer too small". The 8-bit path takes the
   download buffer **by value** and hands it to `Array2` without copying — on a
   60 MP sensor that copy is the frame itself; 16-bit pays one, since its bytes
-  must be re-read as `u16`. Identical in `zwo-camera` (RM5) and `svbony-camera`
-  (RM5).
+  must be re-read as `u16`. **One implementation**, in
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
+  driver's share is only which of its own formats maps onto which pixel depth,
+  and the format name the message carries.
 
 ### Cooling
 
@@ -516,7 +518,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **ST1.** `SensorType` is `RGGB` (colour) when the colour control is present,
   else `Monochrome`; `BayerOffsetX/Y` follow the SDK's reported Bayer pattern.
   The driver maps the SDK's spelling onto
-  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `BayerPattern`, which locates the first red photosite; the offsets
   themselves are **one implementation** across the three camera drivers.
 
