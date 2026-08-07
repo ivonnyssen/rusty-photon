@@ -15,9 +15,14 @@ latest push:
    workflow the PR woke up (e.g. `msi.yml` on packaging changes). A slow
    leg still running means not done.
 2. **A quiet Copilot round** — the most recent requested review produced
-   zero new comments. A quiet round only counts if nothing was pushed
-   after it; any later push (docs included) needs one more round.
-3. **Every review thread has a reply** (see the loop below).
+   zero new comments **and no suppressed-comments section** (see
+   *Suppressed comments* — the round summary says "generated no new
+   comments" even when it carries findings). A quiet round only counts
+   if nothing was pushed after it; any later push (docs included) needs
+   one more round.
+3. **Every review thread has a reply** (see the loop below) — and note
+   that thread coverage alone does not satisfy criterion 2, because
+   suppressed comments create no thread to cover.
 4. **No merge conflicts** (`gh pr view <n> --json mergeable`).
 
 Then report merge readiness and stop. Merging is the repo owner's
@@ -69,6 +74,49 @@ Repeat until the exit criteria hold. Comments from human reviewers go
 through the same loop, except: when inclined to decline, ask the
 reviewer rather than unilaterally closing the discussion.
 
+## Suppressed comments — the findings that create no thread
+
+Copilot hides some findings inside a `<details><summary>Suppressed
+comments (n)</summary>` block in the **review body**. They are ordinary
+review findings, often the sharpest ones, but they:
+
+- do **not** appear in `pulls/<n>/comments`,
+- do **not** create a review thread, so there is nothing to resolve or
+  reply to, and
+- do **not** stop the summary line from reading *"generated no new
+  comments"*.
+
+A loop that checks only inline comments and thread replies therefore
+satisfies both criteria while shipping every one of them. On PR #902
+this was not marginal: **17 suppressed findings across the rounds
+against 4 inline comments**, and the suppressed set included a real
+host-endianness bug, a test that could pass vacuously, a validation
+record asserting evidence it did not contain, and a factually wrong code
+comment.
+
+So parse the body of every round:
+
+```sh
+# jq -s '.[][]' for the same reason as the watcher above: --paginate
+# concatenates one array per page, which a bare '.[]' mishandles.
+gh api --paginate 'repos/{owner}/{repo}/pulls/<n>/reviews' \
+  | jq -s -r '.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")
+              | "\(.commit_id[0:8])  \(.body)"' \
+  | grep -A100 'Suppressed comments'
+```
+
+Triage them exactly like inline comments (same priors below). Since
+there is no thread, record the outcome as a PR comment instead, so the
+reasoning is on the record.
+
+**Read every review since your last push, not just the newest.** A round
+can arrive as *two* review objects seconds apart, and taking only the
+last silently drops the other's findings. Worse, the `commit_id` on a
+review is not reliably the head SHA — on #902 the review carrying the
+findings was recorded against the *previous* commit while reviewing the
+head's content, so a watcher keyed on `commit_id == HEAD` matched the
+empty one and reported a quiet round that was not quiet.
+
 ## Pacing — watch, don't sleep
 
 Babysitting MUST be event-driven: run a **background watcher** — a loop
@@ -86,6 +134,10 @@ checks pending**. The shape:
 # watch-pr.sh <pr-number> <copilot-round-baseline>
 # ($1 must be the numeric PR id: the gh api call below cannot take a URL/branch)
 while :; do
+  # A merged/closed PR never settles: without this the loop spins to its
+  # timeout while looking perfectly healthy.
+  state=$(gh pr view "$1" --json state --jq .state)
+  [ "${state:-OPEN}" != "OPEN" ] && { echo "PR is $state"; exit 0; }
   rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
     | jq -s '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
@@ -125,6 +177,44 @@ Reference durations — for recognizing a stuck leg, never for sleeping:
 Don't request a Copilot round on code that is about to change again.
 Draft PRs don't get Copilot auto-review; request it explicitly (same
 API call) once the PR is ready.
+
+Three things a watcher must get right, each of which produced a wrong
+answer on #902:
+
+- **Check the PR is still open first.** A merged or closed PR never
+  settles, and the loop spins to its timeout looking healthy.
+- **Don't key "a new round" on `commit_id == HEAD`.** See *Suppressed
+  comments*: reviews are not reliably stamped with the head SHA. Compare
+  against the set of review ids seen before the push instead.
+- **Settled CI does not end a wait for review, and a quiet round does
+  not end a wait for CI.** They are separate criteria that can become
+  true minutes apart; exiting on the first one and reporting readiness
+  asserts something never checked.
+
+### When no checks appear at all
+
+`gh pr checks` saying *"no checks reported"* is not a slow queue — it
+means no run was created. Before debugging the PR, check whether runs
+are being created **repo-wide** (`gh run list --limit 20`) and whether
+[githubstatus.com](https://www.githubstatus.com/api/v2/summary.json)
+shows an Actions incident. During the 2026-08-06 Actions outage, pushes
+produced Copilot runs but no `bazel`/`check` runs at all, while other
+branches' jobs sat `queued` for hours — nothing about any PR was wrong.
+
+**GitHub does not replay missed `pull_request` triggers.** Once Actions
+recovers, the runs will not appear on their own. If every affected
+workflow uses a bare `pull_request:` trigger — no `types:` filter, so
+the default `[opened, synchronize, reopened]` applies, which is the case
+for `bazel.yml`, `check.yml` and `bazel-coverage.yml` — then closing and
+reopening the PR re-fires them **without a push**, which preserves an
+already-earned quiet Copilot round that an empty commit would invalidate.
+Verify the triggers first; a workflow that filters `types:` may not
+include `reopened`.
+
+One caveat before closing a PR: with `delete_branch_on_merge` enabled,
+confirm the PR is not merged in the interim — a later `git push` to a
+deleted branch silently recreates it, which looks like a resurrected
+merged branch.
 
 ## Triage guidance
 
@@ -172,6 +262,14 @@ Roughly one comment in eight is a duplicate: the same finding on
 sibling files, or re-raised in a later round against a commit that
 already fixed it. Check whether an intervening SHA addressed it before
 writing a reply.
+
+A suggested fix can be right about the defect and wrong about the
+remedy, so verify the remedy too. On #902 a comment correctly called a
+schema assertion too weak, then prescribed asserting on the definition's
+`enum` array — but `schemars` renders a *documented* fieldless enum as
+`oneOf[].const`, so implementing that literally would have asserted
+against a key that does not exist. Dumping the actual artefact before
+writing the assertion cost one command and caught it.
 
 ### Steering Copilot
 
