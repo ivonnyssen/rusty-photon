@@ -22,6 +22,8 @@
 //! multiple of 2, so [`check`] takes an [`Alignment`] rather than existing in
 //! two versions that could disagree about anything else.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use core::fmt;
 use core::num::{NonZeroU128, NonZeroU32};
 use core::time::Duration;
@@ -41,18 +43,24 @@ pub struct Roi {
 
 /// A sensor's sub-frame alignment rule: the binned extent must be a multiple of
 /// these, or the SDK rejects the ROI.
+///
+/// The multiples are [`NonZeroU32`] because a zero one has no honest reading —
+/// "every extent is a multiple of 0" is false, and treating it as "no rule"
+/// would let a typo turn this into a weaker validator without saying so. The
+/// absence of a rule is already spelled `None` where an `Alignment` is asked
+/// for, so the type has no second way to mean it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Alignment {
     /// `NumX` must be a multiple of this.
-    pub width: u32,
+    pub width: NonZeroU32,
     /// `NumY` must be a multiple of this.
-    pub height: u32,
+    pub height: NonZeroU32,
 }
 
 impl Alignment {
     /// The rule requiring `width`-pixel and `height`-pixel multiples.
     #[must_use]
-    pub const fn new(width: u32, height: u32) -> Self {
+    pub const fn new(width: NonZeroU32, height: NonZeroU32) -> Self {
         Self { width, height }
     }
 }
@@ -117,9 +125,12 @@ impl core::error::Error for GeometryError {}
 /// Returns the first [`GeometryError`] the ROI trips, in that order.
 ///
 /// ```
+/// use core::num::NonZeroU32;
 /// use rusty_photon_camera_geometry::{check, Alignment, GeometryError, Roi};
 ///
-/// let asi = Some(Alignment::new(8, 2));
+/// let eight = NonZeroU32::new(8).unwrap();
+/// let two = NonZeroU32::new(2).unwrap();
+/// let asi = Some(Alignment::new(eight, two));
 /// let roi = Roi { start_x: 0, start_y: 0, width: 64, height: 48 };
 /// check(roi, 6240, 4176, 1, asi).unwrap();
 ///
@@ -128,7 +139,7 @@ impl core::error::Error for GeometryError {}
 /// assert_eq!(check(misaligned, 6240, 4176, 0, asi), Err(GeometryError::ZeroBin));
 /// assert_eq!(
 ///     check(misaligned, 6240, 4176, 1, asi),
-///     Err(GeometryError::Misaligned(Alignment::new(8, 2)))
+///     Err(GeometryError::Misaligned(Alignment::new(eight, two)))
 /// );
 /// ```
 pub fn check(
@@ -148,7 +159,8 @@ pub fn check(
         return Err(GeometryError::ZeroBin);
     };
     if let Some(align) = align {
-        if !is_multiple_of(roi.width, align.width) || !is_multiple_of(roi.height, align.height) {
+        // `Rem<NonZeroU32>` is total, so the rule needs no guard of its own.
+        if roi.width % align.width != 0 || roi.height % align.height != 0 {
             return Err(GeometryError::Misaligned(align));
         }
     }
@@ -159,12 +171,6 @@ pub fn check(
         return Err(GeometryError::OutOfBoundsY);
     }
     Ok(())
-}
-
-/// Whether `value` is a multiple of `divisor`, treating a zero divisor as
-/// "no rule" rather than dividing by it.
-fn is_multiple_of(value: u32, divisor: u32) -> bool {
-    NonZeroU32::new(divisor).is_none_or(|d| value % d == 0)
 }
 
 /// Rescale a ROI in binned coordinates from bin `old` to bin `new`.
@@ -319,7 +325,12 @@ pub fn progress_percent(done: Duration, total: Duration) -> u8 {
 mod tests {
     use super::*;
 
-    const ASI: Option<Alignment> = Some(Alignment::new(8, 2));
+    /// A zero here would not compile, which is the point — `NonZeroU32::new(0)`
+    /// is `None`, and `expect` on `None` in a `const` is a build error, not a
+    /// runtime surprise.
+    const EIGHT: NonZeroU32 = NonZeroU32::new(8).expect("8 is not zero");
+    const TWO: NonZeroU32 = NonZeroU32::new(2).expect("2 is not zero");
+    const ASI: Option<Alignment> = Some(Alignment::new(EIGHT, TWO));
 
     fn roi_at(start_x: u32, start_y: u32, width: u32, height: u32) -> Roi {
         Roi {
@@ -378,7 +389,7 @@ mod tests {
         // shrinking it to another misaligned value.
         assert_eq!(
             check(roi_at(0, 0, 8001, 64), 6240, 4176, 1, ASI),
-            Err(GeometryError::Misaligned(Alignment::new(8, 2)))
+            Err(GeometryError::Misaligned(Alignment::new(EIGHT, TWO)))
         );
     }
 
@@ -386,11 +397,11 @@ mod tests {
     fn alignment_applies_per_axis() {
         assert_eq!(
             check(roi_at(0, 0, 100, 64), 6240, 4176, 1, ASI),
-            Err(GeometryError::Misaligned(Alignment::new(8, 2)))
+            Err(GeometryError::Misaligned(Alignment::new(EIGHT, TWO)))
         );
         assert_eq!(
             check(roi_at(0, 0, 64, 47), 6240, 4176, 1, ASI),
-            Err(GeometryError::Misaligned(Alignment::new(8, 2)))
+            Err(GeometryError::Misaligned(Alignment::new(EIGHT, TWO)))
         );
         // No rule, same ROI, no complaint — this is qhy-camera's case, and it
         // is the only thing that distinguishes it.
@@ -450,7 +461,7 @@ mod tests {
             "BinX and BinY must be greater than 0"
         );
         assert_eq!(
-            GeometryError::Misaligned(Alignment::new(8, 2)).to_string(),
+            GeometryError::Misaligned(Alignment::new(EIGHT, TWO)).to_string(),
             "NumX must be a multiple of 8 and NumY a multiple of 2"
         );
         assert_eq!(

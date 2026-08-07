@@ -30,6 +30,7 @@
 //! late-completing task — the same discipline `zwo-camera`'s
 //! `run_exposure`/`result_lock` pattern uses.
 
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -108,7 +109,10 @@ const READOUT_FORMATS: [ReadoutFormat; 2] = [
 /// This is the *whole* difference between this driver's geometry and
 /// `qhy-camera`'s, which passes `None` — everything else about validating a ROI
 /// is shared, and lives in `rusty-photon-camera-geometry`.
-const ALIGNMENT: Option<Alignment> = Some(Alignment::new(8, 2));
+const ALIGNMENT: Option<Alignment> = Some(Alignment::new(
+    NonZeroU32::new(8).expect("8 is not zero"),
+    NonZeroU32::new(2).expect("2 is not zero"),
+));
 
 /// Sensor geometry and capability data cached from `SVB_CAMERA_PROPERTY`/
 /// `_EX` and `SVBGetSensorPixelSize` at the connect handshake — unlike

@@ -22,6 +22,7 @@
 //! Blocking capture SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -101,7 +102,10 @@ fn negotiated_formats(info: &CameraInfo) -> Vec<ReadoutFormat> {
 /// This is the *whole* difference between this driver's geometry and
 /// `qhy-camera`'s, which passes `None` — everything else about validating a ROI
 /// is shared, and lives in `rusty-photon-camera-geometry`.
-const ALIGNMENT: Option<Alignment> = Some(Alignment::new(8, 2));
+const ALIGNMENT: Option<Alignment> = Some(Alignment::new(
+    NonZeroU32::new(8).expect("8 is not zero"),
+    NonZeroU32::new(2).expect("2 is not zero"),
+));
 
 /// Per-device runtime state: caches populated at connect plus the exposure state
 /// machine. Atomics for the hot/simple flags; `parking_lot::Mutex` for the
