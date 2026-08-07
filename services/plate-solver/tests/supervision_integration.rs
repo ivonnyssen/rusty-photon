@@ -101,10 +101,20 @@ fn cmd_ignoring_sigterm_from_exec() -> Command {
     let mut cmd = cmd_with_mode("ignore_sigterm");
     // SAFETY: `pre_exec` requires the closure to be async-signal-safe, because
     // it runs in the forked child between `fork` and `execve`. `signal(2)` is
-    // on POSIX's async-signal-safe list, and the closure does nothing else.
+    // on POSIX's async-signal-safe list, as is reading `errno`, and the closure
+    // does nothing else.
+    //
+    // Returning the error rather than dropping it matters for diagnosis, not
+    // for control flow: `SIG_ERR` here would mean SIGTERM was somehow
+    // uncatchable, and swallowing it would surface as a `TimedOutTerminated`
+    // outcome further down — the exact misleading symptom this helper exists to
+    // remove. An `Err` from `pre_exec` fails the spawn instead, so the test's
+    // `unwrap` panics at the real cause.
     unsafe {
         cmd.as_std_mut().pre_exec(|| {
-            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            if libc::signal(libc::SIGTERM, libc::SIG_IGN) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
