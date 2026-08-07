@@ -247,6 +247,35 @@ confirm the PR is not merged in the interim — a later `git push` to a
 deleted branch silently recreates it, which looks like a resurrected
 merged branch.
 
+### When only the ConformU legs go red
+
+`conformu.yml` pins **no** ConformU version: it calls
+`ivonnyssen/conformu-install@v3`, whose `version` input defaults to
+`latest` and is resolved against `ASCOMInitiative/ConformU/releases/latest`
+on every run. That is deliberate — ConformU is the spec validator, and
+drifting behind it is the worse failure — but it means **a release upstream
+can turn a green nightly red with no commit of ours**.
+
+So when the conformu legs are the only thing red, check for a new release
+before reading the diff:
+
+```sh
+gh api repos/ASCOMInitiative/ConformU/releases --jq '.[0:3][] | "\(.tag_name)\t\(.published_at)"'
+```
+
+If one landed between the last green run and the red one, that is the
+first hypothesis. Confirm what a run actually installed rather than
+inferring it from timestamps — the version is stamped in the job log:
+
+```sh
+gh run view <run-id> --log | grep -oiE "conform universal [0-9.]+"
+```
+
+The same applies in reverse to hardware validation: `docs/validation/`
+records name the ConformU version because a record made on the version CI
+no longer runs is evidence for a validator the project has moved past.
+Check the local tool matches what CI resolves before recording a run.
+
 ## Triage guidance
 
 Copilot is often right about edge cases (silent fall-throughs, masked
