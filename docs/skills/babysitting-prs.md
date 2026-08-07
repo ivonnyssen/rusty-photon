@@ -94,6 +94,23 @@ host-endianness bug, a test that could pass vacuously, a validation
 record asserting evidence it did not contain, and a factually wrong code
 comment.
 
+#902 is not an outlier; suppressed is where the findings normally land.
+PR #923 ran five rounds carrying **6 suppressed findings against 1
+inline comment**, and rounds 2–4 were suppressed-*only* — a loop keyed
+on threads would have seen "generated no new comments", found its single
+thread already replied, and declared merge readiness three rounds early.
+Two of the six were substantive: a constructor that silently disabled a
+validation rule, and one alignment constant spelled two different ways,
+which would have produced exactly the ConformU failure the code exists
+to prevent. Neither is reachable by any local gate — clippy, Bazel and
+the tests were green for all five rounds.
+
+Expect the round *after* a suppressed-comment fix to find fallout from
+that fix. On #923 rounds 3 and 4 flagged doc drift and a redundant shim
+that the previous round's own fixes introduced. That is convergence
+working, not review thrashing — but it does mean a small fix never
+justifies skipping the next round.
+
 So parse the body of every round:
 
 ```sh
@@ -258,6 +275,12 @@ Share of a category's comments that led to a real improvement:
 | "This won't compile"             |  32 |     0% |     84% |
 
 (Performance and uncategorized comments, 59 threads, are omitted.)
+
+One limit of this corpus: it was built from review *threads*, so it
+contains no suppressed comments at all. The priors describe the inline
+population only, and nothing here licenses discounting a suppressed
+finding — on the two PRs where the split was measured, suppressed
+findings were both the majority and, on average, the sharper half.
 
 Read the first five rows closely — that is where review has caught
 defects nothing else could. Doc drift is 38% of all comment volume and
