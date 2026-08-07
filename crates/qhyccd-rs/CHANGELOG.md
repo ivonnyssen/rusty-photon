@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A simulated filter wheel can no longer be commanded to a slot it cannot report.
+  Writing `CONTROL_CFWPORT` decodes the value to a slot, and that decode falls
+  back to a legacy decimal reading for a byte outside `0-9A-Fa-f` — so `'G'`
+  became slot 23, which no hex digit names. The move was accepted, and once it
+  settled *every* subsequent position read failed with `InvalidFilterSlot`,
+  permanently: the wheel was parked where the read path, which reports by
+  encoding the slot, had no code to answer with. The write is now rejected with
+  that same error and the wheel holds its position. Simulation only, and the
+  decode's fallback is unchanged on the read path, where degrading a nonstandard
+  value beats failing on it.
+
 - `SimulatedCameraConfig::with_filter_wheel` now caps the slot count at 16, the
   number a `CONTROL_CFWPORT` hex digit can address. A larger count was accepted
   and advertised through `CfwSlotsNum` and `CfwPort`'s range while every slot

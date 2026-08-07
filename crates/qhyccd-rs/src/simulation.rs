@@ -25,7 +25,7 @@
 //! ```
 
 use crate::quantize;
-use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, StreamMode};
+use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, QHYError, Result, StreamMode};
 use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -530,13 +530,25 @@ impl SimulatedCameraState {
     /// Command the simulated filter wheel to `target`. Like real hardware the move
     /// is not instantaneous: subsequent position reads report the OLD slot until
     /// `SIM_CFW_SETTLE_POLLS` polls have elapsed (see `poll_filter_wheel`).
-    pub fn command_filter_wheel(&mut self, target: u32) {
+    ///
+    /// A target with no `CONTROL_CFWPORT` code is rejected rather than commanded.
+    /// The position read reports the wheel by *encoding* it, so accepting such a
+    /// target would park the wheel where it could no longer answer — the bound
+    /// the encoder puts on `Camera::set_cfw_position`'s input has to hold here
+    /// too, since this path arrives through a decode that has none.
+    pub fn command_filter_wheel(&mut self, target: u32) -> Result<()> {
+        if crate::camera::cfw_slot_to_ascii(target).is_none() {
+            let error = QHYError::InvalidFilterSlot { slot: target };
+            tracing::error!(error = ?error);
+            return Err(error);
+        }
         self.filter_wheel_target = target;
         self.filter_wheel_settle_polls = if target == self.filter_wheel_position {
             0
         } else {
             SIM_CFW_SETTLE_POLLS
         };
+        Ok(())
     }
 
     /// Read the simulated filter-wheel position, advancing the settle by one poll.

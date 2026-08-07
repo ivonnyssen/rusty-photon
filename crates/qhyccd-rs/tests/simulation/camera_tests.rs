@@ -1346,6 +1346,36 @@ fn cfw_move_is_not_instantaneous() {
     camera.close().unwrap();
 }
 
+/// A raw `CONTROL_CFWPORT` write carrying a byte that is not a hex digit decodes
+/// through the legacy decimal fallback, which has no upper bound: `'G'` reads as
+/// slot 23. Commanding that would park the wheel where the position read — which
+/// reports by *encoding* the slot — has no code to answer with, so every later
+/// read would fail. The command is rejected instead and the wheel holds its slot.
+#[test]
+fn cfw_command_rejects_a_slot_the_wheel_could_not_report() {
+    let config = SimulatedCameraConfig::default().with_filter_wheel(16);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    camera.set_cfw_position(4).unwrap();
+    cfw_arrive(&camera, 4);
+
+    // 'G' is 0x47, one past 'F', so the hex decode declines it and the fallback
+    // carries it to 0x47 - 0x30 = 23 — a slot no hex digit names.
+    let err = camera
+        .set_parameter(ControlType::CfwPort, f64::from(b'G'))
+        .unwrap_err();
+    assert!(
+        matches!(err, QHYError::InvalidFilterSlot { slot: 23 }),
+        "the rejected slot should be named, got {err:?}"
+    );
+
+    // The wheel stayed where it was, and reads still answer.
+    assert_eq!(camera.cfw_position().unwrap(), 4);
+
+    camera.close().unwrap();
+}
+
 /// Audit #6: with a configured not-ready probability, live-mode reads
 /// intermittently return the retryable error (as real `GetQHYCCDLiveFrame` does
 /// between frames), so a consumer must poll/retry. Over 200 reads at p=0.5 both
