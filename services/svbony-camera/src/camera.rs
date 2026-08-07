@@ -30,6 +30,7 @@
 //! late-completing task — the same discipline `zwo-camera`'s
 //! `run_exposure`/`result_lock` pattern uses.
 
+use std::num::NonZeroU128;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -582,8 +583,14 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
             "SVBony requires NumX a multiple of 8 and NumY a multiple of 2",
         ));
     }
-    let max_x = sensor_w / bin;
-    let max_y = sensor_h / bin;
+    // The bin divides the sensor extent, so a zero bin is not a geometry that
+    // fails a rule — it is one with no rule to apply. Rejecting it completes
+    // this validator rather than leaving a division for callers to prove safe.
+    let (Some(max_x), Some(max_y)) = (sensor_w.checked_div(bin), sensor_h.checked_div(bin)) else {
+        return Err(ASCOMError::invalid_value(
+            "BinX and BinY must be greater than 0",
+        ));
+    };
     if roi.start_x.saturating_add(roi.width) > max_x {
         return Err(ASCOMError::invalid_value(
             "StartX + NumX exceeds CameraXSize / BinX",
@@ -753,7 +760,10 @@ fn to_image_array(
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|c| u16::from_ne_bytes(*c))
+                // Little-endian on the wire regardless of host: `from_ne_bytes` would
+                // byte-swap every pixel on a big-endian machine, turning a frame into
+                // noise rather than failing visibly.
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
@@ -1442,13 +1452,19 @@ impl Camera for SvbonyCamera {
         let (Some(start), Some(duration)) = (start, duration) else {
             return Ok(0);
         };
-        if duration.is_zero() {
+        // A duration under a microsecond has no ratio worth reporting.
+        // `NonZeroU128` carries that answer down into the division, so the guard
+        // and the divisor are one fact rather than two that could drift apart.
+        let Some(duration_us) = NonZeroU128::new(duration.as_micros()) else {
             return Ok(99);
-        }
+        };
         let elapsed = start.elapsed().unwrap_or(Duration::ZERO);
-        // Never report 100 while in flight (that is reserved for the ready state).
-        let pct = (elapsed.as_secs_f64() / duration.as_secs_f64() * 100.0).clamp(0.0, 99.0);
-        Ok(pct as u8)
+        // Never report 100 while in flight (that is reserved for the ready
+        // state). Integer throughout, so there is no float to round: the ratio
+        // is capped at 99 before it is narrowed, which gives the conversion an
+        // answer for every input, and the fallback is that same cap.
+        let pct = elapsed.as_micros().saturating_mul(100) / duration_us;
+        Ok(u8::try_from(pct.min(99)).unwrap_or(99))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1757,6 +1773,9 @@ mod tests {
     fn check_geometry_rejects_zero_size() {
         assert!(check_geometry(roi(0, 0, 0, 64), 3008, 3008, 1).is_err());
         assert!(check_geometry(roi(0, 0, 64, 0), 3008, 3008, 1).is_err());
+        // a zero bin is rejected, not divided by
+        let err = check_geometry(roi(0, 0, 64, 64), 3008, 3008, 0).unwrap_err();
+        assert!(err.message.contains("BinX and BinY"), "{}", err.message);
     }
 
     #[test]
@@ -1790,6 +1809,21 @@ mod tests {
         // ASCOM [x][y]: first axis = width.
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
+    }
+
+    #[test]
+    fn to_image_array_16bit_reads_the_wire_order() {
+        // The camera puts 16-bit pixels on the wire little-endian, so `34 12`
+        // is 0x1234. This pins the contract and would catch an outright swap
+        // (`from_be_bytes`, or hand-rolled shifts), but it CANNOT catch a
+        // regression to `from_ne_bytes`: on a little-endian host the two are
+        // the same instruction. Observing that needs a big-endian target,
+        // which CI does not have.
+        let mut bytes = vec![0u8; 64 * 48 * 2];
+        bytes[0] = 0x34;
+        bytes[1] = 0x12;
+        let array = to_image_array(bytes, 64, 48, ImageType::Raw16).unwrap();
+        assert_eq!(array[(0, 0, 0)], 0x1234_i32);
     }
 
     /// The Raw8 unpack reads one byte per pixel, so a 16-bit-sized buffer

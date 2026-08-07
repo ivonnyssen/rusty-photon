@@ -205,7 +205,10 @@ fn report_pixels(buf: &[u8], image_type: ImageType) {
         ImageType::Raw16 => {
             let pixels: Vec<u16> = buf
                 .chunks_exact(2)
-                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+                // Little-endian on the wire regardless of host. This probe's
+                // output is the measured evidence behind the MaxADU ceilings,
+                // so it must not depend on the machine that gathered it.
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
             let (min, max, sum) = pixels
                 .iter()

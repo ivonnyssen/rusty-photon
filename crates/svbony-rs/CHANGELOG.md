@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `CameraInfo::supported_bins` now **drops** a `supported_bins` entry that is
+  not a valid `u32` instead of mapping it to `0`. The `take_while(b != 0)`
+  sentinel stops at a literal zero but not at a negative, so a negative entry
+  became a `0` in the list — and `0` there reads as a supported bin factor. A
+  driver validating a client's `BinX` against the list would have accepted `0`
+  and then divided the sensor extent by it. Requires the SDK to report a
+  negative bin, so no camera is known to trigger it.
+
 ### Added
 
 - Initial repository scaffold for `svbony-rs` (safe wrapper) and

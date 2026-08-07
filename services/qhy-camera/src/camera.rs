@@ -21,6 +21,7 @@
 //! Blocking exposure SDK calls run on `spawn_blocking` inside a detached task; a
 //! generation counter lets abort/disconnect invalidate a late-completing task.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -476,8 +477,14 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
             "NumX and NumY must be greater than 0",
         ));
     }
-    let max_x = ccd_w / bin;
-    let max_y = ccd_h / bin;
+    // The bin divides the sensor extent, so a zero bin is not a geometry that
+    // fails a rule — it is one with no rule to apply. Rejecting it completes
+    // this validator rather than leaving a division for callers to prove safe.
+    let (Some(max_x), Some(max_y)) = (ccd_w.checked_div(bin), ccd_h.checked_div(bin)) else {
+        return Err(ASCOMError::invalid_value(
+            "BinX and BinY must be greater than 0",
+        ));
+    };
     if roi.start_x.saturating_add(roi.width) > max_x {
         return Err(ASCOMError::invalid_value(
             "StartX + NumX exceeds CameraXSize / BinX",
@@ -640,7 +647,10 @@ fn to_image_array(mut image: ImageData) -> Result<ImageArray, String> {
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|c| u16::from_ne_bytes(*c))
+                // Little-endian on the wire regardless of host: `from_ne_bytes` would
+                // byte-swap every pixel on a big-endian machine, turning a frame into
+                // noise rather than failing visibly.
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))
@@ -1456,10 +1466,13 @@ impl Camera for QhyCameraDevice {
                 100
             });
         }
+        // A zero expected duration has no ratio to report. `NonZeroU64` carries
+        // that answer down into the division below, so the guard and the divisor
+        // are one fact rather than two that could drift apart.
         let expected = self.state.expected_duration_us.load(Ordering::Acquire);
-        if expected == 0 {
+        let Some(expected) = NonZeroU64::new(expected) else {
             return Ok(0);
-        }
+        };
         // `get_remaining_exposure_us` reads 0 both just-before the SDK exposure
         // actually begins and at completion; while still in flight, never report
         // 100 (that is reserved for the Idle/ready state above).
@@ -1468,9 +1481,13 @@ impl Camera for QhyCameraDevice {
                 .get_remaining_exposure_us()
                 .map_err(|_| ASCOMError::invalid_operation("failed to read remaining exposure"))?,
         );
-        let done = expected.saturating_sub(remaining);
-        let pct = (done as f64 / expected as f64 * 100.0).clamp(0.0, 99.0);
-        Ok(pct as u8)
+        let done = expected.get().saturating_sub(remaining);
+        // Integer throughout, so there is no float to round: the ratio is capped
+        // at 99 before it is narrowed, which gives the conversion an answer for
+        // every input. The fallback is that same cap, so even an impossible
+        // overflow lands on what the clamp means.
+        let pct = done.saturating_mul(100) / expected;
+        Ok(u8::try_from(pct.min(99)).unwrap_or(99))
     }
 
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
@@ -1707,6 +1724,9 @@ mod tests {
         // zero
         assert!(check_geometry(area(0, 0, 0, 100), 3072, 2048, 1).is_err());
         assert!(check_geometry(area(0, 0, 100, 0), 3072, 2048, 1).is_err());
+        // a zero bin is rejected, not divided by
+        let err = check_geometry(area(0, 0, 100, 100), 3072, 2048, 0).unwrap_err();
+        assert!(err.message.contains("BinX and BinY"), "{}", err.message);
         // out of bounds in x and y
         assert!(check_geometry(area(0, 0, 4000, 100), 3072, 2048, 1).is_err());
         assert!(check_geometry(area(0, 0, 100, 3000), 3072, 2048, 1).is_err());
@@ -1733,6 +1753,28 @@ mod tests {
         // ASCOM [x][y]: first axis = width.
         assert_eq!(array.dim().0, 64);
         assert_eq!(array.dim().1, 48);
+    }
+
+    #[test]
+    fn to_image_array_16bit_reads_the_wire_order() {
+        // The camera puts 16-bit pixels on the wire little-endian, so `34 12`
+        // is 0x1234. This pins the contract and would catch an outright swap
+        // (`from_be_bytes`, or hand-rolled shifts), but it CANNOT catch a
+        // regression to `from_ne_bytes`: on a little-endian host the two are
+        // the same instruction. Observing that needs a big-endian target,
+        // which CI does not have.
+        let mut data = vec![0u8; 64 * 48 * 2];
+        data[0] = 0x34;
+        data[1] = 0x12;
+        let image = ImageData {
+            data,
+            width: 64,
+            height: 48,
+            bits_per_pixel: 16,
+            channels: 1,
+        };
+        let array = to_image_array(image).unwrap();
+        assert_eq!(array[(0, 0, 0)], 0x1234_i32);
     }
 
     #[test]
