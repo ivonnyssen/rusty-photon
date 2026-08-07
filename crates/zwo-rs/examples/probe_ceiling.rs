@@ -182,7 +182,10 @@ fn report(camera: &Camera, shot: &Shot) {
 
     let pixels: Vec<u16> = buf
         .chunks_exact(2)
-        .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+        // Little-endian, not native: the camera puts Raw16 on the wire in that
+        // order whatever the host is, so a big-endian host reading native
+        // would measure byte-swapped pixels and report a false ceiling.
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     let mean = pixels.iter().map(|&p| u64::from(p)).sum::<u64>() as f64 / pixels.len() as f64;
     println!(
