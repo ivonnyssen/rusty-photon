@@ -85,6 +85,7 @@ pub use libqhyccd_sys as sys;
 mod camera;
 mod error;
 mod filter_wheel;
+mod quantize;
 mod sdk;
 mod types;
 

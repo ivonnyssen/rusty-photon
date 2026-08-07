@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math) and #908 (star geometry, noise source, tail) — `simulation.rs` and `types.rs` now at zero |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail) and the CFW codec / buffer copies — **`qhyccd-rs` production code now at zero** |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -942,6 +942,102 @@ Three exemptions in the whole file, each at a named boundary with a bound
 proof: `quantize` for float→int, `next_signed` for the per-pixel draw, and
 `row_seed`. That ratio — 218 sites to three annotations — is what the rung was
 testing, and it holds.
+
+### L5c — `camera.rs`, where a cast was hiding a bug
+
+20 sites, one of them in test scope. Four clusters cleared without an exemption,
+and one of them was not a lint problem at all.
+
+**The filter-wheel codec was a hand-written `char::to_digit`.** Slots travel over
+`CONTROL_CFWPORT` as a single hex digit — `'0'`..`'F'`, sixteen positions — and
+both halves of the codec spelled that out by hand:
+
+```rust
+fn cfw_slot_to_ascii(slot: u32) -> u32 {
+    if slot < 10 { slot + b'0' as u32 } else { (slot - 10) + b'A' as u32 }
+}
+
+fn cfw_ascii_to_slot(ascii: u32) -> u32 {
+    match ascii {
+        d @ 0x30..=0x39 => d - 0x30,
+        d @ 0x41..=0x46 => d - 0x41 + 10,
+        d @ 0x61..=0x66 => d - 0x61 + 10,
+        other => other.saturating_sub(0x30),
+    }
+}
+```
+
+Seven sites between them. The decode is exactly `char::to_digit(16)`, which
+accepts the same codes in either case and rejects everything else including
+non-ASCII, so it collapses to one call with the legacy fallback intact:
+
+```rust
+char::from_u32(ascii).and_then(|c| c.to_digit(16)).unwrap_or_else(|| ascii.saturating_sub(0x30))
+```
+
+Verified identical on **all 4,294,967,296 `u32` inputs** (6.5 s in a release
+build — cheap enough that there was no reason to sample).
+
+The encode is where it got interesting. **`u32` is eight times wider than the
+domain**, and that over-width is what made the arithmetic unprovable. Narrowing
+to `u8` would not have helped — `u8` permits 255 and `255 + b'0'` still
+overflows, so clippy warns identically. This is *not* the `size: u8` case from
+the star drawer, where the `u8` was narrower than the `u32` arithmetic it fed and
+so the bound was provable. The bound needed here is 16, and no integer type says
+16.
+
+`char::from_digit(slot, 16)` says it, and returns `None` above it:
+
+```rust
+fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
+    char::from_digit(slot, 16).map(|d| u32::from(d.to_ascii_uppercase()))
+}
+```
+
+Which surfaced the bug the total signature had been concealing: `set_fw_position(20)`
+encoded to `'K'` and commanded an undefined slot, silently. Nothing shipping
+reached it — the Alpaca layer bounds-checks against `get_number_of_filters` first
+— but the library's own contract permitted it, and no test pinned the behaviour.
+It is now `QHYError::InvalidFilterSlot`, in a function that already returned
+`Result`.
+
+**Generalisation:** a conversion forced to be total by pretending an
+unrepresentable case cannot happen is worth a second look before it is made
+lint-clean. The same shape appeared twice more in this file —
+`get_number_of_readout_modes` truncating a `usize` count into the `u32` its
+`Result` could have rejected, and `ControlType::Other(i32)` carrying a value the
+SDK takes as `u32`, which `to_raw` then cast back. Both had an honest arm
+available and unused.
+
+**The buffer copies wanted `get_mut`, not a check.** Both frame downloads did an
+explicit `if buf.len() < data.len() { return Err(BufferTooSmall) }` and then
+indexed. Normally a fallible spelling after a real check just adds a dead arm —
+but here the check and the slice are the same question, so they become one
+statement:
+
+```rust
+let Some(destination) = buf.get_mut(..data.len()) else { /* BufferTooSmall */ };
+destination.copy_from_slice(&data);
+```
+
+In `get_single_frame` this paid for itself: the early check existed only so a
+short buffer would error *without consuming* the captured image, 20 lines before
+the copy. Copying through the borrow instead of out of a `take` gets the same
+guarantee from the ordering, and the whole bounds-checking preamble deletes.
+
+**`quantize` moved up a level.** Two of the float→int sites (`cfw_slot_count`,
+`cfw_position`) compile in real-SDK builds too, where `simulation.rs` — and its
+private `quantize` module — does not exist. The module's doc comment already
+stated a crate-wide policy; it just lived in the file that needed it first. It is
+now `crates/qhyccd-rs/src/quantize.rs`, with `to_u32` unconditional and the other
+five widths gated behind `simulation` so a real-SDK build has no dead code to
+warn about. **One exemption now serves both backends.**
+
+20 sites → 0, with no new exemption. **`qhyccd-rs` production code is at zero**;
+what remains in the crate is test scope and `libqhyccd-sys`, which does not
+inherit the workspace lints (`-sys` shims are L7's bucket — and its one site,
+`const QHYCCD_ERROR_F64: f64 = u32::MAX as f64`, has no alternative anyway:
+`f64::from` is not `const`).
 
 ## L6a — split the CI channels
 
