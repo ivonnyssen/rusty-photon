@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SimulatedCameraConfig::with_filter_wheel` now caps the slot count at 16, the
+  number a `CONTROL_CFWPORT` hex digit can address. A larger count was accepted
+  and advertised through `CfwSlotsNum` and `CfwPort`'s range while every slot
+  from the sixteenth up had no code to command it by, so the simulated wheel
+  reported a size it then refused to move within (`InvalidFilterSlot`).
+  Simulation only; configurations of 16 or fewer slots are unaffected.
+
 - `start_single_frame_exposure` no longer reports a spurious error when
   `ExpQHYCCDSingleFrame` returns `QHYCCD_READ_DIRECTLY` (`0x2001`) — a non-error
   return meaning the single frame is already captured and can be read
@@ -48,6 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `set_cfw_position` rejects a slot outside the sixteen the SDK can
+  address, with the new `QHYError::InvalidFilterSlot`, instead of encoding it as
+  whatever byte the arithmetic produced. `CONTROL_CFWPORT` carries the position as
+  a single hex digit, so slot 16 previously became `'G'` and commanded an
+  undefined position; there is no code for it to have. The codec is now
+  `char::from_digit` / `char::to_digit(16)` rather than hand-written offsets —
+  identical on every input for the decode, and on slots 0–15 for the encode.
+  Callers that bound the slot against `get_number_of_filters` (as this
+  workspace's Alpaca layer does) are unaffected.
+- **Breaking:** `ControlType::Other` carries a `u32` rather than an `i32`, the
+  width the SDK's own `CONTROL_ID` parameter takes and the one `to_raw` already
+  returned.
 - **Breaking:** the colour-filter-array enum is renamed `BayerMode` →
   `BayerPattern`, matching the sibling `zwo-rs` / `svbony-rs` crates (which both
   already expose `BayerPattern`). The type name was a wrapper invention — the QHY

@@ -19,6 +19,7 @@ use std::ffi::{c_char, CStr};
 
 use parking_lot::RwLock;
 
+use crate::quantize;
 use crate::Result;
 use crate::{CCDChipArea, CCDChipInfo, FrameInfo, QHYError, StreamMode};
 
@@ -52,25 +53,36 @@ use crate::simulation::{self, SimulatedCameraState};
 // physical slot. Shared by the real accessors and the simulation backend so a
 // crate round-trip stays consistent; verified only on hardware for slots >= 10.
 
-/// Encode a 0-indexed slot as its `CONTROL_CFWPORT` hex-ASCII code.
-fn cfw_slot_to_ascii(slot: u32) -> u32 {
-    if slot < 10 {
-        slot + b'0' as u32
-    } else {
-        (slot - 10) + b'A' as u32
-    }
+/// Slots a `CONTROL_CFWPORT` value can address. This is the encoding's bound,
+/// not a chosen limit — one hex digit names sixteen positions and no more — so
+/// anything advertising a slot *count* has to agree with it (a test below pins
+/// the two together).
+///
+/// Only a slot *count* needs this; the encoders carry the bound in their own
+/// signatures. That is the simulator's config and the test, so the const is
+/// scoped to them rather than sitting dead in a real-SDK build.
+#[cfg(any(feature = "simulation", test))]
+pub(crate) const CFW_MAX_SLOTS: u32 = 16;
+
+/// Encode a 0-indexed slot as its `CONTROL_CFWPORT` hex-ASCII code, or `None`
+/// for a slot the encoding cannot name. A single hex digit addresses sixteen
+/// positions and no more, which is what [`char::from_digit`] enforces here —
+/// the bound lives in the return type rather than in this sentence.
+fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
+    char::from_digit(slot, 16).map(|d| u32::from(d.to_ascii_uppercase()))
 }
 
-/// Decode a `CONTROL_CFWPORT` hex-ASCII code back to a 0-indexed slot. Accepts
-/// upper- or lower-case hex; any out-of-range byte falls back to the legacy
-/// decimal decode so a nonstandard value degrades rather than panics.
+/// Decode a `CONTROL_CFWPORT` hex-ASCII code back to a 0-indexed slot.
+///
+/// [`char::to_digit`] is **ASCII-only**: std defines a digit as `0-9`, `a-z`,
+/// `A-Z`, so at radix 16 it accepts exactly `0-9`, `A-F`, `a-f` — the codes the
+/// wheel can report, in either case — and nothing else, non-ASCII code points
+/// included. Any other byte falls back to the legacy decimal decode so a
+/// nonstandard value degrades rather than panics.
 fn cfw_ascii_to_slot(ascii: u32) -> u32 {
-    match ascii {
-        d @ 0x30..=0x39 => d - 0x30,      // '0'..='9'
-        d @ 0x41..=0x46 => d - 0x41 + 10, // 'A'..='F'
-        d @ 0x61..=0x66 => d - 0x61 + 10, // 'a'..='f'
-        other => other.saturating_sub(0x30),
-    }
+    char::from_u32(ascii)
+        .and_then(|c| c.to_digit(16))
+        .unwrap_or_else(|| ascii.saturating_sub(0x30))
 }
 
 #[cfg(test)]
@@ -80,10 +92,27 @@ mod cfw_encoding_tests {
 
     #[test]
     fn slot_to_ascii_uses_hex_digits() {
-        assert_eq!(cfw_slot_to_ascii(0), u32::from(b'0')); // 48
-        assert_eq!(cfw_slot_to_ascii(9), u32::from(b'9')); // 57
-        assert_eq!(cfw_slot_to_ascii(10), u32::from(b'A')); // 65, NOT ':' (58)
-        assert_eq!(cfw_slot_to_ascii(15), u32::from(b'F')); // 70
+        assert_eq!(cfw_slot_to_ascii(0), Some(u32::from(b'0'))); // 48
+        assert_eq!(cfw_slot_to_ascii(9), Some(u32::from(b'9'))); // 57
+        assert_eq!(cfw_slot_to_ascii(10), Some(u32::from(b'A'))); // 65, NOT ':' (58)
+        assert_eq!(cfw_slot_to_ascii(15), Some(u32::from(b'F'))); // 70
+    }
+
+    #[test]
+    fn slot_to_ascii_has_no_code_past_the_sixteenth_slot() {
+        // The SDK addresses the wheel with one hex digit, so slot 16 is not a
+        // slot with an unusual code — it is a slot with no code at all.
+        assert_eq!(cfw_slot_to_ascii(16), None);
+        assert_eq!(cfw_slot_to_ascii(u32::MAX), None);
+    }
+
+    #[test]
+    fn max_slots_is_exactly_where_the_encoding_runs_out() {
+        // `CFW_MAX_SLOTS` is advertised as a slot count elsewhere (the
+        // simulator caps its wheel with it), so it has to stay pinned to the
+        // codec rather than drift into a second, independent 16.
+        assert!(cfw_slot_to_ascii(super::CFW_MAX_SLOTS - 1).is_some());
+        assert_eq!(cfw_slot_to_ascii(super::CFW_MAX_SLOTS), None);
     }
 
     #[test]
@@ -97,7 +126,8 @@ mod cfw_encoding_tests {
     #[test]
     fn encoding_round_trips_every_slot_0_to_15() {
         for slot in 0..16 {
-            assert_eq!(cfw_ascii_to_slot(cfw_slot_to_ascii(slot)), slot);
+            let ascii = cfw_slot_to_ascii(slot).unwrap();
+            assert_eq!(cfw_ascii_to_slot(ascii), slot);
         }
     }
 
@@ -105,8 +135,16 @@ mod cfw_encoding_tests {
     fn slots_0_through_9_match_the_legacy_decimal_offset() {
         // Hex and decimal `+48` coincide below 10; they diverge only from slot 10.
         for slot in 0..10 {
-            assert_eq!(cfw_slot_to_ascii(slot), slot + 48);
+            assert_eq!(cfw_slot_to_ascii(slot), Some(slot + 48));
         }
+    }
+
+    #[test]
+    fn ascii_to_slot_falls_back_to_the_decimal_decode_off_the_hex_range() {
+        // Not hex digits, so the fallback carries them: the wheel reporting
+        // something nonstandard degrades to a number rather than panicking.
+        assert_eq!(cfw_ascii_to_slot(u32::from(b'G')), 23); // 0x47 - 0x30
+        assert_eq!(cfw_ascii_to_slot(0), 0); // saturates rather than wrapping
     }
 }
 
@@ -191,8 +229,8 @@ pub enum ControlType {
     /// `CAM_BIN8X8MODE` (76) — 8×8 binning support.
     CamBin8x8mode,
     /// Any control outside the subset named above; carries the raw SDK
-    /// `CONTROL_ID`.
-    Other(i32),
+    /// `CONTROL_ID`, in the width the SDK's own `CONTROL_ID` parameter takes.
+    Other(u32),
 }
 
 impl ControlType {
@@ -237,7 +275,7 @@ impl ControlType {
             Self::CamIsColor => 59,
             Self::CamBin6x6mode => 75,
             Self::CamBin8x8mode => 76,
-            Self::Other(v) => v as u32,
+            Self::Other(v) => v,
         }
     }
 
@@ -247,7 +285,7 @@ impl ControlType {
     /// raw id back to a `ControlType`), so it is test-only.
     #[cfg(test)]
     #[must_use]
-    fn from_raw(v: i32) -> Self {
+    fn from_raw(v: u32) -> Self {
         match v {
             0 => Self::Brightness,
             2 => Self::Wbr,
@@ -328,7 +366,7 @@ mod control_type_tests {
             ControlType::CamBin8x8mode,
         ];
         for control in named {
-            assert_eq!(ControlType::from_raw(control.to_raw() as i32), control);
+            assert_eq!(ControlType::from_raw(control.to_raw()), control);
         }
     }
 
@@ -1410,15 +1448,17 @@ impl Camera {
                 generator.generate_16bit(width, height, channels)
             };
 
-            if buf.len() < data.len() {
+            // The bound check and the slice are the same statement, so they
+            // cannot drift apart.
+            let Some(destination) = buf.get_mut(..data.len()) else {
                 let error = QHYError::BufferTooSmall {
                     needed: data.len(),
                     got: buf.len(),
                 };
                 tracing::error!(error = ?error);
                 return Err(error);
-            }
-            buf[..data.len()].copy_from_slice(&data);
+            };
+            destination.copy_from_slice(&data);
 
             Ok(FrameInfo {
                 width,
@@ -1508,7 +1548,7 @@ impl Camera {
                 let remaining_us = state.get_remaining_exposure_us();
                 if remaining_us > 0 {
                     drop(state); // Release lock while sleeping
-                    std::thread::sleep(std::time::Duration::from_micros(remaining_us as u64));
+                    std::thread::sleep(std::time::Duration::from_micros(u64::from(remaining_us)));
                     // Reacquire lock
                     state = self.state.write();
                 } else {
@@ -1516,37 +1556,29 @@ impl Camera {
                 }
             }
 
-            // Bounds-check the caller's buffer against the captured frame BEFORE
-            // consuming it, so a short buffer errors without losing the image.
-            let need = match state.captured_image.as_ref() {
-                Some(image) => image.len(),
-                None => {
-                    return Err(QHYError::Sdk {
-                        op: "get_single_frame: no image available",
-                    })
-                }
-            };
-            if buf.len() < need {
-                let error = QHYError::BufferTooSmall {
-                    needed: need,
-                    got: buf.len(),
+            // Copy through the borrow rather than out of a `take`, so a short
+            // buffer errors with the image still held rather than losing it.
+            {
+                let captured_image = state.captured_image.as_ref().ok_or(QHYError::Sdk {
+                    op: "get_single_frame: no image available",
+                })?;
+                let Some(destination) = buf.get_mut(..captured_image.len()) else {
+                    let error = QHYError::BufferTooSmall {
+                        needed: captured_image.len(),
+                        got: buf.len(),
+                    };
+                    tracing::error!(error = ?error);
+                    return Err(error);
                 };
-                tracing::error!(error = ?error);
-                return Err(error);
+                destination.copy_from_slice(captured_image);
             }
 
-            // Take the pre-generated image + metadata (image presence checked above).
-            let captured_image = state.captured_image.take().ok_or(QHYError::Sdk {
-                op: "get_single_frame: no image available",
-            })?;
+            // Delivered: drop the image and its metadata, and clear the exposure.
+            state.captured_image = None;
             let metadata = state.captured_image_metadata.take().ok_or(QHYError::Sdk {
                 op: "get_single_frame: no image metadata available",
             })?;
-
-            // Clear exposure state
             state.exposure_start = None;
-
-            buf[..captured_image.len()].copy_from_slice(&captured_image);
 
             Ok(FrameInfo {
                 width: metadata.width,
@@ -1751,7 +1783,7 @@ impl Camera {
             if state.config.supported_controls.contains_key(&control) {
                 // For CamColor, return the Bayer pattern value
                 if control == ControlType::CamColor {
-                    return state.config.bayer_pattern.map(|m| m as u32);
+                    return state.config.bayer_pattern.map(u32::from);
                 }
                 // Real `IsQHYCCDControlAvailable` returns `QHYCCD_SUCCESS` (0) for an
                 // available non-color control, and the real arm passes that raw
@@ -1799,9 +1831,15 @@ impl Camera {
                 ControlType::CfwPort => {
                     // Position carried as its hex-ASCII code (see `cfw_slot_to_ascii`);
                     // reading advances the simulated move one poll toward the target.
-                    Ok(cfw_slot_to_ascii(state.poll_filter_wheel()) as f64)
+                    let slot = state.poll_filter_wheel();
+                    let Some(ascii) = cfw_slot_to_ascii(slot) else {
+                        let error = QHYError::InvalidFilterSlot { slot };
+                        tracing::error!(error = ?error);
+                        return Err(error);
+                    };
+                    Ok(f64::from(ascii))
                 }
-                ControlType::CfwSlotsNum => Ok(state.config.filter_wheel_slots as f64),
+                ControlType::CfwSlotsNum => Ok(f64::from(state.config.filter_wheel_slots)),
                 ControlType::CurTemp => {
                     // Real GetQHYCCDParam(CURTEMP) tracks the CONTROL_COOLER setpoint;
                     // advance one poll-step toward it and report the new value.
@@ -1822,7 +1860,7 @@ impl Camera {
                         Err(error)
                     }
                 }
-                ControlType::OutputDataActualBits => Ok(state.bit_depth as f64),
+                ControlType::OutputDataActualBits => Ok(f64::from(state.bit_depth)),
                 _ => state.parameters.get(&control).copied().ok_or_else(|| {
                     let error = QHYError::GetParameter { control };
                     tracing::error!(error = ?error);
@@ -1914,7 +1952,7 @@ impl Camera {
                     // Value is the hex-ASCII position code (see `cfw_ascii_to_slot`).
                     // Command a move; the wheel reaches the slot after a few polls
                     // (see `poll_filter_wheel`), not instantly.
-                    state.command_filter_wheel(cfw_ascii_to_slot(value as u32));
+                    state.command_filter_wheel(cfw_ascii_to_slot(quantize::to_u32(value)));
                 }
                 ControlType::Cooler => {
                     state.target_temperature = value;
@@ -1923,7 +1961,7 @@ impl Camera {
                     state.cooler_pwm = value;
                 }
                 ControlType::Exposure => {
-                    state.exposure_duration_us = value as u64;
+                    state.exposure_duration_us = quantize::to_u64(value);
                     state.parameters.insert(control, value);
                 }
                 _ => {
@@ -2075,24 +2113,33 @@ impl Camera {
 
     /// Number of filter-wheel slots (`ControlType::CfwSlotsNum`).
     pub fn cfw_slot_count(&self) -> Result<u32> {
-        Ok(self.get_parameter(ControlType::CfwSlotsNum)? as u32)
+        Ok(quantize::to_u32(
+            self.get_parameter(ControlType::CfwSlotsNum)?,
+        ))
     }
 
     /// Current 0-indexed filter-wheel position, decoding the SDK's hex-ASCII
     /// `ControlType::CfwPort` value (`'0'` == slot 0 .. `'F'` == slot 15).
     pub fn cfw_position(&self) -> Result<u32> {
-        Ok(cfw_ascii_to_slot(
-            self.get_parameter(ControlType::CfwPort)? as u32
-        ))
+        Ok(cfw_ascii_to_slot(quantize::to_u32(
+            self.get_parameter(ControlType::CfwPort)?,
+        )))
     }
 
     /// Command the filter wheel to a 0-indexed slot, encoding it as the SDK's
     /// hex-ASCII `ControlType::CfwPort` code (`'0'` == slot 0 .. `'F'` == slot 15).
+    /// A slot past the sixteenth has no such code, and is rejected with
+    /// [`QHYError::InvalidFilterSlot`] rather than commanded as some other slot.
     ///
     /// Actuates hardware — see [`Camera::set_target_temperature_celsius`]'s
     /// tenet note.
     pub fn set_cfw_position(&self, position: u32) -> Result<()> {
-        self.set_parameter(ControlType::CfwPort, f64::from(cfw_slot_to_ascii(position)))
+        let Some(ascii) = cfw_slot_to_ascii(position) else {
+            let error = QHYError::InvalidFilterSlot { slot: position };
+            tracing::error!(error = ?error);
+            return Err(error);
+        };
+        self.set_parameter(ControlType::CfwPort, f64::from(ascii))
     }
 }
 
@@ -2135,7 +2182,12 @@ impl Camera {
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
-            Ok(state.config.readout_modes.len() as u32)
+            // The real path reports the count in a `u32` out-parameter, so a
+            // configured list too long to fit one is a config the SDK could not
+            // have described — the error arm the signature already carries.
+            u32::try_from(state.config.readout_modes.len()).map_err(|_| QHYError::Sdk {
+                op: "get_number_of_readout_modes",
+            })
         }
     }
 

@@ -13,8 +13,9 @@ use crate::ControlType;
 /// that names the wrapper method which failed; route such calls through
 /// [`check`]. The remaining variants capture the genuinely-distinct conditions
 /// the wrapper detects itself: a closed camera, the three control-scoped
-/// parameter failures (where the [`ControlType`] is real information), and the
-/// two FFI string-conversion errors.
+/// parameter failures (where the [`ControlType`] is real information), an
+/// argument outside the range the SDK can address, and the two FFI
+/// string-conversion errors.
 ///
 /// This mirrors the flat shape of the sibling crates' error enums (`zwo-rs`'s
 /// `Error`, `svbony-rs`'s `Error`); it carries no per-call-site variant. The
@@ -67,6 +68,15 @@ pub enum QHYError {
         needed: usize,
         /// bytes the caller provided
         got: usize,
+    },
+    /// A filter-wheel slot outside the sixteen the SDK can address. Slots travel
+    /// over `CONTROL_CFWPORT` as a single hex digit (`'0'`..`'F'`), so slot 16
+    /// and up have no code to be commanded with, and reporting one back would
+    /// mean the wheel is at a position this encoding cannot name.
+    #[error("filter-wheel slot {slot} is outside the SDK's 16 addressable positions")]
+    InvalidFilterSlot {
+        /// The slot that has no `CONTROL_CFWPORT` code.
+        slot: u32,
     },
     /// A string returned by the SDK was not valid UTF-8.
     #[error("invalid UTF-8 in a string returned by the SDK: {0}")]

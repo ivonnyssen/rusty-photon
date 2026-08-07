@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c (simulator pixel loops) in #895/#904; L5d (the three camera services' gain/offset range) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -728,6 +728,317 @@ production only ever generates the gradient and the debug cost lands on at most
 14 BDD captures (~0.2 s against a 2.8 s suite), but CI builds fastbuild, so a
 hot loop converted this way pays it on every run. Measure the site first.
 
+### L5c — the star geometry's signed detour
+
+The file's last structural shape, and 50 of the 60 sites it had left. Every one
+of them dropped into `i32` to subtract two coordinates, and then threw the sign
+away:
+
+```rust
+let x = cx as i32 + dx as i32 - size as i32;
+let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else { continue };
+let dist = (((dx as i32 - size as i32).pow(2) + (dy as i32 - size as i32).pow(2)) as f64).sqrt();
+```
+
+`dx - size` is computed twice — once to place a pixel, once to measure it — and
+what each use wants is not a signed number. The distance wants a **magnitude**;
+the coordinate wants a **direction**. `abs_diff` yields the first without
+leaving `u32`, and a comparison picks the arm for the second:
+
+```rust
+let (ox, oy) = (dx.abs_diff(radius), dy.abs_diff(radius));
+let (Some(x), Some(y)) = (
+    if dx >= radius { cx.checked_add(ox) } else { cx.checked_sub(ox) },
+    if dy >= radius { cy.checked_add(oy) } else { cy.checked_sub(oy) },
+) else { continue };
+let (fx, fy) = (f64::from(ox), f64::from(oy));
+let dist = (fx * fx + fy * fy).sqrt();
+```
+
+Three things worth carrying to the other `as_conversions` clusters:
+
+- **Clippy exempts float arithmetic**, because a float operation cannot panic or
+  wrap. So moving a computation *into* `f64` through a total magnitude removes
+  the whole cluster at once — no `checked_*`, no `#[expect]`, nothing to justify
+  per site. It only works when the result was going to be a float anyway, which
+  a distance is.
+- **`u8` is a bound the compiler can see.** `draw_star_*` took `size: u32` and
+  wrote `0..=size * 2`, which lints. Retyping the parameter to `u8` makes the
+  doubling provably total — 2 × 255 cannot leave `u32` — with no invented cap
+  and no arm that never fires. The callers pass `random_range(1..=3)`, so the
+  type merely records what was already true.
+- **A guard clippy cannot see still needs the saturating spelling.**
+  `random_range(1..frame.width - 1)` sits under an early `frame.width < 3`
+  return; `saturating_sub(1)` says so without adding a second guard.
+
+**The old form was wrong at the seam, and the rewrite fixes it silently.** An
+exhaustive sweep of both forms over 168,611 (centre, size, offset) combinations
+— every centre from 0 to 40, plus 1000, 3071 and the `i32`/`u32` boundaries, at
+every size the generators draw — agrees **bit-for-bit on coordinate and
+distance for every centre below `i32::MAX`**, and diverges only above it, where
+`cx as i32` goes negative and the old code dropped a pixel that was inside the
+frame. With debug assertions the old form additionally *panicked* on 10,970 of
+those cases. Neither is reachable through `qhy-camera`, but both are gone.
+
+60 sites → 10, and the file's only remaining shapes are the four in the tail
+(a filter-wheel decrement, a `BayerPattern` discriminant, a row seed, and
+`PixelNoise::next_signed`).
+
+#### What the total spelling cost, measured properly
+
+The cross-binary comparison used for the pixel loops could not resolve this
+change: over seven passes, `generate_gradient_8bit` moved −6.5% and the colour
+flat path +8.6%, and **neither function was touched**. At that noise floor a
+real ±3% is invisible. Building both forms into one binary and interleaving them
+— same process, same allocator, same cache state — resolves it to ±0.2%:
+
+| ring-distance form | full 3072×2048 frame |
+|---|---|
+| old, `i32` square then one convert | 12.3 ms |
+| **new, magnitude then float square** | **12.7 ms (+3%)** |
+| rejected: `f64::from(ox.saturating_mul(ox))` | 18.2 ms (+50%) |
+
+The integer variant looks closest to the original and is by far the worst: the
+`saturating_mul` cmov defeats vectorization of the inner loop. The float form's
+3% buys ten sites and the seam fix, on the one pattern production never
+generates — `ImagePattern::TestPattern` is a test and BDD fixture. Two lessons
+generalize: **a same-process A/B is the only comparison that survives layout
+noise**, and **a saturating spelling in a vectorizable loop can cost far more
+than the widening it avoids.**
+
+### L5c — the noise source, and three benchmarks that disagreed
+
+`PixelNoise::next_signed` was the file's hottest body — one call per pixel, so
+6.3 million per full frame — and carried five of the ten sites left after the
+star geometry. It recomputed a value that could not change:
+
+```rust
+fn next_signed(&mut self, range: i32) -> i32 {
+    if range <= 0 { return 0; }
+    let span = u64::from(range.unsigned_abs()) * 2 + 1;   // per pixel
+    let scaled = (u64::from(self.next_u32()) * span) >> 32;
+    (scaled as i64 - i64::from(range)) as i32
+}
+```
+
+`range` is fixed for a whole frame, so `span` belongs on the struct. Moving it
+there deletes one site outright, lets the constructor spell the remaining
+arithmetic saturating for free (once per frame), and drops the per-pixel
+`range <= 0` branch — a zero range now yields a span of one, which scales every
+draw to zero anyway. What is left is two lines under **one** `#[expect]`
+carrying the bound proof: `range <= i32::MAX` gives `span <= 2^32 - 1`, so the
+product is at most `(2^32 - 1)^2 = 2^64 - 2^33 + 1`, inside `u64` with `2^33 - 1`
+to spare.
+
+**Neither cast has a total spelling.** `scaled as i64` and the final `as i32`
+are both provably in range, and both `try_from` forms would be arms that can
+never be taken — the dead-arm trap this plan has hit before. An `#[expect]` is
+the honest answer where a `checked_*` would be theatre.
+
+10 sites → 5.
+
+#### Three benchmarks, three answers, one that was measuring the right thing
+
+This is the part worth carrying forward, because two of the three were
+convincing and wrong:
+
+| how it was measured | verdict on the hoist |
+|---|---|
+| microbenchmark accumulating draws into an `i64` | **−12 to −14%** |
+| whole generators, separate binaries, min of 5 passes | inconclusive (±8% noise) |
+| **the real loop body, both forms in one process** | **0%** |
+
+The microbenchmark's `acc += next_signed()` creates a dependency chain that
+exposes the span computation's latency. The real loop stores to an independent
+buffer, so out-of-order execution hides that work entirely behind the xorshift's
+own state chain — the recomputation was *already free*, and the 14% was an
+artifact of the harness. The cross-binary run, meanwhile, could not see anything
+at all: `generate_gradient_8bit` moved +8% between builds that do not change it.
+
+**So the hoist is not a speedup, and this plan should not claim one.** It is
+worth keeping because a frame-invariant value computed per pixel is wrong on its
+own terms, and because it shrinks the exemption. What *is* a measured result is
+the alternative:
+
+| per-pixel noise draw, 6.29 M samples | |
+|---|---|
+| recompute the span (original) | 10.5 ms |
+| hoisted, arithmetic under `#[expect]` | 10.5 ms |
+| **hoisted, arithmetic saturating** | **15.3 ms (+45%)** |
+
+That is the second time in this rung a saturating spelling cost far more than
+the widening it avoided — the star geometry's integer variant measured +50%.
+Two sites, two independent measurements, one rule: **inside a per-pixel loop,
+reach for `#[expect]` with a bound proof, not for `saturating_*`.** Outside one,
+saturating is free and should stay the default.
+
+#### Frames are non-deterministic, so compare the stream
+
+An attempt to verify the hoist by hashing generated frames failed before it
+started: `generate_8bit` draws `frame_seed` from `rand::rng()` on every call, by
+design, so two runs of the *same binary* disagree. Only the zero-noise cases
+matched, which looked exactly like a real regression. The check that works is
+the noise stream itself — `next_signed` for a fixed seed — which is identical
+before and after across ranges 0, 10, 100, 65535 and `i32::MAX`.
+
+### L5c — the tail, and the file at zero
+
+Five sites, four decisions, and one of them paid for itself twice over.
+
+**Two guarded decrements** — `f64::from(slots - 1)` under an `if slots > 0`, and
+`settle_polls -= 1` under an `if settle_polls > 0`. Neither runs in a loop, so
+`saturating_sub(1)` is free and the guard above it is what makes the arm
+unreachable. This is now the third distinct place in the rung where the answer
+was "the guard is real, clippy just cannot see it".
+
+**A discriminant enum with no `From`.** The simulator read `BayerPattern`'s SDK
+code with a double cast, written twice:
+
+```rust
+(bayer_pattern as u32 as f64, bayer_pattern as u32 as f64, 0.0)
+```
+
+and `types.rs` open-coded the same conversion four more times inside its own
+`TryFrom<u32>`, as guard clauses comparing against `Variant as u32`. Writing the
+conversion once turns all of it into ordinary code:
+
+```rust
+impl From<BayerPattern> for u32 {
+    fn from(pattern: BayerPattern) -> Self {
+        match pattern { GBRG => 1, GRBG => 2, BGGR => 3, RGGB => 4 }
+    }
+}
+```
+
+`TryFrom` becomes a plain `match value { 1 => Ok(GBRG), ... }`, the simulator
+becomes `f64::from(u32::from(bayer_pattern))`, and `camera.rs`'s
+`.map(|m| m as u32)` becomes `.map(u32::from)`. **Seven sites across three files
+for one impl** — the best ratio in the rung, and the pattern to look for
+wherever a `repr`-style enum is read back with a cast. The discriminants stay on
+the enum because the doc comment promises the SDK's numbering, and a test now
+pins `u32::from` to those four values so the two cannot drift.
+
+**One `#[expect]`, for a conversion that has no total spelling.** `row_seed`
+takes a `usize` row index and folds it into a `u32` seed. `usize → u32` has no
+`From`, and every fallible spelling is worse than the cast: the arm cannot be
+taken (the row index is bounded by `Frame::height`, a `u32`), and a
+`unwrap_or(0)` fallback would alias row 0's seed. A seed needs only to differ
+between rows.
+
+5 sites → 0. **`simulation.rs` is at zero production sites, from 218**, and
+`types.rs` with it. What remains in the crate is `camera.rs` (21) and the test
+scope.
+
+| L5c pass | sites |
+|---|---:|
+| starting point | 218 |
+| pixel loops (chunked iteration) | 135 |
+| value math (`quantize`, saturating samples) | 60 |
+| star geometry (`abs_diff`, float distance) | 10 |
+| noise source (span hoisted, one `#[expect]`) | 5 |
+| **tail (`From` impl, guarded decrements)** | **0** |
+
+Three exemptions in the whole file, each at a named boundary with a bound
+proof: `quantize` for float→int, `next_signed` for the per-pixel draw, and
+`row_seed`. That ratio — 218 sites to three annotations — is what the rung was
+testing, and it holds.
+
+### L5c — `camera.rs`, where a cast was hiding a bug
+
+20 sites, one of them in test scope. Four clusters cleared without an exemption,
+and one of them was not a lint problem at all.
+
+**The filter-wheel codec was a hand-written `char::to_digit`.** Slots travel over
+`CONTROL_CFWPORT` as a single hex digit — `'0'`..`'F'`, sixteen positions — and
+both halves of the codec spelled that out by hand:
+
+```rust
+fn cfw_slot_to_ascii(slot: u32) -> u32 {
+    if slot < 10 { slot + b'0' as u32 } else { (slot - 10) + b'A' as u32 }
+}
+
+fn cfw_ascii_to_slot(ascii: u32) -> u32 {
+    match ascii {
+        d @ 0x30..=0x39 => d - 0x30,
+        d @ 0x41..=0x46 => d - 0x41 + 10,
+        d @ 0x61..=0x66 => d - 0x61 + 10,
+        other => other.saturating_sub(0x30),
+    }
+}
+```
+
+Seven sites between them. The decode is exactly `char::to_digit(16)`, which
+accepts the same codes in either case and rejects everything else including
+non-ASCII, so it collapses to one call with the legacy fallback intact:
+
+```rust
+char::from_u32(ascii).and_then(|c| c.to_digit(16)).unwrap_or_else(|| ascii.saturating_sub(0x30))
+```
+
+Verified identical on **all 4,294,967,296 `u32` inputs** (6.5 s in a release
+build — cheap enough that there was no reason to sample).
+
+The encode is where it got interesting. **`u32` is eight times wider than the
+domain**, and that over-width is what made the arithmetic unprovable. Narrowing
+to `u8` would not have helped — `u8` permits 255 and `255 + b'0'` still
+overflows, so clippy warns identically. This is *not* the `size: u8` case from
+the star drawer, where the `u8` was narrower than the `u32` arithmetic it fed and
+so the bound was provable. The bound needed here is 16, and no integer type says
+16.
+
+`char::from_digit(slot, 16)` says it, and returns `None` above it:
+
+```rust
+fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
+    char::from_digit(slot, 16).map(|d| u32::from(d.to_ascii_uppercase()))
+}
+```
+
+Which surfaced the bug the total signature had been concealing: `set_fw_position(20)`
+encoded to `'K'` and commanded an undefined slot, silently. Nothing shipping
+reached it — the Alpaca layer bounds-checks against `get_number_of_filters` first
+— but the library's own contract permitted it, and no test pinned the behaviour.
+It is now `QHYError::InvalidFilterSlot`, in a function that already returned
+`Result`.
+
+**Generalisation:** a conversion forced to be total by pretending an
+unrepresentable case cannot happen is worth a second look before it is made
+lint-clean. The same shape appeared twice more in this file —
+`get_number_of_readout_modes` truncating a `usize` count into the `u32` its
+`Result` could have rejected, and `ControlType::Other(i32)` carrying a value the
+SDK takes as `u32`, which `to_raw` then cast back. Both had an honest arm
+available and unused.
+
+**The buffer copies wanted `get_mut`, not a check.** Both frame downloads did an
+explicit `if buf.len() < data.len() { return Err(BufferTooSmall) }` and then
+indexed. Normally a fallible spelling after a real check just adds a dead arm —
+but here the check and the slice are the same question, so they become one
+statement:
+
+```rust
+let Some(destination) = buf.get_mut(..data.len()) else { /* BufferTooSmall */ };
+destination.copy_from_slice(&data);
+```
+
+In `get_single_frame` this paid for itself: the early check existed only so a
+short buffer would error *without consuming* the captured image, 20 lines before
+the copy. Copying through the borrow instead of out of a `take` gets the same
+guarantee from the ordering, and the whole bounds-checking preamble deletes.
+
+**`quantize` moved up a level.** Two of the float→int sites (`cfw_slot_count`,
+`cfw_position`) compile in real-SDK builds too, where `simulation.rs` — and its
+private `quantize` module — does not exist. The module's doc comment already
+stated a crate-wide policy; it just lived in the file that needed it first. It is
+now `crates/qhyccd-rs/src/quantize.rs`, with `to_u32` unconditional and the other
+five widths gated behind `simulation` so a real-SDK build has no dead code to
+warn about. **One exemption now serves both backends.**
+
+20 sites → 0, with no new exemption. **`qhyccd-rs` production code is at zero**;
+what remains in the crate is test scope and `libqhyccd-sys`, which does not
+inherit the workspace lints (`-sys` shims are L7's bucket — and its one site,
+`const QHYCCD_ERROR_F64: f64 = u32::MAX as f64`, has no alternative anyway:
+`f64::from` is not `const`).
+
 ### L5d — the gain range, cached at the wrong type
 
 The three ASCOM camera services carry the same six accessors, and between them
@@ -808,10 +1119,18 @@ fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
 
 **26 sites → 0 across three services for one `#[expect]`**, in the one place
 no `TryFrom<f64>` exists to spell it otherwise. The remaining 60 sites in the
-three files are the shapes that repeat verbatim across all three — `rescale_roi`
-(where `qhy` carries a `.max(1)` clamp its two siblings lack, with a comment
-describing the bug their absence implies), the clamped `pct as u8`, the
-`bytes[..needed]` frame copies, and `zwo`'s `MaxADU` shift.
+three files are the shapes that repeat verbatim across all three — `rescale_roi`,
+the clamped `pct as u8`, the `bytes[..needed]` frame copies, and `zwo`'s `MaxADU`
+shift.
+
+`rescale_roi` was the one where the repetition itself was the finding, and it
+went to #913 rather than here: `qhy` carried a `.max(1)` clamp its two siblings
+lacked, with a comment describing the bug their absence implied. Copying the
+clamp across then exposed the half nobody had — an explicit `NumX = 0` was being
+rewritten to 1, inventing exactly the value the clamp existed to prevent, and on
+`qhy`, which has no alignment rule to catch it, that cleared every check and
+exposed a one-pixel frame. **Reading three copies of a function against each
+other is its own audit**, and worth doing before deciding which copy is right.
 
 ## L6a — split the CI channels
 
