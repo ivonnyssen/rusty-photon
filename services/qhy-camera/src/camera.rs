@@ -584,13 +584,17 @@ fn max_adu_from_bits(bits: u32) -> u32 {
 }
 
 /// Bayer-pattern → ASCOM `BayerOffsetX/Y`.
+///
+/// The SDK spells the quad out in full, so this maps four names onto the same
+/// four; where the red photosite then sits is the shared crate's rule.
 const fn bayer_offsets(mode: BayerPattern) -> (u8, u8) {
     match mode {
-        BayerPattern::GBRG => (0, 1),
-        BayerPattern::GRBG => (1, 0),
-        BayerPattern::BGGR => (1, 1),
-        BayerPattern::RGGB => (0, 0),
+        BayerPattern::GBRG => geometry::BayerPattern::Gbrg,
+        BayerPattern::GRBG => geometry::BayerPattern::Grbg,
+        BayerPattern::BGGR => geometry::BayerPattern::Bggr,
+        BayerPattern::RGGB => geometry::BayerPattern::Rggb,
     }
+    .offsets()
 }
 
 /// Convert a single-plane SDK frame into an ASCOM `ImageArray` with `[x][y]` axis
@@ -1711,6 +1715,10 @@ mod tests {
         assert!(err.message.contains("StartX + NumX"), "{}", err.message);
     }
 
+    /// The offsets come from the shared crate, so these values are not a
+    /// restatement of anything in this file — they pin the vendor mapping end
+    /// to end. `GRBG` and `GBRG` are the pair worth having a test for: they are
+    /// anagrams and their offsets are transposes of each other.
     #[test]
     fn bayer_offset_mapping() {
         assert_eq!(bayer_offsets(BayerPattern::RGGB), (0, 0));

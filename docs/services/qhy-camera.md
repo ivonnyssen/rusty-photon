@@ -515,6 +515,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 - **ST1.** `SensorType` is `RGGB` (colour) when the colour control is present,
   else `Monochrome`; `BayerOffsetX/Y` follow the SDK's reported Bayer pattern.
+  The driver maps the SDK's spelling onto
+  [`rusty-photon-camera-geometry`](../../crates/rusty-photon-camera-geometry/)'s
+  `BayerPattern`, which locates the first red photosite; the offsets
+  themselves are **one implementation** across the three camera drivers.
 
 ### FilterWheel (when a CFW is detected)
 
