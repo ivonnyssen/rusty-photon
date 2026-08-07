@@ -11,11 +11,11 @@ a physical sensor.
 
 | | |
 |---|---|
-| Commit | `28bdd094` (branch `feat/camera-core-image-array`, PR #926 — `main` + the camera-core refactor under test) |
+| Commit | `7e12a9b3` (branch `feat/camera-core-image-array`, PR #926 — `main` + the camera-core refactor under test) |
 | Platform | Fedora Linux 44 x86_64 |
 | Binary | `cargo run -p zwo-camera` — **default features**, i.e. the production non-`simulation` path `zwo-camera → zwo-rs → libzwo-sys → libASICamera2.so` |
 | ZWO SDK | `/usr/local/lib/libASICamera2.so`, `99-asi.rules` udev rule |
-| ConformU | 4.4.0 (Build 52526.0ad7f21) |
+| ConformU | 4.5.0 (Build 53834.49ab847) — the version CI has tracked since it was published on 2026-08-06 |
 | Service | one instance, port 11122, three devices at `camera/0`, `camera/1`, `camera/2` |
 
 ## Devices and verdicts
@@ -45,7 +45,11 @@ response target.
 | Offset range | 0–100 | 0–600 | 0–20 |
 | `ReadoutModes` | Raw16, Raw8 | Raw16, Raw8 | Raw16, Raw8 |
 | Cooling (K1) | `true` | `false` | `false` |
-| `CCDTemperature` | 0.0 °C at first read | 37.8 °C | live |
+| `CCDTemperature` | 0.0 °C at first read | 37.8 °C | 30.5 °C |
+
+The two mono bodies return `NotImplemented` for `BayerOffsetX/Y`, which
+ConformU records as expected for a `Monochrome` sensor — so ST1's gating is
+confirmed in both directions in the same run, not just on the colour body.
 
 The reported extents are R4-aligned: the ASI1600MM-Cool's raw 4656 × 3520 and
 the ASI178MM's 3096 × 2080 are reduced to the largest multiples the whole bin

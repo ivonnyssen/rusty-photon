@@ -1167,8 +1167,9 @@ presents a single simulated camera, so C0/C4 had only ever been simulated.
 - **Tenet 3** — `CoolerOn` read `false` after every connect, on every run.
 
 **The shared camera-core crate on hardware (2026-08-07).** The same three
-bodies, re-run at `28bdd094` after the ROI rule set, the Bayer offsets and the
-single-plane `ImageArray` unpack moved out of the three camera drivers into
+bodies, re-run at `7e12a9b3` on ConformU 4.5.0 after the ROI rule set, the
+Bayer offsets and the single-plane `ImageArray` unpack moved out of the three
+camera drivers into
 [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/). Both
 suites clean on all three; full record in
 [docs/validation](../validation/2026-08-07-zwo-camera-three-cameras-linux/README.md).
