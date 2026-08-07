@@ -105,9 +105,17 @@ jobs:
 
       - name: Commit and push repin
         if: steps.changed.outputs.dirty == 'true'
+        # The branch name reaches the script through the environment rather
+        # than `${{ }}` interpolation: an expression is pasted in as literal
+        # text before bash parses the line, so a branch whose name carried
+        # shell metacharacters would execute as code. Dependabot's own naming
+        # makes that unreachable here, but the env indirection costs nothing
+        # and keeps the pattern uniform.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add MODULE.bazel.lock
-          git commit -m "chore(bazel): repin MODULE.bazel.lock for ${{ github.head_ref }}"
-          git push origin HEAD:${{ github.head_ref }}
+          git commit -m "chore(bazel): repin MODULE.bazel.lock for $HEAD_REF"
+          git push origin "HEAD:$HEAD_REF"

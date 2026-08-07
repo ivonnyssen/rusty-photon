@@ -16,7 +16,6 @@ name: rolling
 jobs:
   # https://twitter.com/mycoliza/status/1571295690063753218
   nightly:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Explicit timeout — see test.yml's plan job. The `cargo test --test bdd`
     # step intermittently hangs; without a cap GitHub's 360 min default let
@@ -73,7 +72,6 @@ jobs:
       - name: cargo test --test bdd
         run: cargo test --locked --all-features --test bdd
   discover-miri:
-    if: github.event_name != 'pull_request'
     name: Discover Miri Services
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -90,21 +88,21 @@ jobs:
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.miri.command) | {name: .name, command: .metadata.miri.command}]')
 
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
 
           # Check if we have any services
           COUNT=$(echo "$SERVICES" | jq 'length')
           if [ "$COUNT" -gt 0 ]; then
-            echo "has_services=true" >> $GITHUB_OUTPUT
+            echo "has_services=true" >> "$GITHUB_OUTPUT"
             echo "Found $COUNT Miri services:"
             echo "$SERVICES" | jq -r '.[] | "  - \(.name): \(.command)"'
           else
-            echo "has_services=false" >> $GITHUB_OUTPUT
+            echo "has_services=false" >> "$GITHUB_OUTPUT"
             echo "No Miri services found"
           fi
 
   miri:
-    if: github.event_name != 'pull_request' && needs.discover-miri.outputs.has_services == 'true'
+    if: needs.discover-miri.outputs.has_services == 'true'
     needs: discover-miri
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -130,7 +128,6 @@ jobs:
           MIRIFLAGS: "-Zmiri-disable-isolation"
   # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
-    if: github.event_name != 'pull_request'
     # This action checks that updating the dependencies of this crate to the latest available that
     # satisfy the versions in Cargo.toml does not break this crate. This is important as consumers
     # of this crate will generally use the latest available crates. This is subject to the standard
@@ -200,7 +197,6 @@ jobs:
         env:
           RUSTFLAGS: -D deprecated
   beta:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     name: scheduled / ubuntu / beta

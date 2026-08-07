@@ -20,7 +20,6 @@ concurrency:
 name: safety
 jobs:
   sanitizers:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Explicit timeout — see test.yml's plan job. The sanitizer `cargo test`
     # step runs the same BDD scenarios that intermittently hang; without a

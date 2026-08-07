@@ -67,8 +67,8 @@ jobs:
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
           COUNT=$(echo "$SERVICES" | jq 'length')
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
-          echo "has_services=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
+          echo "has_services=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "ConformU services ($COUNT): $(echo "$SERVICES" | jq -r '[.[].name] | join(", ")')"
 
   # Ubuntu and macOS: run all conformu tests in parallel within a single job.

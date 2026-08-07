@@ -57,7 +57,7 @@ jobs:
           mkdir -p staging
           cp target/${{ matrix.target }}/release/filemonitor staging/
           cd staging
-          tar czf ../filemonitor-${VERSION}-${{ matrix.target }}.tar.gz filemonitor
+          tar czf "../filemonitor-${VERSION}-${{ matrix.target }}.tar.gz" filemonitor
       - name: Install cargo-deb
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo install cargo-deb
