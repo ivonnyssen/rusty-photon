@@ -79,7 +79,7 @@ impl MountType {
     /// returns `Err(byte)` carrying the unrecognised mount-type byte
     /// otherwise so the driver can quote it in operator-facing diagnostics.
     pub const fn from_motor_board_version(version: u32) -> Result<Self, u8> {
-        let mount_id = (version & 0xFF) as u8;
+        let [mount_id, _, _, _] = version.to_le_bytes();
         match mount_id {
             0x00 => Ok(Self::Eq6),
             0x01 => Ok(Self::Heq5),

@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1255,6 +1255,37 @@ milliarcsecond band bounds; no `TryFrom<f64>` exists to spell it, a float-to-int
 band that the exact great-circle test then filters. The workspace's exemption
 count for the L5 three stands at four, all f64-to-integer narrowings below a
 visible guard.
+
+### L5g — `skywatcher-motor-protocol`
+
+42 production sites to **zero**, no new exemptions. A hex wire codec is the
+lint trio's home turf — nibble arithmetic, frame indexing, masked narrowing —
+and every shape turned out to have a total named spelling:
+
+- **Slice patterns are the length check.** The frame validators and
+  `AxisStatus::decode` replaced an explicit length guard plus indexing with an
+  exhaustive match whose short arms (`[] | [_] => Err(too short)`) *are* the
+  check and whose main-arm bindings are the proof. Every arm is reachable and
+  already tested — unlike a `let`-else after a guard, whose else arm is dead
+  code coverage can never reach.
+- **Validation now hands back what it proved.** `Response::decode` re-indexed
+  the frame `validate_response_frame` had just checked. A `pub(crate)`
+  `split_response_frame` returns `(prefix, payload)`; the public validator
+  keeps its API as a thin wrapper over it.
+- **`to_le_bytes` is the named spelling of masked narrowing.** The three
+  `(value >> n & 0xFF) as u8` casts in `encode_u24` and the mount-type low
+  byte became `let [lo, mid, hi, _] = value.to_le_bytes()` — exact,
+  const-stable, so every `const fn` stayed const.
+- **The copy audit fired again (L5e's lesson).** The crate carried the nibble
+  decoder twice (codec + response, identical except the error variant) and
+  the encoder twice (command's arithmetic fn vs codec's lookup table). Both
+  directions now live once in `codec.rs`. The response copy returned
+  `PayloadError` for a non-hex byte, contradicting the GTi service's
+  documented taxonomy (`HexError` = non-hex byte, `PayloadError` = wrong
+  shape); unification made the docs true, and no test pinned the old variant.
+- The debias now mirrors the bias: `decode_position` uses `wrapping_sub`
+  where `encode_position` already used `wrapping_add` — bit-exact, and the
+  high byte `decode_u24` zeroes makes overflow unreachable anyway.
 
 ## L6a — split the CI channels
 

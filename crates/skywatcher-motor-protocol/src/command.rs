@@ -4,7 +4,7 @@
 //! ASCII letter (uppercase = setter / motion; lowercase = inquiry), `<axis>`
 //! is `'1'`, `'2'`, or `'3'`, and `<payload>` is 0..=6 ASCII hex bytes.
 
-use crate::codec::{encode_position, encode_u24};
+use crate::codec::{encode_position, encode_u24, nibble_to_hex};
 use crate::error::Result;
 
 /// Which physical axis a command targets.
@@ -144,16 +144,6 @@ impl MotionMode {
             db2 |= 0x1;
         }
         [nibble_to_hex(db1), nibble_to_hex(db2)]
-    }
-}
-
-fn nibble_to_hex(n: u8) -> u8 {
-    debug_assert!(n < 16, "nibble must be 0..=15, got {n:#x}");
-    let lo = n & 0x0F;
-    if lo < 10 {
-        b'0' + lo
-    } else {
-        b'A' + (lo - 10)
     }
 }
 
