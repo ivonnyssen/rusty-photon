@@ -7,7 +7,7 @@
 //! * `!<XX>\r` — error. `XX` is one ASCII hex byte (the mount-side error
 //!   code); decoded into [`crate::error::MountErrorCode`].
 
-use crate::codec::{decode_position, decode_u24, decode_u8, validate_response_frame};
+use crate::codec::{decode_nibble, decode_position, decode_u24, decode_u8, split_response_frame};
 use crate::command::{Axis, Command};
 use crate::error::{MountErrorCode, ProtocolError, Result};
 
@@ -53,15 +53,15 @@ impl AxisStatus {
     /// Decode the three-nibble `:f<axis>` payload. See the table on
     /// [`AxisStatus`] for the bit assignments.
     pub fn decode(payload: &[u8]) -> Result<Self> {
-        if payload.len() != 3 {
+        let [n0, n1, n2] = payload else {
             return Err(ProtocolError::PayloadError(format!(
                 "axis status payload must be 3 hex digits, got {}",
                 payload.len()
             )));
-        }
-        let n0 = decode_nibble(payload[0])?;
-        let n1 = decode_nibble(payload[1])?;
-        let n2 = decode_nibble(payload[2])?;
+        };
+        let n0 = decode_nibble(*n0)?;
+        let n1 = decode_nibble(*n1)?;
+        let n2 = decode_nibble(*n2)?;
         Ok(Self {
             goto: (n0 & 0x1) == 0,
             ccw: (n0 & 0x2) != 0,
@@ -71,17 +71,6 @@ impl AxisStatus {
             initialized: (n2 & 0x1) != 0,
             level_switch_on: (n2 & 0x2) != 0,
         })
-    }
-}
-
-fn decode_nibble(b: u8) -> Result<u8> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        other => Err(ProtocolError::PayloadError(format!(
-            "expected ASCII hex digit, got {other:#04x}"
-        ))),
     }
 }
 
@@ -110,22 +99,20 @@ impl Response {
     /// `:j1` returns a [`Response::Position`] (signed, debiased) whereas
     /// `:a1` returns a [`Response::U24`] (unsigned).
     pub fn decode(frame: &[u8], in_reply_to: &Command) -> Result<Self> {
-        validate_response_frame(frame)?;
-        // Strip the leading prefix and the trailing `\r`.
-        let prefix = frame[0];
-        let payload = &frame[1..frame.len() - 1];
+        let (prefix, payload) = split_response_frame(frame)?;
 
         if prefix == b'!' {
             // Error reply. Per spec §4: two hex digits → one byte
             // error code. Empirical: the Star Adventurer GTi
             // returns a single hex digit for single-digit codes
             // (all the documented codes 0..8 fit). Accept either.
-            let code = match payload.len() {
-                1 => decode_nibble(payload[0])?,
-                2 => decode_u8([payload[0], payload[1]])?,
-                n => {
+            let code = match payload {
+                [d] => decode_nibble(*d)?,
+                [h, l] => decode_u8([*h, *l])?,
+                _ => {
                     return Err(ProtocolError::FrameError(format!(
-                        "error response payload must be 1 or 2 hex chars, got {n}"
+                        "error response payload must be 1 or 2 hex chars, got {}",
+                        payload.len()
                     )))
                 }
             };
@@ -175,15 +162,13 @@ impl Response {
                 // any known controller emits it. We promote whichever
                 // width we receive to a `u32` so the parameter cache
                 // stays uniform.
-                Ok(Self::U24(match payload.len() {
-                    2 => {
-                        let bytes = [payload[0], payload[1]];
-                        u32::from(decode_u8(bytes)?)
-                    }
-                    6 => decode_u24(expect_u24_payload(payload)?)?,
-                    n => {
+                Ok(Self::U24(match payload {
+                    [h, l] => u32::from(decode_u8([*h, *l])?),
+                    [_, _, _, _, _, _] => decode_u24(expect_u24_payload(payload)?)?,
+                    _ => {
                         return Err(ProtocolError::PayloadError(format!(
-                            "expected 2- or 6-hex-byte payload for `:g`, got {n} bytes"
+                            "expected 2- or 6-hex-byte payload for `:g`, got {} bytes",
+                            payload.len()
                         )))
                     }
                 }))

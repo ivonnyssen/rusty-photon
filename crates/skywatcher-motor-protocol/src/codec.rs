@@ -23,15 +23,22 @@ pub const POSITION_MIN: i32 = -(1 << 23);
 /// Inclusive upper bound of the signed-24-bit encoder-tick range.
 pub const POSITION_MAX: i32 = (1 << 23) - 1;
 
-const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+/// Upper-case ASCII hex digit for the low nibble of `n`. The high nibble
+/// is masked off, so the mapping is total. The saturating arithmetic is
+/// the total spelling of offsets that cannot overflow under the mask.
+pub(crate) const fn nibble_to_hex(n: u8) -> u8 {
+    let lo = n & 0x0F;
+    if lo < 10 {
+        b'0'.saturating_add(lo)
+    } else {
+        b'A'.saturating_add(lo.saturating_sub(10))
+    }
+}
 
 /// Encode a `u8` as two ASCII hex bytes (high nibble first, upper-case).
 #[must_use]
 pub const fn encode_u8(value: u8) -> [u8; 2] {
-    [
-        HEX_UPPER[(value >> 4) as usize],
-        HEX_UPPER[(value & 0x0F) as usize],
-    ]
+    [nibble_to_hex(value >> 4), nibble_to_hex(value & 0x0F)]
 }
 
 /// Decode two ASCII hex bytes into a `u8`. Case-insensitive on input.
@@ -41,11 +48,13 @@ pub fn decode_u8(bytes: [u8; 2]) -> Result<u8> {
     Ok((hi << 4) | lo)
 }
 
-fn decode_nibble(b: u8) -> Result<u8> {
+/// Decode one ASCII hex digit. Each arm's range makes its subtraction
+/// total; the saturating spelling states that without a panic path.
+pub(crate) fn decode_nibble(b: u8) -> Result<u8> {
     match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
+        b'0'..=b'9' => Ok(b.saturating_sub(b'0')),
+        b'a'..=b'f' => Ok(b.saturating_sub(b'a').saturating_add(10)),
+        b'A'..=b'F' => Ok(b.saturating_sub(b'A').saturating_add(10)),
         other => Err(ProtocolError::HexError(format!(
             "expected ASCII hex digit, got {other:#04x}"
         ))),
@@ -58,9 +67,7 @@ fn decode_nibble(b: u8) -> Result<u8> {
 /// as `[b'5', b'6', b'3', b'4', b'1', b'2']`.
 #[must_use]
 pub const fn encode_u24(value: u32) -> [u8; 6] {
-    let lo = (value & 0xFF) as u8;
-    let mid = ((value >> 8) & 0xFF) as u8;
-    let hi = ((value >> 16) & 0xFF) as u8;
+    let [lo, mid, hi, _] = value.to_le_bytes();
     let [a, b] = encode_u8(lo);
     let [c, d] = encode_u8(mid);
     let [e, f] = encode_u8(hi);
@@ -99,7 +106,11 @@ pub fn encode_position(ticks: i32) -> Result<[u8; 6]> {
 /// [`i32`] in the range `-2^23 ..= 2^23 - 1`.
 pub fn decode_position(bytes: &[u8; 6]) -> Result<i32> {
     let biased = decode_u24(bytes)?;
-    Ok(biased.cast_signed() - POSITION_BIAS.cast_signed())
+    // `decode_u24` zeroes the high byte, so the debias cannot overflow;
+    // wrapping is bit-exact and mirrors the encode side's `wrapping_add`.
+    Ok(biased
+        .cast_signed()
+        .wrapping_sub(POSITION_BIAS.cast_signed()))
 }
 
 /// Verify that `frame` matches the strict outbound (command) UDP framing
@@ -110,26 +121,32 @@ pub fn decode_position(bytes: &[u8; 6]) -> Result<i32> {
 /// they go on the wire. Serial transports skip this — they stream
 /// continuously and re-sync on the next `:`.
 pub fn validate_command_frame(frame: &[u8]) -> Result<()> {
-    if frame.len() < 3 {
+    // The short arms are the length check: the main arm only sees frames
+    // of at least prefix + one byte + terminator.
+    let (first, body, last) = match frame {
+        [] | [_] | [_, _] => {
+            return Err(ProtocolError::FrameError(format!(
+                "command frame too short ({} bytes)",
+                frame.len()
+            )))
+        }
+        [first, body @ .., last] => (*first, body, *last),
+    };
+    if first != b':' {
         return Err(ProtocolError::FrameError(format!(
-            "command frame too short ({} bytes)",
-            frame.len()
+            "command frame must start with `:`, got {first:#04x}"
         )));
     }
-    if frame[0] != b':' {
-        return Err(ProtocolError::FrameError(format!(
-            "command frame must start with `:`, got {:#04x}",
-            frame[0]
-        )));
-    }
-    if frame[frame.len() - 1] != b'\r' {
+    if last != b'\r' {
         return Err(ProtocolError::FrameError(
             "command frame must end with `\\r`".to_string(),
         ));
     }
     // Reject embedded `\r` — the controller treats a second `\r` as the end
     // of frame, so any payload containing one would split into two frames.
-    if frame[..frame.len() - 1].contains(&b'\r') {
+    // The prefix is already known not to be one, so checking the body
+    // covers everything before the terminator.
+    if body.contains(&b'\r') {
         return Err(ProtocolError::FrameError(
             "command frame contains embedded `\\r`".to_string(),
         ));
@@ -144,24 +161,37 @@ pub fn validate_command_frame(frame: &[u8]) -> Result<()> {
 /// Used by the UDP transport on receive. Serial transports buffer up to
 /// the first `\r` and pass exactly the resulting slice in here.
 pub fn validate_response_frame(frame: &[u8]) -> Result<()> {
-    if frame.len() < 2 {
+    split_response_frame(frame).map(|_| ())
+}
+
+/// Validate `frame` against the response framing rules and hand back the
+/// prefix byte and the payload between it and the trailing `\r`, so
+/// decoders never re-derive what validation already proved.
+pub(crate) fn split_response_frame(frame: &[u8]) -> Result<(u8, &[u8])> {
+    // The short arms are the length check: the main arm only sees frames
+    // of at least prefix + terminator.
+    let (prefix, payload, last) = match frame {
+        [] | [_] => {
+            return Err(ProtocolError::FrameError(format!(
+                "response frame too short ({} bytes)",
+                frame.len()
+            )))
+        }
+        [prefix, payload @ .., last] => (*prefix, payload, *last),
+    };
+    if prefix != b'=' && prefix != b'!' {
         return Err(ProtocolError::FrameError(format!(
-            "response frame too short ({} bytes)",
-            frame.len()
+            "response frame must start with `=` or `!`, got {prefix:#04x}"
         )));
     }
-    if frame[0] != b'=' && frame[0] != b'!' {
-        return Err(ProtocolError::FrameError(format!(
-            "response frame must start with `=` or `!`, got {:#04x}",
-            frame[0]
-        )));
-    }
-    if frame[frame.len() - 1] != b'\r' {
+    if last != b'\r' {
         return Err(ProtocolError::FrameError(
             "response frame must end with `\\r`".to_string(),
         ));
     }
-    if frame[..frame.len() - 1].contains(&b'\r') {
+    // The prefix is already known not to be a `\r`, so checking the
+    // payload covers everything before the terminator.
+    if payload.contains(&b'\r') {
         return Err(ProtocolError::FrameError(
             "response frame contains embedded `\\r`".to_string(),
         ));
@@ -170,13 +200,13 @@ pub fn validate_response_frame(frame: &[u8]) -> Result<()> {
     // digits (`!XX\r`, 4 bytes). Empirically the Star Adventurer GTi
     // returns a single hex digit (`!X\r`, 3 bytes) for the
     // single-digit error codes defined in §5 (0..8). Accept either.
-    if frame[0] == b'!' && frame.len() != 3 && frame.len() != 4 {
+    if prefix == b'!' && frame.len() != 3 && frame.len() != 4 {
         return Err(ProtocolError::FrameError(format!(
             "error response must be `!X\\r` (3 bytes) or `!XX\\r` (4 bytes), got {} bytes",
             frame.len()
         )));
     }
-    Ok(())
+    Ok((prefix, payload))
 }
 
 #[cfg(test)]
